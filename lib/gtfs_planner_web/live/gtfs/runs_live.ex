@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
   on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
@@ -123,25 +124,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
   end
 
-  defp audit_context(socket) do
-    %{current_user: user, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
-
-    %AuditContext{
-      actor_id: user.id,
-      actor_email: user.email,
-      organization_id: organization.id,
-      gtfs_version_id: version.id,
-      station_stop_id: nil
-    }
-  end
-
   defp editor_refusal(socket),
     do: put_toast(socket, "You no longer have editor access to this organization.", :refused)
 
   @impl true
   def handle_params(params, _uri, socket) do
-    day = blank_to_nil(params["day"])
+    day = Values.presence(params["day"])
     sort = sort_key(params["sort"])
     dir = sort_dir(params["dir"])
 
@@ -166,7 +154,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:scale, scale_value(params["scale"]))
       |> assign(:view, view)
       |> assign(:panel, panel_value(params["panel"]))
-      |> assign(:run, blank_to_nil(params["run"]))
+      |> assign(:run, Values.presence(params["run"]))
       |> ensure_day_loaded()
 
     socket =
@@ -244,7 +232,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   @impl true
   def handle_event("select_day", %{"day" => day}, socket) do
-    {:noreply, push_patch(socket, to: runs_path(socket, blank_to_nil(day)))}
+    {:noreply, push_patch(socket, to: runs_path(socket, Values.presence(day)))}
   end
 
   def handle_event("retry", _params, socket) do
@@ -562,7 +550,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("remove_orphans", _params, socket) do
     %{day: day} = socket.assigns
 
-    case Gtfs.remove_run_orphans(audit_context(socket), day) do
+    case Gtfs.remove_run_orphans(AuditContext.from_assigns(socket.assigns), day) do
       # A count, not `:ok`: the drawer says how many rows it deleted, and the
       # domain counts the rows it actually removed rather than the rows it
       # believed were there.
@@ -612,7 +600,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("rename_run", %{"run" => %{"run_id" => new_id}}, socket) do
     %{day: day} = socket.assigns
 
-    case Gtfs.rename_run(audit_context(socket), day, socket.assigns.run, new_id) do
+    case Gtfs.rename_run(
+           AuditContext.from_assigns(socket.assigns),
+           day,
+           socket.assigns.run,
+           new_id
+         ) do
       {:ok, %{undo: moves}} ->
         # `push_patch/2` returns a socket, not `{:noreply, socket}`. Returning it
         # bare fails the whole LiveView with an ArgumentError that dumps the
@@ -849,7 +842,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
     socket = assign(socket, :apply_state, :pending)
 
-    case Gtfs.apply_run_plan(audit_context(socket), plan) do
+    case Gtfs.apply_run_plan(AuditContext.from_assigns(socket.assigns), plan) do
       {:ok, %{undo: undo_moves}} when undo_moves != [] ->
         {:noreply,
          socket
@@ -961,7 +954,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp save_crew_settings(socket, entries) do
     attrs = crew_attrs(entries)
 
-    case Gtfs.update_crew_settings(audit_context(socket), attrs) do
+    case Gtfs.update_crew_settings(AuditContext.from_assigns(socket.assigns), attrs) do
       {:ok, _crew} ->
         # The rules feed every derivation, so the day is reloaded and the drawer
         # closes: the reader asked to change the rules, not to keep editing them.
@@ -1289,11 +1282,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # uncaught — `false` is not `:ok` and not one of the refusals — and take the
   # whole LiveView down on an ordinary unchosen select.
   defp both_chosen?(gap, to) do
-    if chosen?(gap) and chosen?(to), do: :ok, else: :nothing_chosen
+    if Values.present?(gap) and Values.present?(to), do: :ok, else: :nothing_chosen
   end
-
-  defp chosen?(""), do: false
-  defp chosen?(_value), do: true
 
   defp split_position(socket, piece, gap) do
     with position when is_integer(position) and position >= 1 <- position(gap),
@@ -1420,7 +1410,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp apply_moves_now(socket, day, moves, success, refusal, after_success) do
-    case Gtfs.apply_run_moves(audit_context(socket), day, moves) do
+    case Gtfs.apply_run_moves(AuditContext.from_assigns(socket.assigns), day, moves) do
       {:ok, %{new_run_id: id, undo: undo_moves}} ->
         socket
         |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})
@@ -1812,15 +1802,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
-
   # `?day=` is dropped rather than rendered empty when no day type is selected,
   # `?day=` is dropped rather than rendered empty when no day type is selected,
   # so `/runs` and `/runs?day=` are the same URL and the first one the one a
@@ -1861,10 +1842,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {"run", not_the_default(run, "")}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
+      |> Enum.map(fn {key, value} -> {key, to_string(value)} end)
 
-    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/runs"
-    if params == "", do: base, else: base <> "?" <> params
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/runs?#{params}"
   end
 
   # The value unless it is the default, so the default never appears in the URL.

@@ -948,7 +948,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       change_timing(view, 2, "departure", "06:00")
 
       render_change(view, "preview_timing", %{"preview_time" => "25:00"})
-      assert has_element?(view, "#timing-preview-1", "01:00 +1 day")
+      assert has_element?(view, "#timing-preview-1", "25:00")
 
       render_change(view, "preview_timing", %{"preview_time" => "08:00"})
       assert has_element?(view, "#timing-preview-1", "08:00")

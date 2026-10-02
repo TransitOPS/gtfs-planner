@@ -104,6 +104,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   @edit_fields [
@@ -402,7 +403,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
     taken = MapSet.new(taken_ids)
     attrs = normalize_keys(attrs)
 
-    case trimmed(Map.get(attrs, :route_id)) do
+    case Values.presence(Map.get(attrs, :route_id)) do
       nil ->
         {candidate, reason} = generated_candidate(candidates, attrs)
         {:ok, %{route_id: dedupe(candidate, taken), reason: reason, mode: :generated}}
@@ -819,8 +820,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # --- identifier inference internals -------------------------------------
 
   defp generated_candidate(candidates, attrs) do
-    number = trimmed(Map.get(attrs, :route_short_name))
-    name = trimmed(Map.get(attrs, :route_long_name))
+    number = Values.presence(Map.get(attrs, :route_short_name))
+    name = Values.presence(Map.get(attrs, :route_long_name))
 
     case inferred_prefix(candidates, number) do
       prefix when is_binary(prefix) ->
@@ -847,8 +848,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
     examples =
       Enum.flat_map(candidates, fn candidate ->
         candidate = normalize_keys(candidate)
-        id = trimmed(Map.get(candidate, :route_id))
-        example_number = trimmed(Map.get(candidate, :route_short_name))
+        id = Values.presence(Map.get(candidate, :route_id))
+        example_number = Values.presence(Map.get(candidate, :route_short_name))
 
         with true <- is_binary(id),
              true <- is_binary(example_number),
@@ -890,17 +891,6 @@ defmodule GtfsPlanner.Gtfs.Routes do
     |> String.trim("-")
   end
 
-  defp trimmed(nil), do: nil
-
-  defp trimmed(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp trimmed(_value), do: nil
-
   # --- creation and replay internals ---------------------------------------
 
   # The domain receives trusted verified attempt data from the LiveView
@@ -914,7 +904,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
     gtfs_version_id = attempt_field(attempt, :gtfs_version_id)
 
     cond do
-      not Enum.all?([attempt_id, actor_id, organization_id, gtfs_version_id], &uuid?/1) ->
+      not Enum.all?([attempt_id, actor_id, organization_id, gtfs_version_id], &Values.uuid?/1) ->
         {:error, :not_found}
 
       actor_id != audit.actor_id ->
@@ -936,7 +926,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # UPDATE before any read or write so allocation and agency resolution see
   # committed state; reconcile reads without the lock.
   defp lock_published_version!(audit, lock \\ true) do
-    if uuid?(audit.organization_id) and uuid?(audit.gtfs_version_id) do
+    if Values.uuid?(audit.organization_id) and Values.uuid?(audit.gtfs_version_id) do
       query =
         from(version in GtfsVersion,
           where:
@@ -973,7 +963,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   defp load_created_route(audit, route_uuid) do
-    if uuid?(route_uuid) do
+    if Values.uuid?(route_uuid) do
       from(route in Route,
         where:
           route.id == ^route_uuid and route.organization_id == ^audit.organization_id and
@@ -1065,7 +1055,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # agency resolves automatically (read-only assignment) and multiple agencies
   # require a selected scoped agency (AC-5).
   defp resolve_agency(attrs, audit) do
-    submitted = trimmed(Map.get(attrs, "agency_id") || Map.get(attrs, :agency_id))
+    submitted = Values.presence(Map.get(attrs, "agency_id") || Map.get(attrs, :agency_id))
     count = Gtfs.count_agencies(audit.organization_id, audit.gtfs_version_id)
 
     cond do
@@ -1432,7 +1422,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
         retry_command_transaction(transaction, attempts)
 
       {:error, reason} ->
-        if retryable_conflict?(reason),
+        if Repo.retryable_conflict?(reason),
           do: retry_command_transaction(transaction, attempts),
           else: {:error, reason}
     end
@@ -1444,31 +1434,13 @@ defmodule GtfsPlanner.Gtfs.Routes do
   defp retry_command_transaction(_transaction, _attempts), do: {:error, :busy}
 
   defp run_apply_transaction(transaction) do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    ).run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable_conflict?(error),
+      if Repo.retryable_conflict?(error),
         do: {:retryable_conflict, error},
         else: reraise(error, __STACKTRACE__)
   end
-
-  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [
-              :serialization_failure,
-              "40001",
-              :deadlock_detected,
-              "40P01"
-            ],
-       do: true
-
-  defp retryable_conflict?(_reason), do: false
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # --- comparison internals -----------------------------------------------
 

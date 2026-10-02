@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Versions do
   import Ecto.Query, warn: false
   alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
@@ -360,7 +361,7 @@ defmodule GtfsPlanner.Versions do
   @spec lock_for_exclusive_write!(Ecto.UUID.t(), Ecto.UUID.t()) :: GtfsVersion.t()
   def lock_for_exclusive_write!(organization_id, version_id) do
     version =
-      if uuid?(organization_id) and uuid?(version_id) do
+      if Values.uuid?(organization_id) and Values.uuid?(version_id) do
         from(v in GtfsVersion,
           where: v.id == ^version_id and v.organization_id == ^organization_id,
           lock: "FOR UPDATE"
@@ -380,7 +381,7 @@ defmodule GtfsPlanner.Versions do
   # calendar reads and schedule writers already take, so input writers exclude each other
   # and any exclusive version owner instead of racing it.
   defp scoped_version_for_share(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
+    if Values.uuid?(organization_id) and Values.uuid?(version_id) do
       from(v in GtfsVersion,
         where: v.id == ^version_id and v.organization_id == ^organization_id,
         lock: "FOR SHARE"
@@ -388,9 +389,6 @@ defmodule GtfsPlanner.Versions do
       |> Repo.one()
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   defp lifecycle_state(organization_id, version_id) do
     from(v in GtfsVersion,

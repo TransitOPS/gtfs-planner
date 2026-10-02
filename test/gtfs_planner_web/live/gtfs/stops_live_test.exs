@@ -547,6 +547,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
 
       assert_patched(view, "/gtfs/#{version.id}/stops?search=test")
     end
+
+    test "a whitespace-only search patches a URL without search and lists every row", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "WSSRCH", parent_station: nil})
+
+      stub_catalog(fn opts ->
+        case Keyword.get(opts, :search) do
+          "" -> {:ok, stop_page([stop], 1, 1, %{})}
+          _blank -> {:ok, stop_page([], 0, 1, %{})}
+        end
+      end)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      html =
+        view
+        |> form("#stop-search-form", %{"search" => " "})
+        |> render_change()
+
+      assert_patched(view, "/gtfs/#{version.id}/stops")
+      assert html =~ "WSSRCH"
+    end
   end
 
   describe "StopsLive empty states" do

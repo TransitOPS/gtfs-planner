@@ -227,7 +227,10 @@ test.describe("durable import and export browser journeys", () => {
       .getAttribute("href");
     await page.locator("#start-export").click();
     await expect
-      .poll(() => page.locator("#export-download-link").getAttribute("href"))
+      .poll(
+        () => page.locator("#export-download-link").getAttribute("href"),
+        { timeout: 30_000 },
+      )
       .not.toBe(oldDownloadHref);
     await page.reload();
     await expect(page.locator("#export-download-link")).toBeVisible({

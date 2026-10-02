@@ -113,8 +113,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesAddFrequencyTest do
       # The new row starts where the last one ended and keeps its gap, so the two
       # windows touch and the list stays valid as typed (R8).
       assert_push_event(view, "focus_scoped_target", %{id: "windows-1-from"})
-      assert has_element?(view, "#windows-1-from[value='12:00']")
-      assert has_element?(view, "#windows-1-until[value='14:00']")
+      assert has_element?(view, "#windows-1-from[value='12:00:00']")
+      assert has_element?(view, "#windows-1-until[value='14:00:00']")
       assert has_element?(view, "#windows-1-every[value='30']")
 
       assert has_element?(

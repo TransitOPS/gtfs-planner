@@ -34,7 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlannerWeb.Gtfs.BlocksComponents
+  alias GtfsPlanner.Gtfs.GtfsTime
 
   setup :editor_setup
 
@@ -184,19 +184,19 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
                "One piece"
              )
 
-      # Sign-on and sign-off are the Blocks clock, so a run that signs off after
-      # midnight reads "+1d" rather than a bare time that looks like it signed
-      # on before it started.
+      # Sign-on and sign-off are the shared GTFS-hours formatter, so a run that
+      # signs off after midnight reads "25:30" rather than a bare time that looks
+      # like it signed on before it started.
       assert has_element?(
                view,
                "#run-1001 [data-role=run-sign-on]",
-               BlocksComponents.clock(first.work.sign_on_secs)
+               GtfsTime.display(first.work.sign_on_secs)
              )
 
       assert has_element?(
                view,
                "#run-1001 [data-role=run-sign-off]",
-               BlocksComponents.clock(first.work.sign_off_secs)
+               GtfsTime.display(first.work.sign_off_secs)
              )
 
       # Spread and Paid as hours and minutes — "11:43", not "703 min" — the same
@@ -218,27 +218,29 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       assert has_element?(view, "#run-1001 [data-role=run-status]")
     end
 
-    test "a run that signs off after midnight prints +1d", context do
+    test "a run that signs off after midnight prints GTFS hours", context do
       world = two_runs(context)
       view = signed_in(context, world)
       [_first, second] = derived(world).derived.runs
 
       # The fixture's two blocks sit either side of midday, so nothing crosses
-      # midnight and the fixture cannot prove this case. The clock's own
-      # behaviour is Blocks' and is its tested, but the COLUMN is this step's, so
-      # what is pinned here is that the cell uses that clock rather than a bare
-      # `hh:mm` of its own — by the sign-off being the same string the clock
+      # midnight and the fixture cannot prove this case. The formatter's own
+      # behaviour is `GtfsTime.display/1`'s and is tested in
+      # `gtfs_time_test.exs`, but the COLUMN is this step's, so what is pinned
+      # here is that the cell uses the shared formatter rather than a bare
+      # `hh:mm` of its own — by the sign-off being the same string the formatter
       # produces for these seconds.
-      # The cell's text is EXACTLY what `BlocksComponents.clock/1` returns for
-      # these seconds, which is the claim this column owns: it uses the Blocks
-      # clock rather than a bare `hh:mm` of its own. The "+1d" suffix itself is
-      # that clock's behaviour and is Blocks' tested, not this step's — and no
-      # world in `RunsFixtures` crosses midnight, so the suffix cannot be seen
-      # end to end here without inventing a fixture this step would own forever.
+      # The cell's text is EXACTLY what `GtfsTime.display/1` returns for these
+      # seconds, which is the claim this column owns: it uses the shared
+      # formatter rather than a bare `hh:mm` of its own. The GTFS-hours clock is
+      # that formatter's behaviour and is its tested, not this step's — and no
+      # world in `RunsFixtures` crosses midnight, so a `25:30`-style value cannot
+      # be seen end to end here without inventing a fixture this step would own
+      # forever.
       cell = view |> element("#run-1002 [data-role=run-sign-off]") |> render()
 
       assert String.trim(cell) =~ "<td"
-      assert cell =~ BlocksComponents.clock(second.work.sign_off_secs)
+      assert cell =~ GtfsTime.display(second.work.sign_off_secs)
     end
   end
 
@@ -333,7 +335,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       assert length(ticks) <= div(span_hours, 2)
 
       # The first tick is the start of the axis, and its label is that instant on
-      # the Blocks clock — so the tick and the row's sign-on cell agree.
+      # the shared GTFS-hours formatter — so the tick and the row's sign-on cell
+      # agree.
       # The regex has one capture group, so each match is [full, left].
       [_full, first_left] = hd(ticks)
 
@@ -341,7 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       assert first_left == "0.00%"
 
       assert view |> element("#runs-timeline thead") |> render() =~
-               BlocksComponents.clock(axis.start_secs)
+               GtfsTime.display(axis.start_secs)
     end
 
     test "the track shares the axis's spacing rule", context do
@@ -394,7 +397,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
 
       assert_patch(
         view,
-        "/gtfs/#{world.version.id}/runs?day=#{world.day_type_key}&sort=paid&dir=desc"
+        "/gtfs/#{world.version.id}/runs?day=#{world.day_type_key}&dir=desc&sort=paid"
       )
     end
 

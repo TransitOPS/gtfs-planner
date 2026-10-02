@@ -77,6 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents
@@ -102,7 +103,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:blocked, nil)
      |> assign(:first_use?, false)
      |> assign(:filtered_empty?, false)
-     |> assign(:closure_count, pluralize_closures(0))
+     |> assign(:closure_count, Wording.count_noun(0, "closure"))
      |> assign(:match_count, 0)
      |> assign(:pathway_groups, [])
      |> assign(:closure_counts, %{})
@@ -734,7 +735,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp access_target(version_id, stop_id, _moment),
-    do: "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access"
+    do: ~p"/gtfs/#{version_id}/stops/#{stop_id}/evolutions/access"
 
   # -- access preview: mounted state -----------------------------------------
 
@@ -1226,13 +1227,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # -- access preview: presentation ------------------------------------------
 
-  defp moment_label(%Date{} = date, time), do: "#{service_clock(time)} on #{long_date(date)}"
-
-  defp long_date(%Date{} = date), do: Calendar.strftime(date, "%A, %B %-d, %Y")
-
-  defp short_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
-
-  defp service_clock(seconds) when is_integer(seconds), do: service_time_value(seconds)
+  defp moment_label(%Date{} = date, time), do: "#{GtfsTime.display(time)} on #{full_date(date)}"
 
   # The moment the result describes: its service date and time, and the local
   # clock time it falls on. The agency zone and its offset are secondary text
@@ -1241,14 +1236,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp preview_moment_label(assigns) do
     with %{local_time: %NaiveDateTime{} = local} <- assigns.preview,
          %{fallback?: false} <- assigns.preview_zone do
-      elsewhere =
+      stamp =
         if NaiveDateTime.to_date(local) == assigns.preview.service_date,
-          do: "",
-          else: " #{short_date(NaiveDateTime.to_date(local))}"
+          do: DisplayClock.format_time(local),
+          else: clock_with_short_date(local)
 
-      "#{long_date(assigns.preview.service_date)} · " <>
-        "#{service_clock(assigns.preview.service_time)} service time " <>
-        "(#{DisplayClock.format_time(local)}#{elsewhere})"
+      "#{full_date(assigns.preview.service_date)} · " <>
+        "#{GtfsTime.display(assigns.preview.service_time)} service time (#{stamp})"
     else
       _absent -> nil
     end
@@ -1309,7 +1303,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp short_moment(%Date{} = date, time),
-    do: "#{service_clock(time)} on #{Calendar.strftime(date, "%a, %b %-d")}"
+    do: "#{GtfsTime.display(time)} on #{Wording.weekday_date(date)}"
 
   defp preview_error_detail(%{preview_error: :too_large}) do
     "That date and time need too many service dates to check. Choose a moment within the version's calendar range."
@@ -1377,8 +1371,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     "#{count} #{if count == 1, do: "period", else: "periods"} with lost connections · "
   end
 
+  # Named exception (R16): a wall-clock annotation beside a sentence that
+  # already names the service date and year, so the date stays short.
+  defp clock_with_short_date(%NaiveDateTime{} = local),
+    do: "#{DisplayClock.format_time(local)} #{Wording.short_date(NaiveDateTime.to_date(local))}"
+
+  # The range span reads date first ("Jan 15 12:00 AM to Jan 16 2:00 AM"); its
+  # sentence names the year, so each end stays date-first and short.
   defp range_local_stamp(%NaiveDateTime{} = local),
-    do: "#{Calendar.strftime(local, "%b %-d")} #{DisplayClock.format_time(local)}"
+    do: "#{Wording.short_date(NaiveDateTime.to_date(local))} #{DisplayClock.format_time(local)}"
 
   # The stale label belongs to the retained range, never to the new request: it
   # names the range still on screen, when it was checked, and either what is
@@ -1469,11 +1470,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             [midnight, local_last] =
               DisplayClock.localize_many([DateTime.add(starts_at, 86_400, :second), last], zone)
 
-            "Service hours 00:00–#{service_time_value(axis)}. 24:00–#{service_time_value(axis)} is " <>
+            "Service hours 00:00–#{GtfsTime.display(axis)}. 24:00–#{GtfsTime.display(axis)} is " <>
               "#{DisplayClock.format_time(midnight)}–#{DisplayClock.format_time(local_last)} on " <>
               "#{Calendar.strftime(NaiveDateTime.to_date(local_last), "%a, %b %-d")}."
           else
-            "Service hours 00:00–#{service_time_value(axis)}."
+            "Service hours 00:00–#{GtfsTime.display(axis)}."
           end
 
         cond do
@@ -1569,13 +1570,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     if Date.compare(instance.service_date, assigns.preview.service_date) == :eq do
       nil
     else
-      "from the #{long_date(instance.service_date)} service day · until #{local_end_label(instance.ends_at, assigns.preview_zone)}"
+      "from the #{full_date(instance.service_date)} service day · until #{local_end_label(instance.ends_at, assigns.preview_zone)}"
     end
   end
 
   defp local_end_label(%DateTime{} = instant, %{fallback?: false} = zone) do
     [local] = DisplayClock.localize_many([instant], zone)
-    "#{DisplayClock.format_time(local)} #{short_date(NaiveDateTime.to_date(local))}"
+    clock_with_short_date(local)
   end
 
   defp local_end_label(_instant, _zone), do: nil
@@ -1674,7 +1675,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     spill =
       if Date.compare(instance.service_date, service_date) == :eq,
         do: "",
-        else: " from the #{long_date(instance.service_date)} service day"
+        else: " from the #{full_date(instance.service_date)} service day"
 
     pathway_reference(row && row.pathway, instance.pathway_id) ++
       [" is closed #{window_label(instance)}#{spill}."]
@@ -1851,7 +1852,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> assign(:blocked, blocked)
     |> assign(:first_use?, first_use?)
     |> assign(:filtered_empty?, filtered_empty?)
-    |> assign(:closure_count, pluralize_closures(length(rows)))
+    |> assign(:closure_count, Wording.count_noun(length(rows), "closure"))
     |> assign(:match_count, length(matches))
     |> assign(:pathway_groups, mode_groups(data.pathways))
     |> assign(:closure_counts, closure_counts(rows))
@@ -2028,7 +2029,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     case Gtfs.delete_pathway_evolution(
            socket.assigns.editor_id,
            socket.assigns.editor_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, _result} -> deleted_closure(socket, target)
       {:error, reason} -> refused_delete(socket, reason)
@@ -2448,7 +2449,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp submit_create(socket, params) do
-    case Gtfs.create_pathway_evolution(params, audit_context(socket)) do
+    case Gtfs.create_pathway_evolution(params, AuditContext.from_assigns(socket.assigns)) do
       {:ok, result} ->
         applied_closure(socket, result)
 
@@ -2467,7 +2468,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
            socket.assigns.editor_id,
            params,
            submitted_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, result} ->
         applied_closure(socket, result, unchanged?: result.fingerprint == submitted_fingerprint)
@@ -2655,13 +2656,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   # and the two helpers below read the mounted assigns, which the render pass and
   # the socket both carry.
   defp access_path(assigns, date, start_time) do
-    query =
-      URI.encode_query([
-        {"date", Date.to_iso8601(date)},
-        {"time", GtfsTime.format(comparable_time(start_time))}
-      ])
+    query = [
+      date: Date.to_iso8601(date),
+      time: GtfsTime.format(comparable_time(start_time))
+    ]
 
-    "#{evolutions_view_path(assigns)}/access?#{query}"
+    ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{assigns.stop_id}/evolutions/access?#{query}"
   end
 
   # The address of the other Evolutions view, for the view switch and for a
@@ -2679,18 +2679,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp access_view_path(assigns), do: evolutions_view_path(assigns) <> "/access"
 
   defp evolutions_view_path(assigns) do
-    version_id = assigns.current_gtfs_version.id
-    "/gtfs/#{version_id}/stops/#{URI.encode(assigns.stop_id)}/evolutions"
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: socket.assigns.stop_id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
+    ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{assigns.stop_id}/evolutions"
   end
 
   # The scoped focus hook only focuses an element the editor already owns.
@@ -3343,7 +3332,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               display={@floorplan}
               snapshot={@station_data}
               closed_instances={@preview.closed}
-              moment={service_clock(@preview.service_time)}
+              moment={GtfsTime.display(@preview.service_time)}
             />
           </div>
         <% end %>

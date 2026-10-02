@@ -35,11 +35,12 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       check_tone: 1,
       day_count: 1,
       featured_label: 1,
-      format_time: 1,
       region_error: 1
     ]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.StationBoard
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Home.ChangeLinks
 
   # The board's loading rows, as the title and detail placeholder widths the
@@ -564,7 +565,9 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
             {editor.station_name || editor.station_stop_id}
           </a>
           <span class="truncate text-[13px] text-muted">
-            {ChangeLinks.display_name(editor.email)} · since {clock_time(editor.started_at)}
+            {ChangeLinks.display_name(editor.email)} · since {DisplayClock.format_time(
+              editor.started_at
+            )}
           </span>
         </li>
       </ul>
@@ -760,7 +763,11 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       assign(assigns,
         name: assigns.row.base.name || assigns.row.base.stop_id,
         subtext: row_subtext(assigns.row),
-        floorplans: floorplan_text(assigns.row.base.floorplan_count),
+        floorplans:
+          if(assigns.row.base.floorplan_count == 0,
+            do: "no floorplan",
+            else: Wording.count_noun(assigns.row.base.floorplan_count, "floorplan")
+          ),
         report: report,
         report_class: report_class,
         reachability: reachability,
@@ -794,7 +801,9 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
     </td>
     <td class="px-5 py-1.5 max-sm:hidden">
       <%= if @row.base.last_edited_local do %>
-        <span class="block text-default">{format_time(@row.base.last_edited_local)}</span>
+        <span class="block text-default">
+          {DisplayClock.format_datetime(@row.base.last_edited_local)}
+        </span>
         <span class="block truncate text-[13px] text-muted">{@row.base.last_edited_by}</span>
       <% else %>
         <span class="text-muted">—</span>
@@ -838,7 +847,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       </span>
     </span>
     <span class="shrink-0 text-[13px] text-muted tabular-nums">
-      {format_time(@item.local_at)}
+      {DisplayClock.format_datetime(@item.local_at)}
     </span>
     """
   end
@@ -895,7 +904,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   # The station cell's second line: the id, its line count through the station's
   # platforms, and the editing marker (AC-21).
   defp row_subtext(row) do
-    lines = lines_text(row.lines)
+    lines = Wording.count_noun(row.lines, "line")
 
     if row.editing? do
       "#{row.base.stop_id} · #{lines} · editing now"
@@ -903,13 +912,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       "#{row.base.stop_id} · #{lines}"
     end
   end
-
-  defp lines_text(1), do: "1 line"
-  defp lines_text(count), do: "#{count} lines"
-
-  defp floorplan_text(0), do: "no floorplan"
-  defp floorplan_text(1), do: "1 floorplan"
-  defp floorplan_text(count), do: "#{count} floorplans"
 
   # A station without pathways is "Not started" whatever its status; a station
   # with pathways whose statuses are unavailable is "Unavailable" (AC-21, AC-29).
@@ -952,7 +954,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   defp tile_icon(_item), do: "hero-arrow-up-tray"
 
   defp item_title(%{kind: :check_errors} = item) do
-    "The last check found #{count_text(item.errors, "error")}."
+    "The last check found #{Wording.count_noun(item.errors, "error")}."
   end
 
   defp item_title(%{kind: :stopped_import, version_name: nil}), do: "An import stopped partway."
@@ -962,7 +964,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_detail(%{kind: :check_errors} = item) do
-    "Found #{day(item.local_at)}. Apps may reject the pathways files until they are fixed. " <>
+    "Found #{Wording.short_date(item.local_at)}. Apps may reject the pathways files until they are fixed. " <>
       "Warnings do not block anything."
   end
 
@@ -971,7 +973,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_action(%{kind: :check_errors} = item) do
-    "View the #{count_text(item.errors, "error")}"
+    "View the #{Wording.count_noun(item.errors, "error")}"
   end
 
   defp item_action(%{kind: :stopped_import}), do: "Review import"
@@ -982,15 +984,12 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
 
   defp item_href(%{kind: :stopped_import}, version_id), do: ~p"/gtfs/#{version_id}/import"
 
-  defp count_text(1, noun), do: "1 #{noun}"
-  defp count_text(count, noun), do: "#{count} #{noun}s"
-
   # The rail's export line: the run's local day and its download state (AC-19).
   defp export_line(%{expired?: true}), do: "download expired"
   defp export_line(%{local_finished_at: nil, state: state}), do: export_state(state)
 
   defp export_line(%{local_finished_at: at, state: state}),
-    do: "#{day(at)} · #{export_state(state)}"
+    do: "#{Wording.short_date(at)} · #{export_state(state)}"
 
   defp export_state(:ready), do: "download available"
   defp export_state(state) when state in [:pending, :building], do: "exporting…"
@@ -999,7 +998,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   defp since_line(%{changes: 0}), do: "No changes since then"
 
   defp since_line(%{changes: changes, stations: stations}),
-    do: "#{count_text(changes, "change")}, #{count_text(stations, "station")}"
+    do: "#{Wording.count_noun(changes, "change")}, #{Wording.count_noun(stations, "station")}"
 
   defp check_tone_class(check) do
     case check_tone(check) do
@@ -1008,10 +1007,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       :success -> "text-success-fg"
     end
   end
-
-  defp clock_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%-I:%M %p")
-
-  defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp stage_query(query, :all), do: query
   defp stage_query(query, stage), do: query ++ [stage: Atom.to_string(stage)]

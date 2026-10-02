@@ -164,7 +164,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
     assert dangling.pattern_derivation_reason == "missing_pattern"
     assert is_nil(dangling.timed_pattern_id)
 
-    derived = Enum.find(patterns(context, version.id, "Red"), &(&1.direction_id == 1))
+    # The supplied Red-1-1 also has direction 1 but no representative trip in
+    # this feed. Inspect the pattern the derived trip actually joined.
+    derived_trip = linked_trip(context, version.id, "T-red-derived-1")
+    derived = pattern(context, version.id, derived_trip.route_pattern_id)
+    assert derived.direction_id == 1
     assert Enum.map(occurrences(derived.id), &{&1.position, &1.stop_id}) == [{1, "A"}, {2, "B"}]
     assert derived.route_pattern_name == "Alpha – Beta"
 

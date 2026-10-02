@@ -13,8 +13,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   Display follows the prototype's review stage: Pasted view shows one column
   per pasted stop (the union of pasted occurrences across the changes), All
   stops shows every occurrence of the scoped pattern plus the extra stops of
-  rows on another pattern. Times render `HH:MM`; estimates are floored to
-  the minute, `+1 day` marks `>= 24:00`, `arr HH:MM` marks a differing
+  rows on another pattern. Times render `HH:MM` with seconds when nonzero,
+  `+1 day` marks `>= 24:00`, `arr HH:MM` marks a differing
   arrival, `was HH:MM` marks a changed cell, and removals strike their old
   times. Pure: no Repo, clock or process state.
 
@@ -51,6 +51,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
           decision: map() | nil,
           warned?: boolean()
         }
+
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Wording
 
   @doc """
   Builds the matrix view model for a review, scope and paste input.
@@ -103,20 +107,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   @spec warned?(map()) :: boolean()
   def warned?(%{warnings: warnings}) when is_list(warnings), do: warnings != []
   def warned?(_change), do: false
-
-  @doc """
-  Formats absolute seconds as `HH:MM`, floored to the minute. Hours are not
-  capped at 24, so after-midnight times read `24:03`.
-  """
-  @spec format_clock(integer()) :: String.t()
-  def format_clock(secs) when is_integer(secs) do
-    total_minutes = Integer.floor_div(secs, 60)
-    hours = Integer.floor_div(total_minutes, 60)
-    minutes = Integer.mod(total_minutes, 60)
-    "#{pad2(hours)}:#{pad2(minutes)}"
-  end
-
-  defp pad2(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   @doc """
   Resolves the timing note for a `pattern_id|name` ref, or `nil` when the
@@ -692,9 +682,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       fetch(row, :how) == :auto,
       "Skips stops, so it goes on the one pattern that fits."
     )
-    |> maybe_note(shifted?(row), "Read as #{format_clock(fetch(row, :start_secs))}.")
+    |> maybe_note(shifted?(row), "Read as #{GtfsTime.display(fetch(row, :start_secs))}.")
     |> maybe_note(
-      truthy?(fetch(row, :rolled?)),
+      TimetablePaste.truthy?(fetch(row, :rolled?)),
       "Runs past midnight; later times count from the same service day."
     )
   end
@@ -736,7 +726,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
     start =
       if is_map(row) and is_integer(fetch(row, :start_secs)),
-        do: " at #{format_clock(fetch(row, :start_secs))}",
+        do: " at #{GtfsTime.display(fetch(row, :start_secs))}",
         else: ""
 
     [note("Skipped: trip #{existing} already leaves#{start}.")]
@@ -759,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     [note("Not in your paste. Trip ID #{trip_id}.")]
     |> maybe_note(
       transfer_count > 0,
-      "#{plural(transfer_count, "transfer")} that name this trip are removed with it."
+      "#{Wording.count_noun(transfer_count, "transfer")} that name this trip are removed with it."
     )
   end
 
@@ -810,9 +800,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       _shift -> false
     end
   end
-
-  defp plural(1, one), do: "1 #{one}"
-  defp plural(count, one), do: "#{count} #{one}s"
 
   # --- Row decisions (step 27) ---
 
@@ -1030,7 +1017,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
     if is_map(raw) do
       raw
-      |> Enum.map(fn {row, decision} -> {to_decision_row(row), decision} end)
+      |> Enum.map(fn {row, decision} -> {TimetablePaste.row_number(row), decision} end)
       |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
       |> Map.new()
     else
@@ -1039,17 +1026,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   end
 
   defp input_decisions(_input), do: %{}
-
-  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_decision_row(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _parse -> nil
-    end
-  end
-
-  defp to_decision_row(_row), do: nil
 
   defp decision_text(decision, keys) when is_map(decision) and is_list(keys) do
     Enum.find_value(keys, fn key ->
@@ -1220,7 +1196,4 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     do: Map.get(map, key, default)
 
   defp fetch(_map, _key, default), do: default
-
-  defp truthy?(true), do: true
-  defp truthy?(_value), do: false
 end

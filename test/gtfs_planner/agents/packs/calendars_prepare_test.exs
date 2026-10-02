@@ -77,7 +77,7 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsPrepareTest do
 
       assert summary == %{
                title: "Stop service",
-               detail: "Mon Oct 12 – Fri Oct 16, 2026 · 5 dates",
+               detail: "Mon, Oct 12 – Fri, Oct 16, 2026 · 5 dates",
                lines: ["Stop · School express", "Stop · School weekdays"]
              }
 
@@ -163,7 +163,7 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsPrepareTest do
                )
 
       assert summary.title == "Change service"
-      assert summary.detail == "Thu Nov 26, 2026"
+      assert summary.detail == "Thu, Nov 26, 2026"
       assert summary.lines == ["Stop · Weekday service", "Run · Sunday service"]
 
       assert result["calendars"] == [

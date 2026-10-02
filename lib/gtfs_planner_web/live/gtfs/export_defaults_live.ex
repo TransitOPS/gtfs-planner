@@ -31,6 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
   alias GtfsPlanner.Gtfs.ExportDefault
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
   alias Phoenix.LiveView.AsyncResult
@@ -120,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
          version_id
        ) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: section_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/export-defaults")}
     else
       {:noreply, socket}
     end
@@ -135,7 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: section_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/export-defaults")}
     else
       {:noreply, socket}
     end
@@ -154,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="export-defaults-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -494,8 +495,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     """
   end
 
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
   # The switch's consequence in the reference's words: what a full export writes
   # with flex on, and what riders lose with it off.
   defp switch_consequence(true) do
@@ -579,14 +578,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
   defp impact_sentence(%{estimate_missing_times: true} = _defaults, summary) do
     estimable = summary.trips - length(summary.not_estimable)
 
-    "The next export estimates #{summary.estimable_times} times on #{pluralize(estimable, "trip")} " <>
-      "across #{pluralize(length(summary.routes), "route")}. " <>
+    "The next export estimates #{summary.estimable_times} times on #{Wording.count_noun(estimable, "trip")} " <>
+      "across #{Wording.count_noun(length(summary.routes), "route")}. " <>
       cant_sentence(summary)
   end
 
   defp impact_sentence(%{estimate_missing_times: false} = _defaults, summary) do
     "The next export leaves #{summary.missing_times} times blank on " <>
-      "#{pluralize(summary.trips, "trip")}. " <> cant_sentence(summary)
+      "#{Wording.count_noun(summary.trips, "trip")}. " <> cant_sentence(summary)
   end
 
   defp cant_sentence(%{not_estimable: []}), do: "Every trip with gaps can be estimated."
@@ -597,9 +596,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     "#{count} #{if(count == 1, do: "trip", else: "trips")} can't be estimated and " <>
       "#{if(count == 1, do: "is", else: "are")} exported as #{if(count == 1, do: "it is", else: "they are")}."
   end
-
-  defp pluralize(1, noun), do: "1 #{noun}"
-  defp pluralize(count, noun), do: "#{count} #{noun}s"
 
   defp route_label(%{route_short_name: short, route_long_name: long, route_id: id}) do
     [short, long]
@@ -670,7 +666,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     %{
       tone: :info,
       text:
-        "Estimated times on #{pluralize(estimable, "trip")} will change in the next export. " <>
+        "Estimated times on #{Wording.count_noun(estimable, "trip")} will change in the next export. " <>
           "Times saved in trips and patterns don’t change."
     }
   end
@@ -682,7 +678,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
       tone: :info,
       text:
         "The next export estimates #{summary.estimable_times} times on " <>
-          "#{pluralize(estimable, "trip")}. Nothing saved in trips changes." <>
+          "#{Wording.count_noun(estimable, "trip")}. Nothing saved in trips changes." <>
           cant_suffix(summary)
     }
   end
@@ -692,7 +688,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
       tone: :warning,
       text:
         "The next export leaves #{summary.missing_times} times blank on " <>
-          "#{pluralize(summary.trips, "trip")}. Riders’ apps will each fill them their own way."
+          "#{Wording.count_noun(summary.trips, "trip")}. Riders’ apps will each fill them their own way."
     }
   end
 
@@ -702,6 +698,4 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     count = length(cant)
     " #{count} #{if(count == 1, do: "trip", else: "trips")} can't be estimated."
   end
-
-  defp section_path(version_id), do: "/gtfs/#{version_id}/settings/export-defaults"
 end

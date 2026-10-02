@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -85,7 +86,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @extension_field :approval_text
   @combination_attempts 3
   @combination_trip_batch 500
-  @combination_retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
   @type kind :: :weekly | :dates_only
   @type coverage_error :: %{service_id: String.t(), reason: :reversed_range}
   @type command ::
@@ -2381,7 +2381,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   rescue
     error in [Postgrex.Error] ->
-      if retryable_combination_error?(error) do
+      if Repo.retryable_conflict?(error) do
         reraise error, __STACKTRACE__
       else
         Repo.rollback({:audit_failed, error})
@@ -2399,7 +2399,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp retry_combination(reason, normalized, review_fingerprint, audit_context, attempts) do
     cond do
-      not retryable_combination_error?(reason) ->
+      not Repo.retryable_conflict?(reason) ->
         {:error, reason}
 
       attempts > 1 ->
@@ -2409,12 +2409,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         {:error, :busy}
     end
   end
-
-  defp retryable_combination_error?(%Postgrex.Error{postgres: %{code: code}})
-       when code in @combination_retryable_codes,
-       do: true
-
-  defp retryable_combination_error?(_reason), do: false
 
   # -- Review and apply ------------------------------------------------------
 
@@ -3810,6 +3804,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp fingerprint_key(key) when is_binary(key), do: key
   defp fingerprint_key(_key), do: :invalid
 
+  # Identifier exception: whitespace is legal fingerprint data, so only "" is invalid.
   defp valid_fingerprint?(value), do: is_binary(value) and value != ""
 
   defp validate_review_fingerprint(fingerprint) when is_binary(fingerprint) do
@@ -3871,7 +3866,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # A literal lock string is required by Ecto.
   defp published_version_for_update(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
+    if Values.uuid?(organization_id) and Values.uuid?(version_id) do
       from(v in GtfsVersion,
         where:
           v.id == ^version_id and v.organization_id == ^organization_id and
@@ -3881,9 +3876,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       |> Repo.one()
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # -- Snapshots, fingerprints and digests ----------------------------------
 

@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
   these tests. Seven of the eight columns are the same numbers the chart shows,
   and the risk is not that they are wrong but that the two views drift apart: a
   second implementation of the same seven cells would be free to print a bare time
-  on one view and a `+1d` clock on the other, and a test that checked each view
+  on one view and a GTFS-hours clock on the other, and a test that checked each
   against its own expected value would pass both.
 
   So the central assertion here is a cell-by-cell comparison between the two views
@@ -394,7 +394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
 
       assert_patch(
         view,
-        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&sort=spread&dir=desc&view=list"
+        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&dir=desc&sort=spread&view=list"
       )
 
       assert run_ids(view) == ["1001", "1002"]

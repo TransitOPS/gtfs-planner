@@ -190,7 +190,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Copy do
   # The copied trip's start is its first row's departure, or its arrival at a trip
   # whose first stop stores only one clock (the ID allocator's stamp).
   defp start_secs([first | _rest]) do
-    case secs(value(first, :departure_time)) || secs(value(first, :arrival_time)) do
+    case GtfsTime.coerce(value(first, :departure_time)) ||
+           GtfsTime.coerce(value(first, :arrival_time)) do
       nil -> {:error, :invalid_command}
       secs -> {:ok, secs}
     end
@@ -424,17 +425,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Copy do
     |> List.wrap()
     |> Enum.sort_by(&{value(&1, :stop_sequence), value(&1, :id)})
   end
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, secs} -> secs
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp finish({:ok, values}), do: {:ok, Enum.reverse(values)}
   defp finish({:error, _reason} = error), do: error

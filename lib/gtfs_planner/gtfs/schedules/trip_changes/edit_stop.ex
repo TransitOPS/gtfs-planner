@@ -145,8 +145,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.EditStop do
   defp stops(rows) do
     Enum.map(rows, fn row ->
       %{
-        arrival: secs(value(row, :arrival_time)),
-        departure: secs(value(row, :departure_time)),
+        arrival: GtfsTime.coerce(value(row, :arrival_time)),
+        departure: GtfsTime.coerce(value(row, :departure_time)),
         timepoint: value(row, :timepoint)
       }
     end)
@@ -162,8 +162,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.EditStop do
     |> Enum.map(fn {{row, stop}, index} ->
       %{
         position: occurrence_position(occurrences, index),
-        arrival_time: clock(stop.arrival),
-        departure_time: clock(stop.departure),
+        arrival_time: stop.arrival && GtfsTime.format(stop.arrival),
+        departure_time: stop.departure && GtfsTime.format(stop.departure),
         timepoint: stop.timepoint,
         pickup_type: value(row, :pickup_type),
         drop_off_type: value(row, :drop_off_type),
@@ -243,20 +243,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.EditStop do
     |> List.wrap()
     |> Enum.sort_by(&{value(&1, :stop_sequence), value(&1, :id)})
   end
-
-  defp clock(nil), do: nil
-  defp clock(seconds), do: GtfsTime.format(seconds)
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, seconds} -> seconds
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp value(_map, _key), do: nil

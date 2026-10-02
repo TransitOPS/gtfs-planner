@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   # The reference offers the three modes this version uses most as one-click
@@ -363,7 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
             <strong class="font-[650]">
               Route {@short_warning.route[:route_id]}
             </strong>
-            <%= if present_name?(@short_warning.route[:route_short_name]) do %>
+            <%= if Values.present?(@short_warning.route[:route_short_name]) do %>
               already uses the number “{@short_warning.route[:route_short_name]}”. Riders may mix
               them up. You can still save.
             <% else %>
@@ -1006,7 +1007,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       if managed_fares? do
         "Route group #{(route_group && (route_group.name || route_group.network_id)) || "none"}"
       else
-        if(blank_value?(form[:network_id].value),
+        if(Values.blank?(form[:network_id].value),
           do: nil,
           else: "Network #{form[:network_id].value}"
         )
@@ -1046,8 +1047,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   defp option_value(value) when is_integer(value), do: to_string(value)
   defp option_value(value) when is_binary(value), do: value
   defp option_value(_value), do: ""
-
-  defp blank_value?(value), do: is_nil(value) or String.trim(to_string(value)) == ""
 
   # The chevron the reference draws with an inline `use` reference. It is
   # absolutely positioned over the select's own `h-11` box rather than over the
@@ -1149,9 +1148,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       ids -> Enum.join(ids, " ")
     end
   end
-
-  defp present_name?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present_name?(_value), do: false
 
   # The saved color a similar-color advisory names; the candidate projection
   # stores it already normalized, so the label is the stored value verbatim.

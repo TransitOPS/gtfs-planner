@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   }
 
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.StationReport2Components
   alias GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
 
@@ -678,12 +679,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   # The facts the workspace header adds once the report has loaded.
   defp station_facts(%{snapshot: %{levels: levels, child_stops: child_stops}}) do
-    "#{pluralize(length(levels), "level", "levels")} · " <>
-      "#{pluralize(length(child_stops), "stop or node", "stops and nodes")} inside"
+    "#{Wording.count_noun(length(levels), "level", "levels")} · " <>
+      "#{Wording.count_noun(length(child_stops), "stop or node", "stops and nodes")} inside"
   end
-
-  defp pluralize(1, one, _many), do: "1 #{one}"
-  defp pluralize(count, _one, many), do: "#{count} #{many}"
 
   attr(:state, :atom, required: true)
   attr(:reason, :atom, default: nil)

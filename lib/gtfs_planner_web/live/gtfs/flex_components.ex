@@ -55,6 +55,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   # The two kinds a first-time editor chooses between (AC-4). Wording is the
   # prototype's. Both the first-use question and the create drawer render them,
@@ -148,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
             role="status"
             class="text-[13px] font-[650] tabular-nums text-strong"
           >
-            {count_label(@count)}
+            {Wording.count_noun(@count, "flex service")}
           </p>
         </div>
 
@@ -868,14 +870,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     """
   end
 
-  @doc """
-  The version's service count as riders read it, shared by the table's caption
-  and the copy action's confirmation.
-  """
-  @spec count_label(non_neg_integer()) :: String.t()
-  def count_label(1), do: "1 flex service"
-  def count_label(count), do: "#{count} flex services"
-
   # The sentence a full export writes for these services (R15, AC-24).
   defp export_sentence(false) do
     "Your flex file is your only feed. It goes to the Transit app and OpenTripPlanner-based trip planners, not to Google."
@@ -906,9 +900,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp contact_word(%FlexService{phone: phone, booking_url: url}) do
     cond do
-      present?(phone) and present?(url) -> "Online or call"
-      present?(url) -> "Online"
-      present?(phone) -> "Call"
+      Values.present?(phone) and Values.present?(url) -> "Online or call"
+      Values.present?(url) -> "Online"
+      Values.present?(phone) -> "Call"
       true -> "No contact"
     end
   end
@@ -917,50 +911,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp notice_suffix(%FlexBookingRule{when: :same_day, minutes: minutes})
        when is_integer(minutes),
-       do: ", #{duration_short(minutes)} ahead"
+       do: ", #{Wording.duration(minutes * 60)} ahead"
 
   defp notice_suffix(%FlexBookingRule{when: :earlier_day, days: days, by: by} = rule)
        when is_integer(days) do
     business = if rule.business_days, do: "business ", else: ""
     unit = if days == 1, do: "day", else: "days"
-    ", by #{compact_clock(by)}, #{days} #{business}#{unit} ahead"
+    # Rider-facing wall-clock text, not a service time: RiderText.t12/2 owns it.
+    ", by #{RiderText.t12(by, true)}, #{days} #{business}#{unit} ahead"
   end
 
   defp notice_suffix(%FlexBookingRule{}), do: ""
-
-  defp duration_short(minutes) when minutes >= 60 and rem(minutes, 60) == 0,
-    do: "#{div(minutes, 60)} hr"
-
-  defp duration_short(minutes), do: "#{minutes} min"
-
-  # "HH:MM" as riders read it: "4 pm" on the hour, "4:30 pm" otherwise.
-  defp compact_clock(time) when is_binary(time) do
-    case String.split(time, ":") do
-      [hours, minutes] -> clock_from_parts(hours, minutes)
-      _other -> time
-    end
-  end
-
-  defp compact_clock(time), do: time
-
-  defp clock_from_parts(hours, minutes) do
-    case {Integer.parse(hours), Integer.parse(minutes)} do
-      {{hours, ""}, {minutes, ""}} -> clock(hours, minutes)
-      _unreadable -> hours <> ":" <> minutes
-    end
-  end
-
-  defp clock(hours, 0), do: "#{hour12(hours)} #{meridiem(hours)}"
-
-  defp clock(hours, minutes) do
-    "#{hour12(hours)}:#{String.pad_leading(Integer.to_string(minutes), 2, "0")} #{meridiem(hours)}"
-  end
-
-  defp hour12(hours), do: rem(rem(hours, 24) + 11, 12) + 1
-
-  defp meridiem(hours), do: if(rem(hours, 24) >= 12, do: "pm", else: "am")
-
-  defp present?(value), do: is_binary(value) and value != ""
 
   # --- the service page (AC-5) -------------------------------------------------
 
@@ -1511,19 +1472,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
         <div class="mt-3 flex flex-wrap gap-2">
           <span
-            :if={present?(@service.phone)}
+            :if={Values.present?(@service.phone)}
             class="inline-flex min-h-9 items-center gap-1.5 rounded-control border border-control px-3 text-sm font-[650] text-strong"
           >
             <.icon name="hero-phone" class="size-4" /> Call {@service.phone}
           </span>
           <span
-            :if={present?(@service.booking_url)}
+            :if={Values.present?(@service.booking_url)}
             class="inline-flex min-h-9 items-center gap-1.5 rounded-control border border-control px-3 text-sm font-[650] text-strong"
           >
             <.icon name="hero-link" class="size-4" /> Book online
           </span>
           <span
-            :if={present?(@service.info_url)}
+            :if={Values.present?(@service.info_url)}
             class="inline-flex min-h-9 items-center text-sm font-[650] text-action"
           >
             More information
@@ -2077,7 +2038,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         <span class="text-sm">
           <span class="font-[650] text-strong">{label}</span>
           <span class="text-muted">
-            · {trip_count_label(Map.get(@trip_counts, service_id, 0), @service.route_id)}
+            · {case Map.get(@trip_counts, service_id, 0) do
+              0 -> "No Route #{@service.route_id} trips"
+              count -> Wording.count_noun(count, "Route #{@service.route_id} trip")
+            end}
           </span>
         </span>
       </label>
@@ -3039,11 +3003,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp inside_line(%{stop_ids: [], route_ids: []}), do: "no stops yet"
 
   defp inside_line(%{stop_ids: stops, route_ids: routes}) do
-    stops_text = "#{length(stops)} #{plural_word(length(stops), "stop")}"
+    stops_text = "#{length(stops)} #{Wording.noun(length(stops), "stop")}"
 
     case routes do
       [] -> stops_text
-      routes -> "#{stops_text} on #{length(routes)} #{plural_word(length(routes), "route")}"
+      routes -> "#{stops_text} on #{length(routes)} #{Wording.noun(length(routes), "route")}"
     end
   end
 
@@ -3061,7 +3025,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp measure_summary(%FlexService{}), do: ", one for each stretch between stops"
 
   defp band_on?(%FlexService{band_start: start, band_end: finish}),
-    do: present?(start) or present?(finish)
+    do: Values.present?(start) or Values.present?(finish)
 
   defp band_note(%FlexService{band_start: start, band_end: finish})
        when is_binary(start) and is_binary(finish) do
@@ -3069,10 +3033,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   defp band_note(%FlexService{}), do: nil
-
-  defp trip_count_label(0, route_id), do: "No Route #{route_id} trips"
-  defp trip_count_label(1, route_id), do: "1 Route #{route_id} trip"
-  defp trip_count_label(count, route_id), do: "#{count} Route #{route_id} trips"
 
   # The prototype's headline states, in its order: inactive first, then a
   # registered-riders service kept out of the feed, then a service that export
@@ -3208,10 +3168,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp delete_removes(%FlexService{} = service),
     do:
-      "its #{plural_word(length(service.areas), "area")} and its booking rule. Fixed routes and stops stay as they are"
-
-  defp plural_word(1, word), do: word
-  defp plural_word(_count, word), do: word <> "s"
+      "its #{Wording.noun(length(service.areas), "area")} and its booking rule. Fixed routes and stops stay as they are"
 
   # The version's calendars as select options: every calendar the version holds,
   # every calendar a stored hours row or booking rule names (so a row whose
@@ -3303,7 +3260,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp dates_label(%{
          calendar: %ServiceCalendar{start_date: %Date{} = from, end_date: %Date{} = to}
        }),
-       do: "#{short_date(from)} – #{short_date(to)}"
+       do: "#{Wording.date(from)} – #{Wording.date(to)}"
 
   defp dates_label(_row), do: nil
 
@@ -3312,17 +3269,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     added = Enum.count(exceptions, &(&1.exception_type == 1))
 
     case {off, added} do
-      {0, 0} -> "No exceptions"
-      {0, added} -> day_count(added) <> " added"
-      {off, 0} -> day_count(off) <> " off"
-      {off, added} -> day_count(off) <> " off, " <> day_count(added) <> " added"
+      {0, 0} ->
+        "No exceptions"
+
+      {0, added} ->
+        Wording.count_noun(added, "day") <> " added"
+
+      {off, 0} ->
+        Wording.count_noun(off, "day") <> " off"
+
+      {off, added} ->
+        Wording.count_noun(off, "day") <> " off, " <> Wording.count_noun(added, "day") <> " added"
     end
   end
 
   defp exceptions_label(_row), do: nil
-
-  defp day_count(1), do: "1 day"
-  defp day_count(count), do: "#{count} days"
 
   defp next_day_label(hour) do
     case RiderText.window(%{start: hour[:start].value, end: hour[:end].value}) do
@@ -3330,8 +3291,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       _other -> nil
     end
   end
-
-  defp short_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
 
   # One strip row per weekday: the draft's hours rows whose calendar runs that
   # day, placed on the 5 am–2 am axis the strip draws.
@@ -3426,7 +3385,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp finding_classes(_level), do: "border-info-line bg-info-bg text-info-fg"
 
   defp updated_line(%FlexService{updated_at: %DateTime{} = at}),
-    do: "Updated #{short_date(DateTime.to_date(at))}"
+    do: "Updated #{Wording.date(DateTime.to_date(at))}"
 
   defp updated_line(%FlexService{}), do: "Not saved yet"
 

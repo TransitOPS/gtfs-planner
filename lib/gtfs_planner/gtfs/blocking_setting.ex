@@ -239,6 +239,7 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
 
   defp validate_roster_day_types(:roster_day_types, _day_types), do: []
 
+  # Named exception: a non-string or blank day-type key must keep counting as blank.
   defp blank_day_type_key?(key), do: not (is_binary(key) and String.trim(key) != "")
 
   defp roster_day_types_error(message), do: {:roster_day_types, {message, []}}

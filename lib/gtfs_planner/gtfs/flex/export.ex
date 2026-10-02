@@ -62,6 +62,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   # AC-25's Transit hold rule: a feed is held when 75% of its routes, or 25% of
   # its routes with more than 40 trips on their busiest service day, lose every
@@ -354,14 +356,14 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   # --- the plan's sentences ---------------------------------------------------
 
   defp area_headline(rows) do
-    "Adds #{length(rows.locations)} #{plural(length(rows.locations), "area")}, " <>
-      "#{length(rows.trips)} flex #{plural(length(rows.trips), "trip")} and " <>
-      "#{length(rows.booking_rules)} #{plural(length(rows.booking_rules), "booking rule")}"
+    "Adds #{length(rows.locations)} #{Wording.noun(length(rows.locations), "area")}, " <>
+      "#{length(rows.trips)} flex #{Wording.noun(length(rows.trips), "trip")} and " <>
+      "#{length(rows.booking_rules)} #{Wording.noun(length(rows.booking_rules), "booking rule")}"
   end
 
   defp detour_headline(service, zones, trips) do
-    "Changes #{length(trips)} Route #{service.route_id} #{plural(length(trips), "trip")}: " <>
-      "adds #{length(zones)} detour #{plural(length(zones), "area")}#{measure_phrase(service)}"
+    "Changes #{length(trips)} Route #{service.route_id} #{Wording.noun(length(trips), "trip")}: " <>
+      "adds #{length(zones)} detour #{Wording.noun(length(zones), "area")}#{measure_phrase(service)}"
   end
 
   defp measure_phrase(%FlexService{measure: :stops}), do: ", one around each stop"
@@ -385,7 +387,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
       file: "location_groups.txt",
       id: group.location_group_id,
       summary:
-        "#{group.location_group_name} · #{length(group_stops)} connecting #{plural(length(group_stops), "stop")}"
+        "#{group.location_group_name} · #{length(group_stops)} connecting #{Wording.noun(length(group_stops), "stop")}"
     }
   end
 
@@ -484,7 +486,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
       {"booking_url", row.booking_url},
       {"info_url", row.info_url}
     ]
-    |> Enum.filter(fn {_column, value} -> present?(value) end)
+    |> Enum.filter(fn {_column, value} -> Values.present?(value) end)
     |> Enum.map_join(" · ", &elem(&1, 0))
   end
 
@@ -495,9 +497,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
 
   defp field_text(_name, nil), do: nil
   defp field_text(name, value), do: "#{name} #{value}"
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 
   defp area_text(km2) when is_number(km2), do: "#{Float.round(km2 * 1.0, 1)} km²"
   defp area_text(_km2), do: nil
@@ -519,9 +518,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   defp join_parts(parts, separator \\ " · ") do
     parts |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(separator)
   end
-
-  defp plural(1, word), do: word
-  defp plural(_count, word), do: word <> "s"
 
   # --- one service ------------------------------------------------------------
 
@@ -1008,16 +1004,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
       code: "transit_hold_risk",
       detail:
         "Transit may hold this feed: leaving out services removes #{lost} of #{total} routes " <>
-          "(#{percent(lost, total)}%), including #{lost_frequent_count} of #{frequent_count} " <>
+          "(#{Wording.percent(lost, total)}%), including #{lost_frequent_count} of #{frequent_count} " <>
           "routes with more than #{@frequent_trips} trips on their busiest day " <>
-          "(#{percent(lost_frequent_count, frequent_count)}%).",
+          "(#{Wording.percent(lost_frequent_count, frequent_count)}%).",
       file: "routes.txt",
       entity_type: "route"
     }
   end
-
-  defp percent(_part, 0), do: 0
-  defp percent(part, whole), do: round(part / whole * 100)
 
   # A route's trips on its busiest service day: the stored trips of a fixed
   # route, or the windowed trips an area service generates, summed over the

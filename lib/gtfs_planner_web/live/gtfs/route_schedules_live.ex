@@ -33,11 +33,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules
@@ -45,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
@@ -583,7 +583,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           ids: [row.id],
           title: "Delete this trip?",
           confirm_label: "Delete 1 trip",
-          detail: "Departs #{clock(row.start_secs)} · #{row_pattern_name(socket, row)}",
+          detail:
+            "Departs #{GtfsTime.display(row.start_secs)} · #{row_pattern_name(socket, row)}",
           frequency?: row.frequency?,
           service_id: socket.assigns.filters.service_id,
           return_focus_id: return_focus,
@@ -668,7 +669,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp delete_visible(socket, dialog, ids) do
-    case Gtfs.delete_trips(socket.assigns.route_id, dialog.service_id, ids, audit_context(socket)) do
+    case Gtfs.delete_trips(
+           socket.assigns.route_id,
+           dialog.service_id,
+           ids,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, %{trips: trips, transfers: transfers}} ->
         deleted(socket, dialog, trips, transfers, ids)
 
@@ -1007,7 +1013,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = edit_stop_command(socket, context, :clear, :later)
     fence = {:expected, %{context.row.id => context.row.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> committed_cell(socket, context, :clear, nil, result)
       {:error, {:refused, errors}} -> cell_error(socket, context, refusal_message(errors))
       {:error, reason} -> cell_error(socket, context, ScheduleComponents.error_message(reason))
@@ -1018,7 +1029,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = edit_stop_command(socket, context, secs, mode)
     fence = {:expected, %{context.row.id => context.row.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         {:ok, committed_cell(socket, context, mode, secs, result)}
 
@@ -1185,7 +1201,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # spelled the way the timetable titles them.
   defp preview_note(nil, _secs), do: nil
   defp preview_note(:plus_12h, _secs), do: "12 hours later"
-  defp preview_note(:next_day, secs), do: "#{human_clock(secs)} next day"
+
+  defp preview_note(:next_day, secs) do
+    time = Time.from_seconds_after_midnight(rem(secs, 86_400))
+
+    "#{DisplayClock.format_time(time)} next day"
+  end
 
   # What Enter would do to the rest of the trip; nothing when the entry keeps the
   # current value or the cell has no time to move.
@@ -1205,7 +1226,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # The one line the grid bar shows after a cell write (step 28 renders it): the
   # stop, the trip's departure and what moved, using the revision-2 copy.
   defp cell_outcome(%{position: position, row: row, section: section}, :clear, _secs, result) do
-    "Cleared #{stop_name(section, position)} on the #{clock(row.start_secs)} trip." <>
+    "Cleared #{stop_name(section, position)} on the #{GtfsTime.display(row.start_secs)} trip." <>
       custom_note(row, result)
   end
 
@@ -1216,14 +1237,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
          result
        ) do
     stop = stop_name(section, position)
-    departs = clock(row.start_secs)
+    departs = GtfsTime.display(row.start_secs)
     first? = first_position?(row, position)
 
     title =
       if first? or mode == :anchor do
-        "The #{departs} trip now leaves at #{cell_clock(first_departure(context, mode, secs))}."
+        "The #{departs} trip now leaves at #{GtfsTime.display(first_departure(context, mode, secs))}."
       else
-        "#{stop} on the #{departs} trip is now #{cell_clock(secs)}."
+        "#{stop} on the #{departs} trip is now #{GtfsTime.display(secs)}."
       end
 
     body =
@@ -1235,7 +1256,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           nil
 
         mode == :anchor ->
-          "Every stop moved #{signed_minutes(secs - current)}; #{stop} is at #{cell_clock(secs)}."
+          "Every stop moved #{signed_minutes(secs - current)}; #{stop} is at #{GtfsTime.display(secs)}."
 
         mode == :later ->
           "#{later_stops(row, position)} moved #{signed_minutes(secs - current)}." <>
@@ -1292,30 +1313,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     "#{sign}#{abs(round(seconds / 60))} min"
   end
 
-  # The same clock the reading uses: seconds only when they are nonzero.
-  defp cell_clock(secs) do
-    formatted = GtfsTime.format(secs)
-
-    if String.ends_with?(formatted, ":00"),
-      do: String.replace_suffix(formatted, ":00", ""),
-      else: formatted
-  end
-
-  defp human_clock(secs) do
-    hour = rem(div(secs, 3_600), 24)
-    minutes = div(rem(secs, 3_600), 60)
-
-    {display_hour, meridiem} =
-      cond do
-        hour == 0 -> {12, "AM"}
-        hour < 12 -> {hour, "AM"}
-        hour == 12 -> {12, "PM"}
-        true -> {hour - 12, "PM"}
-      end
-
-    "#{display_hour}:#{pad(minutes)} #{meridiem}"
-  end
-
   # --- nudges and undo ---------------------------------------------------------
 
   # `]`/`[`/`}`/`{` (R12): an immediate R4 Shift of the selection, or of the cursor
@@ -1363,7 +1360,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = {:shift, ids, minutes * 60, nil}
     fence = {:expected, Map.new(rows, &{&1.id, &1.updated_at})}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> nudged(socket, ids, minutes, result)
       {:error, {:refused, errors}} -> nudge_refused(socket, errors)
       {:error, reason} -> warning_outcome(socket, ScheduleComponents.error_message(reason))
@@ -1415,7 +1417,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp restore_entry(socket, %{payload: payload, message: message}) do
-    case Gtfs.restore_trips(socket.assigns.route_id, payload, audit_context(socket)) do
+    case Gtfs.restore_trips(
+           socket.assigns.route_id,
+           payload,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         undone(socket, result, message)
 
@@ -1474,7 +1480,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         "Nothing was undone. A trip from that change was deleted after it."
 
       row ->
-        "Nothing was undone. The #{clock(row.start_secs)} trip changed after your change. " <>
+        "Nothing was undone. The #{GtfsTime.display(row.start_secs)} trip changed after your change. " <>
           "Its current times are shown."
     end
   end
@@ -1636,7 +1642,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           })
           |> assign(:outcome, %{
             tone: :info,
-            text: "#{trip_count_label(length(ids))} copied. Press ⌘V in the grid to paste.",
+            text:
+              "#{Wording.count_noun(length(ids), "trip")} copied. Press ⌘V in the grid to paste.",
             undo?: false
           })
       end
@@ -1713,7 +1720,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         params = %{
           service_id: socket.assigns.filters.service_id,
           mode: :at,
-          first_departure: clock(anchor + @duplicate_offset_secs),
+          first_departure: GtfsTime.format(anchor + @duplicate_offset_secs),
           skip_existing: true,
           anchor_secs: anchor
         }
@@ -1756,7 +1763,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       %{
         value: calendar.service_id,
         name: name,
-        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+        label: "#{name} · #{Wording.count_noun(calendar.route_trip_count, "trip")}"
       }
     end
   end
@@ -1795,7 +1802,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       %{
         value: calendar.service_id,
         name: name,
-        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+        label: "#{name} · #{Wording.count_noun(calendar.route_trip_count, "trip")}"
       }
     end
   end
@@ -1856,7 +1863,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     case change_command(socket, change) do
       {:ok, command} ->
-        case Gtfs.review_trip_change(socket.assigns.route_id, command, audit_context(socket)) do
+        case Gtfs.review_trip_change(
+               socket.assigns.route_id,
+               command,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, review} ->
             assign(socket, :change, %{change | review: review, refusal: nil, stale?: false})
 
@@ -2248,7 +2259,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            socket.assigns.route_id,
            command,
            {:reviewed, fingerprint},
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, result} ->
         applied_change(socket, change, result)
@@ -2311,7 +2322,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         do: " Blocks are kept.",
         else: ""
 
-    "Shifted #{trip_count_label(length(result.changed_trip_ids))} #{params.minutes} min " <>
+    "Shifted #{Wording.count_noun(length(result.changed_trip_ids), "trip")} #{params.minutes} min " <>
       "#{direction}.#{kept}"
   end
 
@@ -2319,7 +2330,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     count = length(result.changed_trip_ids)
     verb = if count == 1, do: "now uses", else: "now use"
 
-    "#{trip_count_label(count)} #{verb} #{timing_name(socket, timing_id)}."
+    "#{Wording.count_noun(count, "trip")} #{verb} #{timing_name(socket, timing_id)}."
   end
 
   # A copy names what it created and what the default skip left alone; a move
@@ -2327,14 +2338,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_outcome(socket, %{kind: :copy, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Copied #{trip_count_label(length(result.created_trip_ids))} to " <>
+    "Copied #{Wording.count_noun(length(result.created_trip_ids), "trip")} to " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
   defp change_outcome(socket, %{kind: :move, params: params}, result) do
     blocks = cleared_blocks(result.change_set.consequences)
 
-    "Moved #{trip_count_label(length(result.changed_trip_ids))} to " <>
+    "Moved #{Wording.count_noun(length(result.changed_trip_ids), "trip")} to " <>
       "#{calendar_name(socket, params.service_id)}.#{cleared_block_clause(blocks)}"
   end
 
@@ -2343,14 +2354,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_outcome(socket, %{kind: :paste, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Pasted #{trip_count_label(length(result.created_trip_ids))} on " <>
+    "Pasted #{Wording.count_noun(length(result.created_trip_ids), "trip")} on " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
   defp change_outcome(socket, %{kind: :duplicate, params: params}, result) do
     skipped = consequence_count(result.change_set.consequences, :skipped_existing)
 
-    "Duplicated #{trip_count_label(length(result.created_trip_ids))} on " <>
+    "Duplicated #{Wording.count_noun(length(result.created_trip_ids), "trip")} on " <>
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
@@ -2571,7 +2582,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp stored_clock(value) do
     case GtfsTime.parse(value) do
-      {:ok, secs} -> clock(secs)
+      {:ok, secs} -> GtfsTime.display(secs)
       {:error, _reason} -> to_string(value)
     end
   end
@@ -2632,7 +2643,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     clocks =
       rows
       |> Enum.flat_map(fn row ->
-        if is_integer(row.start_secs), do: [clock(row.start_secs)], else: []
+        if is_integer(row.start_secs), do: [GtfsTime.display(row.start_secs)], else: []
       end)
       |> Enum.sort()
 
@@ -2711,11 +2722,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp change_who(assigns, %{ids: [trip_id]}) do
     case strip_row(assigns, trip_id) do
       %{start_cell: %{text: text}} -> "the #{text} trip"
-      _missing -> trip_count_label(1)
+      _missing -> Wording.count_noun(1, "trip")
     end
   end
 
-  defp change_who(_assigns, %{ids: ids}), do: trip_count_label(length(ids))
+  defp change_who(_assigns, %{ids: ids}), do: Wording.count_noun(length(ids), "trip")
 
   # The reference's first consequence line: the reviewed first departures, the
   # earliest three shown and the rest counted.
@@ -2763,7 +2774,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     text =
       Enum.map_join(shown, ", ", fn {old, new} ->
-        "#{clock(old)} → #{clock(new)}"
+        "#{GtfsTime.display(old)} → #{GtfsTime.display(new)}"
       end)
 
     if more > 0, do: "#{text}, and #{more} more.", else: "#{text}."
@@ -2942,7 +2953,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                socket.assigns.route_id,
                drawer.trip.id,
                attrs,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:noreply, duplicated(socket, drawer, trip)}
@@ -2969,7 +2980,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                drawer.trip.id,
                attrs,
                drawer.trip.updated_at,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:noreply, saved_trip(socket, drawer, trip, attrs)}
@@ -3024,7 +3035,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp apply_frequency_command(socket, drawer, command) do
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, :none, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           :none,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         added_frequency(socket, drawer, command, result)
 
@@ -3060,7 +3076,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     riders = if attrs.exact_times == 0, do: "every N minutes", else: "each departure time"
     day = calendar_name(socket, drawer.values["service_id"])
 
-    "Added frequency service to #{day}: #{clock(first.start_secs)}–#{clock(last.end_secs)}. " <>
+    "Added frequency service to #{day}: #{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}. " <>
       "Riders see #{riders}."
   end
 
@@ -3090,7 +3106,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp apply_frequency_edit(socket, drawer, command) do
     fence = {:expected, %{drawer.trip.id => drawer.trip.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         case write_frequency_details(socket, drawer, result) do
           {:ok, result} -> {:noreply, frequency_saved(socket, command, result)}
@@ -3137,7 +3158,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                drawer.trip.id,
                attrs,
                updated_at,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:ok, refence_restore(result, drawer.trip.id, trip.updated_at)}
@@ -3206,7 +3227,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     first = List.first(windows)
     last = List.last(windows)
 
-    "Saved the frequency service #{clock(first.start_secs)}–#{clock(last.end_secs)}."
+    "Saved the frequency service #{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}."
   end
 
   # The timestamp the engine forced on the changed trip, read from the restore
@@ -3223,7 +3244,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp add_trips(socket, drawer) do
     case create_attrs(drawer) do
       {:ok, attrs} ->
-        case Gtfs.create_trips(socket.assigns.route_id, attrs, audit_context(socket)) do
+        case Gtfs.create_trips(
+               socket.assigns.route_id,
+               attrs,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, %{trips: [first | _] = trips}} ->
             {:noreply, added(socket, attrs, trips, first)}
 
@@ -3243,7 +3268,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     label = calendar_label(socket.assigns.payload.calendars, attrs.service_id)
 
     socket
-    |> put_flash(:info, "Added #{trip_count_label(length(trips))} to #{label}.")
+    |> put_flash(:info, "Added #{Wording.count_noun(length(trips), "trip")} to #{label}.")
     |> assign(:drawer, nil)
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
     |> assign(:keep_vehicle_change, true)
@@ -3254,7 +3279,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     label = calendar_label(socket.assigns.payload.calendars, trip.service_id)
 
     socket
-    |> put_flash(:info, "Duplicated the #{clock(row_start_secs(drawer))} trip to #{label}.")
+    |> put_flash(
+      :info,
+      "Duplicated the #{GtfsTime.display(row_start_secs(drawer))} trip to #{label}."
+    )
     |> assign(:drawer, nil)
     |> assign(:vehicle_change_from, current_vehicle_count(socket))
     |> assign(:keep_vehicle_change, true)
@@ -3271,7 +3299,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     moved? = trip.service_id != socket.assigns.filters.service_id
 
     message =
-      "Saved the #{clock(row_start_secs(drawer))} trip." <>
+      "Saved the #{GtfsTime.display(row_start_secs(drawer))} trip." <>
         if moved? do
           " Moved to #{calendar_label(socket.assigns.payload.calendars, trip.service_id)};" <>
             " it is no longer in this view."
@@ -3395,11 +3423,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # The flash names the removed transfers only when the transaction removed any,
   # and always keeps the trip count first.
-  defp deleted_label(trips, 0), do: trip_count_label(trips)
-  defp deleted_label(trips, 1), do: "#{trip_count_label(trips)} and 1 transfer record"
+  defp deleted_label(trips, 0), do: Wording.count_noun(trips, "trip")
+  defp deleted_label(trips, 1), do: "#{Wording.count_noun(trips, "trip")} and 1 transfer record"
 
   defp deleted_label(trips, transfers),
-    do: "#{trip_count_label(trips)} and #{transfers} transfer records"
+    do: "#{Wording.count_noun(trips, "trip")} and #{transfers} transfer records"
 
   defp reload_or_fail(socket) do
     case reload_schedule(socket) do
@@ -3421,7 +3449,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            route.route_id,
            true,
            Gtfs.route_source(route),
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: _saved}} ->
         {:noreply,
@@ -3598,10 +3626,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     filters = socket.assigns.filters
 
     %{}
-    |> put_param("service_id", trip.service_id, nil)
-    |> put_param("direction", direction_param(trip.direction_id), "0")
-    |> put_param("pattern", pattern_id, "all")
-    |> put_param("stops", stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", trip.service_id, nil)
+    |> put_unless_default("direction", direction_param(trip.direction_id), "0")
+    |> put_unless_default("pattern", pattern_id, "all")
+    |> put_unless_default("stops", stops_param(filters.stops), "timepoints")
   end
 
   defp pattern_id_for_trip(socket, trip) do
@@ -3614,34 +3642,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # --- editor authority ------------------------------------------------------
 
-  # The role is re-read from the membership on every mutating event, so a role
-  # revoked while the page is open refuses the next write. This is the stricter
-  # form of the `has_role?(@user_roles, :pathways_studio_editor)` check: the
-  # assign is only a snapshot from mount.
+  # The membership is re-read from the database on every mutating event, so a
+  # role revoked or a membership deactivated while the page is open refuses the
+  # next write. This is the stricter form of the
+  # `has_role?(@user_roles, :pathways_studio_editor)` check: the assign is only a
+  # snapshot from mount.
   defp editor_access?(socket) do
-    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
-  end
-
-  defp live_roles(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      membership.roles || []
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> []
+      _other -> false
     end
   end
 
@@ -3749,8 +3762,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     case parse_clock_value(until_text) do
       {:ok, until_secs} ->
         %{
-          from: clock(until_secs),
-          until: clock(until_secs + @window_hours * 3_600),
+          from: GtfsTime.format(until_secs),
+          until: GtfsTime.format(until_secs + @window_hours * 3_600),
           every: window.every
         }
 
@@ -3782,7 +3795,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "pattern_id" => row_pattern_uuid(socket, row),
       "timed_pattern_id" => row.timed_pattern_id || "custom",
       "service_id" => row.service_id,
-      "start_time" => clock(row.start_secs) || "",
+      "start_time" => (row.start_secs && GtfsTime.format(row.start_secs)) || "",
       "trip_headsign" => row.trip_headsign || "",
       "trip_short_name" => row.trip_short_name || "",
       "wheelchair_accessible" => integer_string(row.wheelchair_accessible),
@@ -3804,7 +3817,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "pattern_id" => row_pattern_uuid(socket, row),
       "timed_pattern_id" => row.timed_pattern_id || first_timing_id(socket, row),
       "service_id" => row.service_id,
-      "start_time" => clock((row.start_secs || 0) + @duplicate_offset_secs)
+      "start_time" => GtfsTime.format((row.start_secs || 0) + @duplicate_offset_secs)
     }
   end
 
@@ -3956,7 +3969,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       target: nil,
       label: label,
       meta: meta,
-      range: "#{clock(first.start_secs)}–#{clock(last.end_secs)}",
+      range: "#{GtfsTime.display(first.start_secs)}–#{GtfsTime.display(last.end_secs)}",
       total_minutes: nil,
       sentence:
         "About #{departures} departures. Not assigned to blocks; counted as ≈ in Trips per hour " <>
@@ -4102,7 +4115,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp stored_clock_text(value) do
     case GtfsTime.parse(value) do
-      {:ok, secs} -> clock(secs)
+      {:ok, secs} -> GtfsTime.format(secs)
       {:error, _reason} -> if(is_binary(value), do: value, else: "")
     end
   end
@@ -4194,7 +4207,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       range: range_label(start_secs, total),
       total_minutes: total,
       sentence:
-        "Adds #{trip_count_label(count)}, #{clock(start_secs)} → #{clock(last)}" <>
+        "Adds #{Wording.count_noun(count, "trip")}, #{GtfsTime.display(start_secs)} → #{GtfsTime.display(last)}" <>
           " every #{every} min.",
       hint: "Includes the end time only when a departure falls exactly on it."
     }
@@ -4248,13 +4261,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp add_label(1), do: "Add 1 trip"
   defp add_label(count), do: "Add #{count} trips"
 
-  defp trip_count_label(1), do: "1 trip"
-  defp trip_count_label(count), do: "#{count} trips"
-
-  defp range_label(start_secs, nil), do: "#{clock(start_secs)} → #{clock(start_secs)}"
+  defp range_label(start_secs, nil),
+    do: "#{GtfsTime.display(start_secs)} → #{GtfsTime.display(start_secs)}"
 
   defp range_label(start_secs, total_minutes),
-    do: "#{clock(start_secs)} → #{clock(start_secs + total_minutes * 60)}"
+    do: "#{GtfsTime.display(start_secs)} → #{GtfsTime.display(start_secs + total_minutes * 60)}"
 
   defp timing_total_minutes(nil), do: nil
 
@@ -4283,14 +4294,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # The drawer reads the page's one R2 grammar; the context takes HH:MM:SS.
   defp parse_start_clock(value) do
     case parse_clock_value(value) do
-      {:ok, secs} -> {:ok, secs, seconds_to_clock(secs)}
+      {:ok, secs} -> {:ok, secs, GtfsTime.format(secs)}
       {:error, _reason} -> {:error, :start_time, ScheduleComponents.error_message(:invalid_time)}
     end
   end
 
   defp parse_until_clock(value) do
     case parse_clock_value(value) do
-      {:ok, secs} -> {:ok, secs, seconds_to_clock(secs)}
+      {:ok, secs} -> {:ok, secs, GtfsTime.format(secs)}
       {:error, _reason} -> {:error, :until, ScheduleComponents.error_message(:until_before_start)}
     end
   end
@@ -4317,25 +4328,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp whole_number?(_value), do: false
 
-  defp clock(nil), do: nil
-
-  defp clock(secs) do
-    secs
-    |> GtfsTime.format()
-    |> String.split(":")
-    |> Enum.take(2)
-    |> Enum.join(":")
-  end
-
-  defp seconds_to_clock(secs) do
-    hours = div(secs, 3_600)
-    minutes = div(rem(secs, 3_600), 60)
-
-    pad(hours) <> ":" <> pad(minutes) <> ":00"
-  end
-
-  defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
-
   # --- URL parameters --------------------------------------------------------
 
   # A filter change carries the loaded view forward and overrides only the field
@@ -4345,10 +4337,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # post the field carries the current view's filter forward.
   defp merged_filters(filters, params, custom?) do
     %{}
-    |> put_param("service_id", params["service_id"] || filters.service_id, nil)
-    |> put_param("direction", params["direction"] || direction_param(filters.direction_id), "0")
-    |> put_param("pattern", params["pattern"] || pattern_param(filters.pattern), "all")
-    |> put_param("stops", params["stops"] || stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", params["service_id"] || filters.service_id, nil)
+    |> put_unless_default(
+      "direction",
+      params["direction"] || direction_param(filters.direction_id),
+      "0"
+    )
+    |> put_unless_default("pattern", params["pattern"] || pattern_param(filters.pattern), "all")
+    |> put_unless_default("stops", params["stops"] || stops_param(filters.stops), "timepoints")
     |> put_custom_param(merged_custom(params["custom"], custom?))
   end
 
@@ -4363,10 +4359,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp canonical_filters(filters, custom?) do
     %{}
-    |> put_param("service_id", filters.service_id, nil)
-    |> put_param("direction", direction_param(filters.direction_id), "0")
-    |> put_param("pattern", pattern_param(filters.pattern), "all")
-    |> put_param("stops", stops_param(filters.stops), "timepoints")
+    |> put_unless_default("service_id", filters.service_id, nil)
+    |> put_unless_default("direction", direction_param(filters.direction_id), "0")
+    |> put_unless_default("pattern", pattern_param(filters.pattern), "all")
+    |> put_unless_default("stops", stops_param(filters.stops), "timepoints")
     |> put_custom_param(custom?)
   end
 
@@ -4377,9 +4373,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp custom_filter?(params), do: params["custom"] == "1"
 
-  defp put_param(query, _key, nil, _default), do: query
-  defp put_param(query, _key, value, value), do: query
-  defp put_param(query, key, value, _default), do: Map.put(query, key, value)
+  # A value equal to its default is left out of the URL, unlike Values.put_present/3's test.
+  defp put_unless_default(query, _key, nil, _default), do: query
+  defp put_unless_default(query, _key, value, value), do: query
+  defp put_unless_default(query, key, value, _default), do: Map.put(query, key, value)
 
   defp direction_param(0), do: "0"
   defp direction_param(1), do: "1"
@@ -4411,9 +4408,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp paste_path(version_id, route_id, filters) do
     query =
       %{}
-      |> put_param("service_id", filters.service_id, nil)
-      |> put_param("direction", direction_param(filters.direction_id), nil)
-      |> put_param("pattern", pattern_param(filters.pattern), "all")
+      |> put_unless_default("service_id", filters.service_id, nil)
+      |> put_unless_default("direction", direction_param(filters.direction_id), nil)
+      |> put_unless_default("pattern", pattern_param(filters.pattern), "all")
 
     path = ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules/paste"
 
@@ -4424,7 +4421,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp schedule_blocks_path(version_id, query) do
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(query)
+    ~p"/gtfs/#{version_id}/blocks?#{query}"
   end
 
   # --- presentation helpers --------------------------------------------------
@@ -4487,7 +4484,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> Enum.map(& &1.start_secs)
       |> Enum.reject(&is_nil/1)
       |> Enum.sort()
-      |> Enum.map(&clock/1)
+      |> Enum.map(&GtfsTime.display/1)
 
     case {Enum.take(times, @listed_departures), length(times) - @listed_departures} do
       {[], _more} -> nil
@@ -4499,11 +4496,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # Adding a timing happens on the pattern that lacks one; with none to name, the
   # patterns list is the way in.
   defp timing_path(patterns, version_id, route_id) do
-    base = "/gtfs/#{version_id}/routes/#{route_id}/patterns"
-
     case Enum.find(patterns, &(&1.timings == [])) do
-      nil -> base
-      pattern -> base <> "/" <> URI.encode(pattern.route_pattern_id, &URI.char_unreserved?/1)
+      nil -> ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns"
+      pattern -> ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns/#{pattern.route_pattern_id}"
     end
   end
 

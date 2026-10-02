@@ -198,7 +198,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
       stop_change(context, user, "S4021", "Market St & 3rd", ~U[2026-09-19 09:12:00.000000Z])
 
       {:ok, view, _html} = live(conn, ~p"/")
-      render_async(view)
+      render_async(view, 5_000)
 
       assert has_element?(view, "#resume-latest", "6 trips changed on Weekday")
       assert has_element?(view, "#resume-latest", "1 change that day")
@@ -210,7 +210,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
              )
 
       assert render(element(view, "#resume-list")) =~
-               ~r/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{1,2}:\d{2} [AP]M\b/
+               ~r/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M\b/
     end
 
     test "a member with no changes sees the team list with author emails", context do

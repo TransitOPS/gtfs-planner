@@ -258,6 +258,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.Combination do
     end
   end
 
+  # Identifier exception: whitespace is legal service_id data, so only "" is invalid.
   defp service_id?(service_id), do: is_binary(service_id) and service_id != ""
 
   defp missing_snapshot(sources, selected_ids) do

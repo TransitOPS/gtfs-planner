@@ -222,7 +222,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.SetTiming do
   end
 
   defp first_departure([first | _rest]) do
-    case secs(value(first, :departure_time)) do
+    case GtfsTime.coerce(value(first, :departure_time)) do
       departure when is_integer(departure) -> departure
       _unreadable -> nil
     end
@@ -231,17 +231,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.SetTiming do
   defp first_departure(_rows), do: nil
 
   defp linked?(loaded), do: value(value(loaded, :trip), :pattern_derivation_state) == "linked"
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, seconds} -> seconds
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp value(_map, _key), do: nil

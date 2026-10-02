@@ -106,6 +106,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
 
   # The settings a version with no stored row reads. The map is the single
   # definition of the defaults: the reader merges stored columns over it and the form
@@ -176,7 +177,6 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The transaction boundary is retried as a whole three times, for a serialization
   # failure or a deadlock, before the command reports `:busy` (AC-14, INV-1).
   @write_attempts 3
-  @retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
 
   @type block :: %{
           summary: Summary.block_summary(),
@@ -3729,13 +3729,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       drive_secs: Enum.sum(Enum.map(movements, & &1.drive_secs)),
       service_km: round_km(Enum.sum(Enum.map(movements, & &1.service_km))),
       deadhead_km: round_km(Enum.sum(Enum.map(movements, & &1.deadhead_km))),
-      riders: riders(service_secs, platform_secs),
+      riders: Wording.percent(service_secs, platform_secs),
       problems: Enum.count(findings, &(&1.severity in [:error, :warning]))
     }
   end
-
-  defp riders(_service_secs, 0), do: 0
-  defp riders(service_secs, platform_secs), do: round(service_secs / platform_secs * 100)
 
   # `Enum.sum/1` over a day with no block is the integer `0`, which `Float.round/2`
   # refuses, so a kilometre figure is a float whatever the day holds.
@@ -4637,7 +4634,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   rescue
     error in [Postgrex.Error, Ecto.ConstraintError, DBConnection.ConnectionError] ->
       # A serialization failure or deadlock goes to the transaction retry instead.
-      if retryable?(error),
+      if Repo.retryable_conflict?(error),
         do: reraise(error, __STACKTRACE__),
         else: Repo.rollback({:audit_failed, error})
   end
@@ -4902,25 +4899,18 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp retry_write(reason, transaction, attempts) do
     cond do
-      not retryable?(reason) -> {:error, reason}
+      not Repo.retryable_conflict?(reason) -> {:error, reason}
       attempts > 1 -> run_write(transaction, attempts - 1)
       true -> {:error, :busy}
     end
   end
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable?(error), do: {:error, error}, else: reraise(error, __STACKTRACE__)
+      if Repo.retryable_conflict?(error),
+        do: {:error, error},
+        else: reraise(error, __STACKTRACE__)
   end
-
-  defp write_transaction_module do
-    Application.get_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransaction.Repo)
-  end
-
-  defp retryable?(%Postgrex.Error{postgres: %{code: code}}) when code in @retryable_codes,
-    do: true
-
-  defp retryable?(_error), do: false
 end

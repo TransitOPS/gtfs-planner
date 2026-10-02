@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.StopTimeEstimator do
   """
 
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Values
 
   @ms_per_mph 2.23694
 
@@ -119,14 +120,11 @@ defmodule GtfsPlanner.Gtfs.StopTimeEstimator do
       arrival: arrival,
       departure: departure,
       timepoint: Map.get(row, :timepoint),
-      distance: normalize_distance(Map.get(row, :distance)),
+      distance: Values.to_float(Map.get(row, :distance)),
       coord: Map.get(row, :coord),
       previous: {Map.get(row, :arrival), Map.get(row, :departure)}
     }
   end
-
-  defp normalize_distance(%Decimal{} = decimal), do: Decimal.to_float(decimal)
-  defp normalize_distance(distance), do: distance
 
   defp timed?(%{arrival: arrival, departure: departure}),
     do: not is_nil(arrival) and not is_nil(departure)

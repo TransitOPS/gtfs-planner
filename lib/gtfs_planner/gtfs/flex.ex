@@ -53,6 +53,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -144,12 +145,12 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> Repo.all()
     |> Map.new(fn attribute ->
       name =
-        blank_to(
+        non_empty_or(
           attribute.schedule_name,
-          blank_to(attribute.description, attribute.service_id)
+          non_empty_or(attribute.description, attribute.service_id)
         )
 
-      {attribute.service_id, %{name: name, plural: blank_to(attribute.description, name)}}
+      {attribute.service_id, %{name: name, plural: non_empty_or(attribute.description, name)}}
     end)
   end
 
@@ -341,17 +342,15 @@ defmodule GtfsPlanner.Gtfs.Flex do
         nil
 
       {west, south, east, north} ->
-        {to_float(west), to_float(south), to_float(east), to_float(north)}
+        {Values.to_float(west), Values.to_float(south), Values.to_float(east),
+         Values.to_float(north)}
     end
   end
-
-  defp to_float(%Decimal{} = value), do: Decimal.to_float(value)
-  defp to_float(value) when is_number(value), do: value * 1.0
 
   # The name riders read in the create drawer's select. A version that carries
   # only one of the two names (or neither) still gets one label per route.
   defp route_name(route_id, short_name, long_name) do
-    case Enum.reject([short_name, long_name], &blank?/1) do
+    case Enum.reject([short_name, long_name], &Values.blank?/1) do
       [] -> route_id
       names -> Enum.join(names, " ")
     end
@@ -391,7 +390,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
       select: {s.stop_id, s.stop_name}
     )
     |> Repo.all()
-    |> Enum.map(fn {stop_id, name} -> {blank_to(name, stop_id), stop_id} end)
+    |> Enum.map(fn {stop_id, name} -> {Values.presence(name) || stop_id, stop_id} end)
   end
 
   @doc """
@@ -444,7 +443,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     )
     |> Repo.all()
     |> Enum.uniq_by(&elem(&1, 0))
-    |> Enum.map(fn {stop_id, name} -> {blank_to(name, stop_id), stop_id} end)
+    |> Enum.map(fn {stop_id, name} -> {Values.presence(name) || stop_id, stop_id} end)
   end
 
   defp route_trip_counts(organization_id, version_id, route_id) do
@@ -894,7 +893,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     )
     |> Repo.all()
     |> Enum.group_by(&elem(&1, 0), fn {_shape_id, lon, lat} ->
-      [coordinate(lon), coordinate(lat)]
+      [Values.to_float(lon), Values.to_float(lat)]
     end)
   end
 
@@ -933,7 +932,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> Enum.find_value([], fn trip_rows ->
       points =
         Enum.map(trip_rows, fn {_route_id, _trip_id, lon, lat} ->
-          [coordinate(lon), coordinate(lat)]
+          [Values.to_float(lon), Values.to_float(lat)]
         end)
 
       if length(points) >= 2, do: points
@@ -957,16 +956,13 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> Enum.map(fn stop ->
       %{
         id: stop.id,
-        name: blank_to(stop.name, stop.id),
-        lon: coordinate(stop.lon),
-        lat: coordinate(stop.lat),
+        name: Values.presence(stop.name) || stop.id,
+        lon: Values.to_float(stop.lon),
+        lat: Values.to_float(stop.lat),
         hub: true
       }
     end)
   end
-
-  # Feed coordinates are decimals; the browser draws floats.
-  defp coordinate(%Decimal{} = value), do: Decimal.to_float(value)
 
   # `route_color` is the feed's hex string without the leading `#`; the map adds
   # it. A route with no colour sends nil and the hook falls back.
@@ -1112,8 +1108,10 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
   # --- keys -------------------------------------------------------------------
 
-  defp blank_to(value, _fallback) when is_binary(value) and value != "", do: value
-  defp blank_to(_value, fallback), do: fallback
+  # Named exception: calendar names feed exported booking_rules.message text, so padded or
+  # whitespace-only names must export unchanged.
+  defp non_empty_or(value, _fallback) when is_binary(value) and value != "", do: value
+  defp non_empty_or(_value, fallback), do: fallback
 
   # R11: the slugified name, made unique in the version with -2, -3… suffixes.
   defp next_key(organization_id, version_id, name) do
@@ -1184,6 +1182,4 @@ defmodule GtfsPlanner.Gtfs.Flex do
   defp attr(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   end
-
-  defp blank?(value), do: is_nil(value) or value == ""
 end

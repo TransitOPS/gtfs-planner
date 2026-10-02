@@ -475,7 +475,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsUncoveredLiveTest do
 
       assert_patch(
         view,
-        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&sort=spread&dir=desc&panel=uncovered"
+        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&dir=desc&panel=uncovered&sort=spread"
       )
 
       assert has_element?(view, "#runs-uncovered-table")

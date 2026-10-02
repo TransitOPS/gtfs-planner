@@ -180,6 +180,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       refute present?(html, "#route-tab-details[aria-current]")
       assert present?(html, "#route-tab-schedules[href='/gtfs/version-1/routes/1/schedules']")
     end
+
+    test "groups a route's trip total in the summary" do
+      html = render_page(%{route_trip_count: 12_345})
+
+      assert text(html, "#pattern-trip-count") == "12,345 trips across all service days"
+    end
   end
 
   describe "page/1 create control" do

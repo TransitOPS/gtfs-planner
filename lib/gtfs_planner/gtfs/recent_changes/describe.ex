@@ -32,6 +32,8 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @weekday_fields ~w(monday tuesday wednesday thursday friday saturday sunday)
   @position_fields ~w(stop_lat stop_lon)
@@ -266,7 +268,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     trips = trip_count(group)
 
     detail =
-      "#{trips} #{pluralize(trips, "trip")} changed on #{calendar_name(lookups, service_id)}"
+      "#{trips} #{Wording.noun(trips, "trip")} changed on #{calendar_name(lookups, service_id)}"
 
     base_item(:schedules, "Schedules", route_title(route, route_id), detail,
       exists?: not is_nil(route),
@@ -385,21 +387,18 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     do: %{stop_id: station_stop_id, level_id: level_id}
 
   defp context(label, local_at, level_name) when is_binary(level_name) and level_name != "" do
-    "#{label} · #{level_name} · #{local_time(local_at)}"
+    "#{label} · #{level_name} · #{DisplayClock.format_datetime(local_at)}"
   end
 
-  defp context(label, local_at, _level_name), do: "#{label} · #{local_time(local_at)}"
-
-  defp local_time(local_at) do
-    Calendar.strftime(local_at, "%b %-d") <> ", " <> DisplayClock.format_time(local_at)
-  end
+  defp context(label, local_at, _level_name),
+    do: "#{label} · #{DisplayClock.format_datetime(local_at)}"
 
   defp route_title(nil, fallback), do: fallback || "Unknown"
 
   defp route_title(route, fallback) do
     cond do
-      present?(route.route_long_name) -> route.route_long_name
-      present?(route.route_short_name) -> route.route_short_name
+      Values.present?(route.route_long_name) -> route.route_long_name
+      Values.present?(route.route_short_name) -> route.route_short_name
       is_binary(route.route_id) -> route.route_id
       true -> fallback || "Unknown"
     end
@@ -426,8 +425,6 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
       _ -> service_id
     end
   end
-
-  defp present?(value), do: is_binary(value) and value != ""
 
   # -- Bounded description vocabulary --
 
@@ -458,7 +455,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp combination_detail(ids) when length(ids) > 1 do
     count = length(ids) - 1
-    "combined with #{count} #{pluralize(count, "calendar")}"
+    "combined with #{count} #{Wording.noun(count, "calendar")}"
   end
 
   defp combination_detail(_ids), do: "calendar changed"
@@ -471,10 +468,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
     cond do
       moved?(before_weekly, after_weekly, "end_date") ->
-        "end date moved to " <> format_date(after_weekly["end_date"])
+        "end date moved to " <> iso_short_date(after_weekly["end_date"])
 
       moved?(before_weekly, after_weekly, "start_date") ->
-        "start date moved to " <> format_date(after_weekly["start_date"])
+        "start date moved to " <> iso_short_date(after_weekly["start_date"])
 
       weekdays_changed?(before_weekly, after_weekly) ->
         "days of service changed"
@@ -503,9 +500,11 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     Enum.any?(@weekday_fields, &(Map.get(before, &1) != Map.get(after_snapshot, &1)))
   end
 
-  defp format_date(iso_date) do
+  # Stored weekly dates are ISO strings; a value that does not parse keeps its raw
+  # text. Only the date text itself is the canonical `Wording.short_date/1`.
+  defp iso_short_date(iso_date) do
     case Date.from_iso8601(iso_date) do
-      {:ok, date} -> Calendar.strftime(date, "%b %-d")
+      {:ok, date} -> Wording.short_date(date)
       {:error, _reason} -> iso_date
     end
   end
@@ -545,7 +544,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     cond do
       Enum.any?(keys, &(&1 in @position_fields)) -> "location moved"
       "stop_name" in keys -> "renamed"
-      true -> "#{length(keys)} #{pluralize(length(keys), "field")} changed"
+      true -> "#{length(keys)} #{Wording.noun(length(keys), "field")} changed"
     end
   end
 
@@ -582,7 +581,4 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp changed_fields(%ChangeLog{changed_fields: %{} = fields}), do: fields
   defp changed_fields(%ChangeLog{}), do: %{}
-
-  defp pluralize(1, word), do: word
-  defp pluralize(_count, word), do: word <> "s"
 end

@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   alias GtfsPlanner.Gtfs.StopTimeEstimator
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @max_warnings 100
 
@@ -47,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
         acc
 
       {stop_id, lat, lon}, acc ->
-        Map.put(acc, stop_id, {to_float(lat), to_float(lon)})
+        Map.put(acc, stop_id, {Values.to_float(lat), Values.to_float(lon)})
     end)
   end
 
@@ -208,12 +209,9 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   defp complete?(record) do
-    present?(Map.get(record, :arrival_time)) and present?(Map.get(record, :departure_time))
+    Values.present?(Map.get(record, :arrival_time)) and
+      Values.present?(Map.get(record, :departure_time))
   end
-
-  defp present?(nil), do: false
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: true
 
   defp estimator_row(record, coords) do
     %{
@@ -261,11 +259,8 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   defp keep_or_copy(stored, seconds) do
-    if present?(stored), do: stored, else: format_or_nil(seconds)
+    if Values.present?(stored), do: stored, else: seconds && GtfsTime.format(seconds)
   end
-
-  defp format_or_nil(nil), do: nil
-  defp format_or_nil(seconds), do: GtfsTime.format(seconds)
 
   defp keep_or_normalize_flag(nil), do: 1
   defp keep_or_normalize_flag(flag), do: flag
@@ -300,10 +295,6 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
       record -> Map.get(record, :stop_sequence, "position #{index + 1}")
     end
   end
-
-  defp to_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
-  defp to_float(value) when is_float(value), do: value
-  defp to_float(value) when is_integer(value), do: value / 1
 
   defp empty_summary do
     %{
@@ -473,15 +464,15 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   defp blank_cells(records) do
     Enum.sum(
       Enum.map(records, fn record ->
-        if(present?(Map.get(record, :arrival_time)), do: 0, else: 1) +
-          if present?(Map.get(record, :departure_time)), do: 0, else: 1
+        if(Values.present?(Map.get(record, :arrival_time)), do: 0, else: 1) +
+          if Values.present?(Map.get(record, :departure_time)), do: 0, else: 1
       end)
     )
   end
 
   defp blank_without_distance?(record) do
-    (not present?(Map.get(record, :arrival_time)) or
-       not present?(Map.get(record, :departure_time))) and
+    (not Values.present?(Map.get(record, :arrival_time)) or
+       not Values.present?(Map.get(record, :departure_time))) and
       is_nil(Map.get(record, :shape_dist_traveled))
   end
 

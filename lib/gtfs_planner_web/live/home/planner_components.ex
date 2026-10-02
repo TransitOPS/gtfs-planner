@@ -20,6 +20,8 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
+  alias GtfsPlanner.Wording
+
   @doc """
   Needs attention: what needs a decision before riders notice.
 
@@ -156,15 +158,16 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp action(%{kind: :check_errors} = item, version_id) do
-    {"View the #{error_count(item.errors)}", ~p"/gtfs/#{version_id}/validation/#{item.run_id}"}
+    {"View the #{Wording.count_noun(item.errors, "error")}",
+     ~p"/gtfs/#{version_id}/validation/#{item.run_id}"}
   end
 
   defp item_title(%{kind: :service_ends} = item) do
-    "Service ends #{day(item.last_date)}. No calendar runs after that date."
+    "Service ends #{Wording.short_date(item.last_date)}. No calendar runs after that date."
   end
 
   defp item_title(%{kind: :service_ended} = item) do
-    "Service ended #{day(item.last_date)}. No calendar runs after that date."
+    "Service ended #{Wording.short_date(item.last_date)}. No calendar runs after that date."
   end
 
   defp item_title(%{kind: :stopped_import, version_name: nil}), do: "An import stopped partway."
@@ -174,12 +177,12 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp item_title(%{kind: :check_errors} = item) do
-    "The last check found #{error_count(item.errors)} in this version."
+    "The last check found #{Wording.count_noun(item.errors, "error")} in this version."
   end
 
   defp item_detail(%{kind: kind} = item) when kind in [:service_ends, :service_ended] do
     "The version's calendars #{ended_phrase(item)} and nothing follows them. " <>
-      "Apps that use this feed will show no service from #{day(Date.add(item.last_date, 1))}. " <>
+      "Apps that use this feed will show no service from #{Wording.short_date(Date.add(item.last_date, 1))}. " <>
       "Extend the calendars or add the next ones."
   end
 
@@ -188,11 +191,12 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
   end
 
   defp item_detail(%{kind: :check_errors} = item) do
-    "Found #{day(item.local_at)} when the feed was exported. Apps may reject the feed until they " <>
+    "Found #{Wording.short_date(item.local_at)} when the feed was exported. Apps may reject the feed until they " <>
       "are fixed. Warnings do not block anything."
   end
 
-  defp ended_phrase(%{kind: :service_ended} = item), do: "ended on #{day(item.last_date)}"
+  defp ended_phrase(%{kind: :service_ended} = item),
+    do: "ended on #{Wording.short_date(item.last_date)}"
 
   defp ended_phrase(%{kind: :service_ends, days: 0}), do: "end today"
   defp ended_phrase(%{kind: :service_ends, days: 1}), do: "end tomorrow"
@@ -217,12 +221,6 @@ defmodule GtfsPlannerWeb.Home.PlannerComponents do
 
   defp decide_text(1), do: "1 thing to decide before riders notice"
   defp decide_text(count), do: "#{count} things to decide before riders notice"
-
-  defp error_count(1), do: "1 error"
-  defp error_count(count), do: "#{count} errors"
-
-  defp day(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
-  defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp primary_link do
     "inline-flex min-h-11 items-center justify-center gap-2 rounded-control bg-action px-4 py-2.5 text-sm font-[650] text-white no-underline hover:bg-action-hover max-sm:ml-[52px]"

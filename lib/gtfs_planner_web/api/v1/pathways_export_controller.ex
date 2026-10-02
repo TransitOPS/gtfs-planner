@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
 
   @doc "POST /api/v1/versions/:version_id/pathways-exports — request or reuse the active run."
   def create(conn, %{"version_id" => version_id}) do
-    with {:ok, version_id} <- cast_uuid(version_id),
+    with {:ok, version_id} <- Ecto.UUID.cast(version_id),
          %{} = _version <- published_version(conn, version_id) do
       start_export(conn, version_id)
     else
@@ -42,8 +42,8 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
 
   @doc "GET /api/v1/versions/:version_id/pathways-exports/:export_id — current lifecycle state."
   def show(conn, params) do
-    with {:ok, version_id} <- cast_uuid(params["version_id"]),
-         {:ok, export_id} <- cast_uuid(params["export_id"]),
+    with {:ok, version_id} <- Ecto.UUID.cast(params["version_id"]),
+         {:ok, export_id} <- Ecto.UUID.cast(params["export_id"]),
          %{} = _version <- published_version(conn, version_id),
          %Run{export_type: @export_type} = run <- scoped_run(conn, version_id, export_id) do
       json(conn, %{data: serialize(run)})
@@ -56,8 +56,8 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
 
   @doc "GET /api/v1/versions/:version_id/pathways-exports/:export_id/download — claim and send bytes."
   def download(conn, params) do
-    with {:ok, version_id} <- cast_uuid(params["version_id"]),
-         {:ok, export_id} <- cast_uuid(params["export_id"]),
+    with {:ok, version_id} <- Ecto.UUID.cast(params["version_id"]),
+         {:ok, export_id} <- Ecto.UUID.cast(params["export_id"]),
          %{} = _version <- published_version(conn, version_id),
          %Run{export_type: @export_type} = run <- scoped_run(conn, version_id, export_id),
          {:ok, claim} <- claim_ready_download(conn, version_id, run) do
@@ -101,9 +101,6 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportController do
     do: ~p"/api/v1/versions/#{version_id}/pathways-exports/#{run_id}"
 
   # -- scope ------------------------------------------------------------------
-
-  defp cast_uuid(value) when is_binary(value), do: Ecto.UUID.cast(value)
-  defp cast_uuid(_value), do: :error
 
   defp organization_id(conn), do: conn.assigns.current_organization_id
 

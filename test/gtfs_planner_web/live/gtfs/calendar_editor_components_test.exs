@@ -55,17 +55,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponentsTest do
     end
   end
 
-  describe "plural/3" do
-    test "uses the singular for one and adds s otherwise" do
-      assert Editor.plural(1, "trip") == "1 trip"
-      assert Editor.plural(2, "trip") == "2 trips"
-    end
-
-    test "uses the given plural when the word does not take s" do
-      assert Editor.plural(3, "day off", "days off") == "3 days off"
-    end
-  end
-
   describe "status/1" do
     test "reads Ended for a calendar whose last service day has passed, even with trips" do
       source = source(warnings: [%{reason: :ended, last_date: ~D[2026-09-01]}])

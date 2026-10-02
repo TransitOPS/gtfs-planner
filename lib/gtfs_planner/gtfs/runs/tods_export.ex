@@ -33,6 +33,8 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   `Day.derived()` on every export.
   """
 
+  alias GtfsPlanner.Gtfs.GtfsTime
+
   @seconds_per_day 86_400
 
   @job_type "Operator"
@@ -469,8 +471,6 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
       raise ArgumentError, "a run event time cannot be negative: #{total} s"
     end
 
-    Enum.map_join([div(total, 3600), rem(div(total, 60), 60), rem(total, 60)], ":", &pad/1)
+    GtfsTime.format(total)
   end
-
-  defp pad(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 end

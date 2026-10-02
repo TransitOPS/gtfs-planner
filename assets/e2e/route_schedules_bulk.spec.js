@@ -365,13 +365,13 @@ test.describe("Schedules bulk journeys", () => {
     await page.locator("#trip-BSF_T1-edit").click();
     await page.locator("#trip-drawer").waitFor({ state: "visible" });
     await expect(page.locator("#frequency-windows")).toBeVisible();
-    await expect(page.locator("#windows-0-from")).toHaveValue("09:00");
-    await expect(page.locator("#windows-0-until")).toHaveValue("10:00");
+    await expect(page.locator("#windows-0-from")).toHaveValue("09:00:00");
+    await expect(page.locator("#windows-0-until")).toHaveValue("10:00:00");
     await expect(page.locator("#windows-0-every")).toHaveValue("10");
 
     await page.locator("#win-add").click();
     await expect(page.locator("#windows-row-1")).toBeVisible();
-    await expect(page.locator("#windows-1-from")).toHaveValue("10:00");
+    await expect(page.locator("#windows-1-from")).toHaveValue("10:00:00");
     await expect(page.locator("#windows-1-every")).toHaveValue("10");
 
     await page.fill("#windows-1-until", "11:00");

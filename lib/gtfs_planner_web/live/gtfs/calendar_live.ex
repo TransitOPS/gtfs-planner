@@ -34,7 +34,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents, as: Editor
 
@@ -315,14 +317,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   def handle_event("duplicate", _params, socket) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     case Gtfs.duplicate_calendar(socket.assigns.service_id, %{}, audit) do
       {:ok, %{service_id: copy_id}} ->
         {:noreply,
          socket
          |> put_flash(:info, "Duplicated as #{copy_id}.")
-         |> push_navigate(to: detail_path(socket, copy_id))}
+         |> push_navigate(
+           to:
+             ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: copy_id]}"
+         )}
 
       {:error, reason} ->
         {:noreply,
@@ -343,12 +348,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       %{command: command, fingerprint: fingerprint} ->
         socket = assign(socket, :review_dialog, nil)
 
-        case Gtfs.apply_calendar_change(command, fingerprint, audit_context(socket)) do
+        case Gtfs.apply_calendar_change(
+               command,
+               fingerprint,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, %{action: :deleted}} ->
             {:noreply,
              socket
              |> put_flash(:info, "Deleted #{socket.assigns.service_id}.")
-             |> push_navigate(to: list_path(socket))}
+             |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars")}
 
           {:ok, result} ->
             {:noreply, after_write(socket, command, result)}
@@ -789,12 +798,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp create(socket, params, attrs) do
-    case Gtfs.create_calendar(attrs, audit_context(socket)) do
+    case Gtfs.create_calendar(attrs, AuditContext.from_assigns(socket.assigns)) do
       {:ok, %{service_id: service_id}} ->
         {:noreply,
          socket
          |> put_flash(:info, "Created #{service_id}.")
-         |> push_navigate(to: detail_path(socket, service_id))}
+         |> push_navigate(
+           to:
+             ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: service_id]}"
+         )}
 
       {:error, reason} ->
         {:noreply, reject_write(socket, params, reason, :create)}
@@ -806,7 +818,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   # is detected instead of silently overwritten.
   defp review_or_apply(socket, params, command) do
     socket = assign(socket, :pending?, true)
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     fingerprints = %{socket.assigns.service_id => socket.assigns.fingerprint}
 
     case Gtfs.review_calendar_change(command, fingerprints, audit) do
@@ -836,7 +848,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp apply_reviewed(socket, command, review) do
-    case Gtfs.apply_calendar_change(command, review.fingerprint, audit_context(socket)) do
+    case Gtfs.apply_calendar_change(
+           command,
+           review.fingerprint,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> {:noreply, socket |> after_write(command, result) |> focus_after(command)}
       {:error, reason} -> {:noreply, write_failed(socket, reason, command)}
     end
@@ -879,7 +895,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp after_write(socket, _command, %{action: :deleted}) do
     socket
     |> put_flash(:info, "Deleted #{socket.assigns.service_id}.")
-    |> push_navigate(to: list_path(socket))
+    |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars")
   end
 
   defp after_write(socket, command, result) do
@@ -895,7 +911,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp result_outcome(%{action: :convert, kind: :dates_only}, _kind) do
     {"Converted to chosen dates.",
      fn source ->
-       "All #{Editor.plural(length(source.active_dates), "service date")} are now stored as individual dates. Trips run on the same days as before."
+       "All #{Wording.count_noun(length(source.active_dates), "service date")} are now stored as individual dates. Trips run on the same days as before."
      end}
   end
 
@@ -913,8 +929,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp result_outcome(%{action: :add_break, changed_count: count}, _kind) do
     {"Days off added.",
      fn source ->
-       "#{Editor.plural(count, "service date")} #{if count == 1, do: "was", else: "were"} removed. " <>
-         "#{Editor.plural(length(source.active_dates), "service day")} on this calendar."
+       "#{Wording.count_noun(count, "service date")} #{if count == 1, do: "was", else: "were"} removed. " <>
+         "#{Wording.count_noun(length(source.active_dates), "service day")} on this calendar."
      end}
   end
 
@@ -956,13 +972,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
            "No trips use this calendar yet."
 
          %{trip_count: trips, routes: routes} ->
-           "#{Editor.plural(trips, "trip")} on #{Editor.plural(length(routes), "route")} now follow this schedule."
+           "#{Wording.count_noun(trips, "trip")} on #{Wording.count_noun(length(routes), "route")} now follow this schedule."
        end
      end}
   end
 
   defp service_days_line(source),
-    do: "#{Editor.plural(length(source.active_dates), "service day")} on this calendar."
+    do: "#{Wording.count_noun(length(source.active_dates), "service day")} on this calendar."
 
   defp write_failed(socket, reason, command) do
     socket
@@ -1068,7 +1084,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp save_name(socket, params) do
     if socket.assigns.live_action == :show and params["name"] == socket.assigns.baseline["name"],
-      do: {:ok, blank_to_nil(params["name"])},
+      do: {:ok, Values.presence(params["name"])},
       else: required_name(params)
   end
 
@@ -1177,20 +1193,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       true ->
         {:ok,
          %{
-           service_schedule_name: blank_to_nil(params["service_schedule_name"]),
+           service_schedule_name: Values.presence(params["service_schedule_name"]),
            service_schedule_type: type,
            service_schedule_typicality: String.to_integer(params["service_schedule_typicality"]),
            rating_start_date: rating_start,
            rating_end_date: rating_end,
-           rating_description: blank_to_nil(params["rating_description"])
+           rating_description: Values.presence(params["rating_description"])
          }}
-    end
-  end
-
-  defp blank_to_nil(value) do
-    case String.trim(value || "") do
-      "" -> nil
-      trimmed -> trimmed
     end
   end
 
@@ -1246,7 +1255,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(organization_id, version_id) do
-      path = version_list_path(socket, version_id)
+      path = ~p"/gtfs/#{version_id}/calendars"
 
       if socket.assigns.dirty? do
         {:noreply, assign(socket, pending_navigation: path)}
@@ -1371,11 +1380,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp write_error_message({:in_use, trips, _routes}, {:delete, _service_id}) do
-    "#{Editor.plural(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t be deleted."
+    "#{Wording.count_noun(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t be deleted."
   end
 
   defp write_error_message({:in_use, trips, _routes}, _command) do
-    {"#{Editor.plural(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t switch to a weekly schedule.",
+    {"#{Wording.count_noun(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t switch to a weekly schedule.",
      "Move its trips to another calendar first."}
   end
 
@@ -1444,18 +1453,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp date_error, do: [date_input: "Choose a valid date."]
 
-  ## Audit
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   ## Input helpers
 
   defp parse_date(%Date{} = date), do: {:ok, date}
@@ -1472,7 +1469,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp parse_optional_date(value) do
     case parse_date(value) do
       {:ok, date} -> date
-      :error -> if blank?(value), do: nil, else: :error
+      :error -> if Values.blank?(value), do: nil, else: :error
     end
   end
 
@@ -1492,8 +1489,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp parse_dates(_value), do: :error
-
-  defp blank?(value), do: String.trim(to_string(value || "")) == ""
 
   defp ordered_range(first_date, last_date) do
     if Date.compare(last_date, first_date) == :lt do
@@ -1516,18 +1511,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp empty_periods,
     do: %{periods: [], breaks: [], holidays: [], extra_days: [], removed_days: []}
-
-  ## Paths
-
-  defp list_path(socket), do: list_path_for(socket.assigns.current_gtfs_version.id)
-
-  defp list_path_for(version_id), do: "/gtfs/#{version_id}/calendars"
-
-  defp detail_path(socket, service_id) do
-    list_path(socket) <> "/show?service_id=" <> URI.encode_www_form(service_id)
-  end
-
-  defp version_list_path(_socket, version_id), do: "/gtfs/#{version_id}/calendars"
 
   defp page_title(:new), do: "Create calendar"
   defp page_title(_action), do: "Calendar"
@@ -1555,7 +1538,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         class="ds-page"
       >
         <Editor.editor_head
-          list_path={list_path_for(@current_gtfs_version.id)}
+          list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
           crumb={crumb(assigns)}
           heading={heading(assigns)}
           badge={if @show?, do: Editor.status(@source)}
@@ -1620,7 +1603,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               <.button
                 id="calendar-back-to-list"
                 class="min-h-11"
-                navigate={list_path_for(@current_gtfs_version.id)}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               >
                 Back to calendars
               </.button>
@@ -1670,14 +1653,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               kind="error"
               title={delete_block_title(@delete_block)}
             >
-              <p :if={@delete_block.trip_count > 0} phx-no-format>{Editor.plural(@delete_block.trip_count, "trip")}<span :if={@delete_block.route_ids != []}> on <span :for={{route_id, index} <- Enum.with_index(@delete_block.route_ids)}><.link id={"calendar-delete-blocked-route-#{route_id}"} navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"} class="font-semibold underline underline-offset-2">{route_id}</.link><span :if={index < length(@delete_block.route_ids) - 1}>, </span></span></span> still {if @delete_block.trip_count == 1, do: "runs", else: "run"} on it. Move them to another calendar first: <strong>Combine calendars</strong> on the Calendars page moves every trip at once, or you can change the calendar on each route’s schedule. Then delete this one.</p>
+              <p :if={@delete_block.trip_count > 0} phx-no-format>{Wording.count_noun(@delete_block.trip_count, "trip")}<span :if={@delete_block.route_ids != []}> on <span :for={{route_id, index} <- Enum.with_index(@delete_block.route_ids)}><.link id={"calendar-delete-blocked-route-#{route_id}"} navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"} class="font-semibold underline underline-offset-2">{route_id}</.link><span :if={index < length(@delete_block.route_ids) - 1}>, </span></span></span> still {if @delete_block.trip_count == 1, do: "runs", else: "run"} on it. Move them to another calendar first: <strong>Combine calendars</strong> on the Calendars page moves every trip at once, or you can change the calendar on each route’s schedule. Then delete this one.</p>
               <p
                 :if={@delete_block.closure_count > 0}
                 id="calendar-delete-closures"
                 class={[@delete_block.trip_count > 0 && "mt-2"]}
               >
-                {@delete_block.closure_count} {closure_usage_phrase(@delete_block.closure_count)} this calendar on {pathway_phrase(
-                  length(@delete_block.closure_paths)
+                {@delete_block.closure_count} {closure_usage_phrase(@delete_block.closure_count)} this calendar on {Wording.noun(
+                  length(@delete_block.closure_paths),
+                  "pathway"
                 )}
                 <CalendarComponents.pathway_links
                   id="calendar-delete-pathways"
@@ -1697,7 +1681,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                   See the routes that use it
                 </a>
                 <.link
-                  navigate={list_path_for(@current_gtfs_version.id)}
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
                   class="inline-flex min-h-11 items-center font-[650] underline underline-offset-2"
                 >
                   Open Calendars
@@ -1854,13 +1838,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       class="inline-flex min-h-11 items-center gap-1 rounded-control border border-subtle bg-canvas pl-3 pr-1 text-sm"
                     >
                       <span class="font-semibold text-strong">
-                        {Editor.weekday_date(date_from_iso(iso))}
+                        {Wording.weekday_date_with_year(date_from_iso(iso))}
                       </span>
                       <button
                         type="button"
                         phx-click="remove_draft_date"
                         phx-value-date={iso}
-                        aria-label={"Remove #{Editor.format_date(date_from_iso(iso))}"}
+                        aria-label={"Remove #{Wording.date(date_from_iso(iso))}"}
                         class="inline-flex size-11 items-center justify-center rounded-control text-muted hover:bg-white hover:text-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                       >
                         <.icon name="hero-x-mark" class="size-4" />
@@ -2007,7 +1991,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 dirty?={@dirty?}
                 pending?={@pending?}
                 note={save_note(assigns)}
-                list_path={list_path_for(@current_gtfs_version.id)}
+                list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               />
             </.form>
           </section>
@@ -2049,7 +2033,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 periods={@periods}
                 active_dates={@source.active_dates}
                 today={@today}
-                list_path={list_path_for(@current_gtfs_version.id)}
+                list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               />
 
               <div id="calendar-change-panel" class="grid gap-4 rounded-control bg-canvas p-4">
@@ -2220,7 +2204,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 kind="info"
                 title={closure_consequence_title(@usage.closure_count)}
               >
-                On {pathway_phrase(length(@usage.closure_paths))}
+                On {Wording.noun(length(@usage.closure_paths), "pathway")}
                 <CalendarComponents.pathway_links
                   id="calendar-review-closures-pathways"
                   paths={@usage.closure_paths}
@@ -2373,7 +2357,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp save_note(%{usage: %{trip_count: trips, routes: routes}} = assigns),
     do:
-      "Saving updates #{Editor.plural(trips, "trip")} on #{Editor.plural(length(routes), "route")} in #{assigns.current_gtfs_version.name}, a published version."
+      "Saving updates #{Wording.count_noun(trips, "trip")} on #{Wording.count_noun(length(routes), "route")} in #{assigns.current_gtfs_version.name}, a published version."
 
   ## Guard copy
 
@@ -2388,9 +2372,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     do: "Scheduled closures use this calendar, so it can’t be deleted"
 
   defp delete_block_title(_block), do: "This calendar is used by trips, so it can’t be deleted"
-
-  defp pathway_phrase(1), do: "pathway"
-  defp pathway_phrase(_count), do: "pathways"
 
   defp closure_usage_phrase(1), do: "scheduled closure uses"
   defp closure_usage_phrase(_count), do: "scheduled closures use"
@@ -2418,7 +2399,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp date_block_title(%{command: {:remove_exceptions, _service_id, [date]}}) do
-    "#{Editor.format_date(date)} was not removed"
+    "#{Wording.date(date)} was not removed"
   end
 
   defp date_block_title(%{command: {:remove_exceptions, _service_id, dates}}) do
@@ -2493,7 +2474,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       pending: "Deleting…",
       lead: "This removes the calendar and its stored date changes. It can’t be undone.",
       items: [
-        "Removes #{Editor.plural(changes.active_date_count, "service date")}.",
+        "Removes #{Wording.count_noun(changes.active_date_count, "service date")}.",
         "No trips use it, so no trip loses service."
       ]
     }
@@ -2507,7 +2488,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       lead:
         "Every date this calendar runs today becomes an individual service date. What runs stays the same; the weekly pattern and its days off are replaced by that list.",
       items: [
-        "Stores all #{Editor.plural(changes.persisted_date_count, "service date")} as chosen dates.",
+        "Stores all #{Wording.count_noun(changes.persisted_date_count, "service date")} as chosen dates.",
         "Removes the weekly days and the date range."
       ]
     }
@@ -2521,7 +2502,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       lead:
         "The calendar will run on the days and dates you chose. Dates you added individually are kept as extra service.",
       items: [
-        "Adds a weekly schedule covering #{Editor.plural(changes.active_date_count, "service date")}.",
+        "Adds a weekly schedule covering #{Wording.count_noun(changes.active_date_count, "service date")}.",
         "Existing date changes are kept."
       ]
     }
@@ -2545,15 +2526,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Add service on #{Editor.weekday_date(date)}?",
-          else: "Add service on #{Editor.plural(length(dates), "date")}?"
+          do: "Add service on #{Wording.weekday_date_with_year(date)}?",
+          else: "Add service on #{Wording.count_noun(length(dates), "date")}?"
         ),
       confirm: if(kind == :weekly, do: "Add extra service", else: "Add service date"),
       pending: "Saving…",
       lead:
         "Trips on #{name} will run #{if length(dates) == 1, do: "on this date", else: "on these dates"}.",
       items: [
-        "#{Editor.plural(changes.active_date_count, "service day")} on this calendar after the change."
+        "#{Wording.count_noun(changes.active_date_count, "service day")} on this calendar after the change."
       ]
     }
   end
@@ -2568,7 +2549,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       pending: "Saving…",
       lead: "Review the effect before saving.",
       items: [
-        "#{Editor.plural(changes.active_date_count, "service day")} on this calendar after saving."
+        "#{Wording.count_noun(changes.active_date_count, "service day")} on this calendar after saving."
       ]
     }
   end
@@ -2587,8 +2568,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Restore the regular schedule on #{Editor.weekday_date(date)}?",
-          else: "Restore service on #{Editor.plural(length(dates), "date")}?"
+          do: "Restore the regular schedule on #{Wording.weekday_date_with_year(date)}?",
+          else: "Restore service on #{Wording.count_noun(length(dates), "date")}?"
         ),
       confirm: "Restore service",
       pending: "Saving…",
@@ -2601,8 +2582,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Remove #{Editor.weekday_date(date)}?",
-          else: "Remove #{Editor.plural(length(dates), "service date")}?"
+          do: "Remove #{Wording.weekday_date_with_year(date)}?",
+          else: "Remove #{Wording.count_noun(length(dates), "service date")}?"
         ),
       confirm: if(length(dates) == 1, do: "Remove date", else: "Remove dates"),
       pending: "Saving…",
@@ -2618,9 +2599,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     scope =
       if removed == expected,
         do: "would be skipped",
-        else: "(#{Editor.plural(removed, "new day")} to skip)"
+        else: "(#{Wording.count_noun(removed, "new day")} to skip)"
 
-    "#{Editor.plural(expected, "service day")} in the range #{scope}#{if expected >= 3, do: ", so it will appear as a break", else: ""}."
+    "#{Wording.count_noun(expected, "service day")} in the range #{scope}#{if expected >= 3, do: ", so it will appear as a break", else: ""}."
   end
 
   defp remaining_line(1), do: "1 service day remains on this calendar."

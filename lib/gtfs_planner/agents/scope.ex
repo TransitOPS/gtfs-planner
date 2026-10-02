@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Agents.Scope do
   alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @max_approval_length 2_000
@@ -164,7 +165,7 @@ defmodule GtfsPlanner.Agents.Scope do
   # The identity version and the scope version are one value: a mismatch is a
   # stale panel, not a second authorized scope.
   defp resolve_version(%__MODULE__{} = scope, id) do
-    if uuid?(id) and id == scope.gtfs_version_id and
+    if Values.uuid?(id) and id == scope.gtfs_version_id and
          not is_nil(Versions.get_gtfs_version_for_lifecycle(scope.organization_id, id)) do
       :ok
     else
@@ -217,7 +218,4 @@ defmodule GtfsPlanner.Agents.Scope do
       actor_email: scope.user_email
     }
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 end

@@ -379,6 +379,32 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
                  nil
                )
     end
+
+    test "a forged skip flag does not skip the row" do
+      grid = [["7:00", "7:15", "7:30", "7:45", "101", "", ""]]
+
+      assert [%{status: :ready, issue: nil, pattern_id: "pattern-full"}] =
+               RowResolver.resolve(
+                 grid,
+                 @main_columns,
+                 scope([@full, @short]),
+                 %{1 => %{skip: 1}},
+                 nil
+               )
+    end
+
+    test "a whitespace-padded row key still targets its row" do
+      grid = [["7:00", "7:15", "7:30", "7:45", "101", "", ""]]
+
+      assert [%{status: :skipped, issue: nil}] =
+               RowResolver.resolve(
+                 grid,
+                 @main_columns,
+                 scope([@full, @short]),
+                 %{" 1" => %{skip: true}},
+                 nil
+               )
+    end
   end
 
   describe "twelve-hour rows" do
@@ -439,6 +465,22 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
                  @main_columns,
                  scope([@full]),
                  %{4 => %{keep_early: true}},
+                 nil
+               )
+    end
+
+    test "a forged keep_early string does not answer the twelve-hour question" do
+      assert [
+               %{status: :ready},
+               %{status: :ready},
+               %{status: :ready},
+               %{row: 4, status: :decision, issue: {:twelve_hour, 4_500}}
+             ] =
+               RowResolver.resolve(
+                 @evening_grid,
+                 @main_columns,
+                 scope([@full]),
+                 %{4 => %{keep_early: "true"}},
                  nil
                )
     end

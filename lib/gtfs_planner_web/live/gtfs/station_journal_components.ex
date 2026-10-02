@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     only: [button: 1, callout: 1, empty_state: 1, icon: 1, skeleton: 1]
 
   alias GtfsPlanner.Accounts.User
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.StationJournal.PhotoStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope
@@ -88,14 +88,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           true -> Calendar.strftime(local, "%b %-d")
         end
     end
-  end
-
-  @doc """
-  Formats a caller-localized wall-clock value for expanded journal metadata.
-  """
-  @spec absolute_time(NaiveDateTime.t()) :: String.t()
-  def absolute_time(%NaiveDateTime{} = local) do
-    Calendar.strftime(local, "%b %-d, %Y") <> " · " <> Gtfs.format_display_time(local)
   end
 
   attr :journal_scope, Scope, required: true
@@ -712,9 +704,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   defp note_body(_body), do: "No note provided"
 
   defp zone_title(local, %{timezone: timezone}) when is_binary(timezone),
-    do: absolute_time(local) <> " " <> timezone
+    do: DisplayClock.format_datetime(local) <> " " <> timezone
 
-  defp zone_title(local, _zone), do: absolute_time(local)
+  defp zone_title(local, _zone), do: DisplayClock.format_datetime(local)
 
   attr :entity_type, :string, required: true
   attr :entity_id, :string, required: true

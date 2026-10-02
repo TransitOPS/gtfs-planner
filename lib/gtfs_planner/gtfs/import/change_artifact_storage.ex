@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
 
   alias GtfsPlanner.Gtfs.Import.ChangeRun
   alias GtfsPlanner.Gtfs.TaskArtifactCapacity
+  alias GtfsPlanner.Values
 
   @max_files 3
   @max_file_bytes 50_000_000
@@ -128,13 +129,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeArtifactStorage do
   end
 
   defp validate_scope(organization_id, version_id, run_id) do
-    if Enum.all?([organization_id, version_id, run_id], &uuid?/1),
+    if Enum.all?([organization_id, version_id, run_id], &Values.uuid?/1),
       do: :ok,
       else: {:error, :invalid_scope}
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_), do: false
 
   defp validate_files(files) do
     cond do

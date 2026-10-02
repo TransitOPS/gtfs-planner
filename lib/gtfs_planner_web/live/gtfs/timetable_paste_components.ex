@@ -37,7 +37,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   import GtfsPlannerWeb.PlannerComponents,
     only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
   # Small decision buttons follow the prototype's secondary small button:
@@ -86,7 +88,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           <dd class="mt-0.5 text-sm font-semibold text-strong">
             <%= if @pattern do %>
               {@pattern.name}
-              <span class="font-normal text-muted">{stop_count(@pattern)}</span>
+              <span class="font-normal text-muted">
+                {case @pattern do
+                  %{occurrences: occurrences} when is_list(occurrences) ->
+                    Wording.count_noun(length(occurrences), "stop")
+
+                  _pattern ->
+                    nil
+                end}
+              </span>
             <% else %>
               None in this direction
             <% end %>
@@ -289,16 +299,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp calendar_dates(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
-    " · #{date_label(first, last)}"
+    " · #{date_span_label(first, last)}"
   end
 
   defp calendar_dates(_calendar), do: ""
 
-  defp date_label(date, date), do: Calendar.strftime(date, "%b %-d, %Y")
+  # A range keeps both ends; a single date reads once. `Wording.date/1` formats each end.
+  defp date_span_label(date, date), do: Wording.date(date)
 
-  defp date_label(first, last) do
-    "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"
-  end
+  defp date_span_label(first, last), do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   defp direction_options(trips) do
     for direction_id <- [0, 1] do
@@ -340,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   defp pattern_options(%{patterns: patterns, trips: trips}) do
     Enum.map(patterns, fn pattern ->
       count = Enum.count(trips, &(&1.route_pattern_id == pattern.route_pattern_id))
-      {"#{pattern.name} · #{trip_count(count)}", pattern.id}
+      {"#{pattern.name} · #{Wording.count_noun(count, "trip")}", pattern.id}
     end)
   end
 
@@ -354,23 +363,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       "pattern when exactly one fits."
   end
 
-  defp trip_count(1), do: "1 trip"
-  defp trip_count(count), do: "#{count} trips"
-
   defp calendar_detail(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
-    "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"
+    "#{Wording.date(first)} – #{Wording.date(last)}"
   end
 
   defp calendar_detail(_calendar), do: nil
-
-  defp stop_count(%{occurrences: occurrences}) when is_list(occurrences) do
-    case length(occurrences) do
-      1 -> "1 stop"
-      count -> "#{count} stops"
-    end
-  end
-
-  defp stop_count(_pattern), do: nil
 
   @doc """
   Renders step 1, the Timetable step: the paste form while it is open and
@@ -691,7 +688,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           </table>
         </div>
         <p class="text-[13px] text-muted">
-          Showing {length(@samples)} of {row_count_text(@total_rows)}. Two neighbouring
+          Showing {length(@samples)} of {Wording.count_noun(@total_rows, "row")}. Two neighbouring
           columns for one stop are its arrival and departure.
         </p>
         <div id="paste-pattern-strip">
@@ -823,9 +820,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     grid = Map.get(review, :grid, []) || []
     if header?, do: max(length(grid) - 1, 0), else: length(grid)
   end
-
-  defp row_count_text(1), do: "1 row"
-  defp row_count_text(count), do: "#{count} rows"
 
   defp occurrence_target?(%{target: {:occurrence, _, _}}), do: true
   defp occurrence_target?(_column), do: false
@@ -966,7 +960,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
             <.status_badge status="warning" label="Not applied" />
           </div>
           <p class="text-[13px] text-muted">
-            {@calendar_name} · {@direction_name} · {plural(@pasted_rows, "pasted row")}
+            {@calendar_name} · {@direction_name} · {Wording.count_noun(@pasted_rows, "pasted row")}
           </p>
         </div>
       </div>
@@ -1146,7 +1140,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         title="Replace needs at least one pasted trip."
         class="mx-5 mt-4"
       >
-        Every row is skipped, so applying would remove all {plural(@trips_before, "trip")} and
+        Every row is skipped, so applying would remove all {Wording.count_noun(@trips_before, "trip")} and
         add none. Restore a row, or use Add trips.
         <:action>
           <button
@@ -1244,7 +1238,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   recompute, filter and view change (`paste-row-<n>` for pasted rows,
   `paste-remove-<trip_id>` for removals); the column set and the filtered
   count arrive as plain assigns because streams are not enumerable. Cells
-  render pasted times bold, estimates italic muted floored to the minute,
+  render pasted times bold, estimates italic muted,
   `Not served`, `+1 day` at or past 24:00, `arr HH:MM` for a differing
   arrival, `was HH:MM` on changed cells and struck old times for removals.
   Timing buttons store a `pattern_id|name` ref through `paste_timing` and
@@ -1484,7 +1478,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           <strong>The chosen pattern no longer fits this row.</strong>
           Choose the one this trip follows.
         <% else %>
-          <strong>{decision_count_text(@decision.options, "pattern fits", "patterns fit")}.</strong>
+          <strong>
+            {Wording.count_noun(length(@decision.options), "pattern fits", "patterns fit")}.
+          </strong>
           Choose the one this trip follows.
         <% end %>
       </p>
@@ -1581,7 +1577,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     </div>
     <div :if={@decision.kind == :twelve} class="grid gap-2">
       <p class="text-[13px] text-warning-fg">
-        <strong>Starts at {TimetablePasteReview.format_clock(@decision.secs)};</strong>
+        <strong>Starts at {GtfsTime.display(@decision.secs)};</strong>
         the other trips start in the evening. Which time is it?
       </p>
       <div class="flex flex-wrap gap-2">
@@ -1593,7 +1589,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="86400"
           class={@decision_button_class}
         >
-          {TimetablePasteReview.format_clock(@decision.secs + 86_400)} · after midnight
+          {GtfsTime.display(@decision.secs + 86_400)} · after midnight
         </button>
         <button
           type="button"
@@ -1603,7 +1599,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="43200"
           class={@decision_button_class}
         >
-          {TimetablePasteReview.format_clock(@decision.secs + 43_200)}
+          {GtfsTime.display(@decision.secs + 43_200)}
         </button>
         <button
           type="button"
@@ -1613,7 +1609,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           phx-value-choice="keep"
           class={@decision_button_class}
         >
-          Keep {TimetablePasteReview.format_clock(@decision.secs)}
+          Keep {GtfsTime.display(@decision.secs)}
         </button>
       </div>
     </div>
@@ -1694,19 +1690,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     """
   end
 
-  defp decision_count_text(options, one, many) when is_list(options) do
-    case length(options) do
-      1 -> "1 #{one}"
-      count -> "#{count} #{many}"
-    end
-  end
-
   defp pairing_legend(%{start_secs: start_secs, options: options}) when is_integer(start_secs) do
-    "#{decision_count_text(options, "trip", "trips")} leave at #{TimetablePasteReview.format_clock(start_secs)}."
+    "#{Wording.count_noun(length(options), "trip", "trips")} leave at #{GtfsTime.display(start_secs)}."
   end
 
   defp pairing_legend(%{options: options}) do
-    "#{decision_count_text(options, "trip leaves", "trips leave")} at the same time."
+    "#{Wording.count_noun(length(options), "trip leaves", "trips leave")} at the same time."
   end
 
   defp neither_chosen?(current) when is_binary(current),
@@ -1722,8 +1711,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   @doc """
-  Renders one matrix time cell: pasted times bold, estimates italic muted
-  floored to the minute, `Not served`, `+1 day` at or past 24:00,
+  Renders one matrix time cell: pasted times bold, estimates italic muted,
+  `Not served`, `+1 day` at or past 24:00,
   `arr HH:MM` for a differing arrival, `was HH:MM` on changed cells and
   struck old times for removals.
   """
@@ -1735,9 +1724,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
     assigns =
       assigns
-      |> assign(:main, cell.secs && TimetablePasteReview.format_clock(cell.secs))
-      |> assign(:arr, cell.arr_secs && TimetablePasteReview.format_clock(cell.arr_secs))
-      |> assign(:was, cell.was_secs && TimetablePasteReview.format_clock(cell.was_secs))
+      |> assign(:main, cell.secs && GtfsTime.display(cell.secs))
+      |> assign(:arr, cell.arr_secs && GtfsTime.display(cell.arr_secs))
+      |> assign(:was, cell.was_secs && GtfsTime.display(cell.was_secs))
       |> assign(:next_day?, is_integer(cell.secs) and cell.secs >= 86_400)
 
     ~H"""
@@ -2047,12 +2036,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   defp clock_time(window, key) when is_map(window) do
     case Map.get(window, key) || Map.get(window, to_string(key)) do
       %Time{} = time ->
-        Calendar.strftime(time, "%H:%M")
+        GtfsTime.display(Time.to_seconds_after_midnight(time) |> elem(0))
 
       binary when is_binary(binary) ->
-        case String.split(binary, ":") do
-          [hour, minute | _rest] -> "#{hour}:#{minute}"
-          _parts -> nil
+        case GtfsTime.coerce(binary) do
+          nil -> raw_clock_parts(binary)
+          secs -> GtfsTime.display(secs)
         end
 
       _time ->
@@ -2061,6 +2050,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp clock_time(_window, _key), do: nil
+
+  defp raw_clock_parts(binary) do
+    case String.split(binary, ":") do
+      [hour, minute | _rest] -> "#{hour}:#{minute}"
+      _parts -> nil
+    end
+  end
 
   @doc """
   The inline message for a failed read. Copy follows the spec proposal §1
@@ -2125,16 +2121,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     trips = if header_checked?(form), do: max(rows - 1, 0), else: rows
 
     summary =
-      "#{plural(trips, "trip row")} · #{plural(columns, "column")} · #{orientation_label(Map.get(review, :orientation))}"
+      "#{Wording.count_noun(trips, "trip row")} · #{Wording.count_noun(columns, "column")} · #{orientation_label(Map.get(review, :orientation))}"
 
     if header_checked?(form), do: summary, else: "#{summary} · no header row"
   end
 
   defp orientation_label(:stops_in_rows), do: "stops down the side"
   defp orientation_label(_orientation), do: "trips in rows"
-
-  defp plural(1, one), do: "1 #{one}"
-  defp plural(count, one), do: "#{count} #{one}s"
 
   # --- Columns step badges, reasons, strip and error summary ---
 
@@ -2398,7 +2391,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         "Every time in these rows, including the filled-in ones, matches it, so it’s reused."
 
     if note.users > 0 do
-      base <> " Used by #{plural(note.users, "row")} here."
+      base <> " Used by #{Wording.count_noun(note.users, "row")} here."
     else
       base
     end
@@ -2421,7 +2414,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
             "They are stored to the second, marked as estimates (timepoint 0), and shown here to the minute."
       end
 
-    base <> estimated <> " Applying creates it for #{plural(note.users, "trip")}."
+    base <> estimated <> " Applying creates it for #{Wording.count_noun(note.users, "trip")}."
   end
 
   @doc """
@@ -2452,7 +2445,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       |> assign(:refusal, refusal)
       |> assign(:needs_decision, counts.needs_decision)
       |> assign(:label, apply_label(mode, applied))
-      |> assign(:disable_with, "Applying #{plural(applied, "change")}…")
+      |> assign(:disable_with, "Applying #{Wording.count_noun(applied, "change")}…")
       |> assign(:status, apply_status(mode, assigns.review, assigns.notice))
       |> assign(
         :disabled?,
@@ -2621,7 +2614,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         title="The connection dropped while applying. It isn’t known whether the changes were saved."
         class="outline-none"
       >
-        Check Schedules before applying again. If the {plural(@unknown_count, "change")} {unknown_verb(
+        Check Schedules before applying again. If the {Wording.count_noun(@unknown_count, "change")} {unknown_verb(
           @unknown_count
         )} saved, reviewing again shows {unknown_them(@unknown_count)} as trips that already exist.
         <:action>
@@ -2737,12 +2730,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     >
       <div>
         <p>
-          This removes {plural(@counts.remove, "trip")} ({replace_removal_list(@removals)}),
+          This removes {Wording.count_noun(@counts.remove, "trip")} ({replace_removal_list(@removals)}),
           changes {@counts.change} and adds {@counts.add} on {@patterns}.
         </p>
         <p :if={@transfers > 0} class="mt-2">
-          <strong class="text-strong">{plural(@transfers, "transfer")}</strong>
-          that {transfer_verb(@transfers)} the removed {plural_noun(@counts.remove, "trip")} {transfer_are(
+          <strong class="text-strong">{Wording.count_noun(@transfers, "transfer")}</strong>
+          that {transfer_verb(@transfers)} the removed {Wording.noun(@counts.remove, "trip")} {transfer_are(
             @transfers
           )} removed too.
         </p>
@@ -2917,8 +2910,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   # --- Apply bar, notices and confirmations (step 28) ---
 
-  defp apply_label(:replace, applied), do: "Replace trips · #{plural(applied, "change")}"
-  defp apply_label(_mode, applied), do: "Apply #{plural(applied, "change")}"
+  defp apply_label(:replace, applied),
+    do: "Replace trips · #{Wording.count_noun(applied, "change")}"
+
+  defp apply_label(_mode, applied), do: "Apply #{Wording.count_noun(applied, "change")}"
 
   defp apply_status(_mode, _review, :permission),
     do: "Editing isn’t available with your current role."
@@ -2938,7 +2933,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         "Nothing to apply."
 
       counts.needs_decision > 0 ->
-        "#{plural(counts.needs_decision, "row")} need a decision before applying."
+        "#{Wording.count_noun(counts.needs_decision, "row")} need a decision before applying."
 
       true ->
         "Ready. Nothing has been saved yet."
@@ -3065,7 +3060,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   defp removal_start(trip) when is_map(trip) do
     case Map.get(trip, :start_secs, Map.get(trip, "start_secs")) do
-      secs when is_integer(secs) -> TimetablePasteReview.format_clock(secs)
+      secs when is_integer(secs) -> GtfsTime.display(secs)
       _secs -> nil
     end
   end
@@ -3086,7 +3081,4 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   defp transfer_are(1), do: "is"
   defp transfer_are(_count), do: "are"
-
-  defp plural_noun(1, one), do: one
-  defp plural_noun(_count, one), do: "#{one}s"
 end

@@ -100,11 +100,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       sort_header: 1
     ]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Gtfs.Rosters.Checks
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.CoreComponents
-  alias GtfsPlannerWeb.Gtfs.BlocksComponents
   alias Phoenix.HTML.Form
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
@@ -238,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       >
         <span class="shrink-0 font-[650]">Roster settings</span>
         <span class="min-w-0 text-muted">
-          · {@groups} · rest {minutes(@roster.rules.min_rest_minutes)} · warn above {@roster.rules.weekly_hours_warn_above} h
+          · {@groups} · rest {Wording.duration(@roster.rules.min_rest_minutes * 60)} · warn above {@roster.rules.weekly_hours_warn_above} h
         </span>
       </button>
 
@@ -434,20 +435,14 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     end)
   end
 
-  # Service-day seconds as the rest of the page writes them: hours and minutes,
-  # which is what the grid's weekly paid cell and the prototype both use.
+  # A duration in seconds as hours and minutes, which is what the grid's weekly
+  # paid cell and the prototype use. Service-day times read `GtfsTime.display/1`.
   defp hours_minutes(secs) when is_integer(secs) do
     "#{div(secs, @seconds_per_hour)}:#{pad(rem(div(secs, @seconds_per_minute), 60))}"
   end
 
   defp pad(minutes) when minutes < 10, do: "0#{minutes}"
   defp pad(minutes), do: "#{minutes}"
-
-  # The minimum rest is stored in minutes and usually read in hours ("rest
-  # 10 h"), because a rule a planner sets between 8 and 12 hours is a rule in
-  # hours. A rule that is not a whole number of hours keeps its minutes.
-  defp minutes(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
-  defp minutes(minutes), do: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
 
   @doc """
   The row above the grid: which lines are shown, and how many of them.
@@ -509,13 +504,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       if(summary.stale_slots > 0, do: [{"Stale slots #{summary.stale_slots}", "stale"}], else: [])
   end
 
-  defp filter_count(%{showing_all: true, total: total}), do: plural_lines(total)
+  defp filter_count(%{showing_all: true, total: total}), do: Wording.count_noun(total, "line")
 
   defp filter_count(%{shown: shown, total: total}),
-    do: "Showing #{shown} of #{plural_lines(total)}"
-
-  defp plural_lines(1), do: "1 line"
-  defp plural_lines(count), do: "#{count} lines"
+    do: "Showing #{shown} of #{Wording.count_noun(total, "line")}"
 
   @doc """
   Renders the roster grid: one row per line, seven weekday slots, and the four
@@ -543,10 +535,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   ## Why the times are the Runs page's
 
-  A run's sign-on and sign-off are `BlocksComponents.clock/1`, the same helper
-  the Runs page and the Blocks page print, so a run that signs off after
-  midnight reads `01:30 +1d` here as it does everywhere else in the app rather
-  than as a second convention the reader has to learn on this page.
+  A run's sign-on and sign-off are `GtfsTime.display/1`, the same formatter the
+  Runs page and the Blocks page print, so a run that signs off after midnight
+  reads `25:30` here as it does everywhere else in the app rather than as a
+  second convention the reader has to learn on this page.
   """
   attr :roster, :map, required: true
 
@@ -1013,13 +1005,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     "#{slot_time(sign_on)}–#{slot_time(sign_off)}"
   end
 
-  # Service-day hours as `H:MM`, unbounded — the same words the weekly paid cell
-  # and the prototype use, so a run that signs off at 00:17 reads `24:17` here
-  # and the page has one clock. A sign-on *before* the service day has no
-  # positive hour to print, so it defers to the Runs page's helper, which says
-  # `23:45 −1d` rather than the meaningless `0:-15`.
-  defp slot_time(secs) when is_integer(secs) and secs < 0, do: BlocksComponents.clock(secs)
-  defp slot_time(secs) when is_integer(secs), do: hours_minutes(secs)
+  # Service-day hours in GTFS hours — the same formatter the Runs page and the
+  # Blocks page print, so a run that signs off at 00:17 reads `24:17` here and
+  # the page has one clock. A sign-on *before* the service day has no positive
+  # hour to print, so the formatter says `23:45 −1d` rather than the meaningless
+  # `0:-15`.
+  defp slot_time(secs) when is_integer(secs), do: GtfsTime.display(secs)
 
   # One marker per slot, and only ever one: a short rest is a warning and a run
   # with errors is an error, and a day that is both says the error.
@@ -1090,8 +1081,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     %{stored: stored} = slot
 
     "Run #{slot.run_id} changed since it was set: was " <>
-      "#{BlocksComponents.clock(stored.sign_on_secs)}–#{BlocksComponents.clock(stored.sign_off_secs)}, now " <>
-      "#{BlocksComponents.clock(slot.run.work.sign_on_secs)}–#{BlocksComponents.clock(slot.run.work.sign_off_secs)}."
+      "#{GtfsTime.display(stored.sign_on_secs)}–#{GtfsTime.display(stored.sign_off_secs)}, now " <>
+      "#{GtfsTime.display(slot.run.work.sign_on_secs)}–#{GtfsTime.display(slot.run.work.sign_off_secs)}."
   end
 
   defp stale_sentence(_slot, :base_changed), do: "The base week changed for that day."
@@ -1277,7 +1268,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   # A duration of minutes, in the hours and minutes a planner reads a rest rule
   # in: 289 minutes reads `4 h 49 min`, not `4:49`, which would read as a clock.
-  defp rest_hours(secs) when is_integer(secs), do: minutes(div(secs, @seconds_per_minute))
+  defp rest_hours(secs) when is_integer(secs), do: Wording.duration(secs)
 
   @doc """
   The Operator cell: the operator's name and employee ID, or `Open`, plus the
@@ -1743,7 +1734,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
             <span class="font-normal text-muted">· {group.day_type.label}</span>
           </h3>
           <span class="tabular text-[13px] text-muted">
-            {open_run_days_text(group.open_run_days)}
+            {Wording.count_noun(group.open_run_days, "open run-day")}
           </span>
         </div>
 
@@ -1790,9 +1781,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       availability: Candidates.new_line_availability(roster, key, open_run.run_id)
     })
   end
-
-  defp open_run_days_text(1), do: "1 open run-day"
-  defp open_run_days_text(count), do: "#{count} open run-days"
 
   @doc """
   One open run's card: what the run is, when it is open, and what can be built
@@ -2025,8 +2013,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     >
       <:lede>
         <span id="rosters-slot-lede">
-          {(@line.operator && @line.operator.display_name) || "Open line"} · {plural_days(
-            map_size(@line.slots)
+          {(@line.operator && @line.operator.display_name) || "Open line"} · {Wording.count_noun(
+            map_size(@line.slots),
+            "working day"
           )} · {@line.paid_secs |> hours_minutes()} paid a week
         </span>
       </:lede>
@@ -2071,7 +2060,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           <legend class="text-base font-bold text-strong">Run for {@day_name}</legend>
           <p class="mt-1 text-[13px] text-muted">
             {@day_name} uses {@group_label} runs. Open runs whose sign-on is closest to this line’s
-            other days come first. Minimum rest is {minutes(@min_rest_minutes)}.
+            other days come first. Minimum rest is {Wording.duration(@min_rest_minutes * 60)}.
           </p>
 
           <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
@@ -2331,9 +2320,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       "the day. Until then the export skips this day."
   end
 
-  defp plural_days(1), do: "1 working day"
-  defp plural_days(count), do: "#{count} working days"
-
   @doc """
   The "Add to line" drawer: an open run's day, and the lines that have it off.
 
@@ -2408,7 +2394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         >
           <legend class="text-[13px] font-[650] text-default">Day</legend>
           <p class="text-[13px] text-muted">
-            Run {@run_id} is open on {plural_open_days(length(@open_weekdays))}.
+            Run {@run_id} is open on {Wording.count_noun(length(@open_weekdays), "day")}.
           </p>
           <div
             role="group"
@@ -2439,7 +2425,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
           <h3 class="text-base font-bold">Lines with {@day_name} off</h3>
           <p class="mt-1 text-[13px] text-muted">
             Lines where it keeps the minimum rest come first, then the lines with the fewest paid
-            hours. Minimum rest is {minutes(@min_rest_minutes)}.
+            hours. Minimum rest is {Wording.duration(@min_rest_minutes * 60)}.
           </p>
           <div class="mt-3 overflow-x-auto rounded-card border border-subtle">
             <table class="w-full border-separate border-spacing-0 text-sm">
@@ -2481,7 +2467,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
                     </label>
                   </td>
                   <td class="px-2 py-1">
-                    {plural_working_days(map_size(row.line.slots))}
+                    {Wording.count_noun(map_size(row.line.slots), "day")}
                     <span class="text-muted">
                       · off {days_off_text(row.line)}
                     </span>
@@ -2570,11 +2556,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   # The column counts working days, so it says "days" rather than the grid's
   # "working days": it sits beside "Paid now", where the reader is comparing two
   # lines rather than reading one line's week.
-  defp plural_working_days(1), do: "1 day"
-  defp plural_working_days(count), do: "#{count} days"
-
-  defp plural_open_days(1), do: "1 day"
-  defp plural_open_days(count), do: "#{count} days"
 
   @doc """
   The line drawer: one line's whole week, and the one destructive action on it.
@@ -2619,7 +2600,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     >
       <:lede>
         <span id="rosters-line-lede">
-          {if @line.operator, do: "Assigned", else: "Open"} · {plural_days(map_size(@line.slots))}
+          {if @line.operator, do: "Assigned", else: "Open"} · {Wording.count_noun(
+            map_size(@line.slots),
+            "working day"
+          )}
         </span>
       </:lede>
 
@@ -3218,7 +3202,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
         </p>
 
         <p class="text-sm">
-          With the lines as they are, the export has <strong class="tabular">{assignment_count(length(@assignments.rows))}</strong>:
+          With the lines as they are, the export has <strong class="tabular">{Wording.count_noun(length(@assignments.rows), "assignment")}</strong>:
           one per operator, run and date.
         </p>
 
@@ -3287,7 +3271,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
               </thead>
               <tbody>
                 <tr :for={row <- @preview} class="border-b border-subtle last:border-b-0">
-                  <td class="tabular px-3 py-2.5 align-middle">{date_label(row.date)}</td>
+                  <td class="tabular px-3 py-2.5 align-middle">{Wording.date(row.date)}</td>
                   <td class="px-3 py-2.5 align-middle font-semibold">{row.run_id}</td>
                   <td class="px-3 py-2.5 align-middle font-mono text-[13px]">{row.employee_id}</td>
                   <td class="px-3 py-2.5 align-middle">{row.operator_name}</td>
@@ -3312,7 +3296,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   # sentence the ZIP's report carries (INV-14).
   defp warning_sentences(assignments) do
     assignments
-    |> AssignmentsExport.sentences(&date_label/1)
+    |> AssignmentsExport.sentences(&Wording.date/1)
     |> Enum.reject(&(elem(&1, 0) == "tods_assignments_planned"))
     |> Enum.map(&elem(&1, 1))
   end
@@ -3329,12 +3313,4 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp warning_title(1), do: "1 thing the export leaves out"
   defp warning_title(count), do: "#{count} things the export leaves out"
-
-  defp assignment_count(1), do: "1 assignment"
-  defp assignment_count(count), do: "#{count} assignments"
-
-  # "Oct 12, 2026" — the page's date format. The export's own report writes
-  # ISO dates and the spec asks for this one here; the rest of the sentence is
-  # shared, so only the date differs between the two.
-  defp date_label(date), do: Calendar.strftime(date, "%b %-d, %Y")
 end

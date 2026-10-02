@@ -14,6 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Calendar, as: GtfsCalendar
+  alias GtfsPlanner.Repo
 
   defp editor_scope(%{conn: conn}) do
     organization =
@@ -407,6 +409,141 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
 
       refute has_element?(view, "#paste-scope-pattern-field option", "Main")
       assert has_element?(view, "#paste-scope-drawer", "another inbound pattern")
+    end
+
+    test "a draft whose service_id keeps its import padding reloads its scope",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+
+      # GTFS import stores an ID's bytes as the file gives them, so a stored
+      # service_id can carry padding. The draft reload must look it up unchanged.
+      Repo.insert!(%GtfsCalendar{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: " RAW ",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      render_change(
+        view,
+        "scope_draft_change",
+        draft_params(%{
+          "service_id" => " RAW ",
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+
+      # The padded ID reloaded its own calendar, which has no trips. A trimmed
+      # "RAW" lookup would miss it and fall back to the one-trip Weekday calendar.
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.main.pattern.id}']",
+               "Main · 0 trips"
+             )
+    end
+
+    test "an imported whitespace-only service_id survives URL canonicalization and schedule selection",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+      service_id = "  "
+
+      # Import accepts every nonempty ID verbatim; editor changesets would nil this ID.
+      Repo.insert!(%GtfsCalendar{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: service_id,
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      })
+
+      Repo.insert!(%GtfsPlanner.Gtfs.CalendarAttribute{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: service_id,
+        service_description: "Imported whitespace service",
+        service_schedule_name: "Imported whitespace service"
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      requested = paste_path(version, paste.route, %{"service_id" => service_id})
+
+      canonical =
+        paste_path(version, paste.route, %{
+          "service_id" => service_id,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+
+      follow(view, requested)
+      assert_patch(view, canonical)
+      follow(view, canonical)
+      assert has_element?(view, "#paste-scope-calendar", "Imported whitespace service")
+
+      # The route's one-trip Weekday is the fallback, so dropping the selected
+      # ID would switch calendars instead of keeping this empty imported service.
+      follow(
+        view,
+        paste_path(version, paste.route, %{
+          "service_id" => paste.weekday,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+
+      assert has_element?(view, "#paste-scope-calendar", "Weekday")
+      open_drawer(view)
+
+      params =
+        draft_params(%{
+          "service_id" => service_id,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+
+      view |> form("#paste-scope-form", params) |> render_change()
+
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.main.pattern.id}']",
+               "Main · 0 trips"
+             )
+
+      view |> form("#paste-scope-form", params) |> render_submit()
+      assert_patch(view, canonical)
+      follow(view, canonical)
+
+      assert has_element?(view, "#paste-scope-calendar", "Imported whitespace service")
+      refute has_element?(view, "#paste-scope-form")
     end
 
     test "using a schedule patches the URL, rebuilds the scope and closes the drawer",
@@ -1484,6 +1621,25 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-rows #paste-row-1", "+1 day")
     end
 
+    test "an estimate with seconds shows HH:MM:SS", %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      text =
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n" <>
+          "06:00:30\t\t06:20:30"
+
+      review_read(view, text)
+
+      render_change(view, "input", review_params(text, %{"stops_view" => "all"}))
+
+      # Anchors with seconds make the interpolated middle stop land past a
+      # whole minute, so the estimated cell shows HH:MM:SS.
+      assert has_element?(view, "#paste-rows #paste-row-1", "06:10:30")
+    end
+
     test "arrival times render when arrival differs from departure",
          %{conn: conn, version: version} = context do
       setup = matrix_setup(context)
@@ -2179,11 +2335,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     end
 
     defp apply_redirect_path(version, route, setup) do
+      # `~p` sorts query keys in the test environment, so the expectation is
+      # written in the order the page emits: direction, pattern, service_id.
       query =
         URI.encode_query([
-          {"service_id", setup.weekday},
           {"direction", "0"},
-          {"pattern", setup.main.pattern.id}
+          {"pattern", setup.main.pattern.id},
+          {"service_id", setup.weekday}
         ])
 
       "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"
@@ -2675,11 +2833,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     end
 
     defp guard_schedules(version, route, paste) do
+      # `~p` sorts query keys in the test environment, so the expectation is
+      # written in the order the page emits: direction, pattern, service_id.
       query =
         URI.encode_query([
-          {"service_id", paste.weekday},
           {"direction", "0"},
-          {"pattern", paste.main.pattern.id}
+          {"pattern", paste.main.pattern.id},
+          {"service_id", paste.weekday}
         ])
 
       "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"

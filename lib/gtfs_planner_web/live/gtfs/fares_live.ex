@@ -133,7 +133,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -251,7 +253,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # page of the same list instead of the next page of everything.
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    {:noreply, push_patch(socket, to: zones_url(socket, page: parse_page(page)))}
+    {:noreply, push_patch(socket, to: zones_url(socket, page: Values.positive_integer(page, 1)))}
   end
 
   # One checkbox. The ID arrives from the browser, so it is validated against
@@ -509,7 +511,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="fares-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -569,7 +571,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
                 <.zone_inventory
                   inventory={@inventory}
                   filter={@filter}
-                  patch_base={zones_path(@current_gtfs_version.id)}
+                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
                 />
                 <.stop_search q={@q} />
               </div>
@@ -627,7 +629,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
                   filter={@filter}
                   q={@q}
                   view={@view}
-                  patch_base={zones_path(@current_gtfs_version.id)}
+                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
                   selection={@selection}
                   matching_count={MapSet.size(@matching_ids)}
                 />
@@ -674,7 +676,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # and page come from the URL. `filter=unassigned` is its own key so a zone
   # literally named "unassigned" cannot collide with the unassigned filter.
   defp zones_params(:zones, params) do
-    {stop_filter(params), normalize_query(params["q"]), parse_page(params["page"])}
+    {stop_filter(params), Values.presence(params["q"]),
+     Values.positive_integer(params["page"], 1)}
   end
 
   defp zones_params(_action, _params), do: {:all, nil, 1}
@@ -683,24 +686,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp stop_filter(%{"filter" => "unassigned"}), do: :unassigned
   defp stop_filter(_params), do: :all
 
-  defp normalize_query(value) when is_binary(value) and value != "", do: value
-  defp normalize_query(_value), do: nil
-
-  defp parse_page(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page > 0 -> page
-      _other -> 1
-    end
-  end
-
-  defp parse_page(_value), do: 1
-
   # The stop list's search and pagination both patch the Zones path, carrying the
   # filter that is currently selected. The filter's value is byte-exact and the
   # query is assembled by `URI.encode_query/1`, so a zone ID with a space or a
   # reserved character survives the round trip.
   defp zones_url(socket, query) do
-    path = zones_path(socket.assigns.current_gtfs_version.id)
+    path = ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares/zones"
     query = stop_filter_query(socket.assigns.filter) ++ query
 
     case query do
@@ -999,7 +990,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp save_zone(%{assigns: %{zone_drawer_open: false}} = socket, _params), do: socket
 
   defp save_zone(socket, params) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     case socket.assigns.zone_drawer_zone_id do
       nil -> save_new_zone(socket, audit, params)
@@ -1102,11 +1093,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     end
   end
 
-  # A zone filter is its own URL state, so the saved zone is patched as a whole
-  # query and encoded by `URI.encode_query/1` rather than appended to the filter
-  # that was current (CR-7).
+  # A zone filter is its own URL state, so the saved zone is patched as its own
+  # query key on the verified route rather than appended to the filter that was
+  # current (CR-7).
   defp zone_filter_url(socket, zone_id) do
-    zones_path(socket.assigns.current_gtfs_version.id) <> "?" <> URI.encode_query(zone: zone_id)
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares/zones?#{[zone: zone_id]}"
   end
 
   # The inventory entry of a zone filter's exact ID, byte-for-byte.
@@ -1193,7 +1184,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     delete = socket.assigns.zone_delete
 
     case FareZones.delete_zone(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            delete.zone.zone_id,
            delete.replacement,
            delete.expected
@@ -1210,7 +1201,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> assign(:undo, nil)
         |> assign(:notice, @zone_deleted_message)
         |> assign(:map_snapshot_after_load, true)
-        |> push_patch(to: zones_path(socket.assigns.current_gtfs_version.id))
+        |> push_patch(
+          to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares/zones"
+        )
 
       # Another editor changed the zone since the dialog opened. Nothing was
       # written: the dialog stays open on the freshly read entry, states the
@@ -1343,7 +1336,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     assignment = socket.assigns.assignment
 
     case FareZones.apply_assignment(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            assignment.preview.changes
          ) do
       {:ok, %{applied: applied}} ->
@@ -1396,7 +1389,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # bytes, including a zone that left the inventory in the meantime.
   defp undo_assignment(socket) do
     case FareZones.undo_assignment(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.undo.applied
          ) do
       {:ok, %{applied: applied}} ->
@@ -1426,11 +1419,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp reload_after_undo(socket, _reason), do: load_workspace(socket)
 
   defp assigned_copy(:assign, applied, zone_name) do
-    "#{stops_count(length(applied))} assigned to #{zone_name}."
+    "#{Wording.count_noun(length(applied), "stop")} assigned to #{zone_name}."
   end
 
   defp assigned_copy(:unassign, applied, _zone_name) do
-    "#{stops_count(length(applied))} unassigned."
+    "#{Wording.count_noun(length(applied), "stop")} unassigned."
   end
 
   # The inventory's zones, from the LiveView's assigns (the render reads them too,
@@ -1585,19 +1578,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # without a zone. A zone's count is its boardable membership, so a zone carried
   # only by stations reads 0 and "Empty zone".
   defp stage_subtitle(:all, inventory),
-    do: "#{stops_count(inventory.boardable_count)} in this version"
+    do: "#{Wording.count_noun(inventory.boardable_count, "stop")} in this version"
 
   defp stage_subtitle(:unassigned, inventory),
     do:
-      "#{stops_count(inventory.unassigned_count)} · trip planners can’t price zone-based journeys that use them"
+      "#{Wording.count_noun(inventory.unassigned_count, "stop")} · trip planners can’t price zone-based journeys that use them"
 
   defp stage_subtitle({:zone, zone_id}, inventory) do
     case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
       nil ->
-        "#{stops_count(0)} · Zone ID #{zone_id}"
+        "#{Wording.count_noun(0, "stop")} · Zone ID #{zone_id}"
 
       zone ->
-        "#{stops_count(zone.stop_count)}#{empty_zone_note(zone)} · #{zone_rules_note(zone)} · Zone ID #{zone_id}"
+        "#{Wording.count_noun(zone.stop_count, "stop")}#{empty_zone_note(zone)} · #{zone_rules_note(zone)} · Zone ID #{zone_id}"
     end
   end
 
@@ -1607,9 +1600,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp zone_rules_note(%{rule_count: 0}), do: "no fare rules use it"
   defp zone_rules_note(%{rule_count: 1}), do: "used by 1 fare rule"
   defp zone_rules_note(%{rule_count: count}), do: "used by #{count} fare rules"
-
-  defp stops_count(1), do: "1 stop"
-  defp stops_count(count), do: "#{count} stops"
 
   # One issue per stopless referenced zone and per fare whose rules trip planners
   # combine, plus one for unassigned stops. The caller passes nil while the
@@ -1629,16 +1619,5 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp checks_tone(%{unassigned_count: unassigned}) when unassigned > 0, do: :warning
   defp checks_tone(_checks), do: :ok
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
-  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares/zones"
+  defp zones_path(version_id), do: ~p"/gtfs/#{version_id}/settings/fares/zones"
 end

@@ -68,11 +68,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Operations.Tods
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RosterOperatorsComponents
   alias GtfsPlannerWeb.Gtfs.RostersComponents
-  alias Plug.Conn.Query
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents, only: [tods_review_current?: 2]
 
@@ -288,22 +288,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     socket
     |> put_toast(@editor_access_lost, :refused)
     |> put_flash(:error, @editor_access_lost)
-  end
-
-  # The server-held identity every roster writer takes. Organization, version and
-  # actor come from the socket, never from event params, and the writer re-checks
-  # the actor's editor membership under its own lock.
-  defp audit_context(socket) do
-    %{current_user: user, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
-
-    %AuditContext{
-      actor_id: user.id,
-      actor_email: user.email,
-      organization_id: organization.id,
-      gtfs_version_id: version.id,
-      station_stop_id: nil
-    }
   end
 
   # An early check on the membership, so a revoked editor is refused before a
@@ -686,7 +670,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("set_day", _params, socket) do
     with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
          {:ok, result} <-
-           Gtfs.set_roster_slot(audit_context(socket), line_id, weekday, run_id) do
+           Gtfs.set_roster_slot(
+             AuditContext.from_assigns(socket.assigns),
+             line_id,
+             weekday,
+             run_id
+           ) do
       {:noreply,
        saved(socket, result.short_rests, "Set #{weekday_name(weekday)} to run #{run_id}.")}
     else
@@ -699,7 +688,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("set_group", _params, socket) do
     with %{line_id: line_id, weekday: weekday, run_id: run_id} <- writable_slot(socket),
          {:ok, _result} <-
-           Gtfs.set_roster_weekday_group(audit_context(socket), line_id, weekday, run_id) do
+           Gtfs.set_roster_weekday_group(
+             AuditContext.from_assigns(socket.assigns),
+             line_id,
+             weekday,
+             run_id
+           ) do
       {:noreply, saved(socket, [], "Set #{group_label(socket, weekday)} to run #{run_id}.")}
     else
       {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
@@ -711,7 +705,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   def handle_event("clear_day", _params, socket) do
     with %{line_id: line_id, weekday: weekday} <- writable_slot(socket),
          {:ok, _result} <-
-           Gtfs.clear_roster_slot(audit_context(socket), line_id, weekday) do
+           Gtfs.clear_roster_slot(AuditContext.from_assigns(socket.assigns), line_id, weekday) do
       {:noreply, saved(socket, [], "Cleared #{weekday_name(weekday)}.")}
     else
       {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
@@ -736,7 +730,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # drops it on the next write, because a row still tinted after the planner has
   # moved on is a mark about something that is no longer the last thing they did.
   def handle_event("add_line", _params, socket) do
-    case Gtfs.create_roster_line(audit_context(socket)) do
+    case Gtfs.create_roster_line(AuditContext.from_assigns(socket.assigns)) do
       {:ok, line} ->
         socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
 
@@ -760,7 +754,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         %{"day_type" => day_type_key, "run" => run_id},
         socket
       ) do
-    case Gtfs.create_roster_line_from_run(audit_context(socket), day_type_key, run_id) do
+    case Gtfs.create_roster_line_from_run(
+           AuditContext.from_assigns(socket.assigns),
+           day_type_key,
+           run_id
+         ) do
       {:ok, line} ->
         socket = socket |> clear_open_work() |> assign(:new_line_id, line.id) |> load_roster()
 
@@ -839,7 +837,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     with %{run_id: run_id, weekday: weekday, selected_line_id: line_id} <- writable_add(socket),
          number when not is_nil(number) <- add_line_number(socket, line_id),
          {:ok, result} <-
-           Gtfs.set_roster_slot(audit_context(socket), line_id, weekday, run_id) do
+           Gtfs.set_roster_slot(
+             AuditContext.from_assigns(socket.assigns),
+             line_id,
+             weekday,
+             run_id
+           ) do
       {:noreply,
        socket
        |> close_add()
@@ -1301,7 +1304,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # is already visible in the grid as "Base week changed" on the slots it
   # invalidates — that marking is the composition's, not this page's.
   defp write_settings(socket, form_state, params) do
-    case Gtfs.update_roster_settings(audit_context(socket), params) do
+    case Gtfs.update_roster_settings(AuditContext.from_assigns(socket.assigns), params) do
       {:ok, _settings} ->
         {:noreply,
          socket
@@ -1419,9 +1422,9 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   # that closes the row reads as the page having lost the planner's work.
   defp save_pick(socket, line_id, number, operator) do
     case Gtfs.assign_roster_operator(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            line_id,
-           pick_operator_id(operator)
+           Values.presence(operator)
          ) do
       {:ok, _result} ->
         # The roster is re-read first and the focus target read off the result:
@@ -1536,13 +1539,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
     |> Operations.list_operators()
     |> Enum.reject(&MapSet.member?(holders, &1.id))
   end
-
-  # An empty value is the row's clearing answer and `nil` is the writer's
-  # clearing answer. Anything else is a submitted id, and the writer is what
-  # casts it inside the caller's organization before it is used.
-  defp pick_operator_id(""), do: nil
-  defp pick_operator_id(operator) when is_binary(operator), do: operator
-  defp pick_operator_id(_not_a_value), do: nil
 
   # What the pick did, in the words the grid draws it with: the operator is read
   # off the reloaded composition's own line rather than off what was submitted,
@@ -2019,7 +2015,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   end
 
   defp delete_line(socket, line_id) do
-    case Gtfs.delete_roster_line(audit_context(socket), line_id) do
+    case Gtfs.delete_roster_line(AuditContext.from_assigns(socket.assigns), line_id) do
       {:ok, %{line_number: number, run_days: run_days}} ->
         socket =
           socket
@@ -2057,7 +2053,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   end
 
   defp create_line_for_add(socket, weekday, run_id) do
-    case Gtfs.create_roster_line(audit_context(socket)) do
+    case Gtfs.create_roster_line(AuditContext.from_assigns(socket.assigns)) do
       {:ok, line} -> add_run_to_new_line(socket, line, weekday, run_id)
       {:error, :forbidden} -> {:noreply, editor_refusal(socket)}
       {:error, :not_found} -> {:noreply, refuse_add_to_line(socket, :not_found)}
@@ -2065,7 +2061,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   end
 
   defp add_run_to_new_line(socket, line, weekday, run_id) do
-    case Gtfs.set_roster_slot(audit_context(socket), line.id, weekday, run_id) do
+    case Gtfs.set_roster_slot(AuditContext.from_assigns(socket.assigns), line.id, weekday, run_id) do
       {:ok, result} ->
         {:noreply,
          socket
@@ -2467,10 +2463,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         {"dir", not_the_default(dir, "asc")}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Query.encode()
 
-    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters"
-    if query == "", do: base, else: base <> "?" <> query
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters?#{query}"
   end
 
   # The value unless it is the default, so the default never appears in the URL.

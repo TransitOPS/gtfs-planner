@@ -30,6 +30,9 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @registered_suffix " (registered riders)"
   @qualified ~r/registered|paratransit|\bADA\b|senior|eligib/i
@@ -359,7 +362,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   """
   @spec window(map()) :: %{start: non_neg_integer(), finish: non_neg_integer()} | nil
   def window(%{start: start, end: finish}) do
-    case {minutes_of(start), minutes_of(finish)} do
+    case {GtfsTime.parse_hhmm(start), GtfsTime.parse_hhmm(finish)} do
       {start_minutes, finish_minutes}
       when is_integer(start_minutes) and is_integer(finish_minutes) ->
         %{
@@ -528,12 +531,12 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     if saved.phone == draft.phone do
       []
     else
-      ["Phone: #{if(present?(draft.phone), do: draft.phone, else: "removed")}"]
+      ["Phone: #{if(Values.present?(draft.phone), do: draft.phone, else: "removed")}"]
     end
   end
 
   defp booking_link_change(saved, draft) do
-    case {present?(saved.booking_url), present?(draft.booking_url)} do
+    case {Values.present?(saved.booking_url), Values.present?(draft.booking_url)} do
       {before, after_} when before == after_ -> []
       {false, true} -> ["Booking link added"]
       {true, false} -> ["Booking link removed"]
@@ -547,7 +550,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     if message(saved, calendars) == message(draft, calendars) do
       []
     else
-      if not present?(saved.note) and present?(draft.note) do
+      if not Values.present?(saved.note) and Values.present?(draft.note) do
         ["Note for riders added"]
       else
         ["Text for riders changed"]
@@ -579,12 +582,12 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
 
   defp how_to_book(service) do
     how =
-      [call_line(service), if(present?(service.booking_url), do: "book online")]
+      [call_line(service), if(Values.present?(service.booking_url), do: "book online")]
       |> Enum.reject(&is_nil/1)
 
     case how do
       [] -> nil
-      parts -> "#{capitalize_first(Enum.join(parts, " or "))}."
+      parts -> "#{Wording.capitalize_first(Enum.join(parts, " or "))}."
     end
   end
 
@@ -614,13 +617,13 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp deadline_text(%FlexBookingRule{when: :same_day} = rule),
-    do: "Book at least #{dur(rule.minutes)} before pickup#{horizon(rule)}"
+    do: "Book at least #{duration_words(rule.minutes)} before pickup#{horizon(rule)}"
 
   defp deadline_text(%FlexBookingRule{when: :earlier_day} = rule) do
     unit = if rule.business_days, do: "business day", else: "day"
     days = days(rule)
 
-    "Book by #{t12(rule.by)} #{days} #{unit}#{plural(days)} before#{horizon(rule)}"
+    "Book by #{t12(rule.by)} #{days} #{unit}#{Wording.noun(days, "")} before#{horizon(rule)}"
   end
 
   defp deadline_text(%FlexBookingRule{}), do: ""
@@ -636,13 +639,13 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp transit_line(%FlexBookingRule{when: :same_day} = rule),
-    do: "Book #{dur(rule.minutes)} ahead"
+    do: "Book #{duration_words(rule.minutes)} ahead"
 
   defp transit_line(%FlexBookingRule{}), do: "Book now"
 
   defp otp_line(%FlexBookingRule{when: :earlier_day} = rule) do
     days = days(rule)
-    "Reservation required at least #{days} day#{plural(days)} in advance"
+    "Reservation required at least #{days} day#{Wording.noun(days, "")} in advance"
   end
 
   defp otp_line(%FlexBookingRule{}), do: "Reservation required"
@@ -660,27 +663,31 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   defp days(%FlexBookingRule{days: days}) when is_integer(days), do: days
   defp days(%FlexBookingRule{}), do: 0
 
-  defp dur(minutes) do
+  @doc """
+  Returns a booking rule's notice as the long words riders read: `"30 minutes"`,
+  `"1 hour"`, `"1 hour 5 minutes"`.
+
+  Minutes under an hour stay in minutes, and a non-integer reads as `"0 minutes"`.
+  The flex checks quote this wording back in their contradiction message, so the
+  check and the exported `booking_rules.txt` line cannot drift apart.
+  """
+  @spec duration_words(term()) :: String.t()
+  def duration_words(minutes) do
     minutes = if is_integer(minutes), do: minutes, else: 0
 
-    [hours_phrase(div(minutes, 60)), minutes_phrase(rem(minutes, 60))]
+    hours = div(minutes, 60)
+    rest = rem(minutes, 60)
+
+    [
+      if(hours > 0, do: Wording.count_noun(hours, "hour")),
+      if(rest > 0, do: Wording.count_noun(rest, "minute"))
+    ]
     |> Enum.reject(&is_nil/1)
     |> case do
       [] -> "0 minutes"
       phrases -> Enum.join(phrases, " ")
     end
   end
-
-  defp hours_phrase(0), do: nil
-  defp hours_phrase(1), do: "1 hour"
-  defp hours_phrase(hours), do: "#{hours} hours"
-
-  defp minutes_phrase(0), do: nil
-  defp minutes_phrase(1), do: "1 minute"
-  defp minutes_phrase(minutes), do: "#{minutes} minutes"
-
-  defp plural(1), do: ""
-  defp plural(_count), do: "s"
 
   defp clock_caps(time) do
     time
@@ -690,7 +697,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp overnight?(start, finish) do
-    case {minutes_of(start), minutes_of(finish)} do
+    case {GtfsTime.parse_hhmm(start), GtfsTime.parse_hhmm(finish)} do
       {start_minutes, finish_minutes}
       when is_integer(start_minutes) and is_integer(finish_minutes) ->
         finish_minutes <= start_minutes
@@ -700,8 +707,15 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     end
   end
 
-  defp t12(time, compact \\ false) do
-    case minutes_of(time) do
+  @doc """
+  Returns a stored `H:MM` time as the lowercase 12-hour reading riders see.
+
+  `compact: true` drops `:00` from an on-the-hour time ("4 pm" instead of
+  "4:00 pm"). An unreadable value reads as an empty string.
+  """
+  @spec t12(term(), boolean()) :: String.t()
+  def t12(time, compact \\ false) do
+    case GtfsTime.parse_hhmm(time) do
       nil ->
         ""
 
@@ -717,40 +731,25 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     end
   end
 
-  defp minutes_of(time) when is_binary(time) do
-    with [hours, minutes] <- String.split(time, ":"),
-         {hours, ""} <- Integer.parse(hours),
-         {minutes, ""} <- Integer.parse(minutes) do
-      hours * 60 + minutes
-    else
-      _other -> nil
-    end
-  end
-
-  defp minutes_of(_time), do: nil
-
   defp pad(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp calendar_entry(calendars, service_id), do: Map.get(calendars, service_id, %{})
 
   defp calendar_name(calendars, service_id) do
-    calendars |> calendar_entry(service_id) |> Map.get(:name) |> blank_to(service_id)
+    calendars |> calendar_entry(service_id) |> Map.get(:name) |> non_empty_or(service_id)
   end
 
   defp calendar_plural(calendars, service_id) do
     calendars
     |> calendar_entry(service_id)
     |> Map.get(:plural)
-    |> blank_to(calendar_name(calendars, service_id))
+    |> non_empty_or(calendar_name(calendars, service_id))
   end
 
-  defp blank_to(value, _fallback) when is_binary(value) and value != "", do: value
-  defp blank_to(_value, fallback), do: fallback
-
-  defp present?(value), do: is_binary(value) and value != ""
-
-  defp capitalize_first(""), do: ""
-  defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
+  # Named exception: calendar names feed exported booking_rules.message text, so padded or
+  # whitespace-only names must export unchanged.
+  defp non_empty_or(value, _fallback) when is_binary(value) and value != "", do: value
+  defp non_empty_or(_value, fallback), do: fallback
 
   defp lowercase_first(""), do: ""
 

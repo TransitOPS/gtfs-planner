@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Calendars.Combination
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarCoverage
@@ -848,7 +849,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         case Gtfs.review_calendar_change(
                {:combine, destination_id, sources, decision_dates},
                fingerprints,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, review} ->
             socket
@@ -1041,7 +1042,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       {:combine, socket.assigns.combine_destination_id,
        socket.assigns.combine_review.retained_sources, socket.assigns.combine_decision_dates}
 
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     generation = socket.assigns.combine_generation
 
     socket
@@ -1583,7 +1584,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         {:error,
          %{
            end_date:
-             "That date is not later than the calendar's current end date, #{CalendarComponents.format_date(summary.calendar.end_date)}."
+             "That date is not later than the calendar's current end date, #{Wording.date(summary.calendar.end_date)}."
          }}
 
       over_extension_horizon?(summary, end_date) ->
@@ -1614,7 +1615,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   defp extension_approved_message(approved) do
-    "Approved extending #{approved.service_id} through #{CalendarComponents.format_date(approved.end_date)}. " <>
+    "Approved extending #{approved.service_id} through #{Wording.date(approved.end_date)}. " <>
       "Ask the helper to prepare it, then review the result before it is applied."
   end
 
@@ -1646,7 +1647,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     case Gtfs.review_calendar_change(
            command,
            %{service_id => fingerprint},
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{extension: extension} = review} when not is_nil(extension) ->
         socket
@@ -1788,7 +1789,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp dispatch_extension(socket) do
     case socket.assigns.extension_review do
       %{command: command, fingerprint: fingerprint} ->
-        audit = audit_context(socket)
+        audit = AuditContext.from_assigns(socket.assigns)
         # Every dispatch owns a generation, and the socket carries it: a result
         # from a superseded review is never presented as the outcome of the one
         # on screen.
@@ -1863,7 +1864,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     changed = Map.get(result, :changed_count, 0)
 
     "Extended #{extension_service_label(socket)} through " <>
-      "#{CalendarComponents.format_date(socket.assigns.extension_review.extension.requested_end_date)}. " <>
+      "#{Wording.date(socket.assigns.extension_review.extension.requested_end_date)}. " <>
       "#{changed} #{if changed == 1, do: "row", else: "rows"} changed."
   end
 
@@ -2298,7 +2299,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
       true ->
         command = {:date_change, dates, remove_from, add_to}
-        audit = audit_context(socket)
+        audit = AuditContext.from_assigns(socket.assigns)
 
         fingerprints =
           target_fingerprints(socket.assigns.date_change_sources, remove_from ++ add_to)
@@ -2338,7 +2339,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       %{command: command, fingerprint: fingerprint} ->
         socket = assign(socket, :date_change_pending?, true)
 
-        case Gtfs.apply_calendar_change(command, fingerprint, audit_context(socket)) do
+        case Gtfs.apply_calendar_change(
+               command,
+               fingerprint,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, result} ->
             socket
             |> assign(:date_change_pending?, false)
@@ -2386,16 +2391,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:date_change_review, nil)
   end
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   defp write_error_message(:stale_review) do
     "These calendars changed in another session. Your selection is still here; review again to see the current result."
   end
@@ -2441,11 +2436,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp to_query(assigns, params, sort_by \\ nil, sort_dir \\ nil) do
     %{}
-    |> put_param("search", params["search"] || assigns.search, "")
-    |> put_param("status", params["status"] || assigns.status, "all")
-    |> put_param("range", params["range"] || assigns.range, "whole")
-    |> put_param("sort_by", sort_by || assigns.sort_by, "name")
-    |> put_param("sort_dir", sort_dir || assigns.sort_dir, "asc")
+    |> put_unless_default("search", params["search"] || assigns.search, "")
+    |> put_unless_default("status", params["status"] || assigns.status, "all")
+    |> put_unless_default("range", params["range"] || assigns.range, "whole")
+    |> put_unless_default("sort_by", sort_by || assigns.sort_by, "name")
+    |> put_unless_default("sort_dir", sort_dir || assigns.sort_dir, "asc")
   end
 
   # The timeline range is a view of the same snapshot, not a filter, so it survives
@@ -2456,15 +2451,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp calendars_path(assigns, query, version_id \\ nil) do
     version_id = version_id || assigns.current_gtfs_version.id
 
-    case URI.encode_query(query) do
-      "" -> "/gtfs/#{version_id}/calendars"
-      encoded -> "/gtfs/#{version_id}/calendars?#{encoded}"
-    end
+    ~p"/gtfs/#{version_id}/calendars?#{query}"
   end
 
-  defp put_param(query, _key, nil, _default), do: query
-  defp put_param(query, _key, value, value), do: query
-  defp put_param(query, key, value, _default), do: Map.put(query, key, value)
+  # A value equal to its default is left out of the URL, unlike Values.put_present/3's test.
+  defp put_unless_default(query, _key, nil, _default), do: query
+  defp put_unless_default(query, _key, value, value), do: query
+  defp put_unless_default(query, key, value, _default), do: Map.put(query, key, value)
 
   defp next_sort_dir(current_key, current_dir, key) do
     case {current_key, current_dir, key} do
@@ -2482,10 +2475,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp column_sort_state(sort_by, sort_dir, column) do
     if column == sort_by, do: sort_dir, else: "none"
   end
-
-  defp format_date(date), do: Calendar.strftime(date, "%b %-d, %Y")
-
-  defp format_day(date), do: Calendar.strftime(date, "%a, %b %-d")
 
   @badge_tones %{
     success: "bg-success-bg text-success-fg",
@@ -2520,10 +2509,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp zone_fallback_text(_missing),
     do: "The agency time zone is missing, so “today” and ending-soon dates use UTC."
 
-  defp gap_label(%{first_date: date, last_date: date}), do: format_date(date)
+  defp gap_label(%{first_date: date, last_date: date}), do: Wording.date(date)
 
   defp gap_label(%{first_date: first, last_date: last}),
-    do: "#{format_date(first)} – #{format_date(last)}"
+    do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   defp result_count(%{constraints?: true} = assigns) do
     "#{length(assigns.calendars)} of #{assigns.counts.calendars} calendars"
@@ -2619,10 +2608,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp date_change_label([]), do: "No dates selected"
 
-  defp date_change_label([date]), do: Calendar.strftime(date, "%a, %b %-d, %Y")
+  defp date_change_label([date]), do: Wording.weekday_date_with_year(date)
 
   defp date_change_label([first | _rest] = dates) do
-    "#{length(dates)} dates · #{format_date(first)} – #{format_date(List.last(dates))}"
+    "#{length(dates)} dates · #{Wording.date(first)} – #{Wording.date(List.last(dates))}"
   end
 
   # The reviewed change count is the domain's real per-row count: a plan set for
@@ -2684,13 +2673,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp line_predicate(%{kind: :run} = line), do: "already runs on #{line_these(line)}."
 
   defp line_effect(%{changes?: false}), do: "Nothing changes."
-  defp line_effect(%{kind: :stop, trips: trips}), do: "#{trips_label(trips)} affected."
-  defp line_effect(%{kind: :run, trips: trips}), do: "#{trips_label(trips)} will run."
 
-  defp trips_label(1), do: "1 trip"
-  defp trips_label(count), do: "#{count} trips"
+  defp line_effect(%{kind: :stop, trips: trips}),
+    do: "#{Wording.count_noun(trips, "trip")} affected."
 
-  defp line_dates(%{dates: [date]}), do: format_day(date)
+  defp line_effect(%{kind: :run, trips: trips}),
+    do: "#{Wording.count_noun(trips, "trip")} will run."
+
+  defp line_dates(%{dates: [date]}), do: Wording.weekday_date(date)
   defp line_dates(%{dates: dates}), do: "#{length(dates)} dates"
 
   defp line_these(%{dates: [_date]}), do: "this date"
@@ -2699,26 +2689,23 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp rows_change_label(1), do: "1 row changes"
   defp rows_change_label(count), do: "#{count} rows change"
 
-  defp calendars_label(1), do: "1 calendar"
-  defp calendars_label(count), do: "#{count} calendars"
-
   defp warning_text(%{reason: :no_service}), do: "No service would remain on any selected date."
 
   defp warning_text(%{reason: :ends_soon, last_date: date, days_remaining: days}),
     do:
-      "Service ends #{format_date(date)} · #{days} #{if days == 1, do: "day", else: "days"} away."
+      "Service ends #{Wording.date(date)} · #{days} #{if days == 1, do: "day", else: "days"} away."
 
   defp warning_text(%{reason: :ended, last_date: date}),
-    do: "Service ended #{format_date(date)}."
+    do: "Service ended #{Wording.date(date)}."
 
   defp warning_text(%{reason: :outside_range, date: date, exception: exception}),
-    do: "#{format_date(date)} is outside the regular range for a #{exception} date."
+    do: "#{Wording.date(date)} is outside the regular range for a #{exception} date."
 
   defp warning_text(%{reason: :redundant_addition, date: date}),
-    do: "#{format_date(date)} already runs on the regular schedule."
+    do: "#{Wording.date(date)} already runs on the regular schedule."
 
   defp warning_text(%{reason: :removal_on_nonservice_day, date: date}),
-    do: "#{format_date(date)} already had no regular service."
+    do: "#{Wording.date(date)} already had no regular service."
 
   defp warning_text(_warning), do: "This change needs review."
 
@@ -2758,7 +2745,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             </.button>
             <.button
               id="calendars-create"
-              navigate={create_path(assigns)}
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
               variant="secondary"
               class="min-h-11"
             >
@@ -2954,7 +2941,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 Calendars say which days each service runs, such as Weekday, Saturday, and Sunday &amp;
                 holidays. Create your first calendar to start.
                 <:action>
-                  <.button id="calendars-create" navigate={create_path(assigns)} class="min-h-11">
+                  <.button
+                    id="calendars-create"
+                    navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
+                    class="min-h-11"
+                  >
                     <.icon name="hero-plus" class="size-4" /> Create calendar
                   </.button>
                 </:action>
@@ -3109,7 +3100,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                       </li>
                     </ul>
                     <span :if={@today} id="calendars-today" class="text-muted">
-                      Today · {format_date(@today)}
+                      Today · {Wording.date(@today)}
                     </span>
                     <p
                       :if={
@@ -3186,7 +3177,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                   class="flex flex-wrap items-center gap-x-2 border-b border-subtle px-4 text-[13px] text-muted md:px-5"
                 >
                   <span :if={@range == "whole"}>
-                    Timeline starts {format_date(@coverage.first_date)}; earlier service since {format_date(
+                    Timeline starts {Wording.date(@coverage.first_date)}; earlier service since {Wording.date(
                       @screen.horizon.first_date
                     )} is hidden.
                   </span>
@@ -3438,7 +3429,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                         <span class="block text-sm font-[650] text-strong">{source.name}</span>
                         <span class="block text-[13px] text-muted">
                           <code class="font-mono">{source.service_id}</code>
-                          · {trips_label(source.trip_count)}
+                          · {Wording.count_noun(source.trip_count, "trip")}
                         </span>
                       </span>
                     </label>
@@ -3489,7 +3480,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                         <span class="block text-sm font-[650] text-strong">{source.name}</span>
                         <span class="block text-[13px] text-muted">
                           <code class="font-mono">{source.service_id}</code>
-                          · {trips_label(source.trip_count)}
+                          · {Wording.count_noun(source.trip_count, "trip")}
                         </span>
                       </span>
                     </label>
@@ -3553,7 +3544,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 </ul>
                 <p id="calendar-date-change-review-count" class="text-sm">
                   <span :if={@date_change_review.affected_service_ids != []}>
-                    This changes <strong>{calendars_label(length(@date_change_review.affected_service_ids))}</strong>.
+                    This changes <strong>{Wording.count_noun(length(@date_change_review.affected_service_ids), "calendar")}</strong>.
                   </span>
                   <span :if={@date_change_review.affected_service_ids == []}>
                     No calendar changes.
@@ -4020,7 +4011,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 <div class="min-w-0 py-2.5">
                   <.link
                     :if={is_nil(summary.coverage_error)}
-                    navigate={detail_path(@version_id, summary)}
+                    navigate={
+                      ~p"/gtfs/#{@version_id}/calendars/show?#{[service_id: summary.service_id]}"
+                    }
                     data-calendar-link={summary.service_id}
                     class="calendar-name"
                   >
@@ -4101,13 +4094,5 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       class={["size-3.5", @state == "none" && "text-muted"]}
     />
     """
-  end
-
-  defp create_path(assigns) do
-    "/gtfs/#{assigns.current_gtfs_version.id}/calendars/new"
-  end
-
-  defp detail_path(version_id, summary) do
-    "/gtfs/#{version_id}/calendars/show?service_id=" <> URI.encode_www_form(summary.service_id)
   end
 end

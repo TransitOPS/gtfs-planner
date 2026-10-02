@@ -39,6 +39,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
 
   alias GtfsPlanner.Gtfs.Fares.Checks, as: FareChecks
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Wording
 
   @sample_size 5
   @exit_gate 7
@@ -90,7 +91,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> count_and_sample(:stop_id)
     |> issue("station_with_parent", fn count, examples ->
-      "#{count} #{plural(count, "station has", "stations have")} a parent station " <>
+      "#{count} #{Wording.noun(count, "station has", "stations have")} a parent station " <>
         "(for example #{examples}). GTFS does not allow a station inside another station. " <>
         "Change its type on the parent station's Floorplans tab or re-import the stops."
     end)
@@ -106,7 +107,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> count_and_sample(:stop_id)
     |> issue("stops_missing_coordinates", fn count, examples ->
-      "#{count} #{plural(count, "stop, station or entrance has", "stops, stations or entrances have")} " <>
+      "#{count} #{Wording.noun(count, "stop, station or entrance has", "stops, stations or entrances have")} " <>
         "no latitude/longitude (for example #{examples}). GTFS requires coordinates for these. " <>
         "Add them on the station's Floorplans tab or re-import the stops."
     end)
@@ -119,7 +120,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> count_and_sample(:pathway_id)
     |> issue("bidirectional_exit_gate", fn count, examples ->
-      "#{count} #{plural(count, "exit gate is", "exit gates are")} two-way " <>
+      "#{count} #{Wording.noun(count, "exit gate is", "exit gates are")} two-way " <>
         "(for example #{examples}). GTFS requires exit gates to be one-way. " <>
         "Open each pathway on the station's Floorplans tab and save it to make it one-way."
     end)
@@ -153,10 +154,10 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
           |> Enum.join(", ")
 
         issue({count, examples}, "transfer_missing_reference", fn count, examples ->
-          "#{count} #{plural(count, "transfer names", "transfers name")} a stop, route or trip " <>
+          "#{count} #{Wording.noun(count, "transfer names", "transfers name")} a stop, route or trip " <>
             "that does not exist in this version (for example #{examples}). " <>
             "GTFS requires transfers to name existing stops, routes and trips. " <>
-            "Fix or delete #{plural(count, "it", "them")} on the Transfers page."
+            "Fix or delete #{Wording.noun(count, "it", "them")} on the Transfers page."
         end)
     end
   end
@@ -197,7 +198,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> count_and_sample(:service_id)
     |> issue("trip_missing_service", fn count, examples ->
-      "#{count} #{plural(count, "trip uses", "trips use")} a service ID that has no calendar or " <>
+      "#{count} #{Wording.noun(count, "trip uses", "trips use")} a service ID that has no calendar or " <>
         "calendar dates (for example #{examples}). GTFS requires every trip's service to be " <>
         "defined. Add the service on the Calendars page or re-import the calendars."
     end)
@@ -285,7 +286,4 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
 
   defp issue({count, examples}, code, message),
     do: %{code: code, message: message.(count, examples)}
-
-  defp plural(1, singular, _plural), do: singular
-  defp plural(_count, _singular, plural), do: plural
 end

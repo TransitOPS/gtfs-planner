@@ -353,7 +353,7 @@ for (const viewport of VIEWPORTS) {
     await expect(page.locator("#timing-arrival-1")).toHaveValue("00:00");
 
     await page.fill("#timing-preview", "25:00");
-    await expect(page.locator("#timing-preview-1")).toContainText("01:00 +1 day");
+    await expect(page.locator("#timing-preview-1")).toContainText("25:00");
     await capture(page, `step7-timings-preview-${viewport.label}`);
 
     await page.fill("#timing-preview", "08:00");

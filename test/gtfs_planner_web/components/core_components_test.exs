@@ -1242,4 +1242,39 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "too short"
     end
   end
+
+  describe "sort_glyph/1" do
+    test "maps a sort direction, as string or atom, to the shared glyph set" do
+      assert sort_glyph("asc") == "▲"
+      assert sort_glyph(:asc) == "▲"
+      assert sort_glyph("desc") == "▼"
+      assert sort_glyph(:desc) == "▼"
+      assert sort_glyph("none") == "↕"
+      assert sort_glyph(:none) == "↕"
+    end
+  end
+
+  describe "table/1 sort headers" do
+    test "renders the shared glyph, aria-hidden, under the column's aria-sort" do
+      assigns = %{rows: [%{name: "A"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="sorted" rows={@rows}>
+          <:col :let={row} label="Name" sort="asc">{row.name}</:col>
+          <:col :let={row} label="Status" sort="none">{row.name}</:col>
+        </.table>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.map(LazyHTML.query(doc, "th"), &LazyHTML.attribute(&1, "aria-sort")) ==
+               [["ascending"], ["none"]]
+
+      glyphs = LazyHTML.query(doc, "th span[aria-hidden='true']")
+      assert LazyHTML.attribute(glyphs, "aria-hidden") == ["true", "true"]
+
+      assert Enum.map(glyphs, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) == ["▲", "↕"]
+    end
+  end
 end

@@ -2,10 +2,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Legacy
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.StationWorkspace
 
@@ -330,7 +333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             No walks were scored, and nothing in the station was changed. Run the check again from
             Reachability. If it fails again, contact support.
           </p>
-          <details :if={present?(@run.error_details)} class="mt-2">
+          <details :if={Values.present?(@run.error_details)} class="mt-2">
             <summary class="flex min-h-11 cursor-pointer items-center font-semibold hover:underline">
               Technical details
             </summary>
@@ -385,7 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             Results from the older check
           </h3>
           <p class="mt-0.5 text-[13px] text-muted tabular-nums">
-            {count_label(length(@results), "walk", "walks")} from stops to street addresses · {@reachable_count} reachable · {length(
+            {Wording.count_noun(length(@results), "walk", "walks")} from stops to street addresses · {@reachable_count} reachable · {length(
               @results
             ) - @reachable_count} unreachable
           </p>
@@ -857,8 +860,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     <%= case @result do %>
       <% {:ok, route} -> %>
         <p class="mt-1 text-[13px] tabular-nums text-muted">
-          {route.duration_seconds}s · {format_meters(route.distance_meters)} · {step_label(
-            route.step_count
+          {route.duration_seconds}s · {format_meters(route.distance_meters)} · {Wording.count_noun(
+            route.step_count,
+            "step"
           )}
         </p>
         <ol class="mt-3 grid gap-1.5">
@@ -869,8 +873,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             <span class="w-5 shrink-0 text-right tabular-nums text-muted">{num}</span>
             <span class="min-w-0 break-words">
               <span class="font-semibold text-strong">{direction_label(step.direction)}</span>
-              <span :if={present?(step.name)}><span class="text-muted">·</span> {step.name}</span>
-              <span :if={step.name_derived? and present?(step.name)} class="text-[13px] text-muted">
+              <span :if={Values.present?(step.name)}>
+                <span class="text-muted">·</span> {step.name}
+              </span>
+              <span
+                :if={step.name_derived? and Values.present?(step.name)}
+                class="text-[13px] text-muted"
+              >
                 (name inferred)
               </span>
               <span :if={step.distance_meters > 0} class="tabular-nums text-muted">
@@ -970,7 +979,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               {diagnostic_text(diag)}
             </th>
             <td class="px-4 py-3 text-strong max-md:block max-md:pt-1 sm:px-6">
-              <%= if present?(diag["entity_id"]) do %>
+              <%= if Values.present?(diag["entity_id"]) do %>
                 {entity_label(diag["entity_type"])}
                 <span class="break-all font-mono text-[13px] text-muted">{diag["entity_id"]}</span>
               <% else %>
@@ -1100,7 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         do: lede,
         else:
           lede <>
-            " The station data has #{count_label(length(diagnostics), "item", "items")} to review below."
+            " The station data has #{Wording.count_noun(length(diagnostics), "item", "items")} to review below."
 
     {"success", "Passed", "Every walk works, including step-free.", lede}
   end
@@ -1133,7 +1142,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   end
 
   defp verdict_copy(nil, summary, _diagnostics) do
-    {"neutral", "Result", "#{count_label(summary.total, "walk", "walks")} tested.", nil}
+    {"neutral", "Result", "#{Wording.count_noun(summary.total, "walk", "walks")} tested.", nil}
   end
 
   defp gap_phrase(1, label), do: "1 walk has #{label}"
@@ -1154,7 +1163,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
     [{problems, "problem", "problems"}, {suggestions, "suggestion", "suggestions"}]
     |> Enum.filter(fn {count, _one, _many} -> count > 0 end)
-    |> Enum.map_join(" · ", fn {count, one, many} -> count_label(count, one, many) end)
+    |> Enum.map_join(" · ", fn {count, one, many} -> Wording.count_noun(count, one, many) end)
   end
 
   defp verdict_footer(nil), do: nil
@@ -1163,10 +1172,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     topology = envelope["topology"] || %{}
 
     [
-      counted(topology["entrance_count"], "entrance", "entrances"),
-      counted(topology["platform_count"], "platform", "platforms"),
-      counted(topology["pathway_count"], "pathway", "pathways"),
-      counted(topology["level_count"], "level", "levels"),
+      if(is_integer(topology["entrance_count"]),
+        do: Wording.count_noun(topology["entrance_count"], "entrance")
+      ),
+      if(is_integer(topology["platform_count"]),
+        do: Wording.count_noun(topology["platform_count"], "platform")
+      ),
+      if(is_integer(topology["pathway_count"]),
+        do: Wording.count_noun(topology["pathway_count"], "pathway")
+      ),
+      if(is_integer(topology["level_count"]),
+        do: Wording.count_noun(topology["level_count"], "level")
+      ),
       duration_label(envelope["duration_ms"])
     ]
     |> Enum.reject(&is_nil/1)
@@ -1175,9 +1192,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       parts -> Enum.join(parts, " · ")
     end
   end
-
-  defp counted(count, one, many) when is_integer(count), do: count_label(count, one, many)
-  defp counted(_count, _one, _many), do: nil
 
   defp duration_label(ms) when is_integer(ms) and ms < 1000, do: "checked in #{ms} ms"
   defp duration_label(ms) when is_number(ms), do: "checked in #{Float.round(ms / 1000, 1)} s"
@@ -1194,7 +1208,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
        envelope["result_schema_version"] && "version #{envelope["result_schema_version"]}"},
       {"Run time", envelope["duration_ms"] && "#{envelope["duration_ms"]} ms"}
     ]
-    |> Enum.filter(fn {_label, value} -> present?(value) end)
+    |> Enum.filter(fn {_label, value} -> Values.present?(value) end)
   end
 
   # ── Section building ───────────────────────────────────────────────────────
@@ -1417,16 +1431,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp direction_label(:elevator), do: "Take the elevator"
   defp direction_label(other), do: other |> to_string() |> String.replace("_", " ")
 
-  defp step_label(1), do: "1 step"
-  defp step_label(count), do: "#{count} steps"
-
   defp format_meters(nil), do: "—"
   defp format_meters(meters) when is_integer(meters), do: "#{meters}m"
   defp format_meters(meters) when is_float(meters), do: "#{Float.round(meters, 1)}m"
   defp format_meters(meters), do: "#{meters}m"
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 
   # The router's own message covers a code this page has no sentence for.
   defp diagnostic_text(%{"code" => code} = diagnostic) do
@@ -1464,13 +1472,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp run_subtitle(run, version) do
     case run.status do
       "completed" ->
-        "Checked #{format_time(run.completed_at || run.inserted_at)} · #{version.name}"
+        "Checked #{DisplayClock.format_datetime(run.completed_at || run.inserted_at)} · #{version.name}"
 
       "failed" ->
-        "Started #{format_time(run.started_at || run.inserted_at)} · didn't finish"
+        "Started #{DisplayClock.format_datetime(run.started_at || run.inserted_at)} · didn't finish"
 
       _ ->
-        "Started #{format_time(run.started_at || run.inserted_at)} · in progress"
+        "Started #{DisplayClock.format_datetime(run.started_at || run.inserted_at)} · in progress"
     end
   end
 end

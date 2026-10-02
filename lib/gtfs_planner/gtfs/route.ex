@@ -3,6 +3,9 @@ defmodule GtfsPlanner.Gtfs.Route do
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
 
+  alias GtfsPlanner.Color
+  alias GtfsPlanner.Values
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -251,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     route_short_name = get_field(changeset, :route_short_name)
     route_long_name = get_field(changeset, :route_long_name)
 
-    if blank_value?(route_short_name) && blank_value?(route_long_name) do
+    if Values.blank?(route_short_name) && Values.blank?(route_long_name) do
       missing_route_name_error(changeset)
     else
       changeset
@@ -272,12 +275,10 @@ defmodule GtfsPlanner.Gtfs.Route do
     end
   end
 
-  defp blank_value?(value), do: is_nil(value) or String.trim(value) == ""
-
   # Editor-only rule: an optional URL is blank or an HTTP(S) URL with a host.
   defp validate_route_url(changeset) do
     validate_change(changeset, :route_url, fn :route_url, url ->
-      if blank_value?(url) or valid_route_url?(url) do
+      if Values.blank?(url) or valid_route_url?(url) do
         []
       else
         [route_url: @url_message]
@@ -350,7 +351,7 @@ defmodule GtfsPlanner.Gtfs.Route do
   defp put_auto_text_color(changeset) do
     case changed_or_current_hex(changeset, :route_color) do
       {:ok, background} ->
-        auto = auto_text_color(background)
+        auto = Color.text_color(background)
 
         if auto == get_field(changeset, :route_text_color) do
           changeset
@@ -371,25 +372,5 @@ defmodule GtfsPlanner.Gtfs.Route do
     else
       :error
     end
-  end
-
-  # Same WCAG pick as RouteIdentity's fallback: black unless the background
-  # luminance gives white more contrast.
-  defp auto_text_color(background) do
-    luminance = relative_luminance(background)
-    black_contrast = (luminance + 0.05) / 0.05
-    white_contrast = 1.05 / (luminance + 0.05)
-    if black_contrast >= white_contrast, do: "000000", else: "FFFFFF"
-  end
-
-  defp relative_luminance(<<red::binary-size(2), green::binary-size(2), blue::binary-size(2)>>) do
-    [red, green, blue]
-    |> Enum.map(&linear_channel/1)
-    |> then(fn [r, g, b] -> 0.2126 * r + 0.7152 * g + 0.0722 * b end)
-  end
-
-  defp linear_channel(hex) do
-    channel = String.to_integer(hex, 16) / 255
-    if channel <= 0.04045, do: channel / 12.92, else: :math.pow((channel + 0.055) / 1.055, 2.4)
   end
 end

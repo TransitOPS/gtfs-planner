@@ -5,8 +5,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.StationWorkspace
 
@@ -270,7 +272,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
               :if={@running?}
               title={
                 if @walks,
-                  do: "Checking #{count_label(@walks, "walk", "walks")}",
+                  do: "Checking #{Wording.count_noun(@walks, "walk", "walks")}",
                   else: "Checking this station"
               }
             >
@@ -404,11 +406,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             The last check stopped before it finished.
           </p>
           <p class="mt-2 text-sm text-muted tabular-nums">
-            Started {format_time(@run.inserted_at)} · no walks were scored
+            Started {DisplayClock.format_datetime(@run.inserted_at)} · no walks were scored
           </p>
         <% else %>
           <p class="mt-3 text-sm text-default tabular-nums">
-            Checked {format_time(@run.inserted_at)}
+            Checked {DisplayClock.format_datetime(@run.inserted_at)}
           </p>
         <% end %>
       </div>
@@ -456,7 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
       </dl>
       <div class="border-t border-subtle px-5 py-4 sm:px-6">
         <p class="text-sm text-default tabular-nums">
-          The check tests {count_label(div(@topology.pair_count, 2), "walk", "walks")}.
+          The check tests {Wording.count_noun(div(@topology.pair_count, 2), "walk", "walks")}.
           Each walk is tested twice, on foot and step-free: {@topology.pair_count} checks in total.
         </p>
       </div>

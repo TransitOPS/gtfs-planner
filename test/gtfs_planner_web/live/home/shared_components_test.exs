@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       %{
         kind: :calendar,
         title: "Weekday",
-        context: "Calendar · Sep 27, 2:18 PM",
+        context: "Calendar · Sep 27, 2026, 2:18 PM",
         detail: "end date moved to Dec 31",
         route: nil,
         params: %{service_id: "WKDY"},
@@ -55,7 +55,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
         %{
           kind: :schedules,
           title: "Downtown – Riverside",
-          context: "Schedules · Sep 27, 2:18 PM",
+          context: "Schedules · Sep 27, 2026, 2:18 PM",
           detail: "6 trips changed on Weekday",
           route: @route,
           params: %{route_id: "12", service_id: "WKDY"},
@@ -172,7 +172,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       d = doc(html)
 
       assert text(d, "#resume-title") == "Continue where you left off"
-      assert text(d, "#resume-latest-context") == "Schedules · Sep 27, 2:18 PM"
+      assert text(d, "#resume-latest-context") == "Schedules · Sep 27, 2026, 2:18 PM"
       assert text(d, "#resume-latest") =~ "Downtown – Riverside"
       assert text(d, "#resume-latest") =~ "6 trips changed on Weekday · 3 changes that day"
 
@@ -212,7 +212,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       assert text(d, "li#resume-1 a") =~ "Weekday"
       assert text(d, "li#resume-1 a") =~ "Calendar · end date moved to Dec 31"
-      assert text(d, "li#resume-1 a") =~ "Sep 27, 2:18 PM"
+      assert text(d, "li#resume-1 a") =~ "Sep 27, 2026, 2:18 PM"
 
       assert attr(d, "li#resume-1 a", "href") ==
                "/gtfs/#{@version_id}/calendars/show?service_id=WKDY"
@@ -335,7 +335,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       d = doc(html)
 
-      assert text(d, "#export-meta") == "Full GTFS · Sep 26, 10:20 AM"
+      assert text(d, "#export-meta") == "Full GTFS · Sep 26, 2026, 10:20 AM"
       assert text(d, "#export-status") == "Download expired"
       assert text(d, "#export-note") =~ "9 changes since then."
       assert text(d, "#export-note") =~ "downloads stay available for 24 hours"
@@ -358,7 +358,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       d = doc(html)
 
-      assert text(d, "#export-meta") == "Pathways export · Sep 26, 10:20 AM"
+      assert text(d, "#export-meta") == "Pathways export · Sep 26, 2026, 10:20 AM"
       assert text(d, "#export-status") == "Download available"
       assert text(d, "#export-note") =~ "31 changes since then across 6 stations."
       assert text(d, "#export-link") == "Export pathways"

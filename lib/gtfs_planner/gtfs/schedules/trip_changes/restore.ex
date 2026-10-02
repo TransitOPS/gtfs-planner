@@ -72,7 +72,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Restore do
     stop_times = value(trip, :stop_times)
     frequencies = value(trip, :frequencies)
 
-    with {:ok, id} <- cast_uuid(value(trip, :id)),
+    with {:ok, id} <- Ecto.UUID.cast(value(trip, :id)),
          true <- valid_fields?(fields),
          true <- is_list(stop_times) and Enum.all?(stop_times, &valid_stop_time?/1),
          true <- is_list(frequencies) and Enum.all?(frequencies, &valid_frequency?/1),
@@ -119,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Restore do
   defp deletes(created) do
     created
     |> Enum.reduce_while({:ok, []}, fn trip, {:ok, acc} ->
-      with {:ok, id} <- cast_uuid(value(trip, :id)),
+      with {:ok, id} <- Ecto.UUID.cast(value(trip, :id)),
            true <- is_binary(value(trip, :trip_id)) and value(trip, :trip_id) != "",
            true <- timestamp?(value(trip, :written_updated_at)) do
         {:cont, {:ok, [id | acc]}}
@@ -162,13 +162,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Restore do
     do: match?({:ok, %DateTime{}, _offset}, DateTime.from_iso8601(value))
 
   defp timestamp?(_value), do: false
-
-  defp cast_uuid(value) do
-    case Ecto.UUID.cast(value) do
-      {:ok, uuid} -> {:ok, uuid}
-      :error -> :error
-    end
-  end
 
   defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp value(_map, _key), do: nil

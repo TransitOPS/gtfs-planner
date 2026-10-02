@@ -221,9 +221,6 @@ organization and actor from the authenticated session rather than from request p
 | Feature | Actor | Entry points | Confidence | Notes |
 |---|---|---|---|---|
 | Probe the instance for liveness | operator | `GET /health` | high | Consumed by the orchestrator |
-| Import a raw stops file from the command line | operator | `mix gtfs.import_stops <organization_id> <path>` | high | |
-| Import a raw levels file from the command line | operator | `mix gtfs.import_levels <organization_id> <path>` | high | |
-| Import a raw pathways file from the command line | operator | `mix gtfs.import_pathways <organization_id> <path>` | high | |
 | Reconcile task leases and their artifacts on a timer | system | `GtfsPlanner.Gtfs.TaskArtifactMaintenance` | medium | Database rows stay the authority; it runs on a configured interval and can be disabled |
 
 ## 4. Cross-cutting capabilities
@@ -358,7 +355,4 @@ organization and actor from the authenticated session rather than from request p
 - Look up an address while placing a garage → `lib/gtfs_planner_web/live/gtfs/garages_live.ex:268`
 - Browse the design system reference → `lib/gtfs_planner_web/router.ex:90`
 - Probe the instance for liveness → `lib/gtfs_planner_web/controllers/health_controller.ex:4`
-- Import a raw stops file from the command line → `lib/mix/tasks/gtfs/import_stops.ex:30`
-- Import a raw levels file from the command line → `lib/mix/tasks/gtfs/import_levels.ex:30`
-- Import a raw pathways file from the command line → `lib/mix/tasks/gtfs/import_pathways.ex:30`
 - Reconcile task leases and their artifacts on a timer → `lib/gtfs_planner/gtfs/task_artifact_maintenance.ex:50`

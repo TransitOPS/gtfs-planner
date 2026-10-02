@@ -494,7 +494,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     // leads page 1.
     await outHeader.locator("button.blocks-sort").click();
     await expect(outHeader).toHaveAttribute("aria-sort", "ascending");
-    await expect(outHeader.locator("button.blocks-sort")).toContainText("↑");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("▲");
 
     const ascending = (await blockBoxes(page)).map((row) => outSeconds(row.out));
     for (let index = 1; index < ascending.length; index += 1) {
@@ -504,7 +504,7 @@ test.describe("Blocks workspace 1440x1000", () => {
 
     await outHeader.locator("button.blocks-sort").click();
     await expect(outHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(outHeader.locator("button.blocks-sort")).toContainText("↓");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("▼");
 
     const sorted = await blockBoxes(page);
     // The order is non-increasing down the page, and the sort kept the whole day
@@ -517,7 +517,10 @@ test.describe("Blocks workspace 1440x1000", () => {
     await expect(page.locator("#blocks-pager")).toContainText(
       `Showing 1–${BLOCKS} of ${BLOCKS} blocks`,
     );
-    await expect(page).toHaveURL(/sort=out&dir=desc/);
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get("sort") === "out" &&
+      url.searchParams.get("dir") === "desc",
+    );
 
     tour.sort = {
       defaultFirst: before[0].block,

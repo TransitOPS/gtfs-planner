@@ -57,10 +57,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   require Logger
   import Ecto.Query
   alias Ecto.Changeset
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Interpreter
   alias GtfsPlanner.Gtfs.Fares.Interpreter.Rows
@@ -70,6 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
 
@@ -535,7 +535,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # never classify as this delete's result.
   defp start_route_delete(socket, review) do
     route_id = socket.assigns.route.route_id
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     task =
       Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
@@ -650,11 +650,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # the editor role or been deactivated since this socket connected.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      GtfsPlannerWeb.EnsureRole.editor_member?(user_id, organization_id)
     else
       _other -> false
     end
@@ -720,7 +717,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp version_route_path(version_id, route_id) do
     if route_id,
       do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
-      else: "/gtfs/#{version_id}/routes"
+      else: ~p"/gtfs/#{version_id}/routes"
   end
 
   # The context read goes through the same facade chain as the current route's
@@ -919,7 +916,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            attrs,
            socket.assigns.source,
            choices,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: _saved}} when is_binary(pending) ->
         {:noreply, guarded_navigate(socket, pending)}
@@ -1111,7 +1108,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            route.route_id,
            desired_active,
            socket.assigns.source,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: saved}} ->
         message = route_status_message(saved)
@@ -1212,7 +1209,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp open_delete_review(socket) do
     route = socket.assigns.route
 
-    case Gtfs.review_route_deletion(route.route_id, audit_context(socket)) do
+    case Gtfs.review_route_deletion(route.route_id, AuditContext.from_assigns(socket.assigns)) do
       {:ok, review} ->
         socket
         |> assign(:delete_review, review)
@@ -1372,21 +1369,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     cond do
       patterns > 0 and trips > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(patterns, "pattern")} and #{Wording.count_noun(trips, "trip")}."
 
       patterns > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(patterns, "pattern")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(patterns, "pattern")}."
 
       trips > 0 ->
-        "#{ref} #{name} deleted, with its #{plural_count(trips, "trip")}."
+        "#{ref} #{name} deleted, with its #{Wording.count_noun(trips, "trip")}."
 
       true ->
         "Route #{ref} deleted."
     end
   end
-
-  defp plural_count(1, word), do: "1 #{word}"
-  defp plural_count(count, word) when is_integer(count), do: "#{count} #{word}s"
 
   # The review's rows: every affected category in the review's own order
   # (AC-13), named the way an operator counts them, its scoped identities kept
@@ -1521,13 +1515,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     cond do
       patterns > 0 and trips > 0 ->
-        "I understand this permanently deletes #{label}, its #{plural_count(patterns, "pattern")} and #{plural_count(trips, "trip")}."
+        "I understand this permanently deletes #{label}, its #{Wording.count_noun(patterns, "pattern")} and #{Wording.count_noun(trips, "trip")}."
 
       patterns > 0 ->
-        "I understand this permanently deletes #{label} and its #{plural_count(patterns, "pattern")}."
+        "I understand this permanently deletes #{label} and its #{Wording.count_noun(patterns, "pattern")}."
 
       trips > 0 ->
-        "I understand this permanently deletes #{label} and its #{plural_count(trips, "trip")}."
+        "I understand this permanently deletes #{label} and its #{Wording.count_noun(trips, "trip")}."
 
       true ->
         "I understand this permanently deletes #{label} and the records listed here."
@@ -1565,7 +1559,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp dependents_phrase(patterns, trips) do
     counted =
       for {count, word} <- [{patterns, "pattern"}, {trips, "trip"}], count > 0 do
-        plural_count(count, word)
+        Wording.count_noun(count, word)
       end
 
     "its " <> Enum.join(counted, " and ")
@@ -1583,11 +1577,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       Enum.reject(
         [
           dialog.ref,
-          positive?(dialog.trips) && "its #{plural_count(dialog.trips, "trip")}",
+          positive?(dialog.trips) && "its #{Wording.count_noun(dialog.trips, "trip")}",
           positive?(dialog.transfers) &&
-            "the #{plural_count(dialog.transfers, "transfer rule")} that " <>
+            "the #{Wording.count_noun(dialog.transfers, "transfer rule")} that " <>
               if(dialog.transfers == 1, do: "mentions", else: "mention") <> " it",
-          positive?(dialog.fare_rules) && "its #{plural_count(dialog.fare_rules, "fare rule")}"
+          positive?(dialog.fare_rules) &&
+            "its #{Wording.count_noun(dialog.fare_rules, "fare rule")}"
         ],
         &(&1 == false)
       )
@@ -1600,9 +1595,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   defp to_sentence(parts),
     do: Enum.join(Enum.drop(parts, -1), ", ") <> ", and " <> List.last(parts)
-
-  defp count_phrase(1, word), do: "1 #{word}"
-  defp count_phrase(count, word) when is_integer(count), do: "#{count} #{word}s"
 
   defp positive?(count) when is_integer(count) and count > 0, do: true
   defp positive?(_other), do: false
@@ -1654,15 +1646,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       value = fields["route_text_color"] -> Map.put(fields, "route_color", value)
       true -> fields
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # The submitted form data: the `route[...]` fields plus the top-level transient
@@ -2030,7 +2013,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     saved_at =
       case merge.source.updated_at do
-        %DateTime{} = at -> " at " <> Calendar.strftime(at, "%H:%M")
+        %DateTime{} = at -> " on " <> DisplayClock.format_datetime(at)
         _other -> ""
       end
 
@@ -2078,7 +2061,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp last_saved_label(nil), do: "never — imported or unknown attribution"
 
   defp last_saved_label(%{saved_at: %DateTime{} = saved_at} = saved) do
-    "#{Calendar.strftime(saved_at, "%b %-d, %Y at %H:%M")} UTC by #{actor_label(saved)}"
+    "#{DisplayClock.format_datetime(saved_at)} by #{actor_label(saved)}"
   end
 
   defp last_saved_label(%{action: action} = saved), do: "#{action} by #{actor_label(saved)}"
@@ -3388,12 +3371,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     parts =
       Enum.concat([
         if(dashed > 0,
-          do: ["#{count_phrase(dashed, "section")} without a path yet"],
+          do: ["#{Wording.count_noun(dashed, "section")} without a path yet"],
           else: []
         ),
         if(hidden > 0,
           do: [
-            "#{count_phrase(hidden, "section")} not shown: #{Enum.join(reasons, ", ")}"
+            "#{Wording.count_noun(hidden, "section")} not shown: #{Enum.join(reasons, ", ")}"
           ],
           else: []
         )

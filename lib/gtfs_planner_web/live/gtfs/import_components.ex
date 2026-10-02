@@ -21,6 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
 
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
@@ -370,15 +371,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
   defp spreadsheet?(name),
     do: String.downcase(Path.extname(name)) in ~w(.xls .xlsx .xlsm .ods .numbers)
 
-  @doc "A count with thousands separators, so 1204338 reads as 1,204,338."
-  def format_count(count) when is_integer(count) do
-    count
-    |> Integer.to_string()
-    |> String.reverse()
-    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
-    |> String.reverse()
-  end
-
   @doc "A byte count in the decimal units a file limit is quoted in (200 MB, not 190.7 MiB)."
   def format_bytes(bytes) when is_integer(bytes) and bytes >= 1_000_000,
     do: "#{Float.round(bytes / 1_000_000, 1)} MB" |> String.replace(".0 MB", " MB")
@@ -426,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
           <p :if={@saved} class="mt-0.5 text-sm text-default">{@saved}</p>
           <p :if={@run.state == "partial" and @run.failed_file} class="mt-0.5 text-sm text-default">
             Last file: {@run.failed_file}{if @run.failed_row,
-              do: " (row #{format_count(@run.failed_row)})"}
+              do: " (row #{Wording.count(@run.failed_row)})"}
           </p>
           <div :if={closure_rejection?(@run)} class="mt-3 grid max-w-[760px] gap-2">
             <p class="m-0 text-sm text-default">
@@ -589,15 +581,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
                   extensions_stop_levels extensions_route_flags extensions_images)
 
   @count_labels %{
-    "pathway_evolutions" => "pathway closures",
-    "patterns_created" => "patterns created",
-    "timings_created" => "timings created",
-    "trips_linked" => "trips linked",
-    "trips_custom" => "trips kept custom",
-    "extensions_stop_coordinates" => "stop coordinates",
-    "extensions_stop_levels" => "stop levels",
-    "extensions_route_flags" => "route flags",
-    "extensions_images" => "images"
+    "agencies" => {"agency", "agencies"},
+    "frequencies" => {"frequency", "frequencies"},
+    "pathway_evolutions" => {"pathway closure", "pathway closures"},
+    "patterns_created" => {"pattern created", "patterns created"},
+    "timings_created" => {"timing created", "timings created"},
+    "trips_linked" => {"trip linked", "trips linked"},
+    "trips_custom" => {"trip kept custom", "trips kept custom"},
+    "extensions_stop_coordinates" => {"stop coordinate", "stop coordinates"},
+    "extensions_stop_levels" => {"stop level", "stop levels"},
+    "extensions_route_flags" => {"route flag", "route flags"},
+    "extensions_images" => {"image", "images"}
   }
 
   # What a partial import committed before it stopped: the counts a person checks
@@ -611,7 +605,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
       |> Enum.sort_by(fn {key, _value} ->
         {Enum.find_index(@count_order, &(&1 == key)) || length(@count_order), key}
       end)
-      |> Enum.map(fn {key, value} -> "#{format_count(value)} #{count_label(key, value)}" end)
+      |> Enum.map(fn {key, value} -> count_label(key, value) end)
 
     if parts != [], do: "Saved before it stopped: #{Enum.join(parts, ", ")}."
   end
@@ -619,20 +613,23 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
   defp saved_counts(_run), do: nil
 
   # Each counted file reads correctly at one and at many: "1 level", "2 pathway
-  # closures". Every known label is a plural that ends in "s" on its noun.
+  # closures". Irregular nouns carry their own plural, and every other key reads
+  # as its own words with the final word singular at one.
   defp count_label(key, value) do
-    plural = Map.get(@count_labels, key, String.replace(key, "_", " "))
-    if value == 1, do: singular(plural), else: plural
+    {one, many} = Map.get(@count_labels, key, regular_forms(key))
+    Wording.count_noun(value, one, many)
   end
 
-  defp singular(label) do
-    case String.split(label, " ") do
-      [noun] -> String.replace_suffix(noun, "s", "")
-      [first, "created"] -> String.replace_suffix(first, "s", "") <> " created"
-      [first, "linked"] -> String.replace_suffix(first, "s", "") <> " linked"
-      [first, "kept", rest] -> String.replace_suffix(first, "s", "") <> " kept " <> rest
-      words -> words |> List.update_at(-1, &String.replace_suffix(&1, "s", "")) |> Enum.join(" ")
-    end
+  defp regular_forms(key) do
+    many = String.replace(key, "_", " ")
+
+    one =
+      many
+      |> String.split(" ")
+      |> List.update_at(-1, &String.replace_suffix(&1, "s", ""))
+      |> Enum.join(" ")
+
+    {one, many}
   end
 
   # ── Station review ────────────────────────────────────────────────────────

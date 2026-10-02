@@ -198,8 +198,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntry do
   end
 
   defp reading(secs, note) do
-    reading = secs |> GtfsTime.format() |> String.replace_suffix(":00", "")
-    %{secs: secs, reading: reading, note: note}
+    %{secs: secs, reading: GtfsTime.display(secs), note: note}
   end
 
   defp reading_or_negative(secs) when secs < 0, do: {:error, :negative_time}

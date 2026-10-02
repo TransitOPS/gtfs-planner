@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Color
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
@@ -44,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.StreetRouting
+  alias GtfsPlanner.Values
 
   @type visit :: %{
           occurrence_id: Ecto.UUID.t(),
@@ -299,7 +301,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       fn {_route_pattern_id, shape} -> shape end
     )
     |> Map.new(fn {route_pattern_id, shapes} ->
-      {route_pattern_id, Enum.any?(shapes, &present?/1)}
+      {route_pattern_id, Enum.any?(shapes, &shape_id?/1)}
     end)
   end
 
@@ -337,7 +339,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         pattern_label: first.pattern_name || first.route_pattern_id,
         visit_positions: Enum.map(plain, fn row -> row.position end),
         custom_positions: Enum.map(custom, fn row -> row.position end),
-        owns_shape?: present?(first.shape_id),
+        owns_shape?: shape_id?(first.shape_id),
         linked_trip_count: Map.get(trip_counts, {first.route_id, first.route_pattern_id}, 0)
       }
     end)
@@ -482,7 +484,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     previous = previous_vectors(linked, visit_vectors)
     blockers = materialization_blockers(pattern, visit_count, linked, stop_counts)
 
-    if present?(pattern.shape_id) do
+    if shape_id?(pattern.shape_id) do
       %{
         shape_id: pattern.shape_id,
         mode: :existing,
@@ -654,7 +656,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       )
       |> Repo.all()
       |> Enum.group_by(& &1.shape_id, fn row ->
-        [decimal_to_float(row.lat), decimal_to_float(row.lon), row.sequence, row.dist]
+        [Values.to_float(row.lat), Values.to_float(row.lon), row.sequence, row.dist]
       end)
     end
   end
@@ -1153,7 +1155,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       &copy_pattern_segment!(&1, source_occurrences, copied_by_position, copy, audit_context)
     )
 
-    if present?(source.shape_id) do
+    if shape_id?(source.shape_id) do
       resolved = resolve(copy)
 
       if resolved.status.missing == 0 and resolved.status.blocked == 0 do
@@ -2331,7 +2333,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     %{
       shape_id: shape.shape_id,
       trip_count: shape.trip_count,
-      points: Enum.map(shape.points, &Enum.map(&1, fn value -> hook_float(value) end)),
+      points: Enum.map(shape.points, &Enum.map(&1, fn value -> Values.to_float(value) end)),
       length_m: shape.length_m,
       visit_distances: hook_float_list(shape.visit_distances)
     }
@@ -2340,11 +2342,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp hook_atom(nil), do: nil
   defp hook_atom(atom) when is_atom(atom), do: to_string(atom)
 
-  defp hook_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
-  defp hook_float(value), do: value
-
   defp hook_float_list(nil), do: nil
-  defp hook_float_list(list), do: Enum.map(list, &hook_float/1)
+  defp hook_float_list(list), do: Enum.map(list, &Values.to_float/1)
 
   defp scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
     from(p in RoutePattern,
@@ -2460,8 +2459,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     points =
       Enum.map(rows, fn row ->
         [
-          decimal_to_float(row.shape_pt_lon),
-          decimal_to_float(row.shape_pt_lat),
+          Values.to_float(row.shape_pt_lon),
+          Values.to_float(row.shape_pt_lat),
           row.shape_dist_traveled
         ]
       end)
@@ -2496,7 +2495,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp route_color(color) when is_binary(color) do
-    if Regex.match?(~r/\A[0-9a-fA-F]{6}\z/, color) and relative_luminance(color) <= 0.85 do
+    if Regex.match?(~r/\A[0-9a-fA-F]{6}\z/, color) and Color.relative_luminance(color) <= 0.85 do
       "#" <> color
     else
       @fallback_route_color
@@ -2504,20 +2503,6 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   end
 
   defp route_color(_), do: @fallback_route_color
-
-  defp relative_luminance(<<r::binary-2, g::binary-2, b::binary-2>>) do
-    0.2126 * linear_channel(r) + 0.7152 * linear_channel(g) + 0.0722 * linear_channel(b)
-  end
-
-  defp linear_channel(hex) do
-    channel = String.to_integer(hex, 16) / 255
-
-    if channel <= 0.03928 do
-      channel / 12.92
-    else
-      :math.pow((channel + 0.055) / 1.055, 2.4)
-    end
-  end
 
   defp load_visits(%RoutePattern{} = pattern) do
     rows =
@@ -2586,15 +2571,12 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         position: row.position,
         stop_id: row.stop_id,
         name: name,
-        lat: decimal_to_float(row.stop_lat),
-        lon: decimal_to_float(row.stop_lon),
+        lat: Values.to_float(row.stop_lat),
+        lon: Values.to_float(row.stop_lon),
         label: label
       }
     end)
   end
-
-  defp decimal_to_float(nil), do: nil
-  defp decimal_to_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
 
   defp load_overrides(_pattern, []), do: []
 
@@ -2726,7 +2708,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   defp export_state(%RoutePattern{} = pattern, summary, digest, imported?) do
     cond do
-      present?(pattern.shape_id) ->
+      shape_id?(pattern.shape_id) ->
         if summary.missing == 0 and summary.blocked == 0 and not is_nil(digest) and
              digest == pattern.alignment_digest do
           :current
@@ -2742,8 +2724,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     end
   end
 
-  defp present?(value) when is_binary(value) and value != "", do: true
-  defp present?(_), do: false
+  # Named exception: a whitespace-only shape_id stored raw by import is still a reference, so
+  # canonical trimming would flip the copy and materialize branches.
+  defp shape_id?(value) when is_binary(value) and value != "", do: true
+  defp shape_id?(_), do: false
 
   defp has_imported_shape?(%RoutePattern{} = pattern) do
     from(t in Trip,
@@ -3321,18 +3305,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   def apply_save(_, _, _, _, _), do: {:error, :invalid_input}
 
-  defp apply_transaction_runner do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
   defp apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts) do
     result =
       try do
-        apply_transaction_runner().run(fn ->
+        ReviewedApplyTransaction.adapter().run(fn ->
           apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context)
         end)
       rescue
@@ -3410,9 +3386,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   # one of the four apply indexes, or as a stale optimistic lock on the
   # same lost race. Each retries with a fresh snapshot, where the
   # recomputed review surfaces the race as a conflict or stale review.
-  defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields}) do
+  defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields} = error) do
     cond do
-      code in [:serialization_failure, "40001", :deadlock_detected, "40P01"] ->
+      Repo.retryable_conflict?(error) ->
         true
 
       code in [:unique_violation, "23505"] ->

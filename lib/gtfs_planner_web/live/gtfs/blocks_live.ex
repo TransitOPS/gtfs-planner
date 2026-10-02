@@ -63,7 +63,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.Blocking.Connections
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
@@ -432,7 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("select_day", %{"day" => day}, socket) do
-    patch(socket, %{day: blank_to_nil(day), trip: nil, page: 1, pool_page: 1},
+    patch(socket, %{day: Values.presence(day), trip: nil, page: 1, pool_page: 1},
       clear_selection: true,
       clear_block_selection: true,
       clear_command: true
@@ -446,7 +449,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("filter", params, socket) do
     status = if params["status"] == "problems", do: :problems, else: :all
-    route = blank_to_nil(params["route"])
+    route = Values.presence(params["route"])
 
     # A route filter keeps only the selected trips that run on that route.
     # The selection is not in the URL, so it is pruned before the patch and both
@@ -498,8 +501,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("filter_connections", params, socket) do
     patch(socket, %{
       setting: connection_setting(params["setting"]),
-      cq: blank_to_nil(params["cq"]),
-      route: blank_to_nil(params["route"]),
+      cq: Values.presence(params["cq"]),
+      route: Values.presence(params["route"]),
       group: nil,
       gpage: 1
     })
@@ -535,7 +538,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     socket
     |> assign(:bulk_choice, nil)
     |> assign(:bulk_review, nil)
-    |> patch(%{group: blank_to_nil(group)})
+    |> patch(%{group: Values.presence(group)})
   end
 
   def handle_event("open_group", _params, socket), do: {:noreply, socket}
@@ -955,7 +958,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           gap: nil,
           block: nil,
           drawer: key,
-          pair: blank_to_nil(params["pair"])
+          pair: Values.presence(params["pair"])
         })
     end
   end
@@ -977,7 +980,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       gap: nil,
       block: nil,
       drawer: "block_rules",
-      pair: blank_to_nil(params["pair"])
+      pair: Values.presence(params["pair"])
     })
   end
 
@@ -1394,7 +1397,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("save_block_rules", params, socket) do
     case Gtfs.update_blocking_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            block_rules_attrs(socket, params)
          ) do
       {:ok, _setting} ->
@@ -1445,7 +1448,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     with {from_ref, to_ref} <- listed_pair(state, pair),
          :ok <-
            Gtfs.clear_deadhead_time(
-             audit_context(socket),
+             AuditContext.from_assigns(socket.assigns),
              {from_ref, to_ref}
            ) do
       {:noreply,
@@ -1527,7 +1530,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       :continue ->
         patch(
           socket,
-          %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
+          %{trip: Values.presence(trip_id), gap: nil, block: Values.presence(params["block"])},
           close_drawer: true
         )
     end
@@ -1547,7 +1550,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           %{
             gap: gap_param(params["from"], params["to"]),
             trip: nil,
-            block: blank_to_nil(params["block"])
+            block: Values.presence(params["block"])
           },
           close_drawer: true
         )
@@ -1562,7 +1565,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       :continue ->
         patch(
           socket,
-          %{block: blank_to_nil(block_id), trip: nil, gap: nil},
+          %{block: Values.presence(block_id), trip: nil, gap: nil},
           close_drawer: true
         )
     end
@@ -1622,7 +1625,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          previous: assigns.connection_saved || :not_stated,
          restorable?: connection_restorable?(gap.records),
          gap: gap_param(gap.from.id, gap.to.id),
-         audit: audit_context(socket)
+         audit: AuditContext.from_assigns(socket.assigns)
        }}
     else
       _other -> :error
@@ -1687,10 +1690,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp parse_state(params, version) do
     %{
       version_id: to_string(version.id),
-      day: blank_to_nil(params["day"]),
+      day: Values.presence(params["day"]),
       panel: if(params["panel"] == "pool", do: :pool, else: :blocks),
       view: view(params["view"]),
-      route: blank_to_nil(params["route"]),
+      route: Values.presence(params["route"]),
       status: if(params["status"] == "problems", do: :problems, else: :all),
       sort: sort(params["sort"]),
       dir: if(params["dir"] == "desc", do: :desc, else: :asc),
@@ -1702,14 +1705,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # `cq` rather than the timeline's own find, so the two views can each be
       # linked with the page in the state it was left in.
       setting: connection_setting(params["setting"]),
-      cq: blank_to_nil(params["cq"]),
-      group: blank_to_nil(params["group"]),
+      cq: Values.presence(params["cq"]),
+      group: Values.presence(params["group"]),
       gpage: page_number(params["gpage"]),
-      trip: blank_to_nil(params["trip"]),
-      gap: blank_to_nil(params["gap"]),
-      block: blank_to_nil(params["block"]),
-      drawer: blank_to_nil(params["drawer"]),
-      pair: blank_to_nil(params["pair"])
+      trip: Values.presence(params["trip"]),
+      gap: Values.presence(params["gap"]),
+      block: Values.presence(params["block"]),
+      drawer: Values.presence(params["drawer"]),
+      pair: Values.presence(params["pair"])
     }
   end
 
@@ -1742,20 +1745,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
   defp toggled_dir(_state, _sort), do: :asc
 
-  defp page_number(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page >= 1 -> min(page, @max_page)
-      _other -> 1
-    end
-  end
-
-  defp page_number(_value), do: 1
+  # The parse is Values.positive_integer/2; the @max_page crafted-URL guard stays here.
+  defp page_number(value), do: min(Values.positive_integer(value, 1), @max_page)
 
   # The two trip UUIDs of a gap, in the one URL parameter the drawer reads back.
   # UUIDs hold no `|`, so the separator cannot be ambiguous; anything else closes
   # the drawer rather than opening a half pair.
   defp gap_param(from, to) do
-    case {blank_to_nil(from), blank_to_nil(to)} do
+    case {Values.presence(from), Values.presence(to)} do
       {nil, _to} -> nil
       {_from, nil} -> nil
       {from, to} -> from <> "|" <> to
@@ -1763,15 +1760,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
-  # the reader needs and an empty day type stays at `/blocks`.
+  # the reader needs and an empty day type stays at `/blocks`: the verified route
+  # drops the `?` when the parameter list is empty.
   #
   # `drawer` carries the page's own drawers, including the Suggest blocks drawer
   # that `rebuild_selected` opens.
   defp blocks_path(state) do
-    case path_params(state) do
-      [] -> "/gtfs/#{state.version_id}/blocks"
-      params -> "/gtfs/#{state.version_id}/blocks?" <> URI.encode_query(params)
-    end
+    ~p"/gtfs/#{state.version_id}/blocks?#{path_params(state)}"
   end
 
   defp path_params(state) do
@@ -1805,15 +1800,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp page_param(1), do: nil
   defp page_param(page), do: Integer.to_string(page)
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   defp ensure_day_loaded(socket) do
     cond do
@@ -2188,7 +2174,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          # review's own refusal sentence, so the answer accounts for every row
          # the reader saw rather than only the ones that reached the write.
          blocked: bulk_blocked(review.rows, bulk_connections(socket.assigns.connections_all)),
-         audit: audit_context(socket)
+         audit: AuditContext.from_assigns(socket.assigns)
        }}
     end
   end
@@ -2929,7 +2915,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     case Gtfs.apply_block_change(
            socket.assigns.day_type.key,
            command,
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            confirmation
          ) do
       {:ok, result} -> applied(socket, command, result)
@@ -2973,11 +2959,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: "No assignment changed. The trip already has this block."
 
   defp success_message({:assign, _ids, _target}, result) do
-    "Assigned #{count_label(length(result.changed_trip_ids))} to block #{result.block_id}."
+    "Assigned #{Wording.count_noun(length(result.changed_trip_ids), "trip")} to block #{result.block_id}."
   end
 
   defp success_message({:unassign, _ids}, result) do
-    "Removed #{count_label(length(result.changed_trip_ids))} from #{source_label(result.review)}."
+    "Removed #{Wording.count_noun(length(result.changed_trip_ids), "trip")} from #{source_label(result.review)}."
   end
 
   defp success_message(_command, _result), do: "Saved the block change."
@@ -3178,7 +3164,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
            socket.assigns.day_type.key,
            block_id,
            %{"garage_id" => garage_id, "vehicle_type_id" => vehicle_type_id},
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            confirmation
          ) do
       {:ok, _result} -> {:noreply, attributes_applied(socket, block_id)}
@@ -3331,14 +3317,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     %{block_id: block.summary.block_id, detail: destination_detail(block.summary)}
   end
 
-  defp destination_detail(%{trip_count: count, start_secs: nil}), do: count_label(count)
+  defp destination_detail(%{trip_count: count, start_secs: nil}),
+    do: Wording.count_noun(count, "trip")
 
   defp destination_detail(%{trip_count: count, start_secs: start, end_secs: finish}) do
-    "#{count_label(count)} · #{BlocksComponents.clock(start)}–#{BlocksComponents.clock(finish)}"
+    "#{Wording.count_noun(count, "trip")} · #{GtfsTime.display(start)}–#{GtfsTime.display(finish)}"
   end
-
-  defp count_label(1), do: "1 trip"
-  defp count_label(count), do: "#{count} trips"
 
   # --- the block drawer's actions ----------------------------------
 
@@ -3577,7 +3561,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # says the settings are already stored rather than claiming a failed save.
   defp save_route_settings(socket, params) do
     case Gtfs.update_route_operating_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            route_setting_entries(socket, params)
          ) do
       :ok ->
@@ -3656,7 +3640,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     result =
       Enum.reduce_while(entries, {:ok, 0}, fn {_key, pair, minutes}, {:ok, count} ->
         case Gtfs.put_deadhead_time(
-               audit_context(socket),
+               AuditContext.from_assigns(socket.assigns),
                pair,
                minutes
              ) do
@@ -4073,7 +4057,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       version_id: socket.assigns.current_gtfs_version.id,
       day_type_key: socket.assigns.day_type && socket.assigns.day_type.key,
       plan: socket.assigns.plan_preview,
-      audit: audit_context(socket)
+      audit: AuditContext.from_assigns(socket.assigns)
     }
   end
 
@@ -4112,7 +4096,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:applied, %{
         moves: moves,
         message:
-          "#{moves} #{plural(moves, "trip")} changed block across #{days}. " <>
+          "#{moves} #{Wording.noun(moves, "trip")} changed block across #{days}. " <>
             "Each trip's change history lists its previous block."
       })
       # A successful apply clears the block selection: those blocks were
@@ -4190,7 +4174,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         value: :unassigned_only,
         title: "Unassigned trips only",
         description:
-          "Keep current blocks. Add the #{unassigned} unassigned #{plural(unassigned, "trip")} to existing or new blocks.",
+          "Keep current blocks. Add the #{unassigned} unassigned #{Wording.noun(unassigned, "trip")} to existing or new blocks.",
         disabled?: unassigned == 0
       },
       %{
@@ -4216,9 +4200,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp selected_title([]), do: ""
   defp selected_title(selected), do: " (#{Enum.join(selected, ", ")})"
-
-  defp plural(1, word), do: word
-  defp plural(_count, word), do: word <> "s"
 
   # The rules the suggestion would use, read from the loaded day's own settings
   # and relief marks. They are the same answers the Block rules and Operator
@@ -4326,7 +4307,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp write_operator_changes(socket, state, minutes, marked, limit) do
     case Gtfs.update_relief_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.day_type && socket.assigns.day_type.key,
            %{max_piece_minutes: minutes, marked: marked}
          ) do
@@ -4401,7 +4382,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the listed value, or a blank for a pair the version cannot measure.
   defp driving_times_rows(assigns) do
     state = assigns.driving_times
-    highlight = blank_to_nil(assigns.state.pair)
+    highlight = Values.presence(assigns.state.pair)
 
     state.pairs
     |> Enum.with_index()
@@ -4472,7 +4453,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp remove_stale_record(socket) do
     row = socket.assigns.remove_record.row
 
-    case Gtfs.remove_in_seat_records([{row.id, row.updated_at}], audit_context(socket)) do
+    case Gtfs.remove_in_seat_records(
+           [{row.id, row.updated_at}],
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, _removed} ->
         {:noreply,
          socket
@@ -4607,7 +4591,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   defp remove_in_seat_batch(socket, %{rows: rows}, key) do
-    case Gtfs.remove_in_seat_records(rows, audit_context(socket)) do
+    case Gtfs.remove_in_seat_records(rows, AuditContext.from_assigns(socket.assigns)) do
       {:ok, removed} ->
         {:noreply,
          socket
@@ -4617,7 +4601,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          |> resolve_drawers()
          |> load_unmatched_in_seat()
          |> assign_page_rows_if_loaded()
-         |> put_flash(:info, "Removed #{removed} in-seat #{plural(removed, "record")}.")}
+         |> put_flash(:info, "Removed #{removed} in-seat #{Wording.noun(removed, "record")}.")}
 
       {:error, :stale} ->
         {:noreply,
@@ -4700,16 +4684,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: load_unmatched_in_seat(socket)
 
   defp resolve_unmatched(socket, _drawer), do: socket
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   defp effective_page(page, visible_count) do
     min(page, max(div(visible_count + @page_size - 1, @page_size), 1))
@@ -5282,7 +5256,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp connection_label(nil), do: "Connection"
 
   defp connection_label(connection) do
-    "Block #{connection.block_id}, #{BlocksComponents.clock(connection.from.last_arrival)} " <>
+    "Block #{connection.block_id}, #{GtfsTime.display(connection.from.last_arrival)} " <>
       "(#{connection.from.trip_id} → #{connection.to.trip_id})"
   end
 

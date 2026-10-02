@@ -226,6 +226,16 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
       assert RiderText.message(area_service(phone: "", booking_url: ""), calendars()) == ""
     end
 
+    test "keeps a padded calendar name untrimmed" do
+      service =
+        area_service(booking_rules: [rule(service_id: "weekday", when: :same_day, minutes: 60)])
+
+      calendars = %{"weekday" => %{name: " Weekday ", plural: "Weekdays"}}
+
+      assert RiderText.message(service, calendars) ==
+               " Weekday  trips: book at least 1 hour before pickup."
+    end
+
     test "starts a registered-riders service with who can ride" do
       service =
         area_service(
@@ -560,6 +570,16 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
                %{start: 1_080, finish: 1_500}
 
       assert RiderText.window(hours(nil, "weekday", "", "18:00")) == nil
+    end
+  end
+
+  describe "t12/2" do
+    test "reads a stored clock in the riders' 12-hour form" do
+      assert RiderText.t12("16:00") == "4:00 pm"
+      assert RiderText.t12("16:00", true) == "4 pm"
+      assert RiderText.t12("16:30", true) == "4:30 pm"
+      assert RiderText.t12("25:10") == "1:10 am"
+      assert RiderText.t12("") == ""
     end
   end
 

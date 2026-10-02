@@ -29,6 +29,8 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.ServiceQueries
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @list_limit 50
   @range_limit_days 62
@@ -219,7 +221,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
     do: prepare_calendar_extension(args, scope)
 
   defp list_calendars(args, scope) do
-    query = normalize_query(args["query"])
+    query = Values.presence(args["query"]) || ""
     offset = args["offset"] || 0
     fingerprint = args["catalog_fingerprint"]
 
@@ -755,16 +757,16 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
       summary: %{
         title: "Extend #{target_name(target.service_id, targets)}",
         detail:
-          end_label(extension.previous_end_date) <>
-            " → " <> end_label(extension.requested_end_date),
+          Wording.weekday_date_with_year(extension.previous_end_date) <>
+            " → " <> Wording.weekday_date_with_year(extension.requested_end_date),
         lines: [
           "Approved by the editor · #{approval_label(approved.approval_text)}",
-          "Newly active dates · #{count_label(extension.newly_active_date_count, "date", "dates")}",
-          "Routes affected · #{count_label(length(extension.routes), "route", "routes")}",
-          "Trips affected · #{count_label(length(extension.trip_identities), "trip", "trips")}",
-          "Closures affected · #{count_label(length(extension.closure_consequences), "closure", "closures")}",
-          "Retained exceptions · #{count_label(length(extension.retained_exceptions), "exception", "exceptions")}",
-          "Unresolved dates · #{count_label(length(extension.unresolved_dates), "date", "dates")}"
+          "Newly active dates · #{Wording.count_noun(extension.newly_active_date_count, "date")}",
+          "Routes affected · #{Wording.count_noun(length(extension.routes), "route")}",
+          "Trips affected · #{Wording.count_noun(length(extension.trip_identities), "trip")}",
+          "Closures affected · #{Wording.count_noun(length(extension.closure_consequences), "closure")}",
+          "Retained exceptions · #{Wording.count_noun(length(extension.retained_exceptions), "exception")}",
+          "Unresolved dates · #{Wording.count_noun(length(extension.unresolved_dates), "date")}"
         ]
       },
       command: command
@@ -816,8 +818,8 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         %{
           label: "End date",
           value:
-            end_label(extension.previous_end_date) <>
-              " → " <> end_label(extension.requested_end_date)
+            Wording.weekday_date_with_year(extension.previous_end_date) <>
+              " → " <> Wording.weekday_date_with_year(extension.requested_end_date)
         },
         %{label: "Routes", value: Integer.to_string(length(extension.routes))},
         %{label: "Trips", value: Integer.to_string(length(extension.trip_identities))},
@@ -852,11 +854,6 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   end
 
   defp command_service_id({:save, service_id, _attrs}), do: service_id
-
-  defp end_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
-
-  defp count_label(1, one, _many), do: "1 #{one}"
-  defp count_label(count, _one, many), do: "#{count} #{many}"
 
   defp approval_label(text) do
     if String.length(text) > @approval_preview_length do
@@ -968,11 +965,11 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   defp summary_title([], _run), do: "Run service"
   defp summary_title(_stop, _run), do: "Change service"
 
-  defp summary_detail([date]), do: date_label(date)
+  defp summary_detail([date]), do: Wording.weekday_date_with_year(date)
 
   defp summary_detail(dates) do
     if consecutive?(dates) do
-      "#{range_start(dates)} – #{date_label(List.last(dates))} · #{length(dates)} dates"
+      "#{range_start(dates)} – #{Wording.weekday_date_with_year(List.last(dates))} · #{length(dates)} dates"
     else
       "#{length(dates)} dates"
     end
@@ -986,13 +983,11 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
     first = List.first(dates)
 
     if first.year == List.last(dates).year do
-      Elixir.Calendar.strftime(first, "%a %b %-d")
+      Wording.weekday_date(first)
     else
-      date_label(first)
+      Wording.weekday_date_with_year(first)
     end
   end
-
-  defp date_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
 
   defp summary_lines(service_ids, action, targets) do
     service_ids
@@ -1078,7 +1073,4 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   defp prepare_error(:unavailable), do: "Calendars are temporarily unavailable."
   defp prepare_error(:stale_review), do: "These calendars changed in another session. Try again."
   defp prepare_error(_reason), do: "This change could not be prepared."
-
-  defp normalize_query(nil), do: ""
-  defp normalize_query(query), do: String.trim(query)
 end

@@ -50,7 +50,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   attr :load_state, :atom, required: true, values: [:loading, :unavailable, :ready]
@@ -566,7 +569,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
                       {pattern.name}
                     </span>
                     <span class="mt-1 block text-[12px] leading-snug text-muted">
-                      {pattern.typicality} · {plural(pattern.stop_count, "stop")}
+                      {pattern.typicality} · {Wording.count_noun(pattern.stop_count, "stop")}
                     </span>
                     <span class={[
                       "block text-[12px] leading-snug",
@@ -705,7 +708,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     name = overview_calendar_name(overview)
 
     if pattern.trips > 0,
-      do: "#{plural(pattern.trips, "trip")} on #{name}",
+      do: "#{Wording.count_noun(pattern.trips, "trip")} on #{name}",
       else: "No trips on #{name}"
   end
 
@@ -816,7 +819,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   def relation(%{comparison: %{alignment: %{identical?: true}}} = assigns) do
-    assigns = assign(assigns, :stop_count, plural(length(assigns.comparison.a.stops), "stop"))
+    assigns =
+      assign(assigns, :stop_count, Wording.count_noun(length(assigns.comparison.a.stops), "stop"))
 
     ~H"""
     <.message
@@ -955,7 +959,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
         id="summary-smaller-timing"
         class="mt-1 px-2 text-[13px] text-muted"
       >
-        {plural(@smaller_timing, "smaller timing difference")}
+        {Wording.count_noun(@smaller_timing, "smaller timing difference")}
         {if @smaller_timing == 1, do: "is", else: "are"} in the stop list.
       </p>
     </div>
@@ -1185,7 +1189,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
                   <.icon name="hero-chevron-down" class="size-4 shrink-0 text-muted" />
                   <span>
                     <span class="font-[650] text-strong">
-                      Show {plural(item.count, "matching stop")}
+                      Show {Wording.count_noun(item.count, "matching stop")}
                     </span>
                     {" · "}{stop_name(@comparison, fold_stop(@alignment, item.from))} to {stop_name(
                       @comparison,
@@ -1813,7 +1817,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp difference_count(%{alignment: %{differences: %{items: items}}}), do: length(items)
 
   defp status_label(0), do: "No differences"
-  defp status_label(count), do: plural(count, "difference")
+  defp status_label(count), do: Wording.count_noun(count, "difference")
 
   # Above 24 rows the reference opens in Differences mode; at or below it every
   # row shows. The server only sets the initial mode; the hook owns it after that.
@@ -2053,7 +2057,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       {:chip, "B"},
       {:text, " starts "},
       {:text, Integer.to_string(length(b_only))},
-      {:text, plural_suffix(b_only)},
+      {:text, Wording.noun(length(b_only), " stop", " stops")},
       {:text, " earlier, at "},
       {:bold, stop_name(comparison, hd(b_only))},
       {:text, ", and joins "},
@@ -2073,7 +2077,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       {:chip, "A"},
       {:text, " starts "},
       {:text, Integer.to_string(length(a_only))},
-      {:text, plural_suffix(a_only)},
+      {:text, Wording.noun(length(a_only), " stop", " stops")},
       {:text, " earlier, at "},
       {:bold, stop_name(comparison, hd(a_only))},
       {:text, "."}
@@ -2187,9 +2191,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     end
   end
 
-  defp plural_suffix([_one]), do: " stop"
-  defp plural_suffix(_ids), do: " stops"
-
   defp boarding_label(%{pickup_type: 1, drop_off_type: 1}), do: "passes without stopping"
   defp boarding_label(%{pickup_type: 1}), do: "only lets riders off"
   defp boarding_label(%{drop_off_type: 1}), do: "only picks riders up"
@@ -2264,7 +2265,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp suggestion_meta(comparison, suggestion, calendar_name) do
     trips =
       if suggestion.trips > 0,
-        do: "#{plural(suggestion.trips, "trip")} on #{calendar_name}",
+        do: "#{Wording.count_noun(suggestion.trips, "trip")} on #{calendar_name}",
         else: "not used on #{calendar_name}"
 
     "#{suggestion.shared} of #{length(comparison.a.stops)} stops in common · #{trips}"
@@ -2312,13 +2313,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp hour_bar_height(count, max), do: max(18, round(count / max * 100))
 
   defp hour_bar_title(hour, count) do
-    after_midnight = if hour >= 24, do: " after midnight", else: ""
-
-    "#{clock(rem(hour * 60, 1440))}–#{clock(rem((hour + 1) * 60, 1440))}#{after_midnight}: #{plural(count, "trip")}"
-  end
-
-  defp clock(minutes) do
-    "#{String.pad_leading(Integer.to_string(div(minutes, 60)), 2, "0")}:#{String.pad_leading(Integer.to_string(rem(minutes, 60)), 2, "0")}"
+    "#{GtfsTime.display(hour * 3600)}–#{GtfsTime.display((hour + 1) * 3600)}: #{Wording.count_noun(count, "trip")}"
   end
 
   attr :label, :string, required: true
@@ -2680,7 +2675,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
     names =
       [route.route_short_name, route.route_long_name]
-      |> Enum.reject(&blank?/1)
+      |> Enum.reject(&Values.blank?/1)
       |> Enum.join(" ")
 
     "Route #{if(names == "", do: route.route_id, else: names)} · #{RoutePattern.direction_label(direction)}"
@@ -2708,7 +2703,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     line =
       [
         RoutePattern.direction_label(entry.direction_id),
-        plural(length(entry.stop_ids), "stop"),
+        Wording.count_noun(length(entry.stop_ids), "stop"),
         picker_trips(entry, calendar_name(comparison))
       ]
       |> Enum.join(" · ")
@@ -2722,7 +2717,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp picker_trips(%{trips: 0}, calendar_name), do: "not used on " <> calendar_name
 
   defp picker_trips(%{trips: trips}, calendar_name),
-    do: plural(trips, "trip") <> " on " <> calendar_name
+    do: Wording.count_noun(trips, "trip") <> " on " <> calendar_name
 
   defp picker_stop_hit(entry, query) do
     needle = picker_needle(query)
@@ -2751,7 +2746,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
         %{label: "No stops in common", class: "text-muted"}
 
       is_binary(other) ->
-        %{label: plural(entry.shared, "stop") <> " in common", class: "text-default"}
+        %{label: Wording.count_noun(entry.shared, "stop") <> " in common", class: "text-default"}
 
       true ->
         nil
@@ -2759,7 +2754,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   defp picker_name(entry) do
-    if blank?(entry.name), do: entry.route_pattern_id, else: entry.name
+    if Values.blank?(entry.name), do: entry.route_pattern_id, else: entry.name
   end
 
   defp picker_needle(query), do: query |> to_string() |> String.trim() |> String.downcase()
@@ -2841,7 +2836,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # "Weekday base · 2 trips", or the bare name when that timing carries none on
   # the chosen calendar (the prototype's option label).
   defp timing_label(timing) do
-    if timing.trips > 0, do: "#{timing.name} · #{plural(timing.trips, "trip")}", else: timing.name
+    if timing.trips > 0,
+      do: "#{timing.name} · #{Wording.count_noun(timing.trips, "trip")}",
+      else: timing.name
   end
 
   # The card's one meta line: direction, stops, use and the service description
@@ -2851,7 +2848,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp meta_line(side) do
     [
       RoutePattern.direction_label(side.pattern.direction_id),
-      plural(length(side.stops), "stop"),
+      Wording.count_noun(length(side.stops), "stop"),
       RoutePattern.typicality_label(side.pattern.route_pattern_typicality),
       service_description(side)
     ]
@@ -2860,7 +2857,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   defp service_description(%{pattern: %{route_pattern_time_desc: description}}) do
-    if blank?(description), do: nil, else: description
+    if Values.blank?(description), do: nil, else: description
   end
 
   defp service_description(_side), do: nil
@@ -2868,7 +2865,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp pattern_name(nil), do: nil
 
   defp pattern_name(%{pattern: %{route_pattern_name: name, route_pattern_id: pattern_id}}) do
-    if blank?(name), do: pattern_id, else: name
+    if Values.blank?(name), do: pattern_id, else: name
   end
 
   # The badge already carries the short name, so the heading leads with the long
@@ -2896,7 +2893,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
     if usage.total > 0 do
       %{
-        trips_lead: plural(usage.total, "trip"),
+        trips_lead: Wording.count_noun(usage.total, "trip"),
         trips_after: " on " <> assigns.calendar_name,
         trips_note: trip_notes(usage)
       }
@@ -2922,7 +2919,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     ]
     |> Enum.reject(&(&1 == false))
     |> Enum.join(" · ")
-    |> blank_to_nil()
+    |> Values.presence()
   end
 
   defp used_calendars(nil, _calendars), do: []
@@ -2939,11 +2936,4 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       calendar -> calendar.name
     end
   end
-
-  defp plural(1, word), do: "1 #{word}"
-  defp plural(count, word), do: "#{count} #{word}s"
-
-  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
 end

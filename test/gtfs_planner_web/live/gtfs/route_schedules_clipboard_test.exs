@@ -503,14 +503,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesClipboardTest do
       assert change.ids == ids
       assert change.params.service_id == scope.service
       assert change.params.mode == :at
-      assert change.params.first_departure == "07:30"
+      assert change.params.first_departure == "07:30:00"
       assert change.params.anchor_secs == 7 * 3_600
 
       assert has_element?(view, "#duplicate-dialog[data-open='true']")
       assert has_element?(view, "#duplicate-dialog-title", "Duplicate 2 trips")
       assert has_element?(view, "#duplicate-context", "Weekday · 07:00–07:15")
       refute has_element?(view, "#duplicate-service")
-      assert has_element?(view, "#duplicate-at[value='07:30']")
+      assert has_element?(view, "#duplicate-at[value='07:30:00']")
       assert has_element?(view, "#duplicate-skip[checked]")
       assert change.review.command == {:copy, ids, scope.service, 1_800, true}
       assert change.review.counts.created == 2

@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -1784,34 +1785,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp retry_serializable_write(_transaction, _attempts), do: {:error, :busy}
 
   defp retry_serializable_write_error(reason, transaction, attempts) do
-    if retryable_conflict?(reason),
+    if Repo.retryable_conflict?(reason),
       do: retry_serializable_write(transaction, attempts),
       else: {:error, reason}
   end
 
   defp run_apply_transaction(transaction) do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    ).run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable_conflict?(error),
+      if Repo.retryable_conflict?(error),
         do: {:retryable_conflict, error},
         else: reraise(error, __STACKTRACE__)
   end
-
-  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [
-              :serialization_failure,
-              "40001",
-              :deadlock_detected,
-              "40P01"
-            ],
-       do: true
-
-  defp retryable_conflict?(_), do: false
 
   defp apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context) do
     route = lock_published_route!(audit_context, route_id)
@@ -2162,7 +2148,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp selection_in_scope?(_pattern, scope_query, ids) do
     ids = Enum.uniq(ids)
 
-    with true <- Enum.all?(ids, &match?({:ok, _}, Ecto.UUID.cast(&1))),
+    with true <- Enum.all?(ids, &Values.uuid?/1),
          found = from(trip in scope_query, where: trip.id in ^ids, select: trip.id) |> Repo.all(),
          true <- length(found) == length(ids) do
       :ok
@@ -2666,8 +2652,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       Enum.map(rows, fn row ->
         %{
           route_pattern_stop_id: map_value(row, :route_pattern_stop_id),
-          arrival_offset: blank_to_nil(map_value(row, :arrival_offset)),
-          departure_offset: blank_to_nil(map_value(row, :departure_offset)),
+          arrival_offset: blank_offset_to_nil(map_value(row, :arrival_offset)),
+          departure_offset: blank_offset_to_nil(map_value(row, :departure_offset)),
           timepoint: map_value(row, :timepoint),
           pickup_type: map_value(row, :pickup_type),
           drop_off_type: map_value(row, :drop_off_type),
@@ -2726,14 +2712,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   # A blank input is the absence of a time. Anything else is left alone so the
   # shape check below still refuses a string, a float or an out-of-range value.
-  defp blank_to_nil(value) when is_binary(value) do
+  # Named exception: integer offsets must pass through; canonical presence/1 would nil them.
+  defp blank_offset_to_nil(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil
       _ -> value
     end
   end
 
-  defp blank_to_nil(value), do: value
+  defp blank_offset_to_nil(value), do: value
 
   defp valid_service_row?(row) do
     row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and

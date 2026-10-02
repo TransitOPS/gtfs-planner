@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Wording
 
   # The two words a range period's lost line is built from. Both are the
   # vocabulary the moment preview's table already uses.
@@ -110,7 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   """
   @spec window_label(map()) :: String.t()
   def window_label(%{start_time: start_time, end_time: end_time}) do
-    "#{compact_time(start_time)}–#{compact_time(end_time)}"
+    "#{GtfsTime.display(start_time)}–#{GtfsTime.display(end_time)}"
   end
 
   @doc """
@@ -162,16 +163,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   def calendar_detail(_option), do: nil
 
-  defp calendar_span(first, first, _count), do: "#{long_date(first)} only"
-  defp calendar_span(first, _last, 1), do: "#{long_date(first)} only"
+  defp calendar_span(first, first, _count), do: "#{Wording.date(first)} only"
+  defp calendar_span(first, _last, 1), do: "#{Wording.date(first)} only"
 
   defp calendar_span(first, last, count),
-    do: "#{short_date(first)} – #{long_date(last)} · #{count} service days"
+    do: "#{Wording.short_date(first)} – #{Wording.date(last)} · #{count} service days"
 
-  defp long_date(%Date{} = date),
-    do: "#{Calendar.strftime(date, "%b")} #{date.day}, #{date.year}"
-
-  defp short_date(%Date{} = date), do: "#{Calendar.strftime(date, "%b")} #{date.day}"
+  # The chosen service day is the page's subject: the access preview, the timeline
+  # and a range cause all read it in full, weekday and long month, instead of as
+  # the canonical `Wording.date/1`. `PathwayEvolutionsLive` shares it.
+  @doc false
+  def full_date(%Date{} = date), do: Calendar.strftime(date, "%A, %B %-d, %Y")
 
   @doc """
   Groups one station's pathways for the locator list.
@@ -325,7 +327,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
                 :if={count > 0}
                 class="shrink-0 rounded-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] tabular-nums text-muted"
               >
-                {pluralize_closures(count)}
+                {Wording.count_noun(count, "closure")}
               </span>
             </button>
           </li>
@@ -334,13 +336,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     </div>
     """
   end
-
-  @doc """
-  Returns `1 closure` / `n closures` for a count, in words rather than a color.
-  """
-  @spec pluralize_closures(non_neg_integer()) :: String.t()
-  def pluralize_closures(1), do: "1 closure"
-  def pluralize_closures(count), do: "#{count} closures"
 
   @doc """
   Prepares one station's static floorplan for the authoring locator and the
@@ -665,7 +660,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             Station at {@moment}
           </h2>
           <.tone_badge :if={@closed_count > 0} tone="error" id="preview-floorplan-badge">
-            {pluralize_pathways(@closed_count)} closed
+            {Wording.count_noun(@closed_count, "pathway")} closed
           </.tone_badge>
           <.tone_badge :if={@closed_count == 0} tone="success" id="preview-floorplan-badge">
             No pathway closed
@@ -1077,9 +1072,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp has_no_floorplan([_label]), do: "level has no floorplan"
   defp has_no_floorplan(_labels), do: "levels have no floorplan"
 
-  defp pluralize_pathways(1), do: "1 pathway"
-  defp pluralize_pathways(count), do: "#{count} pathways"
-
   # One closed pathway's own line: its label when the snapshot still has it,
   # its exact natural id, and where on this floorplan it is (or that it is not
   # on this floorplan at all). The floorplan never silently drops a closed
@@ -1119,7 +1111,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   seconds it carries.
   """
   @spec service_time_value(non_neg_integer()) :: String.t()
-  def service_time_value(seconds) when is_integer(seconds), do: compact_time(seconds)
+  # Named exception: the closure field accepts H:MM and keeps nonzero seconds.
+  def service_time_value(seconds) when is_integer(seconds) do
+    case String.split(GtfsTime.format(seconds), ":") do
+      [hours, minutes, "00"] -> "#{hours}:#{minutes}"
+      parts -> Enum.join(parts, ":")
+    end
+  end
+
   def service_time_value(_seconds), do: ""
 
   # -- editor ----------------------------------------------------------------
@@ -1205,8 +1204,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp no_active_dates_line(_option), do: nil
 
   defp usage_clause(%{trip_count: trips, closure_count: closures}) do
-    "used by #{count_label(trips, "trip", "trips")} and " <>
-      count_label(closures, "closure", "closures")
+    "used by #{Wording.count_noun(trips, "trip")} and " <>
+      Wording.count_noun(closures, "closure")
   end
 
   defp usage_clause(_option), do: nil
@@ -1250,8 +1249,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp window_phrase(0, 86_400), do: "all day (00:00–24:00)"
 
   defp window_phrase(start_time, end_time) when end_time > 86_400 do
+    time = Time.from_seconds_after_midnight(rem(end_time, 86_400))
+
     "#{window_label(%{start_time: start_time, end_time: end_time})} " <>
-      "(until #{clock_label(end_time)} #{later_label(end_time)})"
+      "(until #{DisplayClock.format_time(time)} #{later_label(end_time)})"
   end
 
   defp window_phrase(start_time, end_time),
@@ -1266,10 +1267,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp reopen_at(86_400), do: "at midnight (24:00)"
 
-  defp reopen_at(end_time) when end_time > 86_400,
-    do: "at #{clock_label(end_time)} #{later_label(end_time)}"
+  defp reopen_at(end_time) when end_time > 86_400 do
+    time = Time.from_seconds_after_midnight(rem(end_time, 86_400))
 
-  defp reopen_at(end_time), do: "at #{compact_time(end_time)}"
+    "at #{DisplayClock.format_time(time)} #{later_label(end_time)}"
+  end
+
+  defp reopen_at(end_time), do: "at #{GtfsTime.display(end_time)}"
 
   defp calendar_phrase(%{label: label}), do: label
   defp calendar_phrase(_calendar), do: "the calendar"
@@ -1281,17 +1285,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     do: " #{label} has no active service dates, so this closure does not apply yet."
 
   defp no_active_dates_suffix(_calendar), do: ""
-
-  # The clock time a service time falls on: 26:00 reads as 2:00 AM on the day
-  # after the service date, which is what a reader needs to see.
-  defp clock_label(seconds) do
-    hours = div(seconds, 3600)
-    minutes = div(rem(seconds, 3600), 60)
-    hour = rem(hours, 12)
-    hour = if hour == 0, do: 12, else: hour
-    suffix = if rem(hours, 24) < 12, do: "AM", else: "PM"
-    "#{hour}:#{String.pad_leading(to_string(minutes), 2, "0")} #{suffix}"
-  end
 
   defp later_label(seconds) do
     case div(seconds, 86_400) do
@@ -1334,9 +1327,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           "does not apply until the calendar has dates."
     }
   end
-
-  defp count_label(1, singular, _plural), do: "1 #{singular}"
-  defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
   # -- access preview --------------------------------------------------------
 
@@ -1962,7 +1952,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     %{
       axis: axis,
       date_label: Calendar.strftime(preview.service_date, "%a, %b %-d"),
-      cursor_label: service_time_value(cursor),
+      cursor_label: GtfsTime.display(cursor),
       cursor_pct: if(cursor <= axis, do: pct(cursor, axis), else: nil),
       ticks: axis_ticks(axis),
       rows:
@@ -1985,7 +1975,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       bar_id: "timeline-bar-#{instance.evolution_id}-#{Date.to_iso8601(instance.service_date)}",
       instance_id: instance.evolution_id,
       service_date: Date.to_iso8601(instance.service_date),
-      service_label: service_date_label(instance.service_date),
+      service_label: Wording.weekday_date(instance.service_date),
       start_time: instance.start_time,
       end_time: instance.end_time,
       from: left,
@@ -2018,7 +2008,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               kind: Atom.to_string(phase),
               service_date: Date.to_iso8601(date),
               time: time,
-              time_label: service_time_value(time),
+              time_label: GtfsTime.display(time),
               weekday:
                 if(Date.compare(date, preview.service_date) == :eq, do: nil, else: weekday(date)),
               pressed?:
@@ -2044,7 +2034,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     |> Enum.map(fn seconds ->
       %{
         seconds: seconds,
-        label: service_time_value(seconds),
+        label: GtfsTime.display(seconds),
         pct: pct(seconds, axis),
         position: axis_position(seconds, axis)
       }
@@ -2065,8 +2055,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     |> :erlang.float_to_binary(decimals: 3)
   end
 
-  defp service_date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
-
   defp weekday(%Date{} = date), do: Calendar.strftime(date, "%a")
 
   defp timeline_title(row, instance, elsewhere?) do
@@ -2074,7 +2062,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     suffix =
       if elsewhere?,
-        do: " on the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day",
+        do: " on the #{full_date(instance.service_date)} service day",
         else: ""
 
     "#{label} closed #{window_label(instance)}#{suffix}"
@@ -2091,13 +2079,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   """
   @spec access_moment_path(String.t(), String.t(), Date.t(), non_neg_integer()) :: String.t()
   def access_moment_path(version_id, stop_id, %Date{} = date, time) when is_integer(time) do
-    query =
-      URI.encode_query([
-        {"date", Date.to_iso8601(date)},
-        {"time", GtfsTime.format(time)}
-      ])
+    query = [date: Date.to_iso8601(date), time: GtfsTime.format(time)]
 
-    "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access?#{query}"
+    ~p"/gtfs/#{version_id}/stops/#{stop_id}/evolutions/access?#{query}"
   end
 
   @doc """
@@ -2194,7 +2178,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       index: index,
       period_count: 1,
       service_date: Date.to_iso8601(service_date),
-      date_label: date_label(service_date),
+      date_label: Wording.weekday_date(service_date),
       local_start: NaiveDateTime.to_iso8601(finding.local_start),
       local_end: NaiveDateTime.to_iso8601(finding.local_end),
       start_offset: finding.start_utc_offset,
@@ -2207,7 +2191,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       causes: range_causes(finding.instances, service_date, snapshot),
       target_date: Date.to_iso8601(service_date),
       target_time: target.time,
-      target_label: service_time_value(target.time),
+      target_label: GtfsTime.display(target.time),
       href: access_moment_path(version_id, stop_id, target.date, target.time),
       show_id: "range-show-#{index}",
       # Only a grouped row discloses a list of dates; a period row is one date.
@@ -2300,7 +2284,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     case dates do
       [one] ->
-        date_label(one)
+        Wording.weekday_date(one)
 
       _many ->
         first = hd(dates)
@@ -2332,7 +2316,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     cond do
       Date.compare(local_start_date, service_date) != :eq ->
-        window <> " on #{date_label(local_start_date)}"
+        window <> " on #{Wording.weekday_date(local_start_date)}"
 
       Date.compare(local_end_date, local_start_date) != :eq ->
         days = Date.diff(local_end_date, local_start_date)
@@ -2383,7 +2367,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       if Date.compare(instance.service_date, service_date) == :eq do
         nil
       else
-        "from the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day"
+        "from the #{full_date(instance.service_date)} service day"
       end
 
     %{
@@ -2643,8 +2627,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     """
   end
 
-  defp date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
-
   attr :id, :string, required: true
   attr :title, :string, required: true
 
@@ -2707,13 +2689,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp direction_label(:to_platform), do: "To platform"
   defp direction_label(:to_exit), do: "From platform"
-
-  defp compact_time(seconds) do
-    case String.split(GtfsTime.format(seconds), ":") do
-      [hours, minutes, "00"] -> "#{hours}:#{minutes}"
-      parts -> Enum.join(parts, ":")
-    end
-  end
 
   defp stop_label(%{stop_name: name}) when is_binary(name) and name != "", do: name
   defp stop_label(%{stop_id: stop_id}), do: stop_id

@@ -43,6 +43,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     only: [constraint_chip: 1, form_error_summary: 1, message: 1, sort_header: 1]
 
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -400,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp route_display_name(%{route_id: route_id} = route) do
     parts =
       [Map.get(route, :route_short_name), Map.get(route, :route_long_name)]
-      |> Enum.map(&blank_to_nil/1)
+      |> Enum.map(&Values.presence/1)
       |> Enum.reject(&is_nil/1)
 
     case parts do
@@ -528,11 +530,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     """
   end
 
-  defp count_label(total, all, in_seat?) when total == all, do: count_noun(total, in_seat?)
-  defp count_label(total, all, in_seat?), do: "#{total} of #{count_noun(all, in_seat?)}"
+  defp count_label(total, all, in_seat?) when total == all, do: record_count_text(total, in_seat?)
+  defp count_label(total, all, in_seat?), do: "#{total} of #{record_count_text(all, in_seat?)}"
 
-  defp count_noun(count, true), do: "#{count} #{pluralize(count, "stay-on-board record")}"
-  defp count_noun(count, false), do: "#{count} #{pluralize(count, "transfer rule")}"
+  defp record_count_text(count, true),
+    do: "#{count} #{Wording.noun(count, "stay-on-board record")}"
+
+  defp record_count_text(count, false), do: "#{count} #{Wording.noun(count, "transfer rule")}"
 
   defp delete_button_label(1), do: "Delete 1 rule"
   defp delete_button_label(count), do: "Delete #{count} rules"
@@ -974,7 +978,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     assigns =
       assign(assigns,
         route: route,
-        route_name: blank_to_nil(Map.get(route, :route_long_name))
+        route_name: Values.presence(Map.get(route, :route_long_name))
       )
 
     ~H"""
@@ -1030,7 +1034,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       "This rule needs a minimum time."
   """
   def attention_text({:competes, count}) do
-    "Conflicts with #{count} other #{pluralize(count, "rule")} for the same trips."
+    "Conflicts with #{count} other #{Wording.noun(count, "rule")} for the same trips."
   end
 
   def attention_text(:min_time_missing), do: "This rule needs a minimum time."
@@ -1064,9 +1068,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp side_word(:from), do: "arriving"
   defp side_word(:to), do: "departing"
 
-  defp pluralize(1, noun), do: noun
-  defp pluralize(_count, noun), do: noun <> "s"
-
   defp article(label) do
     lowered = String.downcase(label)
 
@@ -1077,18 +1078,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   defp route_short_name(route) when is_map(route),
-    do: blank_to_nil(Map.get(route, :route_short_name))
+    do: Values.presence(Map.get(route, :route_short_name))
 
   defp route_short_name(_route), do: nil
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   @doc """
   Writes a rule as one sentence: what it means for riders and for the trip planners
@@ -1236,7 +1228,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         No transfers match
       </h2>
       <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
-        Try another stop, route or word, or clear the filters to see all {count_noun(
+        Try another stop, route or word, or clear the filters to see all {record_count_text(
           @all_count,
           @in_seat?
         )}.
@@ -1289,7 +1281,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp endpoint_context(_endpoint, true), do: "Not in this version"
 
   defp endpoint_context(%{child_count: count}, _missing?) when count > 0,
-    do: "Station · covers #{count} #{pluralize(count, "platform")}"
+    do: "Station · covers #{count} #{Wording.noun(count, "platform")}"
 
   defp endpoint_context(%{location_type: 1}, _missing?), do: "Station"
 
@@ -1668,12 +1660,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp coverage_sentence(endpoint) do
     count = endpoint.child_count
 
-    "#{endpoint_name(endpoint)} includes #{count} #{pluralize(count, "platform")}, " <>
+    "#{endpoint_name(endpoint)} includes #{count} #{Wording.noun(count, "platform")}, " <>
       "so this rule applies at every one. A rule for a specific route or trip overrides it."
   end
 
   defp overlap_sentence(count) do
-    "#{count} other #{pluralize(count, "rule")} of equal priority can apply to some of the " <>
+    "#{count} other #{Wording.noun(count, "rule")} of equal priority can apply to some of the " <>
       "same trips, so a trip planner can’t tell which one wins. " <>
       "Keep one, or narrow one to a route or trip."
   end
@@ -2775,12 +2767,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp live_field(%{action: :validate} = form, name) do
     field = form[name]
 
-    if blank?(field.value), do: %{field | errors: []}, else: field
+    if Values.blank?(field.value), do: %{field | errors: []}, else: field
   end
 
   defp live_field(form, name), do: form[name]
-
-  defp blank?(value), do: value in [nil, ""] or (is_binary(value) and String.trim(value) == "")
 
   # The draft's type and minimum time as the changeset would read them, so the
   # readout and the preview answer the operator's keystrokes rather than the
@@ -2800,7 +2790,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp draft_field(editor, key) do
     case editor.params[key] do
-      value when is_binary(value) -> blank_to_nil(value)
+      value when is_binary(value) -> Values.presence(value)
       _value -> nil
     end
   end
@@ -2906,7 +2896,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp trip_option(trip) do
     base =
       [Map.get(trip, :time), Map.get(trip, :headsign), Map.get(trip, :service_id)]
-      |> Enum.map(&blank_to_nil/1)
+      |> Enum.map(&Values.presence/1)
       |> Enum.reject(&is_nil/1)
       |> case do
         [] -> trip.trip_id
@@ -2947,7 +2937,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       "Central Station"
   """
   def stop_label(%{stop_name: name, stop_id: stop_id}) do
-    case blank_to_nil(name) do
+    case Values.presence(name) do
       nil -> stop_id
       name -> name
     end
@@ -2969,7 +2959,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   def stop_hint(%{location_type: 1} = stop) do
     case Map.get(stop, :child_count, 0) do
       0 -> "Station"
-      count -> "Station · covers #{count} #{pluralize(count, "platform")}"
+      count -> "Station · covers #{count} #{Wording.noun(count, "platform")}"
     end
   end
 

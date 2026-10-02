@@ -9,6 +9,9 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   """
   use Phoenix.Component
 
+  alias GtfsPlanner.Color
+  alias GtfsPlanner.Values
+
   @hex_regex ~r/\A[0-9A-Fa-f]{6}\z/
 
   # The prototype's advisory similarity threshold, in CIE76 units.
@@ -34,13 +37,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   def normalize_hex(_), do: :error
 
   @spec contrast_ratio(String.t(), String.t()) :: float()
-  def contrast_ratio(background, foreground) do
-    l1 = relative_luminance(background)
-    l2 = relative_luminance(foreground)
-    lighter = max(l1, l2)
-    darker = min(l1, l2)
-    (lighter + 0.05) / (darker + 0.05)
-  end
+  defdelegate contrast_ratio(background, foreground), to: Color
 
   # The normalized background and the foreground that reaches 4.5:1 against it,
   # or `:error` when the feed's background is missing or unvalidated.
@@ -68,13 +65,8 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   @spec automatic_text_color(term()) :: String.t() | :error
   def automatic_text_color(background) do
     case normalize_hex(background) do
-      {:ok, norm_bg} ->
-        if contrast_ratio(norm_bg, "000000") >= contrast_ratio(norm_bg, "FFFFFF"),
-          do: "000000",
-          else: "FFFFFF"
-
-      :error ->
-        :error
+      {:ok, norm_bg} -> Color.text_color(norm_bg)
+      :error -> :error
     end
   end
 
@@ -143,7 +135,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   # whitepoint — the same conversion `route_identity_preview.js` carries.
   defp lab(hex) do
     {r, g, b} = hex_to_rgb(hex)
-    [lr, lg, lb] = Enum.map([r, g, b], &linearize/1)
+    [lr, lg, lb] = Enum.map([r, g, b], &Color.linear_channel/1)
     f = fn t -> if t > 0.008856, do: :math.pow(t, 1 / 3), else: 7.787 * t + 16 / 116 end
 
     x = f.((lr * 0.4124 + lg * 0.3576 + lb * 0.1805) / 0.95047)
@@ -241,32 +233,13 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     route_id = Map.get(route, :route_id)
 
     cond do
-      present?(short_name) -> short_name
-      present?(route_id) -> route_id
+      Values.present?(short_name) -> short_name
+      Values.present?(route_id) -> route_id
       true -> "Unknown route"
     end
   end
 
-  defp present?(nil), do: false
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_), do: false
-
-  defp relative_luminance(hex) do
-    {r, g, b} = hex_to_rgb(hex)
-    0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
-  end
-
   defp hex_to_rgb(<<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
     {String.to_integer(r, 16), String.to_integer(g, 16), String.to_integer(b, 16)}
-  end
-
-  defp linearize(channel) do
-    srgb = channel / 255
-
-    if srgb <= 0.04045 do
-      srgb / 12.92
-    else
-      :math.pow((srgb + 0.055) / 1.055, 2.4)
-    end
   end
 end

@@ -20,15 +20,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     ]
 
   alias Ecto.Changeset
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
     route_type = parse_route_type(params["route_type"])
-    agency_id = parse_string(params["agency_id"])
+    agency_id = Values.presence(params["agency_id"])
     # Status presentation follows the same effective predicate as the shared
     # list/count filters (only explicit false is inactive), so an unknown value
     # presents as All statuses instead of drifting from the query.
@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     search = params["search"] || ""
     sort_by = parse_atom(params["sort_by"], :route_id)
     sort_dir = parse_atom(params["sort_dir"], :asc)
-    page = parse_integer(params["page"], 1)
+    page = Values.positive_integer(params["page"], 1)
     per_page = socket.assigns.per_page
 
     opts = [
@@ -209,10 +209,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     query_params =
       %{}
-      |> maybe_put("route_type", route_type)
-      |> maybe_put("agency_id", agency_id)
-      |> maybe_put("active", active)
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_type", route_type)
+      |> Values.put_present("agency_id", agency_id)
+      |> Values.put_present("active", active)
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -225,10 +225,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   def handle_event("search", %{"search" => term}, socket) do
     query_params =
       %{}
-      |> maybe_put("search", term)
-      |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-      |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-      |> maybe_put("active", socket.assigns.filter_form.params["active"])
+      |> Values.put_present("search", term)
+      |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+      |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+      |> Values.put_present("active", socket.assigns.filter_form.params["active"])
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -255,10 +255,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     query_params =
       %{}
-      |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-      |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-      |> maybe_put("active", socket.assigns.filter_form.params["active"])
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+      |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+      |> Values.put_present("active", socket.assigns.filter_form.params["active"])
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(new_sort_by, new_sort_dir)
 
     {:noreply,
@@ -269,7 +269,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    page_num = parse_integer(page, 1)
+    page_num = Values.positive_integer(page, 1)
 
     query_params = build_query_params(socket, page_num)
 
@@ -286,7 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
     opts = [
       route_type: parse_route_type(socket.assigns.filter_form.params["route_type"]),
-      agency_id: parse_string(socket.assigns.filter_form.params["agency_id"]),
+      agency_id: Values.presence(socket.assigns.filter_form.params["agency_id"]),
       active: socket.assigns.filter_form.params["active"],
       search: socket.assigns.search,
       sort_by: socket.assigns.sort_by,
@@ -337,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         |> Map.put(key, "")
         |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
         |> Map.new()
-        |> maybe_put("search", socket.assigns.search)
+        |> Values.put_present("search", socket.assigns.search)
         |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
       else
         build_query_params(socket, socket.assigns.page)
@@ -426,7 +426,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     else
       # The Automatic/Custom radios post `text_mode` beside the `route` fields,
       # as `save_new_route` reads it, so the chip survives a validate reply.
-      params = maybe_put(params, "text_mode", event["text_mode"])
+      params = Values.put_present(params, "text_mode", event["text_mode"])
 
       {:noreply, assign_new_route_draft(socket, params, :validate)}
     end
@@ -713,7 +713,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
         >
           <p id="routes-count" role="status" class="font-[650] tabular-nums text-strong">
-            {route_count_text(@routes_state, @total_count)}
+            {if @routes_state == :unavailable,
+              do: "Routes could not load",
+              else: Wording.count_noun(@total_count, "route")}
           </p>
 
           <div id="routes-chips" class="flex flex-wrap items-center gap-2">
@@ -1018,12 +1020,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     route.route_long_name || route.route_short_name || route.route_id
   end
 
-  defp route_count_text(:ready, count), do: "#{count} #{pluralize(count, "route")}"
-  defp route_count_text(:unavailable, _count), do: "Routes could not load"
-
-  defp pluralize(1, singular), do: singular
-  defp pluralize(_count, singular), do: "#{singular}s"
-
   # The summary row repeats each active constraint as a removable chip, so it
   # needs the value, not the param. Status reads as a word; mode maps through the
   # same label helper the rest of the page uses.
@@ -1034,18 +1030,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     # the chip shows — the chosen value, not the raw param.
     filters = [
       {"search", assigns.search != "", "\"" <> assigns.search <> "\""},
-      {"route_type", present?(params["route_type"]),
+      {"route_type", Values.present?(params["route_type"]),
        Route.route_type_label(parse_route_type(params["route_type"]))},
       {"active", params["active"] in ~w(true false), status_label(params["active"])},
-      {"agency_id", present?(params["agency_id"]), params["agency_id"]}
+      {"agency_id", Values.present?(params["agency_id"]), params["agency_id"]}
     ]
 
     for {key, true, label} <- filters, do: %{key: key, label: label}
   end
-
-  defp present?(nil), do: false
-  defp present?(""), do: false
-  defp present?(_value), do: true
 
   defp status_label("true"), do: "Active"
   defp status_label("false"), do: "Inactive"
@@ -1259,7 +1251,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                   id="new-route-agency-settings"
                   variant="secondary"
                   class="min-h-11"
-                  navigate={agencies_path(@version.id)}
+                  navigate={~p"/gtfs/#{@version.id}/settings/agencies"}
                 >
                   Open Settings › Agencies
                 </.button>
@@ -1449,13 +1441,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp new_route_preview(form, agency_options) do
     new_route_preview_values(
-      trimmed_field(form[:route_short_name].value),
-      trimmed_field(form[:route_long_name].value),
-      trimmed_field(form[:route_type].value),
-      agency_name_for(agency_options, trimmed_field(form[:agency_id].value)),
-      trimmed_field(form[:route_id].value),
-      trimmed_field(form[:route_color].value),
-      trimmed_field(form[:route_text_color].value)
+      Values.presence(form[:route_short_name].value) || "",
+      Values.presence(form[:route_long_name].value) || "",
+      Values.presence(form[:route_type].value) || "",
+      agency_name_for(agency_options, Values.presence(form[:agency_id].value) || ""),
+      Values.presence(form[:route_id].value) || "",
+      Values.presence(form[:route_color].value) || "",
+      Values.presence(form[:route_text_color].value) || ""
     )
   end
 
@@ -1488,17 +1480,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       route: %{
         route_id: route_id,
         route_short_name: short,
-        route_color: blank_to(color, "FFFFFF"),
-        route_text_color: blank_to(text, "000000")
+        route_color: Values.presence(color) || "FFFFFF",
+        route_text_color: Values.presence(text) || "000000"
       }
     }
   end
-
-  defp blank_to(value, default), do: if(value == "", do: default, else: value)
-
-  defp trimmed_field(nil), do: ""
-  defp trimmed_field(value) when is_binary(value), do: String.trim(value)
-  defp trimmed_field(_value), do: ""
 
   defp mode_label_for(""), do: "Mode not chosen"
 
@@ -1615,7 +1601,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # locks the published version, resolves the zone, chooses the ID and runs the
   # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
   defp create_agency_setup(socket, params) do
-    case FeedSettings.create_agency(audit_context(socket), params) do
+    case FeedSettings.create_agency(AuditContext.from_assigns(socket.assigns), params) do
       {:ok, agency} ->
         {:noreply, finish_agency_setup(socket, agency)}
 
@@ -1705,15 +1691,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       %{agency: %{id: ^agency_id}, route_count: count} -> count
       _row -> nil
     end)
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp parse_agency_setup_origin("assign_routes"), do: :assign_routes
@@ -1867,7 +1844,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         String.trim(to_string(attrs[field] || "")) != ""
       end)
 
-    text_entered? or present?(attrs["route_type"]) or present?(attrs["route_id"]) or
+    text_entered? or Values.present?(attrs["route_type"]) or Values.present?(attrs["route_id"]) or
       text_mode == "custom"
   end
 
@@ -1912,8 +1889,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       true -> nil
     end
   end
-
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 
   # A failed save is the only state that earns the view-level banner; validation
   # on change marks its own fields and must not shout about a save never
@@ -2024,7 +1999,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   defp strip_managed_route_id(attrs, :auto), do: Map.delete(attrs, "route_id")
 
   defp run_creation(socket, attrs, attempt) do
-    case Gtfs.create_editor_route(attrs, attempt, audit_context(socket)) do
+    case Gtfs.create_editor_route(attrs, attempt, AuditContext.from_assigns(socket.assigns)) do
       {:ok, %{route: route}} ->
         {:noreply, finish_new_route(socket, route)}
 
@@ -2110,7 +2085,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   defp reconcile_recovered_creation(socket, attempt) do
-    case Gtfs.reconcile_creation(attempt, audit_context(socket)) do
+    case Gtfs.reconcile_creation(attempt, AuditContext.from_assigns(socket.assigns)) do
       {:ok, route} ->
         {:noreply, finish_recovered_creation(socket, route)}
 
@@ -2180,11 +2155,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # the editor role or been deactivated since this socket connected.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      GtfsPlannerWeb.EnsureRole.editor_member?(user_id, organization_id)
     else
       _other -> false
     end
@@ -2206,12 +2178,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp build_query_params(socket, page) do
     %{}
-    |> maybe_put("route_type", socket.assigns.filter_form.params["route_type"])
-    |> maybe_put("agency_id", socket.assigns.filter_form.params["agency_id"])
-    |> maybe_put("active", socket.assigns.filter_form.params["active"])
-    |> maybe_put("search", socket.assigns.search)
-    |> maybe_put("sort_by", socket.assigns.sort_by)
-    |> maybe_put("sort_dir", socket.assigns.sort_dir)
+    |> Values.put_present("route_type", socket.assigns.filter_form.params["route_type"])
+    |> Values.put_present("agency_id", socket.assigns.filter_form.params["agency_id"])
+    |> Values.put_present("active", socket.assigns.filter_form.params["active"])
+    |> Values.put_present("search", socket.assigns.search)
+    |> Values.put_present("sort_by", socket.assigns.sort_by)
+    |> Values.put_present("sort_dir", socket.assigns.sort_dir)
     |> Map.put("page", page)
   end
 
@@ -2225,10 +2197,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     end
   end
 
-  defp parse_string(nil), do: nil
-  defp parse_string(""), do: nil
-  defp parse_string(value) when is_binary(value), do: value
-
   defp parse_atom(nil, default), do: default
   defp parse_atom("", default), do: default
 
@@ -2239,20 +2207,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       ArgumentError -> :route_id
     end
   end
-
-  defp parse_integer(nil, default), do: default
-  defp parse_integer("", default), do: default
-
-  defp parse_integer(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> default
-    end
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_sort(map, :route_id, :asc), do: map
 

@@ -86,6 +86,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   alias GtfsPlanner.Gtfs.Transfers.Overlaps
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @general_types [0, 1, 2, 3]
@@ -257,8 +258,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     in_seat_rows = view_rows(in_seat, data, competitor_ids)
     all_view_rows = if view == :in_seat, do: in_seat_rows, else: general_rows
 
-    route_id = string_option(opts[:route])
-    stop_ids = stop_filter(organization_id, gtfs_version_id, string_option(opts[:stop]))
+    route_id = Values.presence(opts[:route])
+    stop_ids = stop_filter(organization_id, gtfs_version_id, Values.presence(opts[:stop]))
     trip_routes = trip_route_index(trips)
 
     filtered =
@@ -266,7 +267,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       |> filter_type(opts[:type], view)
       |> filter_attention(opts[:attention], view)
       |> Enum.filter(&matches_filters?(&1.transfer, stop_ids, route_id, trip_routes))
-      |> filter_search(string_option(opts[:search]))
+      |> filter_search(Values.presence(opts[:search]))
       |> sort_rows(requested_sort_by(opts), requested_sort_dir(opts))
 
     per_page = requested_per_page(opts)
@@ -302,7 +303,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       load_transfers(organization_id, gtfs_version_id)
       |> Enum.reject(&in_seat?/1)
 
-    route_id = string_option(opts[:route])
+    route_id = Values.presence(opts[:route])
 
     trip_routes =
       if route_id do
@@ -313,7 +314,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
         %{}
       end
 
-    stop_ids = stop_filter(organization_id, gtfs_version_id, string_option(opts[:stop]))
+    stop_ids = stop_filter(organization_id, gtfs_version_id, Values.presence(opts[:stop]))
 
     general
     |> Enum.filter(&matches_filters?(&1, stop_ids, route_id, trip_routes))
@@ -456,8 +457,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   """
   @spec map_payload(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map_payload()
   def map_payload(organization_id, gtfs_version_id, endpoints) do
-    from_id = map_stop_id(Map.get(endpoints, :from_stop_id))
-    to_id = map_stop_id(Map.get(endpoints, :to_stop_id))
+    from_id = Values.presence(Map.get(endpoints, :from_stop_id))
+    to_id = Values.presence(Map.get(endpoints, :to_stop_id))
 
     stops =
       [from_id, to_id]
@@ -1183,17 +1184,6 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   defp rule_index(_rows, _rule), do: nil
 
-  # A typed option is used only when it is a non-blank string; anything else is
-  # treated as absent rather than coerced. The LiveView canonicalizes the URL.
-  defp string_option(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp string_option(_value), do: nil
-
   defp max_page(rows, per_page), do: max(1, div(length(rows) + per_page - 1, per_page))
 
   defp requested_page(opts) do
@@ -1230,8 +1220,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # its station — with no name, so the control can still show it selected.
   defp filter_options(rows, view, opts) do
     %{
-      stops: rows |> stop_options() |> put_missing_stop(string_option(opts[:stop])),
-      routes: rows |> route_options() |> put_missing_route(string_option(opts[:route])),
+      stops: rows |> stop_options() |> put_missing_stop(Values.presence(opts[:stop])),
+      routes: rows |> route_options() |> put_missing_route(Values.presence(opts[:route])),
       types: if(view == :in_seat, do: @in_seat_types, else: @general_types)
     }
   end
@@ -1342,13 +1332,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       platform_code: stop.platform_code,
       parent_name: Map.get(parent_names, stop.parent_station),
       child_count: Map.get(child_counts, stop.stop_id, 0),
-      lat: decimal_to_float(stop.stop_lat),
-      lon: decimal_to_float(stop.stop_lon)
+      lat: Values.to_float(stop.stop_lat),
+      lon: Values.to_float(stop.stop_lon)
     }
   end
-
-  defp decimal_to_float(nil), do: nil
-  defp decimal_to_float(%Decimal{} = value), do: Decimal.to_float(value)
 
   # R2 coverage of one stop from a scoped load. A stop that is not in this
   # organization and version covers nothing, so a foreign or unknown ID can never
@@ -1459,8 +1446,16 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   # after every valid clock by its own text rather than raising.
   defp earliest_clock(clocks) do
     case Enum.reject(clocks, &is_nil/1) do
-      [] -> nil
-      values -> values |> Enum.min_by(&clock_key/1) |> String.slice(0, 5)
+      [] ->
+        nil
+
+      values ->
+        earliest = Enum.min_by(values, &clock_key/1)
+
+        case GtfsTime.parse(earliest) do
+          {:ok, seconds} -> GtfsTime.display(seconds)
+          {:error, :invalid_time} -> String.slice(earliest, 0, 5)
+        end
     end
   end
 
@@ -1569,21 +1564,13 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   # A hook payload value names a stop only when it is a non-blank string; anything
   # else is treated as no endpoint rather than cast (CR-6 untrusted input).
-  defp map_stop_id(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp map_stop_id(_value), do: nil
 
   defp map_point(%Stop{} = stop) do
     %{
       stop_id: stop.stop_id,
       name: stop.stop_name,
-      lat: decimal_to_float(stop.stop_lat),
-      lon: decimal_to_float(stop.stop_lon),
+      lat: Values.to_float(stop.stop_lat),
+      lon: Values.to_float(stop.stop_lon),
       location_type: stop.location_type
     }
   end
@@ -1661,10 +1648,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   defp extent(%{south: south, west: west, north: north, east: east}) do
     %{
-      south: decimal_to_float(south),
-      west: decimal_to_float(west),
-      north: decimal_to_float(north),
-      east: decimal_to_float(east)
+      south: Values.to_float(south),
+      west: Values.to_float(west),
+      north: Values.to_float(north),
+      east: Values.to_float(east)
     }
   end
 
@@ -1738,35 +1725,21 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   defp retry_write(_transaction, _attempts), do: {:error, :busy}
 
   defp retry_write_error(reason, transaction, attempts) do
-    if retryable?(reason),
+    if Repo.retryable_conflict?(reason),
       do: retry_write(transaction, attempts),
       else: {:error, reason}
   end
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable?(error) do
+      if Repo.retryable_conflict?(error) do
         {:retryable_failure, error}
       else
         reraise error, __STACKTRACE__
       end
   end
-
-  defp write_transaction_module do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
-  defp retryable?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001", :deadlock_detected, "40P01"],
-       do: true
-
-  defp retryable?(_error), do: false
 
   defp create_general_transaction(attrs, audit) do
     Authorization.lock_editor!(audit)

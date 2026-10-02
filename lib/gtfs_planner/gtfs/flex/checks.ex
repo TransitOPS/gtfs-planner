@@ -41,10 +41,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @typedoc """
   One readiness finding: `:error` excludes the service from the flex file (R4),
@@ -204,12 +207,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
         Map.merge(counts, %{tone: :neutral, label: "Not in trip planners"})
 
       errors > 0 ->
-        Map.merge(counts, %{tone: :error, label: "#{errors} problem#{plural(errors)}"})
+        Map.merge(counts, %{tone: :error, label: "#{errors} problem#{Wording.noun(errors, "")}"})
 
       warnings > 0 ->
         Map.merge(counts, %{
           tone: :warning,
-          label: "Ready · #{warnings} suggestion#{plural(warnings)}"
+          label: "Ready · #{warnings} suggestion#{Wording.noun(warnings, "")}"
         })
 
       true ->
@@ -240,7 +243,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp area_name_checks(areas) do
     areas
-    |> Enum.filter(&(present?(&1.name) and Regex.match?(@code_like_area_name, &1.name)))
+    |> Enum.filter(&(Values.present?(&1.name) and Regex.match?(@code_like_area_name, &1.name)))
     |> Enum.map(
       &check(
         :warning,
@@ -301,7 +304,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp route_checks(%FlexService{route_id: route_id} = service, version_facts) do
     choice =
-      if present?(route_id) do
+      if Values.present?(route_id) do
         []
       else
         [check(:error, :where, :route, "Choose the route that detours.")]
@@ -316,7 +319,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   # An inactive route leaves the export with its trips, so a detour on it, or
   # an area that follows it, would describe service the feed does not carry.
   defp inactive_route_check(route_id, version_facts) do
-    if present?(route_id) and inactive_route?(route_id, version_facts) do
+    if Values.present?(route_id) and inactive_route?(route_id, version_facts) do
       [check(:error, :where, :route, inactive_route_text(route_id))]
     else
       []
@@ -333,7 +336,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp missing_route_check(route_id, version_facts) do
-    if present?(route_id) and not Map.has_key?(version_facts.routes, route_id) do
+    if Values.present?(route_id) and not Map.has_key?(version_facts.routes, route_id) do
       [
         check(
           :error,
@@ -386,7 +389,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
       end
 
     wording =
-      if present?(service.wording) do
+      if Values.present?(service.wording) do
         []
       else
         [
@@ -472,7 +475,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp zone_hours_check(hours) do
-    if Enum.any?(hours, &present?(&1.area_key)) do
+    if Enum.any?(hours, &Values.present?(&1.area_key)) do
       [
         check(
           :warning,
@@ -521,7 +524,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp contact_missing_check(phone, booking_url) do
-    if blank?(phone) and blank?(booking_url) do
+    if Values.blank?(phone) and Values.blank?(booking_url) do
       [
         check(
           :error,
@@ -536,7 +539,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp phone_check(phone) do
-    if present?(phone) and not Regex.match?(@phone_format, String.trim(phone)) do
+    if Values.present?(phone) and not Regex.match?(@phone_format, String.trim(phone)) do
       [
         check(
           :error,
@@ -551,7 +554,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp url_check(booking_url) do
-    if present?(booking_url) and not Regex.match?(@booking_url_format, String.trim(booking_url)) do
+    if Values.present?(booking_url) and
+         not Regex.match?(@booking_url_format, String.trim(booking_url)) do
       [check(:error, :booking, :url, "Enter the full booking link, starting with https://")]
     else
       []
@@ -562,7 +566,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp rule_shape_checks(%FlexService{kind: :detour} = service) do
     rules = service.booking_rules
 
-    if length(rules) == 1 and not Enum.any?(rules, &present?(&1.service_id)) do
+    if length(rules) == 1 and not Enum.any?(rules, &Values.present?(&1.service_id)) do
       []
     else
       [
@@ -599,7 +603,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
       end
 
     by =
-      if present?(rule.by) do
+      if Values.present?(rule.by) do
         []
       else
         [check(:error, :booking, :by, "Enter the time riders must book by.")]
@@ -647,7 +651,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
               :warning,
               :booking,
               :note,
-              "The note says “#{quoted}”, but the rule says at least #{duration(minutes)}. Trip " <>
+              "The note says “#{quoted}”, but the rule says at least #{RiderText.duration_words(minutes)}. Trip " <>
                 "planners show both."
             )
           ]
@@ -685,7 +689,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp days_contradiction(_sentence, _rule), do: []
 
   defp app_mention_check(note, %FlexService{booking_url: booking_url}) do
-    if Regex.match?(@note_app_mention, note) and blank?(booking_url) do
+    if Regex.match?(@note_app_mention, note) and Values.blank?(booking_url) do
       [
         check(
           :warning,
@@ -743,7 +747,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   # R5: an exported registered-riders service needs a page about who can ride.
   defp info_url_checks(%FlexService{include_registered: true} = service) do
-    if present?(service.info_url) do
+    if Values.present?(service.info_url) do
       []
     else
       [
@@ -761,7 +765,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp info_url_checks(%FlexService{}), do: []
 
   defp eligibility_checks(service) do
-    if present?(service.eligibility) do
+    if Values.present?(service.eligibility) do
       []
     else
       [
@@ -949,8 +953,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   # before the start taken as the next day (R6). A row without both times is not
   # a window.
   defp window(%{start: start, end: finish}) do
-    with start_minutes when is_integer(start_minutes) <- minutes_of(start),
-         finish_minutes when is_integer(finish_minutes) <- minutes_of(finish) do
+    with start_minutes when is_integer(start_minutes) <- GtfsTime.parse_hhmm(start),
+         finish_minutes when is_integer(finish_minutes) <- GtfsTime.parse_hhmm(finish) do
       if finish_minutes <= start_minutes do
         {start_minutes, finish_minutes + @minutes_per_day}
       else
@@ -988,16 +992,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
     end)
   end
 
-  defp minutes_of(time) do
-    with [hours, minutes] <- String.split(to_string(time), ":"),
-         {hours, ""} <- Integer.parse(hours),
-         {minutes, ""} <- Integer.parse(minutes) do
-      hours * 60 + minutes
-    else
-      _other -> nil
-    end
-  end
-
   # --- small helpers ----------------------------------------------------------
 
   defp check(level, section, field, text) do
@@ -1006,13 +1000,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
   defp missing_ids(ids, known) do
     ids
-    |> Enum.filter(&present?/1)
+    |> Enum.filter(&Values.present?/1)
     |> Enum.uniq()
     |> Enum.reject(&MapSet.member?(known, &1))
   end
 
   defp main_rule(service) do
-    Enum.find(service.booking_rules, &(not present?(&1.service_id)))
+    Enum.find(service.booking_rules, &(not Values.present?(&1.service_id)))
   end
 
   defp area_name(areas, key) do
@@ -1027,36 +1021,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
     if String.match?(unit, ~r/h/i), do: minutes * 60, else: minutes
   end
 
-  # The same wording as `RiderText`'s deadline sentence ("at least 1 hour"),
-  # whose duration helper is private there.
-  defp duration(0), do: "0 minutes"
-  defp duration(1), do: "1 minute"
-  defp duration(minutes) when minutes < 60, do: "#{minutes} minutes"
-
-  defp duration(minutes) do
-    hours = div(minutes, 60)
-    rest = rem(minutes, 60)
-
-    case {hours, rest} do
-      {hours, 0} -> "#{hours} hour#{plural(hours)}"
-      {hours, rest} -> "#{hours} hour#{plural(hours)} #{rest} minute#{plural(rest)}"
-    end
-  end
-
   defp day_count(days, business_days) do
     unit = if business_days, do: "business day", else: "day"
-    "#{days} #{unit}#{plural(days)}"
+    "#{days} #{unit}#{Wording.noun(days, "")}"
   end
 
   defp round1(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 1)
   defp round1(number), do: to_string(number)
 
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
-
-  defp blank?(value), do: not present?(value)
-
   defp trimmed(value), do: value |> to_string() |> String.trim()
-
-  defp plural(1), do: ""
-  defp plural(_count), do: "s"
 end

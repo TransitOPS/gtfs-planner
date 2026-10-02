@@ -20,6 +20,8 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Home.ChangeLinks
   alias GtfsPlannerWeb.ProductSurfaces
@@ -193,7 +195,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
           <div>
             <h3 class="text-sm font-bold text-strong">Last check</h3>
             <p :if={@check} id="check-time" class="text-[13px] text-muted">
-              {format_time(@check.local_at)}
+              {DisplayClock.format_datetime(@check.local_at)}
             </p>
           </div>
           <span
@@ -530,7 +532,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
       assign(assigns,
         path: ChangeLinks.path(assigns.version_id, assigns.item),
         meta: row_meta(assigns.item, assigns.scope),
-        time: format_time(assigns.item.local_at),
+        time: DisplayClock.format_datetime(assigns.item.local_at),
         link_class: @resume_row_grid <> " no-underline hover:bg-canvas",
         grid_class: @resume_row_grid
       )
@@ -649,13 +651,12 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   Shared by the planner page's Check and share card and the Pathways rail.
   """
   def check_summary(check) do
-    "#{count_text(check.errors, "error", "No errors")} · " <>
-      count_text(check.warnings, "warning", "no warnings")
+    "#{if(check.errors == 0, do: "No errors", else: Wording.count_noun(check.errors, "error"))} · " <>
+      if(check.warnings == 0,
+        do: "no warnings",
+        else: Wording.count_noun(check.warnings, "warning")
+      )
   end
-
-  defp count_text(0, _noun, zero), do: zero
-  defp count_text(1, noun, _zero), do: "1 #{noun}"
-  defp count_text(count, noun, _zero), do: "#{count} #{noun}s"
 
   defp check_badge_class(check) do
     case check_tone(check) do
@@ -675,9 +676,14 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
 
   defp check_link_label(check) do
     case check_tone(check) do
-      :error -> "View the #{count_text(check.errors, "error", "No errors") |> String.downcase()}"
-      :warning -> "View warnings"
-      :success -> "View the check"
+      :error ->
+        "View the #{if(check.errors == 0, do: "No errors", else: Wording.count_noun(check.errors, "error")) |> String.downcase()}"
+
+      :warning ->
+        "View warnings"
+
+      :success ->
+        "View the check"
     end
   end
 
@@ -690,7 +696,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   defp export_meta(%{type: type, local_finished_at: nil}), do: export_type_label(type)
 
   defp export_meta(%{type: type, local_finished_at: at}),
-    do: "#{export_type_label(type)} · #{format_time(at)}"
+    do: "#{export_type_label(type)} · #{DisplayClock.format_datetime(at)}"
 
   defp export_type_label(:full), do: "Full GTFS"
   defp export_type_label(:pathways), do: "Pathways export"
@@ -751,13 +757,4 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
       _ -> nil
     end
   end
-
-  @doc """
-  An agency-local wall-clock time as its display time.
-
-  `GtfsPlanner.Home` localizes every time the page shows (resume items, check,
-  export and board edits) with `DisplayClock`, so a view never converts a zone
-  itself and never shows a stored UTC instant as if it were local.
-  """
-  def format_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d, %-I:%M %p")
 end

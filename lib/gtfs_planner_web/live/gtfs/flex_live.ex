@@ -43,7 +43,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Flex
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
 
@@ -395,7 +397,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
         do: {"create_name", @create_messages.name},
         else: nil
       ),
-      if(kind == "detour" and blank?(values["route_id"]),
+      if(kind == "detour" and Values.blank?(values["route_id"]),
         do: {"create_route_id", @create_messages.route_id},
         else: nil
       )
@@ -407,7 +409,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
     version_id = socket.assigns.current_gtfs_version.id
     attrs = create_attrs(values)
 
-    case Flex.create_service(audit_context(socket), attrs) do
+    case Flex.create_service(AuditContext.from_assigns(socket.assigns), attrs) do
       {:ok, service} ->
         push_navigate(socket, to: "/gtfs/#{version_id}/flex/#{service.id}")
 
@@ -485,7 +487,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   # --- the copy action --------------------------------------------------------
 
   defp copy_services(socket, source) do
-    case Flex.copy_from_version(audit_context(socket), source.id) do
+    case Flex.copy_from_version(AuditContext.from_assigns(socket.assigns), source.id) do
       {:ok, 0} ->
         assign(socket,
           copy_target: nil,
@@ -496,7 +498,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
         socket
         |> load_services()
         |> assign(copy_target: nil, copy_error: nil)
-        |> put_flash(:info, "#{FlexComponents.count_label(count)} copied from #{source.name}.")
+        |> put_flash(
+          :info,
+          "#{Wording.count_noun(count, "flex service")} copied from #{source.name}."
+        )
 
       {:error, :target_not_empty} ->
         # Another editor added a service between the load and the copy: R14
@@ -520,15 +525,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
     end
   end
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # The copy action needs a source version only when this version has no
   # service, and `copy_from_version/2` copies into an empty version only. The
   # sources are the organization's published versions that hold a service: a
@@ -546,6 +542,4 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   end
 
   defp copy_form, do: to_form(%{"source_version_id" => ""}, as: :copy)
-
-  defp blank?(value), do: is_nil(value) or value == ""
 end

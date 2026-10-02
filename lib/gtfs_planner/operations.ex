@@ -41,6 +41,7 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @type actor :: %{required(:id) => Ecto.UUID.t()}
 
@@ -1650,29 +1651,31 @@ defmodule GtfsPlanner.Operations do
   # value, so only a present, non-blank value is written.
   defp garage_update_fields(fields) do
     %{}
-    |> put_non_blank(fields, :name)
-    |> put_non_blank(fields, :lat)
-    |> put_non_blank(fields, :lon)
+    |> put_non_blank_field(fields, :name)
+    |> put_non_blank_field(fields, :lat)
+    |> put_non_blank_field(fields, :lon)
   end
 
   # A present `vehicle_label` or `license_plate` is written, mapping a blank to
   # nil; an absent column is left out so the stored value is preserved.
   defp vehicle_update_fields(fields) do
     %{}
-    |> put_present(fields, :vehicle_label)
-    |> put_present(fields, :license_plate)
+    |> put_given_field(fields, :vehicle_label)
+    |> put_given_field(fields, :license_plate)
   end
 
-  defp put_non_blank(attrs, fields, key) do
+  # A whitespace-only name reaches the changeset, so the garage keeps its validation error.
+  defp put_non_blank_field(attrs, fields, key) do
     case Map.get(fields, key) do
       blank when blank in [nil, ""] -> attrs
       value -> Map.put(attrs, key, value)
     end
   end
 
-  defp put_present(attrs, fields, key) do
+  # A present key is always written, mapping blank to nil; an absent key keeps the stored value.
+  defp put_given_field(attrs, fields, key) do
     case Map.fetch(fields, key) do
-      {:ok, value} -> Map.put(attrs, key, blank_to_nil(value))
+      {:ok, value} -> Map.put(attrs, key, Values.presence(value))
       :error -> attrs
     end
   end
@@ -1752,13 +1755,10 @@ defmodule GtfsPlanner.Operations do
 
   defp present_value(fields, key) do
     case Map.fetch(fields, key) do
-      {:ok, value} -> blank_to_nil(value)
+      {:ok, value} -> Values.presence(value)
       :error -> nil
     end
   end
-
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
 
   defp load_existing(_organization_id, _kind, [], _lock?), do: %{}
 

@@ -881,7 +881,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   def handle_event("confirm_delete", _params, socket) do
     version_id = socket.assigns.current_gtfs_version.id
 
-    case Flex.delete_service(audit_context(socket), socket.assigns.service_id) do
+    case Flex.delete_service(AuditContext.from_assigns(socket.assigns), socket.assigns.service_id) do
       :ok ->
         {:noreply,
          socket
@@ -1643,7 +1643,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # the stored one again.
   defp set_active(socket, active) do
     case Flex.set_active(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.service_id,
            active
          ) do
@@ -1760,7 +1760,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   defp write_page(socket, loaded) do
     case Flex.save_service(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            loaded,
            page_attrs(socket.assigns.draft),
            area_inputs(socket)
@@ -2952,15 +2952,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       {area.key, area.name, area.source, area.census_geoid, area.census_layer,
        area.census_vintage, area.route_ids, area.distance_m, Map.get(geojson, geojson_key(area))}
     end)
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp service_path(socket) do

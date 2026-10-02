@@ -189,6 +189,30 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
       assert service_names(ctx.organization.id, ctx.version.id) == representative_names()
     end
 
+    test "a detour route of spaces is refused on its own question", ctx do
+      {:ok, view, _html} = live(ctx.conn, flex_path(ctx.version))
+
+      loaded(view)
+      view |> element("#create-service") |> render_click()
+
+      view
+      |> element("#create-form")
+      |> render_change(%{"create" => %{"kind" => "detour"}})
+
+      view
+      |> element("#create-form")
+      |> render_submit(%{"create" => %{"route_id" => "  ", "name" => "Toledo Call-ahead"}})
+
+      document = doc(view)
+
+      assert text_of(document, "#create-error-summary") =~
+               "Answer one question to create the service"
+
+      assert summary_links(document) == ["#create_route_id"]
+      assert text_of(document, "#create-error-summary") =~ "Choose the route that detours."
+      assert service_names(ctx.organization.id, ctx.version.id) == representative_names()
+    end
+
     test "an area service is created from its kind and name and opens its page", ctx do
       {:ok, view, _html} = live(ctx.conn, flex_path(ctx.version))
 

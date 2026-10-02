@@ -6457,8 +6457,8 @@ case Accounts.register_first_admin(%{
       last_stop: "BB_S3"
     })
 
-    # After midnight: the last arrival is 25:30, so the End cell reads 01:30 +1d and
-    # the axis ceiling is 26:00.
+    # After midnight: the last arrival is 25:30, so the End cell reads 25:30 in
+    # GTFS hours and the axis ceiling is 26:00.
     block_trip.(%{
       trip_id: "BB_MIDNIGHT_A",
       route_id: "BB_R1",

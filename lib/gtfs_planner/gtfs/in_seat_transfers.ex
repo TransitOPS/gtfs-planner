@@ -844,7 +844,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
         retry_write(transaction, attempts)
 
       {:error, reason} ->
-        if retryable?(reason),
+        if Repo.retryable_conflict?(reason),
           do: retry_write(transaction, attempts),
           else: {:error, reason}
     end
@@ -856,27 +856,13 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   defp retry_write(_transaction, _attempts), do: {:error, :busy}
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable?(error) do
+      if Repo.retryable_conflict?(error) do
         {:retryable_failure, error}
       else
         reraise error, __STACKTRACE__
       end
   end
-
-  defp write_transaction_module do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
-  defp retryable?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001", :deadlock_detected, "40P01"],
-       do: true
-
-  defp retryable?(_error), do: false
 end

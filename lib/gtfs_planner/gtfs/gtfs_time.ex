@@ -3,7 +3,8 @@ defmodule GtfsPlanner.Gtfs.GtfsTime do
   Parses and formats GTFS clock values as integer seconds.
 
   GTFS service times may continue beyond midnight, so these values do not use
-  Elixir's `Time` type.
+  Elixir's `Time` type. `format/1` is the form written to feeds, exports, inputs
+  and digests; `display/1` formats the same seconds for people.
   """
 
   @max_seconds 2_147_483_647
@@ -58,6 +59,51 @@ defmodule GtfsPlanner.Gtfs.GtfsTime do
 
   def format(_seconds),
     do: raise(ArgumentError, "time seconds must be within the supported range")
+
+  @spec display(integer() | nil) :: String.t()
+  def display(nil), do: "—"
+
+  def display(seconds) when is_integer(seconds) and seconds < 0 do
+    days = -Integer.floor_div(seconds, 86_400)
+    within_day = Integer.mod(seconds, 86_400)
+
+    display(within_day) <> " −#{days}d"
+  end
+
+  def display(seconds) when is_integer(seconds) do
+    hours = div(seconds, 3_600)
+    minutes = div(rem(seconds, 3_600), 60)
+    remainder = rem(seconds, 60)
+
+    clock = pad(hours) <> ":" <> pad(minutes)
+
+    if remainder == 0, do: clock, else: clock <> ":" <> pad(remainder)
+  end
+
+  @spec coerce(term()) :: non_neg_integer() | nil
+  def coerce(value) when is_integer(value) and value >= 0, do: value
+
+  def coerce(value) when is_binary(value) do
+    case parse(value) do
+      {:ok, seconds} -> seconds
+      {:error, :invalid_time} -> nil
+    end
+  end
+
+  def coerce(_value), do: nil
+
+  @spec parse_hhmm(term()) :: non_neg_integer() | nil
+  def parse_hhmm(value) when is_binary(value) do
+    with [hours, minutes] <- String.split(value, ":"),
+         {hours, ""} <- Integer.parse(hours),
+         {minutes, ""} <- Integer.parse(minutes) do
+      hours * 60 + minutes
+    else
+      _ -> nil
+    end
+  end
+
+  def parse_hhmm(_value), do: nil
 
   @spec format_offset(offset_seconds()) :: String.t()
   def format_offset(seconds)

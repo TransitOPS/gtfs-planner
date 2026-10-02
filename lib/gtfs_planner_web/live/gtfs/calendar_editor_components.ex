@@ -18,8 +18,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Wording
+
   @short_format "%b %-d"
-  @weekday_date_format "%a, %b %-d, %Y"
 
   @weekdays [
     monday: "Monday",
@@ -56,31 +57,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
   ## Dates and counts
 
-  @doc "One civil date the way the Calendars list writes it: `Sep 1, 2026`."
-  defdelegate format_date(date), to: GtfsPlannerWeb.Gtfs.CalendarComponents
-
-  @doc "A civil date with its weekday: `Thu, Nov 26, 2026`."
-  def weekday_date(%Date{} = date), do: Calendar.strftime(date, @weekday_date_format)
-
   @doc """
   A date range that drops what the reader already knows: `Sep 5 – 10, 2026` inside
   one month, `Sep 5 – Oct 10, 2026` inside one year, both years otherwise.
   """
-  def date_span(%Date{} = date, %Date{} = date), do: format_date(date)
+  def date_span(%Date{} = date, %Date{} = date), do: Wording.date(date)
 
   def date_span(%Date{year: year, month: month} = first, %Date{year: year, month: month} = last),
     do: "#{Calendar.strftime(first, @short_format)} – #{last.day}, #{year}"
 
   def date_span(%Date{year: year} = first, %Date{year: year} = last),
-    do: "#{Calendar.strftime(first, @short_format)} – #{format_date(last)}"
+    do: "#{Calendar.strftime(first, @short_format)} – #{Wording.date(last)}"
 
   def date_span(%Date{} = first, %Date{} = last),
-    do: "#{format_date(first)} – #{format_date(last)}"
-
-  @doc "`1 trip`, `2 trips`; a plural that is not `noun <> s` is passed as `many`."
-  def plural(1, one, _many), do: "1 #{one}"
-  def plural(count, one, many), do: "#{count} #{many || one <> "s"}"
-  def plural(count, one), do: plural(count, one, nil)
+    do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   ## What the header says
 
@@ -99,7 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     cond do
       ended? -> {:neutral, "Ended"}
       ends_soon && ends_soon.days_remaining == 0 -> {:warning, "Ends today"}
-      ends_soon -> {:warning, "Ends in #{plural(ends_soon.days_remaining, "day")}"}
+      ends_soon -> {:warning, "Ends in #{Wording.count_noun(ends_soon.days_remaining, "day")}"}
       no_service? -> {:warning, "No service"}
       source.usage.trip_count == 0 -> {:neutral, "Not used by trips"}
       source.today in source.active_dates -> {:success, "Runs today"}
@@ -113,7 +103,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       [
         "Runs #{days_phrase(calendar)}",
         date_span(calendar.start_date, calendar.end_date),
-        plural(length(dates), "service day")
+        Wording.count_noun(length(dates), "service day")
       ],
       " · "
     )
@@ -122,7 +112,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def lede(%{active_dates: []}), do: "Runs only on chosen dates · none added yet"
 
   def lede(%{active_dates: dates}) do
-    "Runs only on chosen dates · #{plural(length(dates), "date")}, " <>
+    "Runs only on chosen dates · #{Wording.count_noun(length(dates), "date")}, " <>
       date_span(List.first(dates), List.last(dates))
   end
 
@@ -130,7 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def usage_line(%{trip_count: 0}), do: "No trips use this calendar yet"
 
   def usage_line(%{trip_count: trips, routes: routes}) do
-    "#{plural(trips, "trip")} on #{plural(length(routes), "route")} " <>
+    "#{Wording.count_noun(trips, "trip")} on #{Wording.count_noun(length(routes), "route")} " <>
       "#{if trips == 1, do: "uses", else: "use"} this calendar"
   end
 
@@ -645,7 +635,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   defp added_as_service(cell), do: cell
 
   defp cell_label(cell, today) do
-    base = "#{weekday_date(cell.date)}: #{Map.fetch!(@cell_words, cell.state)}"
+    base = "#{Wording.weekday_date_with_year(cell.date)}: #{Map.fetch!(@cell_words, cell.state)}"
     if cell.date == today, do: base <> ", today", else: base
   end
 
@@ -756,7 +746,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   defp gap_sentence(breaks) do
     breaks
     |> Enum.map_join(". ", fn interval ->
-      "No service #{date_span(interval.first_date, interval.last_date)} (#{plural(interval.service_days, "service day")})"
+      "No service #{date_span(interval.first_date, interval.last_date)} (#{Wording.count_noun(interval.service_days, "service day")})"
     end)
     |> Kernel.<>(".")
   end
@@ -807,17 +797,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     periods = assigns.periods
 
     label =
-      "Service from #{format_date(first)} to #{format_date(last)}: " <>
+      "Service from #{Wording.date(first)} to #{Wording.date(last)}: " <>
         Enum.join(
           [
-            plural(length(periods.periods), "period"),
-            plural(length(periods.breaks), "break"),
-            plural(
+            Wording.count_noun(length(periods.periods), "period"),
+            Wording.count_noun(length(periods.breaks), "break"),
+            Wording.count_noun(
               length(periods.holidays) + length(other_days_off(periods)),
               "day off",
               "days off"
             ),
-            plural(length(extra), "extra service day")
+            Wording.count_noun(length(extra), "extra service day")
           ],
           ", "
         ) <> "."
@@ -839,7 +829,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       Enum.map(dates, fn date ->
         %{
           id: "periods-segment-date-#{date}",
-          title: format_date(date),
+          title: Wording.date(date),
           class: "absolute top-4 h-3.5 rounded-badge bg-cyan-700",
           style: span_style(geometry, date, date)
         }
@@ -851,7 +841,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       axis: axis(first, last),
       today: today_style(geometry, assigns.today),
       label:
-        "Service on #{plural(length(dates), "chosen date")} from #{format_date(first)} to #{format_date(last)}."
+        "Service on #{Wording.count_noun(length(dates), "chosen date")} from #{Wording.date(first)} to #{Wording.date(last)}."
     }
   end
 
@@ -872,7 +862,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     %{
       class: "absolute top-2.5 h-[26px] w-[3px] rounded-badge #{color}",
       style: "left: #{pct(left_percent(geometry, date))}",
-      title: "#{weekday_date(date)} · #{title}"
+      title: "#{Wording.weekday_date_with_year(date)} · #{title}"
     }
   end
 
@@ -1029,7 +1019,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
           {date_span(@row.first_date, @row.last_date)}
         </span>
         <span class="block text-[13px] text-muted">
-          Break · {plural(@row.service_days, "service day")} without service
+          Break · {Wording.count_noun(@row.service_days, "service day")} without service
         </span>
         <span class="mt-1 block sm:hidden">
           <.change_badge tone={:warning}>No service</.change_badge>
@@ -1052,7 +1042,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
               id={"calendar-exception-chips-#{date}"}
               class="flex flex-wrap items-center justify-between gap-2 text-[13px]"
             >
-              <span>{weekday_date(date)}</span>
+              <span>{Wording.weekday_date_with_year(date)}</span>
               <button
                 :if={@editable}
                 id={"calendar-exception-chips-remove-#{date}"}
@@ -1061,7 +1051,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
                 phx-value-date={Date.to_iso8601(date)}
                 class={link_button_class()}
               >
-                Restore service<span class="sr-only"> on {format_date(date)}</span>
+                Restore service<span class="sr-only"> on {Wording.date(date)}</span>
               </button>
             </li>
           </ul>
@@ -1097,7 +1087,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     ~H"""
     <tr id={"calendar-exception-chips-#{@entry.date}"} class="border-t border-subtle align-top">
       <td class="py-3 pr-3">
-        <span class="block font-semibold text-strong">{weekday_date(@entry.date)}</span>
+        <span class="block font-semibold text-strong">
+          {Wording.weekday_date_with_year(@entry.date)}
+        </span>
         <span :if={@note} class="mt-1 flex items-start gap-1 text-[13px] text-warning-fg">
           <.icon name="hero-exclamation-triangle" class="mt-0.5 size-3.5 shrink-0" />
           <span>{@note}</span>
@@ -1122,7 +1114,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
             @removed? -> "Restore service"
             @weekly? -> "Remove extra service"
             true -> "Remove date"
-          end}<span class="sr-only"> on {format_date(@entry.date)}</span>
+          end}<span class="sr-only"> on {Wording.date(@entry.date)}</span>
         </button>
       </td>
     </tr>
@@ -1202,16 +1194,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
     Enum.join(
       [
-        plural(removed_outside, "day off", "days off"),
-        plural(length(periods.breaks), "break"),
-        plural(length(periods.extra_days), "extra service day")
+        Wording.count_noun(removed_outside, "day off", "days off"),
+        Wording.count_noun(length(periods.breaks), "break"),
+        Wording.count_noun(length(periods.extra_days), "extra service day")
       ],
       " · "
     )
   end
 
   defp change_summary(:dates_only, _periods, exceptions, _rows),
-    do: plural(length(exceptions), "service date")
+    do: Wording.count_noun(length(exceptions), "service date")
 
   # A stored change can be redundant or outside the range; the row says so where the
   # person is looking, and the page summary says how many there are.
@@ -1250,7 +1242,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def warning_line(warning, kind, range \\ nil)
 
   def warning_line(%{reason: :ended, last_date: date}, kind, _range) do
-    "This calendar ended on #{format_date(date)}, so its trips no longer run. " <>
+    "This calendar ended on #{Wording.date(date)}, so its trips no longer run. " <>
       if(kind == :weekly,
         do: "Extend the end date to bring service back.",
         else: "Add service dates to bring it back."
@@ -1260,8 +1252,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def warning_line(%{reason: :ends_soon, last_date: date, days_remaining: days}, kind, _range) do
     lead =
       if days == 0,
-        do: "Ends today, on #{format_date(date)}.",
-        else: "Ends in #{plural(days, "day")}, on #{format_date(date)}."
+        do: "Ends today, on #{Wording.date(date)}.",
+        else: "Ends in #{Wording.count_noun(days, "day")}, on #{Wording.date(date)}."
 
     lead <>
       if(kind == :weekly,
@@ -1275,19 +1267,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
   def warning_line(%{reason: :redundant_addition, date: date}, _kind, _range),
     do:
-      "#{weekday_date(date)} already runs on the regular schedule, so the extra service changes nothing."
+      "#{Wording.weekday_date_with_year(date)} already runs on the regular schedule, so the extra service changes nothing."
 
   def warning_line(%{reason: :removal_on_nonservice_day, date: date}, _kind, _range),
     do:
-      "#{weekday_date(date)} isn’t a service day for this calendar, so removing service that day changes nothing."
+      "#{Wording.weekday_date_with_year(date)} isn’t a service day for this calendar, so removing service that day changes nothing."
 
   def warning_line(%{reason: :outside_range, exception: :added, date: date}, _kind, range),
     do:
-      "#{weekday_date(date)} is outside the regular dates#{range_suffix(range)}. It runs only because it is stored as its own change."
+      "#{Wording.weekday_date_with_year(date)} is outside the regular dates#{range_suffix(range)}. It runs only because it is stored as its own change."
 
   def warning_line(%{reason: :outside_range, date: date}, _kind, range),
     do:
-      "#{weekday_date(date)} is outside the regular dates#{range_suffix(range)}, so this day off changes nothing."
+      "#{Wording.weekday_date_with_year(date)} is outside the regular dates#{range_suffix(range)}, so this day off changes nothing."
 
   def warning_line(%{reason: reason}, _kind, _range), do: to_string(reason)
 
@@ -1349,7 +1341,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
         <p class="mt-0.5 text-[13px] text-muted">
           {if @trips > 0,
             do:
-              "#{plural(@trips, "trip")} on #{plural(length(@usage.routes), "route")}. Editing this calendar changes service for all of them.",
+              "#{Wording.count_noun(@trips, "trip")} on #{Wording.count_noun(length(@usage.routes), "route")}. Editing this calendar changes service for all of them.",
             else: "Nothing runs on this calendar yet."}
         </p>
       </div>
@@ -1516,7 +1508,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h3 class="text-base font-bold text-strong">Result after applying</h3>
         <p class="text-sm font-[650] text-strong">
-          {format_date(@extension.previous_end_date)} → {format_date(@extension.requested_end_date)}
+          {Wording.date(@extension.previous_end_date)} → {Wording.date(@extension.requested_end_date)}
         </p>
       </div>
 
@@ -1527,10 +1519,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
       <div id={"#{@id}-dates"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(@dates |> length(), "date", "dates")} newly in service
+          {Wording.count_noun(@dates |> length(), "date", "dates")} newly in service
         </h4>
         <p class="text-[13px] text-muted">
-          The first is {weekday_date(hd(@dates))} and the last is {weekday_date(List.last(@dates))}.
+          The first is {Wording.weekday_date_with_year(hd(@dates))} and the last is {Wording.weekday_date_with_year(
+            List.last(@dates)
+          )}.
         </p>
         <ul class="mt-1 flex flex-wrap gap-1.5">
           <li
@@ -1538,14 +1532,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
             id={"#{@id}-date-#{Date.to_iso8601(date)}"}
             class="rounded-badge bg-white px-2 py-0.5 text-[13px] font-[650] text-strong"
           >
-            {weekday_date(date)}
+            {Wording.weekday_date_with_year(date)}
           </li>
           <li
             :if={@hidden_dates > 0}
             id={"#{@id}-dates-hidden"}
             class="rounded-badge bg-white px-2 py-0.5 text-[13px] text-muted"
           >
-            and {plural(@hidden_dates, "more date", "more dates")}
+            and {Wording.count_noun(@hidden_dates, "more date", "more dates")}
           </li>
         </ul>
         <p :if={@dates == []} class="mt-1 text-sm text-muted">
@@ -1555,35 +1549,35 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
       <div id={"#{@id}-routes"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@routes), "route", "routes")} affected
+          {Wording.count_noun(length(@routes), "route", "routes")} affected
         </h4>
         <ul class="mt-1 grid gap-0.5 text-[13px]">
           <li :for={route <- @routes} class="text-default">
             <code class="font-mono font-[650] text-strong">{route.route_id}</code>
-            · {plural(route.trip_count, "trip", "trips")}
+            · {Wording.count_noun(route.trip_count, "trip", "trips")}
           </li>
         </ul>
         <p class="mt-1 text-[13px] text-muted">
-          {plural(length(@extension.trip_identities), "trip", "trips")} in total keep their
+          {Wording.count_noun(length(@extension.trip_identities), "trip", "trips")} in total keep their
           calendar and run on the new dates.
         </p>
       </div>
 
       <div :if={@closures != []} id={"#{@id}-closures"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@closures), "closure", "closures")} on this calendar
+          {Wording.count_noun(length(@closures), "closure", "closures")} on this calendar
         </h4>
         <ul class="mt-1 grid gap-0.5 text-[13px] text-default">
           <li :for={closure <- @closures}>
             <code class="font-mono font-[650] text-strong">{closure.pathway_id}</code>
-            · {plural(length(closure.station_stop_ids), "station", "stations")}
+            · {Wording.count_noun(length(closure.station_stop_ids), "station", "stations")}
           </li>
         </ul>
       </div>
 
       <div id={"#{@id}-retained"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@retained), "existing date change", "existing date changes")} kept
+          {Wording.count_noun(length(@retained), "existing date change", "existing date changes")} kept
         </h4>
         <p class="text-[13px] text-muted">
           This extension changes the end date only, so every exception already stored stays as it

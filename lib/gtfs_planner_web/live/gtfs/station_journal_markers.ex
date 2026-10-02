@@ -532,7 +532,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   end
 
   defp validate_coordinate(val, axis) do
-    case to_float(val) do
+    case cast_float(val) do
       {:ok, f} ->
         if not infinite?(f) and f >= 0.0 and f <= Coordinates.max_diagram_coordinate(axis) do
           {:ok, f}
@@ -545,16 +545,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp to_float(val) when is_float(val), do: {:ok, val}
-  defp to_float(val) when is_integer(val), do: {:ok, val * 1.0}
+  # Marker coordinates keep a tagged `{:ok, float} | :error` contract so a bad
+  # value stays distinguishable; the canonical `Values.to_float/1` returns a bare value.
+  defp cast_float(val) when is_float(val), do: {:ok, val}
+  defp cast_float(val) when is_integer(val), do: {:ok, val * 1.0}
 
-  defp to_float(%Decimal{} = dec) do
+  defp cast_float(%Decimal{} = dec) do
     {:ok, Decimal.to_float(dec)}
   rescue
     Decimal.Error -> :error
   end
 
-  defp to_float(_), do: :error
+  defp cast_float(_), do: :error
 
   defp infinite?(val), do: val in [:infinity, :"-infinity"]
 

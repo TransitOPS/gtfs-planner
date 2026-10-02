@@ -11,7 +11,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -62,7 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     search = params["search"] || ""
     sort_by = parse_column_atom(params["sort_by"]) || :stop_name
     sort_dir = parse_sort_dir(params["sort_dir"])
-    page = parse_integer(params["page"], 1)
+    page = Values.positive_integer(params["page"], 1)
     per_page = socket.assigns.per_page
 
     opts = [
@@ -149,10 +151,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
     query_params =
       %{}
-      |> maybe_put("wheelchair_boarding", wheelchair_boarding)
-      |> maybe_put("route_id", route_id)
-      |> maybe_put("direction_id", direction_id)
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("wheelchair_boarding", wheelchair_boarding)
+      |> Values.put_present("route_id", route_id)
+      |> Values.put_present("direction_id", direction_id)
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -165,13 +167,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   def handle_event("search", %{"search" => term}, socket) do
     query_params =
       %{}
-      |> maybe_put("search", term)
-      |> maybe_put(
+      |> Values.put_present("search", term)
+      |> Values.put_present(
         "wheelchair_boarding",
         socket.assigns.filter_form.params["wheelchair_boarding"]
       )
-      |> maybe_put("route_id", socket.assigns.filter_form.params["route_id"])
-      |> maybe_put("direction_id", socket.assigns.filter_form.params["direction_id"])
+      |> Values.put_present("route_id", socket.assigns.filter_form.params["route_id"])
+      |> Values.put_present("direction_id", socket.assigns.filter_form.params["direction_id"])
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
 
     {:noreply,
@@ -187,13 +189,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
     query_params =
       %{}
-      |> maybe_put(
+      |> Values.put_present(
         "wheelchair_boarding",
         socket.assigns.filter_form.params["wheelchair_boarding"]
       )
-      |> maybe_put("route_id", socket.assigns.filter_form.params["route_id"])
-      |> maybe_put("direction_id", socket.assigns.filter_form.params["direction_id"])
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_id", socket.assigns.filter_form.params["route_id"])
+      |> Values.put_present("direction_id", socket.assigns.filter_form.params["direction_id"])
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(socket.assigns.sort_by, socket.assigns.sort_dir)
       |> Map.drop(dropped)
 
@@ -224,13 +226,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
     query_params =
       %{}
-      |> maybe_put(
+      |> Values.put_present(
         "wheelchair_boarding",
         socket.assigns.filter_form.params["wheelchair_boarding"]
       )
-      |> maybe_put("route_id", socket.assigns.filter_form.params["route_id"])
-      |> maybe_put("direction_id", socket.assigns.filter_form.params["direction_id"])
-      |> maybe_put("search", socket.assigns.search)
+      |> Values.put_present("route_id", socket.assigns.filter_form.params["route_id"])
+      |> Values.put_present("direction_id", socket.assigns.filter_form.params["direction_id"])
+      |> Values.put_present("search", socket.assigns.search)
       |> maybe_put_sort(new_sort_by, new_sort_dir)
 
     {:noreply,
@@ -241,7 +243,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
-    page_num = parse_integer(page, 1)
+    page_num = Values.positive_integer(page, 1)
     query_params = build_query_params(socket, page_num)
 
     {:noreply,
@@ -553,7 +555,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               role="status"
               class="font-[650] tabular-nums text-strong"
             >
-              {stop_count_text(@total_count, has_active_constraints?(assigns))}
+              {case has_active_constraints?(assigns) do
+                true ->
+                  Wording.count_noun(
+                    @total_count,
+                    "stop or station matches",
+                    "stops and stations match"
+                  )
+
+                false ->
+                  Wording.count_noun(@total_count, "stop or station", "stops and stations")
+              end}
             </p>
 
             <div id="stops-chips" class="flex flex-wrap items-center gap-2">
@@ -1050,15 +1062,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           assigns.route_options_state == :unavailable) and assigns.route_id in [nil, ""])
   end
 
-  defp stop_count_text(count, false),
-    do: "#{count} #{pluralize(count, "stop or station", "stops and stations")}"
-
-  defp stop_count_text(count, true),
-    do: "#{count} #{pluralize(count, "stop or station matches", "stops and stations match")}"
-
-  defp pluralize(1, singular, _plural), do: singular
-  defp pluralize(_count, _singular, plural), do: plural
-
   defp no_match_title(assigns) do
     if only_search_active?(assigns),
       do: "No stops match “#{assigns.search}”",
@@ -1080,20 +1083,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
     [
       {"search", "Search", assigns.search != "", "“#{assigns.search}”"},
-      {"route_id", "Route", present?(params["route_id"]),
+      {"route_id", "Route", Values.present?(params["route_id"]),
        route_label(assigns.available_routes, params["route_id"])},
-      {"direction_id", "Direction", present?(params["direction_id"]),
+      {"direction_id", "Direction", Values.present?(params["direction_id"]),
        direction_filter_label(params["direction_id"])},
-      {"wheelchair_boarding", "Wheelchair access", present?(params["wheelchair_boarding"]),
+      {"wheelchair_boarding", "Wheelchair access", Values.present?(params["wheelchair_boarding"]),
        access_filter_label(params["wheelchair_boarding"])}
     ]
     |> Enum.filter(fn {_key, _kind, active?, _value} -> active? end)
     |> Enum.map(fn {key, kind, _active?, value} -> %{key: key, kind: kind, value: value} end)
   end
-
-  defp present?(nil), do: false
-  defp present?(""), do: false
-  defp present?(_value), do: true
 
   defp route_label(available_routes, route_id) do
     case Enum.find(available_routes, &(&1.route_id == route_id)) do
@@ -1113,22 +1112,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   # A blank name falls back to the ID, so a row always has something to open.
   defp stop_display_name(%{stop_name: name, stop_id: stop_id}) do
-    case trimmed(name) do
+    case Values.presence(name) do
       nil -> stop_id
       name -> name
     end
   end
 
-  defp stop_description(%{stop_desc: desc}), do: trimmed(desc)
-
-  defp trimmed(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp trimmed(_value), do: nil
+  defp stop_description(%{stop_desc: desc}), do: Values.presence(desc)
 
   # Most rows are plain stops, so only a station or entrance names its type
   # where the Type column is hidden.
@@ -1144,12 +1134,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   defp build_query_params(socket, page) do
     %{}
-    |> maybe_put("wheelchair_boarding", socket.assigns.filter_form.params["wheelchair_boarding"])
-    |> maybe_put("route_id", socket.assigns.filter_form.params["route_id"])
-    |> maybe_put("direction_id", socket.assigns.filter_form.params["direction_id"])
-    |> maybe_put("search", socket.assigns.search)
-    |> maybe_put("sort_by", socket.assigns.sort_by)
-    |> maybe_put("sort_dir", socket.assigns.sort_dir)
+    |> Values.put_present(
+      "wheelchair_boarding",
+      socket.assigns.filter_form.params["wheelchair_boarding"]
+    )
+    |> Values.put_present("route_id", socket.assigns.filter_form.params["route_id"])
+    |> Values.put_present("direction_id", socket.assigns.filter_form.params["direction_id"])
+    |> Values.put_present("search", socket.assigns.search)
+    |> Values.put_present("sort_by", socket.assigns.sort_by)
+    |> Values.put_present("sort_dir", socket.assigns.sort_dir)
     |> Map.put("page", page)
   end
 
@@ -1206,20 +1199,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   defp parse_sort_dir("desc"), do: :desc
   defp parse_sort_dir(_), do: :asc
-
-  defp parse_integer(nil, default), do: default
-  defp parse_integer("", default), do: default
-
-  defp parse_integer(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> default
-    end
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_sort(map, :stop_name, :asc), do: map
 

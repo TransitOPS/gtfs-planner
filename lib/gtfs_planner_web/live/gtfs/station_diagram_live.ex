@@ -26,13 +26,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
 
   import GtfsPlannerWeb.Gtfs.StationJournalComponents,
-    only: [journal_panel: 1, author_label: 1, relative_time: 2, absolute_time: 1]
+    only: [journal_panel: 1, author_label: 1, relative_time: 2]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DiagramUploadValidator
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Pathway
@@ -42,7 +43,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
@@ -897,8 +900,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     do: geo_stop_count > 0
 
   defp child_stop_marker(stop, badges_by_stop) do
-    lat = marker_float(stop.stop_lat)
-    lon = marker_float(stop.stop_lon)
+    lat = Values.to_float(stop.stop_lat)
+    lon = Values.to_float(stop.stop_lon)
     diagram_coordinate = marker_diagram_coordinate(stop)
     has_geo? = is_float(lat) and is_float(lon)
 
@@ -928,10 +931,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Map.get(stop_id, [])
     |> Enum.map(&%{pathway_mode: &1.pathway_mode, pathway_id: &1.pathway_id})
   end
-
-  defp marker_float(%Decimal{} = d), do: Decimal.to_float(d)
-  defp marker_float(n) when is_number(n), do: n * 1.0
-  defp marker_float(_), do: nil
 
   defp station_platform_options(all_child_stops, station_stop_id) do
     all_child_stops
@@ -1031,7 +1030,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 gtfs_version_id={@current_gtfs_version.id}
                 active_tab={:diagram}
               >
-                <:meta>Station · {level_count_label(length(@levels))}</:meta>
+                <:meta>
+                  Station · {if @levels == [],
+                    do: "No levels yet",
+                    else: Wording.count_noun(length(@levels), "level")}
+                </:meta>
                 <:actions>
                   <.editing_presence_control
                     station_editing_status={@station_editing_status}
@@ -1808,8 +1811,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
-    x = to_float(x)
-    y = to_float(y)
+    x = click_coordinate(x)
+    y = click_coordinate(y)
 
     case socket.assigns.mode do
       :view ->
@@ -2689,7 +2692,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          }} ->
           kept_status =
             if kept_count > 0,
-              do: ", #{kept_count} entered #{pluralize(kept_count, "length")} kept",
+              do: ", #{kept_count} entered #{Wording.noun(kept_count, "length")} kept",
               else: ""
 
           {:noreply,
@@ -2700,7 +2703,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> reset_ruler_state()
            |> assign(
              :scale_status,
-             "Scale updated - #{recalculated_count} pathway #{pluralize(recalculated_count, "length")} recalculated" <>
+             "Scale updated - #{recalculated_count} pathway #{Wording.noun(recalculated_count, "length")} recalculated" <>
                kept_status
            )}
 
@@ -4150,8 +4153,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.filter(& &1.on_active_level)
     |> Enum.flat_map(fn stop ->
       with %{x: x, y: y} <- Coordinates.normalize_point(stop.diagram_coordinate),
-           lat when is_number(lat) <- anchor_coordinate(stop.stop_lat),
-           lon when is_number(lon) <- anchor_coordinate(stop.stop_lon) do
+           lat when is_number(lat) <- finite_coordinate(stop.stop_lat),
+           lon when is_number(lon) <- finite_coordinate(stop.stop_lon) do
         [%{x: x, y: y, lat: lat, lon: lon}]
       else
         _ -> []
@@ -4165,12 +4168,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Mirrors `Gtfs.direct_candidates_for/1`'s conversion. NaN and infinity have
   # no float representation and are dropped rather than raised out of a
   # debounced event.
-  defp anchor_coordinate(%Decimal{} = value) do
+  defp finite_coordinate(%Decimal{} = value) do
     if Decimal.nan?(value) or Decimal.inf?(value), do: nil, else: Decimal.to_float(value)
   end
 
-  defp anchor_coordinate(value) when is_number(value), do: value * 1.0
-  defp anchor_coordinate(_), do: nil
+  defp finite_coordinate(value) when is_number(value), do: value * 1.0
+  defp finite_coordinate(_), do: nil
 
   # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
   # removed in the same cutover that wired this contract (INV-2).
@@ -4699,7 +4702,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp journal_context_captured_label(payload, entry) do
     case {Map.get(payload.local_times, {entry.id, :captured}), payload.now} do
       {%NaiveDateTime{} = local, %NaiveDateTime{} = now} -> relative_time(local, now)
-      {%NaiveDateTime{} = local, _now} -> absolute_time(local)
+      {%NaiveDateTime{} = local, _now} -> DisplayClock.format_datetime(local)
       _ -> nil
     end
   end
@@ -5992,8 +5995,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp combine_pair_signage(signage_a, signage_b) do
-    has_a? = non_blank_text?(signage_a)
-    has_b? = non_blank_text?(signage_b)
+    has_a? = Values.present?(signage_a)
+    has_b? = Values.present?(signage_b)
 
     cond do
       has_a? and has_b? ->
@@ -6009,9 +6012,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         nil
     end
   end
-
-  defp non_blank_text?(value) when is_binary(value), do: String.trim(value) != ""
-  defp non_blank_text?(_value), do: false
 
   defp pathway_pair_sort_key(pathway) do
     {pathway.from_stop_id, pathway.to_stop_id, pathway.pathway_id}
@@ -6064,9 +6064,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_optional_decimal(%Decimal{} = val), do: val
   defp parse_optional_decimal(_), do: nil
 
-  defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
+  # Named exception: a platform selected from the station's stops carries imported stop_id
+  # bytes, so a padded ID must still test against the stored set and be written exactly.
+  defp chosen_stop_id(nil), do: nil
+  defp chosen_stop_id(""), do: nil
+  defp chosen_stop_id(value), do: value
 
   defp to_optional_string(nil), do: ""
   defp to_optional_string(value), do: to_string(value)
@@ -6081,17 +6083,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_snakecase_id(_), do: ""
 
-  defp to_float(val) when is_float(val), do: val
-  defp to_float(val) when is_integer(val), do: val / 1
+  # Canvas click coordinates arrive as strings and `nil` means zero; the
+  # canonical `Values.to_float/1` returns nil and would crash at `Float.to_string/1`.
+  defp click_coordinate(val) when is_float(val), do: val
+  defp click_coordinate(val) when is_integer(val), do: val / 1
 
-  defp to_float(val) when is_binary(val) do
+  defp click_coordinate(val) when is_binary(val) do
     case Float.parse(val) do
       {parsed, _rest} -> parsed
       :error -> 0.0
     end
   end
 
-  defp to_float(nil), do: 0.0
+  defp click_coordinate(nil), do: 0.0
 
   defp parse_finite_float(nil), do: {:error, :invalid_coordinate}
   defp parse_finite_float(""), do: {:error, :invalid_coordinate}
@@ -6250,10 +6254,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     value = Map.get(stop_level, field)
     if Coordinates.normalize_point(value), do: value, else: nil
   end
-
-  defp level_count_label(0), do: "No levels yet"
-  defp level_count_label(1), do: "1 level"
-  defp level_count_label(count), do: "#{count} levels"
 
   defp scale_configured?(nil), do: false
 
@@ -7093,7 +7093,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
 
     location_type = parse_int(params["location_type"] || "3")
-    selected_parent_platform = blank_to_nil(params["parent_platform"])
+    selected_parent_platform = chosen_stop_id(params["parent_platform"])
     platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
     parent_station =
@@ -7111,7 +7111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       parent_station: parent_station,
       level_id: params["level_id"],
       wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
-      platform_code: blank_to_nil(params["platform_code"]),
+      platform_code: Values.presence(params["platform_code"]),
       stop_lat: params["stop_lat"],
       stop_lon: params["stop_lon"],
       diagram_coordinate: %{"x" => x, "y" => y}
@@ -7894,7 +7894,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          stop.id,
          origin_id,
          "Remove point from the plan?",
-         "This clears its position and deletes #{count} connected #{pluralize(count, "pathway")}. The point stays in this station.",
+         "This clears its position and deletes #{count} connected #{Wording.noun(count, "pathway")}. The point stays in this station.",
          "Remove from plan"
        )}
     end
@@ -7911,7 +7911,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          stop.id,
          origin_id,
          "Delete point?",
-         "This permanently deletes #{stop.stop_name || stop.stop_id} and #{count} connected #{pluralize(count, "pathway")}.",
+         "This permanently deletes #{stop.stop_name || stop.stop_id} and #{count} connected #{Wording.noun(count, "pathway")}.",
          "Delete point"
        )}
     end
@@ -7941,7 +7941,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          level.id,
          origin_id,
          "Remove level from station?",
-         "This unassigns #{child_stop_count} #{pluralize(child_stop_count, "point")} and removes this level's floorplan. The level record stays available.",
+         "This unassigns #{child_stop_count} #{Wording.noun(child_stop_count, "point")} and removes this level's floorplan. The level record stays available.",
          "Remove level"
        )
        |> Map.put(:lock_version, stop_level.lock_version)}
@@ -8034,9 +8034,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp safe_focus_origin(_origin_id), do: nil
-
-  defp pluralize(1, singular), do: singular
-  defp pluralize(_count, singular), do: "#{singular}s"
 
   defp load_naming_preview(socket, style) do
     case Stations.preview_station_naming(socket.assigns.audit_ctx, style) do

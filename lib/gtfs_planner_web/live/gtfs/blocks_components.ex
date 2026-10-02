@@ -19,8 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   local to this page is the timeline table and the gap markers, styled by the
   `blocks (design system)` section of `assets/css/app.css`.
 
-  Times are printed from parsed seconds with `clock/1`; nothing here re-reads a
-  clock string from the database. The timeline reads the block's trips
+  Times are printed from parsed seconds with `GtfsTime.display/1`; nothing here
+  re-reads a clock string from the database. The timeline reads the block's trips
   and findings only, and takes the block's plot order from the pure
   `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs. The
   List view and the pool take a trip's findings from the day's own finding list,
@@ -35,6 +35,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -247,7 +249,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         Showing the suggestion
       </span>
       <span id="blocks-summary-note" class="ml-auto text-[13px] text-muted">
-        Whole service day · {day_count_label(@day_type.date_count)}
+        Whole service day · {Wording.count_noun(@day_type.date_count, "day")}
       </span>
     </section>
     """
@@ -503,7 +505,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       return_focus_id="blocks-service-dates"
       class="max-w-[520px]"
     >
-      <:lede>{@day_type.label} · {day_count_label(@day_type.date_count)}</:lede>
+      <:lede>{@day_type.label} · {Wording.count_noun(@day_type.date_count, "day")}</:lede>
 
       <.drawer_scroll>
         <p class="text-sm text-muted">
@@ -512,14 +514,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <section :for={{label, dates} <- @months} data-role="service-dates-month">
           <h3 class="text-[15px] font-bold text-strong">
-            {label} <span class="font-normal text-muted">· {day_count_label(length(dates))}</span>
+            {label}
+            <span class="font-normal text-muted">· {Wording.count_noun(length(dates), "day")}</span>
           </h3>
           <ul class="mt-2 flex flex-wrap gap-1.5">
             <li
               :for={date <- dates}
               class="rounded-badge bg-canvas px-2 py-1 text-[13px] tabular-nums text-default"
             >
-              {short_date(date)}
+              {weekday_day(date)}
             </li>
           </ul>
         </section>
@@ -634,7 +637,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               class="min-h-11"
               phx-click="request_remove_stale"
             >
-              Remove {@stale_count} {word(
+              Remove {@stale_count} {Wording.noun(
                 @stale_count,
                 "record that no longer matches",
                 "records that no longer match"
@@ -652,7 +655,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         them. --%>
         <section id="checks-in-seat-version" class="border-t border-subtle pt-5">
           <h3 class="text-[15px] font-bold text-strong">
-            This version · {length(@unmatched)} in-seat {word(
+            This version · {length(@unmatched)} in-seat {Wording.noun(
               length(@unmatched),
               "record doesn't",
               "records don't"
@@ -687,7 +690,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             class="mt-3 min-h-11"
             phx-click="request_remove_unmatched"
           >
-            Remove {length(@unmatched)} {word(length(@unmatched), "record", "records")}
+            Remove {length(@unmatched)} {Wording.noun(length(@unmatched), "record", "records")}
           </.button>
         </section>
       </.drawer_scroll>
@@ -795,12 +798,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # no question, which the caller checks before it renders a button asking it.
   defp removal_copy(scope, count) when count > 0 do
     %{
-      title: "Remove #{count} in-seat #{word(count, "record", "records")}?",
+      title: "Remove #{count} in-seat #{Wording.noun(count, "record", "records")}?",
       body:
-        "#{word(count, "This record no longer matches", "These records no longer match")} #{scope}. " <>
+        "#{Wording.noun(count, "This record no longer matches", "These records no longer match")} #{scope}. " <>
           "Trips and blocks don't change. " <>
           "Each deletion is audited; riders will see whatever apps infer from the blocks.",
-      confirm: "Remove #{count} #{word(count, "record", "records")}"
+      confirm: "Remove #{count} #{Wording.noun(count, "record", "records")}"
     }
   end
 
@@ -986,7 +989,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <details open>
           <summary class="flex min-h-11 cursor-pointer items-center text-sm font-[650] text-action">
-            Inspect {length(@moves)} affected {word(length(@moves), "trip", "trips")} and dates
+            Inspect {length(@moves)} affected {Wording.noun(length(@moves), "trip", "trips")} and dates
           </summary>
           <div class="mt-2 grid gap-3">
             <div
@@ -1006,7 +1009,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 <tbody class="divide-y divide-subtle/60">
                   <tr :for={move <- @moves}>
                     <td class="px-3 py-1.5">{move.trip.trip_id}</td>
-                    <td class="px-3 py-1.5 tabular-nums">{clock(move.trip.first_departure)}</td>
+                    <td class="px-3 py-1.5 tabular-nums">
+                      {GtfsTime.display(move.trip.first_departure)}
+                    </td>
                     <td class="px-3 py-1.5">{move.from || "Unassigned"}</td>
                     <td class="px-3 py-1.5">
                       <strong data-role="suggestion-proposed" class="text-strong">
@@ -1237,7 +1242,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     [
       if(existing > 0,
-        do: "#{existing} existing #{word(existing, "problem remains", "problems remain")}"
+        do: "#{existing} existing #{Wording.noun(existing, "problem remains", "problems remain")}"
       ),
       if(assigns.fixed_problems > 0, do: "#{assigns.fixed_problems} fixed")
     ]
@@ -1283,19 +1288,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp repeats_note([]), do: nil
 
   defp repeats_note(ids) do
-    "#{Enum.join(ids, ", ")} #{word(length(ids), "repeats", "repeat")} " <>
-      "without individual departures and #{word(length(ids), "stays", "stay")} unassigned."
+    "#{Enum.join(ids, ", ")} #{Wording.noun(length(ids), "repeats", "repeat")} " <>
+      "without individual departures and #{Wording.noun(length(ids), "stays", "stay")} unassigned."
   end
 
   defp estimate_note(0), do: nil
 
   defp estimate_note(count) do
-    "#{count} #{word(count, "driving time is", "driving times are")} still " <>
-      "#{word(count, "an estimate", "estimates")}."
+    "#{count} #{Wording.noun(count, "driving time is", "driving times are")} still " <>
+      "#{Wording.noun(count, "an estimate", "estimates")}."
   end
-
-  defp word(1, singular, _plural), do: singular
-  defp word(_count, _singular, plural), do: plural
 
   # The deadhead figure is printed in hours to one decimal; a plan's drive seconds
   # are whole minutes, so the same shape is one decimal of an hour.
@@ -1382,7 +1384,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       return_focus_id="blocks-summary-figures-item-vehicles"
       class="max-w-[520px]"
     >
-      <:lede :if={@day_type}>{@day_type.label} · {day_count_label(@day_type.date_count)}</:lede>
+      <:lede :if={@day_type}>
+        {@day_type.label} · {Wording.count_noun(@day_type.date_count, "day")}
+      </:lede>
 
       <.drawer_scroll>
         <section id="plan-summary-plan">
@@ -1501,7 +1505,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   "block min-w-0 flex-1",
                   (bar.over_listed? && "bg-error-line") || "bg-navy-300"
                 ]}
-                title={"#{clock(bar.start_secs)} · #{bar.count}"}
+                title={"#{GtfsTime.display(bar.start_secs)} · #{bar.count}"}
               >
               </i>
               <span
@@ -1521,8 +1525,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               </span>
             </div>
             <div class="mt-1 flex justify-between text-xs tabular-nums text-muted">
-              <span>{clock(List.first(@chart.bins).start_secs)}</span>
-              <span>{clock(List.last(@chart.bins).start_secs + 900)}</span>
+              <span>{GtfsTime.display(List.first(@chart.bins).start_secs)}</span>
+              <span>{GtfsTime.display(List.last(@chart.bins).start_secs + 900)}</span>
             </div>
             <p id="plan-summary-chart-summary" class="mt-2 text-sm">
               {chart_summary(@chart.row)}
@@ -1576,7 +1580,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               </dd>
             </dl>
             <p id="plan-summary-relief-note" class="mt-2 text-[13px] text-muted">
-              Limit {duration(@max_piece_minutes)} · {count_label(@relief_stop_count, "stop", "stops")} marked.{too_long_note(
+              Limit {Wording.duration(@max_piece_minutes * 60)} · {Wording.count_noun(
+                @relief_stop_count,
+                "stop"
+              )} marked.{too_long_note(
                 @longest_stretch,
                 @max_piece_minutes
               )}
@@ -2502,10 +2509,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
           <.trip_field label="Departs">
-            <strong>{clock(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
+            <strong>{GtfsTime.display(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
           </.trip_field>
           <.trip_field label="Arrives">
-            <strong>{clock(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
+            <strong>{GtfsTime.display(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
           </.trip_field>
           <.trip_field label="Headsign">{blank_dash(@trip.trip_headsign)}</.trip_field>
           <.trip_field label="Pattern">{blank_dash(@trip.route_pattern_id)}</.trip_field>
@@ -2788,7 +2795,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="grid gap-4 text-default"
     >
       <p class="text-sm text-muted">
-        {count_label(@trip_count, "trip", "trips")} · applies on {@total_dates} days
+        {Wording.count_noun(@trip_count, "trip")} · applies on {@total_dates} days
       </p>
 
       <.input
@@ -3150,8 +3157,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="rounded-card border border-subtle px-3.5 py-3 text-sm"
     >
       <p class="font-bold text-strong">
-        {if @effect.selected?, do: @current_label, else: "Also changes"} · {@effect.day_type.label} · {day_count_label(
-          @effect.day_type.date_count
+        {if @effect.selected?, do: @current_label, else: "Also changes"} · {@effect.day_type.label} · {Wording.count_noun(
+          @effect.day_type.date_count,
+          "day"
         )}
       </p>
       <p class="mt-1">{effect_sentence(@effect, @review)}</p>
@@ -3321,10 +3329,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
           <.trip_field wide? label="Arrives">
-            <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
+            <strong>{GtfsTime.display(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
           </.trip_field>
           <.trip_field wide? label="Departs">
-            <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
+            <strong>{GtfsTime.display(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
           </.trip_field>
           <.trip_field wide? label="On board">
             <span id="gap-available">{@on_board}</span>
@@ -3813,7 +3821,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     params =
       [{"gap", gap}] ++ if(is_binary(day), do: [{"day", day}], else: [])
 
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(params)
+    ~p"/gtfs/#{version_id}/blocks?#{params}"
   end
 
   @doc """
@@ -3954,12 +3962,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="max-w-[520px]"
     >
       <:lede :if={@selected_day_type}>
-        {@selected_day_type.label} · {day_count_label(@selected_day_type.date_count)}
+        {@selected_day_type.label} · {Wording.count_noun(@selected_day_type.date_count, "day")}
       </:lede>
 
       <.drawer_scroll>
         <p id="block-day-summary" class="text-sm text-muted">
-          {count_label(@summary.trip_count, "trip", "trips")} · {time_out(
+          {Wording.count_noun(@summary.trip_count, "trip")} · {time_out(
             @summary.start_secs,
             @summary.end_secs
           )} · {hours(@summary.hours)} h out of the garage · {km(@movements.service_km)} km with
@@ -4059,7 +4067,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 class="rounded-card border border-subtle px-3.5 py-3 text-sm"
               >
                 <p class="font-bold text-strong">
-                  {change.label} · {day_count_label(change.date_count)}
+                  {change.label} · {Wording.count_noun(change.date_count, "day")}
                 </p>
                 <p class="mt-1">{change.sentence}</p>
               </div>
@@ -4196,7 +4204,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               label="Merge into another block"
               placeholder="Search block ID"
               autocomplete="off"
-              help={"All #{count_label(@summary.trip_count, "trip", "trips")} join the block you choose. A merge never creates an ID."}
+              help={"All #{Wording.count_noun(@summary.trip_count, "trip")} join the block you choose. A merge never creates an ID."}
             />
 
             <fieldset>
@@ -4255,7 +4263,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               Remove all trips
             </.button>
             <p class="mt-2 text-[13px] text-muted">
-              Puts {count_label(@summary.trip_count, "trip", "trips")} back in Unassigned trips.
+              Puts {Wording.count_noun(@summary.trip_count, "trip")} back in Unassigned trips.
               You'll review the effect first.
             </p>
             <p
@@ -4422,7 +4430,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     # A block whose calendars disagree has no single garage to compare a choice
     # against, so the reader has not decided anything yet and the preview stays
     # out of the way until the picker holds a garage.
-    if change == [] or (undecided?(resolution) and blank_choice(garage) == nil) do
+    if change == [] or (undecided?(resolution) and Values.presence(garage) == nil) do
       []
     else
       services = block.trips |> Enum.map(& &1.service_id) |> MapSet.new()
@@ -4448,9 +4456,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         "Block #{block_id} runs the same #{shared} trips there. " <> change_sentence(change)
     }
   end
-
-  defp blank_choice(""), do: nil
-  defp blank_choice(value), do: value
 
   defp undecided?(%{conflict: conflict}), do: conflict not in [nil, []]
   defp undecided?(_resolution), do: false
@@ -4481,13 +4486,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp change_parts(garage, type, resolution, garages, types) do
     []
     |> then(
-      &if blank_choice(garage) != resolution.garage_id,
-        do: ["garage becomes #{garage_name(garages, blank_choice(garage))}" | &1],
+      &if Values.presence(garage) != resolution.garage_id,
+        do: ["garage becomes #{garage_name(garages, Values.presence(garage))}" | &1],
         else: &1
     )
     |> then(
-      &if blank_choice(type) != resolution.vehicle_type_id,
-        do: ["type becomes #{type_name(types, blank_choice(type))}" | &1],
+      &if Values.presence(type) != resolution.vehicle_type_id,
+        do: ["type becomes #{type_name(types, Values.presence(type))}" | &1],
         else: &1
     )
     |> Enum.reverse()
@@ -4632,7 +4637,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp leave_row(pull, trip, garage) do
     %{
       kind: :leave,
-      time: clock(pull.start_secs),
+      time: GtfsTime.display(pull.start_secs),
       activity: "Leave #{garage} garage",
       detail: pull_detail(pull, stop_name(trip && trip.first_stop), :out),
       error?: false,
@@ -4644,7 +4649,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp return_row(pull, _trip, garage) do
     %{
       kind: :return,
-      time: clock(pull.end_secs),
+      time: GtfsTime.display(pull.end_secs),
       activity: "Return to #{garage} garage",
       detail: pull_detail(pull, nil, :back),
       error?: false,
@@ -4661,10 +4666,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp pull_detail(%{drive_secs: nil}, _to, :back), do: "Driving time unknown"
 
   defp pull_detail(%{drive_secs: secs, source: source}, to, :out),
-    do: "#{minutes(secs)}#{est_mark(source)} to #{to}"
+    do: "#{Wording.duration(secs)}#{est_mark(source)} to #{to}"
 
   defp pull_detail(%{drive_secs: secs, source: source}, _to, :back),
-    do: "#{minutes(secs)}#{est_mark(source)}"
+    do: "#{Wording.duration(secs)}#{est_mark(source)}"
 
   defp trip_row(trip, routes, note \\ nil) do
     stops = "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
@@ -4723,18 +4728,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     detail =
       cond do
         error? ->
-          "! Needs #{minutes(movement.drive_secs)}; has #{div(gap.gap_secs, 60)}"
+          "! Needs #{Wording.duration(movement.drive_secs)}; has #{div(gap.gap_secs, 60)}"
 
         movement.drive_secs == nil ->
           "Driving time unknown"
 
         true ->
-          "#{minutes(movement.drive_secs)}#{est_mark(movement.source)}"
+          "#{Wording.duration(movement.drive_secs)}#{est_mark(movement.source)}"
       end
 
     %{
       kind: :drive,
-      time: clock(movement.arrival_secs),
+      time: GtfsTime.display(movement.arrival_secs),
       activity: "Drive to #{to_stop}",
       detail: detail,
       error?: error?,
@@ -4746,9 +4751,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp overlap_row(movement, gap) do
     %{
       kind: :overlap,
-      time: clock(movement.arrival_secs),
+      time: GtfsTime.display(movement.arrival_secs),
       activity: "Overlap",
-      detail: "#{minutes(-gap.gap_secs)} overlap",
+      detail: "#{Wording.duration(-gap.gap_secs)} overlap",
       error?: true,
       trip: nil,
       gap: gap
@@ -4762,7 +4767,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp wait_row(movement, gap, to_stop, relief?) do
     %{
       kind: :wait,
-      time: clock(movement.arrival_secs + (movement.drive_secs || 0)),
+      time: GtfsTime.display(movement.arrival_secs + (movement.drive_secs || 0)),
       activity: "Wait at #{to_stop}",
       detail:
         "#{div(movement.wait_secs || gap.gap_secs, 60)} min" <>
@@ -4860,23 +4865,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # distance and the time available, the deadhead with the drive it needs, or a
   # drive the vehicle cannot make in time.
   defp gap_text(%{gap_secs: secs}, _from, _to, _movement) when secs < 0,
-    do: "#{minutes(-secs)} overlap"
+    do: "#{Wording.duration(-secs)} overlap"
 
   # The gap the vehicle cannot cover: the drive it needs against the time there is,
   # which is the sentence the drawer leads with. The minutes are the movement's own
   # drive and the block's own gap, not a subtraction here.
   defp gap_text(%{gap_secs: secs}, _from, to, %{feasible?: false, drive_secs: drive})
        when is_integer(drive),
-       do: "Needs #{minutes(drive)} to reach #{stop_name(to.first_stop)}; has #{minutes(secs)}."
+       do:
+         "Needs #{Wording.duration(drive)} to reach #{stop_name(to.first_stop)}; has #{Wording.duration(secs)}."
 
   defp gap_text(%{handoff: :same_stop, gap_secs: secs}, _from, to, _movement),
-    do: "#{minutes(secs)} layover at #{stop_name(to.first_stop)}"
+    do: "#{Wording.duration(secs)} layover at #{stop_name(to.first_stop)}"
 
   defp gap_text(%{handoff: :same_station, gap_secs: secs}, from, _to, _movement),
-    do: "Same station · #{minutes(secs)} at #{station_name(from.last_stop)}"
+    do: "Same station · #{Wording.duration(secs)} at #{station_name(from.last_stop)}"
 
   defp gap_text(%{handoff: {:nearby, meters}, gap_secs: secs}, _from, _to, _movement),
-    do: "Nearby stop · #{meters} m · #{minutes(secs)} available"
+    do: "Nearby stop · #{meters} m · #{Wording.duration(secs)} available"
 
   defp gap_text(%{handoff: {:moves, nil}}, from, to, _movement),
     do: move_text(from, to, " (no coordinates)")
@@ -5096,8 +5102,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # pair's own `gap=` deep link kept so the drawer the editor came from is still
   # the one they land on.
   defp connection_day_path(version_id, day_key, from, to) do
-    "/gtfs/#{version_id}/blocks?" <>
-      URI.encode_query([{"day", day_key}, {"gap", "#{from.id}|#{to.id}"}])
+    ~p"/gtfs/#{version_id}/blocks?#{[day: day_key, gap: "#{from.id}|#{to.id}"]}"
   end
 
   defp record_note([], _to), do: nil
@@ -5195,14 +5200,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # time available to speak of — its own callout prints the overlap — so the row
   # says so rather than printing a negative number of minutes.
   defp available_text(%{gap_secs: secs}) when secs < 0, do: "—"
-  defp available_text(%{gap_secs: secs}), do: minutes(secs)
+  defp available_text(%{gap_secs: secs}), do: Wording.duration(secs)
 
   # The drive without riders, with the source the movement carries. A gap that
   # needs no drive names the handoff that made it, and a drive whose time the
   # version cannot compute says so rather than printing a zero, because a zero
   # would read as a drive that costs nothing.
   defp drive_text(%{kind: :layover}, %{handoff: handoff}), do: "None · #{handoff_label(handoff)}"
-  defp drive_text(%{drive_secs: secs}, _gap) when is_integer(secs), do: minutes(secs)
+  defp drive_text(%{drive_secs: secs}, _gap) when is_integer(secs), do: Wording.duration(secs)
   defp drive_text(_movement, _gap), do: "Unknown · no driving time"
 
   defp handoff_label(:same_stop), do: "same stop"
@@ -5224,13 +5229,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp drive_badge_tone(%{source: :entered}), do: :success
   defp drive_badge_tone(_movement), do: :neutral
 
-  defp drive_minutes(%{drive_secs: secs}) when is_integer(secs), do: minutes(secs)
+  defp drive_minutes(%{drive_secs: secs}) when is_integer(secs), do: Wording.duration(secs)
   defp drive_minutes(_movement), do: "an unknown number of"
 
   # The wait a reachable gap leaves behind. A drive the vehicle cannot make and a
   # drive whose length is unknown both leave no wait to report, so the row says so
   # rather than printing a number the movements never derived.
-  defp wait_text(%{wait_secs: secs}) when is_integer(secs) and secs >= 0, do: minutes(secs)
+  defp wait_text(%{wait_secs: secs}) when is_integer(secs) and secs >= 0,
+    do: Wording.duration(secs)
 
   defp wait_text(_movement), do: "—"
 
@@ -5695,10 +5701,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               icon="hero-truck"
               title="No blocks on this service day yet"
             >
-              A block is the trips one vehicle works in order. This day has {count_label(
+              A block is the trips one vehicle works in order. This day has {Wording.count_noun(
                 @counts.unassigned,
-                "trip",
-                "trips"
+                "trip"
               )} with no vehicle. Select trips and place them on a new block.
               <:action>
                 <.button
@@ -5995,8 +6000,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp connections_summary(nil), do: ""
 
   defp connections_summary(connections) do
-    "#{connections.count} of #{count_label(connections.total, "connection", "connections")} " <>
-      "at #{count_label(length(connections.places), "place", "places")}"
+    "#{connections.count} of #{Wording.count_noun(connections.total, "connection")} " <>
+      "at #{Wording.count_noun(length(connections.places), "place")}"
   end
 
   # The page's groups as one section per place, in the order R12 already sorted
@@ -6107,8 +6112,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # assigning trips to blocks is the one step that creates the first connection.
   defp connections_timeline_path(version_id, state) do
     case state.day do
-      nil -> "/gtfs/#{version_id}/blocks"
-      day -> "/gtfs/#{version_id}/blocks?" <> URI.encode_query(day: day)
+      nil -> ~p"/gtfs/#{version_id}/blocks"
+      day -> ~p"/gtfs/#{version_id}/blocks?#{[day: day]}"
     end
   end
 
@@ -6317,7 +6322,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 {section.name}
               </h2>
               <span class="text-[13px] tabular-nums text-muted">
-                {count_label(section.count, "connection", "connections")}
+                {Wording.count_noun(section.count, "connection")}
               </span>
             </div>
 
@@ -6400,7 +6405,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           title={"#{place.name} isn't on the map."}
           class="shadow-card"
         >
-          Its stop has no coordinates; its {count_label(place.count, "connection", "connections")} are
+          Its stop has no coordinates; its {Wording.count_noun(place.count, "connection")} are
           still in the list.
         </.message>
       </div>
@@ -6635,7 +6640,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <dd :if={!@same_stop?}>{connection_handoff_names(@group.handoffs)}</dd>
         <dt class="text-muted">On board</dt>
         <dd class="tabular-nums">
-          {connection_wait_text(@group)} min, arrivals {clock(@group.first_arrival)}–{clock(
+          {connection_wait_text(@group)} min, arrivals {GtfsTime.display(@group.first_arrival)}–{GtfsTime.display(
             @group.last_arrival
           )}
         </dd>
@@ -6656,7 +6661,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         id="connections-group-count"
         class="mt-5 text-sm font-semibold text-strong"
       >
-        {count_label(length(@group.connections), "connection", "connections")}
+        {Wording.count_noun(length(@group.connections), "connection")}
       </h3>
 
       <div class="mt-2 max-w-full overflow-x-auto">
@@ -6702,7 +6707,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 </button>
               </td>
               <td class="pr-2 tabular-nums">
-                {clock(connection.from.last_arrival)}
+                {GtfsTime.display(connection.from.last_arrival)}
                 <span class="text-[12px] text-muted">
                   {connection.from.trip_id}→{connection.to.trip_id}
                 </span>
@@ -6756,7 +6761,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-disabled-with="Reviewing…"
           disabled={is_nil(@bulk_choice)}
         >
-          Review {count_label(length(@group.connections), "connection", "connections")}
+          Review {Wording.count_noun(length(@group.connections), "connection")}
         </.button>
         <p
           :if={is_nil(@bulk_choice)}
@@ -6891,7 +6896,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         :save_label,
         if(assigns.pending,
           do: "Saving…",
-          else: "Save #{count_label(included, "connection", "connections")}"
+          else: "Save #{Wording.count_noun(included, "connection")}"
         )
       )
 
@@ -6910,7 +6915,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <.route_badge_for route_id={@group.from_route_id} routes={@routes} />
         <.icon name={connection_join_icon(@group)} class="size-4 shrink-0 text-muted" />
         <.route_badge_for route_id={@group.to_route_id} routes={@routes} />
-        at {@group.place.name} · {count_label(length(@review.rows), "connection", "connections")} ·
+        at {@group.place.name} · {Wording.count_noun(length(@review.rows), "connection")} ·
         Preview, not saved
       </:lede>
 
@@ -6982,7 +6987,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                       phx-click="toggle_bulk_row"
                       phx-value-id={row.id}
                       disabled={@pending}
-                      aria-label={"Include block #{row.connection.block_id}, #{clock(
+                      aria-label={"Include block #{row.connection.block_id}, #{GtfsTime.display(
                         row.connection.from.last_arrival
                       )}"}
                       class="size-[18px] accent-action"
@@ -6991,7 +6996,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 </td>
                 <td class="whitespace-nowrap py-2.5 pr-3">
                   <strong>{row.connection.block_id}</strong>
-                  · <span class="tabular-nums">{clock(row.connection.from.last_arrival)}</span>
+                  ·
+                  <span class="tabular-nums">
+                    {GtfsTime.display(row.connection.from.last_arrival)}
+                  </span>
                   <span class="block text-[12px] text-muted">
                     {row.connection.from.trip_id} → {row.connection.to.trip_id}
                   </span>
@@ -7155,7 +7163,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         data-role="bulk-result-unrestorable"
         class="mt-1 text-[13px]"
       >
-        {count_label(@unrestorable, "replaced record", "replaced records")} can’t be restored
+        {Wording.count_noun(@unrestorable, "replaced record")} can’t be restored
         because {if @unrestorable == 1, do: "it", else: "they"} didn’t match the block.
       </p>
 
@@ -7167,7 +7175,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-click="undo_bulk"
           class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-semibold underline underline-offset-4 hover:bg-canvas"
         >
-          Undo {count_label(@restorable, "change", "changes")}
+          Undo {Wording.count_noun(@restorable, "change")}
         </button>
         <button
           id="bulk-dismiss"
@@ -7198,9 +7206,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp bulk_result_title(result) do
     title =
       if Map.has_key?(result, :restored) do
-        "Restored #{count_label(result.restored, "connection", "connections")}."
+        "Restored #{Wording.count_noun(result.restored, "connection")}."
       else
-        "Saved #{count_label(length(result.saved), "connection", "connections")}: " <>
+        "Saved #{Wording.count_noun(length(result.saved), "connection")}: " <>
           "#{bulk_setting_label(result.setting)}."
       end
 
@@ -7293,7 +7301,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-click="open_assign"
           phx-value-scope="selection"
         >
-          Assign {count_label(@count, "trip", "trips")}
+          Assign {Wording.count_noun(@count, "trip")}
         </.button>
       </div>
     </div>
@@ -7323,7 +7331,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-card border border-action/30 bg-selection px-4 py-2"
     >
       <strong id="block-selection-count" class="text-sm text-strong">
-        {count_label(@count, "block selected", "blocks selected")}
+        {Wording.count_noun(@count, "block selected", "blocks selected")}
       </strong>
 
       <div class="flex flex-wrap items-center gap-2">
@@ -7448,7 +7456,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </button>
         </h3>
         <span class="text-[13px] text-muted">
-          {count_label(@summary.trip_count, "trip", "trips")}{block_span(@summary)}
+          {Wording.count_noun(@summary.trip_count, "trip")}{block_span(@summary)}
         </span>
         <span class="text-[13px] text-muted">
           <span data-role="list-km-riders" data-km={@movements.service_km}>
@@ -7496,13 +7504,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
                 data-label="Start"
               >
-                {clock(trip.first_departure)}
+                {GtfsTime.display(trip.first_departure)}
               </td>
               <td
                 class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
                 data-label="End"
               >
-                {clock(trip.last_arrival)}
+                {GtfsTime.display(trip.last_arrival)}
               </td>
               <td class="px-3 py-1.5 max-md:col-span-2" data-label="From → To">
                 <.endpoints trip={trip} />
@@ -7541,7 +7549,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp block_span(%{start_secs: nil}), do: ""
 
   defp block_span(summary) do
-    " · #{clock(summary.start_secs)}–#{clock(summary.end_secs)} · #{hours(summary.hours)} h"
+    " · #{GtfsTime.display(summary.start_secs)}–#{GtfsTime.display(summary.end_secs)} · #{hours(summary.hours)} h"
   end
 
   @doc """
@@ -7640,7 +7648,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             </td>
             <td class="px-3 py-1.5 max-md:col-span-2" data-label="Start → end">
               <span class="tabular-nums">
-                {clock(trip.first_departure)} → {clock(trip.last_arrival)}
+                {GtfsTime.display(trip.first_departure)} → {GtfsTime.display(trip.last_arrival)}
               </span>
               <span
                 :if={text = eligibility_text(trip)}
@@ -7992,7 +8000,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     Enum.filter(block.trips, &visible?(&1, route_filter))
   end
 
-  defp gap_label(%{gap_secs: secs}) when secs >= 0, do: minutes(secs)
+  defp gap_label(%{gap_secs: secs}) when secs >= 0, do: Wording.duration(secs)
   defp gap_label(%{gap_secs: secs}), do: "Overlap #{div(-secs, 60)} min"
 
   # The Schedules page for a trip's route, narrowed to the trip's own calendar
@@ -8004,7 +8012,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # A service-day link's URL state: the two parameters the page reads, so following
   # it opens the trip's drawer again on the day it names.
   defp day_type_trip_path(version_id, day_key, trip_id) do
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query([{"day", day_key}, {"trip", trip_id}])
+    ~p"/gtfs/#{version_id}/blocks?#{[day: day_key, trip: trip_id]}"
   end
 
   @doc """
@@ -8072,7 +8080,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   aria-hidden="true"
                   class="text-action"
                 >
-                  {sort_arrow(@state.dir)}
+                  {sort_glyph(@state.dir)}
                 </span>
                 <.icon
                   :if={Atom.to_string(@state.sort) != column.key}
@@ -8526,38 +8534,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     }
   end
 
-  @doc """
-  Prints parsed seconds as `HH:MM`, with ` −1d` before midnight and ` +1d` after
-  it. A negative service-day second floors into the day before rather than
-  truncating towards it, so −900 s reads 23:45 −1d rather than 00:00.
-  """
-  def clock(nil), do: "—"
-
-  def clock(secs) when is_integer(secs) do
-    days = Integer.floor_div(secs, 86_400)
-    # `rem/2` keeps the dividend's sign, which would leave a negative second
-    # still negative and print `00:-15`. `Integer.mod/2` is the operation that
-    # pairs with `floor_div/2`, so the within-day value is never negative.
-    within = Integer.mod(secs, 86_400)
-
-    clock =
-      String.pad_leading(Integer.to_string(div(within, 3600)), 2, "0") <>
-        ":" <> String.pad_leading(Integer.to_string(div(rem(within, 3600), 60)), 2, "0")
-
-    case days do
-      0 -> clock
-      days when days < 0 -> clock <> " −" <> Integer.to_string(-days) <> "d"
-      days -> clock <> " +#{days}d"
-    end
-  end
-
   # The Time out cell: the platform span on one line, or a dash when the block has
   # no span at all rather than a dash at either end of a pair.
   defp time_out(nil, _end_secs), do: "—"
   defp time_out(_start_secs, nil), do: "—"
 
   defp time_out(start_secs, end_secs) do
-    clock(start_secs) <> "–" <> clock(end_secs)
+    GtfsTime.display(start_secs) <> "–" <> GtfsTime.display(end_secs)
   end
 
   # The Garage · type cell. A block whose calendars disagree has no single
@@ -8590,22 +8573,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # “1 · Coast Highway” when the route has both names, so the picker says what
   # each number is.
   defp route_option_label(route_id, route) do
-    case {present(route.short_name), present(route.long_name)} do
+    case {Values.presence(route.short_name), Values.presence(route.long_name)} do
       {nil, nil} -> route_id
       {short, nil} -> short
       {nil, long} -> long
       {short, long} -> "#{short} · #{long}"
     end
   end
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      _trimmed -> value
-    end
-  end
-
-  defp present(_value), do: nil
 
   # The suffix rule for the Driving times link: the count is printed only when the
   # day has an estimate to review, and the label starts with a separator so the
@@ -8634,11 +8608,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp day_type_option_label(day_type) do
-    "#{day_type.label} · #{day_count_label(day_type.date_count)}"
+    "#{day_type.label} · #{Wording.count_noun(day_type.date_count, "day")}"
   end
-
-  defp day_count_label(1), do: "1 day"
-  defp day_count_label(count), do: "#{count} days"
 
   # The whole-day tiles. A tile that leads somewhere is an action; the rest are
   # figures. Unassigned trips and Problems take a state colour while there is
@@ -8780,18 +8751,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp peak_detail(%{at_secs: nil}), do: "none timed"
-  defp peak_detail(peak), do: "at #{clock(peak.at_secs)}"
+  defp peak_detail(peak), do: "at #{GtfsTime.display(peak.at_secs)}"
 
   # The Peak out figure's definition, printed in the Plan summary: what it counts
   # and what it leaves out.
   defp peak_note(%{at_secs: nil}), do: "No block has timed trips, so there is no peak."
 
   defp peak_note(peak) do
-    "Peak out is the most blocks in progress at once: #{peak.count} at #{clock(peak.at_secs)}. " <>
+    "Peak out is the most blocks in progress at once: #{peak.count} at #{GtfsTime.display(peak.at_secs)}. " <>
       "It leaves out " <>
-      count_label(peak.excluded_unassigned, "unassigned trip", "unassigned trips") <>
+      Wording.count_noun(peak.excluded_unassigned, "unassigned trip") <>
       " and " <>
-      count_label(peak.excluded_frequency, "repeating trip", "repeating trips") <> "."
+      Wording.count_noun(peak.excluded_frequency, "repeating trip") <> "."
   end
 
   # One sentence per short fleet row, in the day's own row order: the typed row
@@ -8799,13 +8770,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # rather than one repeated line.
   defp shortfall_summary(shortfalls) do
     Enum.map_join(shortfalls, " ", fn row ->
-      "#{row.garage} · #{row.type}: needs #{row.needed} at #{clock(row.at_secs)}, " <>
+      "#{row.garage} · #{row.type}: needs #{row.needed} at #{GtfsTime.display(row.at_secs)}, " <>
         "#{row.listed} listed."
     end)
   end
-
-  defp count_label(1, singular, _plural), do: "1 #{singular}"
-  defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
   # The chart's text equivalent and its caption. The bars are one garage · type's
   # vehicles out per 15-minute bin, so the label names that row and its listing
@@ -8815,16 +8783,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     row = chart.row
 
     "#{row.garage} #{row.type} vehicles out by 15 minutes; peak #{row.needed} at " <>
-      "#{clock(row.at_secs)}; #{row.listed} listed. Chart covers " <>
-      "#{clock(List.first(chart.bins).start_secs)} to " <>
-      "#{clock(List.last(chart.bins).start_secs + 900)}."
+      "#{GtfsTime.display(row.at_secs)}; #{row.listed} listed. Chart covers " <>
+      "#{GtfsTime.display(List.first(chart.bins).start_secs)} to " <>
+      "#{GtfsTime.display(List.last(chart.bins).start_secs + 900)}."
   end
 
   defp chart_summary(%{at_secs: nil} = row), do: fleet_when(row.at_secs, row.needed)
 
   defp chart_summary(row) do
     sentence =
-      "#{row.garage} · #{row.type}: #{row.needed} out at the busiest time (#{clock(row.at_secs)}); " <>
+      "#{row.garage} · #{row.type}: #{row.needed} out at the busiest time (#{GtfsTime.display(row.at_secs)}); " <>
         "#{row.listed} listed."
 
     if row.short? do
@@ -8860,7 +8828,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # dash rather than a clock the row never reached.
   defp fleet_when(nil, _needed), do: "—"
   defp fleet_when(_at_secs, 0), do: "—"
-  defp fleet_when(at_secs, _needed), do: clock(at_secs)
+  defp fleet_when(at_secs, _needed), do: GtfsTime.display(at_secs)
 
   defp min_layover_label(nil), do: "the plan’s"
   defp min_layover_label(minutes), do: "#{minutes}-minute"
@@ -8870,7 +8838,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp too_long_note(%{secs: secs, block_id: block_id}, limit) when is_integer(limit) do
     if secs > limit * 60 do
-      " Block #{block_id} has no place to change operators for #{duration(div(secs, 60))}."
+      " Block #{block_id} has no place to change operators for #{Wording.duration(secs)}."
     else
       ""
     end
@@ -8881,15 +8849,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp stretch_label(nil), do: "—"
 
   defp stretch_label(%{secs: secs, block_id: block_id}) do
-    "#{duration(div(secs, 60))} in block #{block_id}"
-  end
-
-  # Whole hours, then minutes only when there are some, so a stretch of exactly
-  # two hours reads "2 h" rather than "2 h 0 min".
-  defp duration(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
-
-  defp duration(minutes) do
-    "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
+    "#{Wording.duration(secs)} in block #{block_id}"
   end
 
   @doc """
@@ -8901,8 +8861,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   zero height rather than a division by zero.
   """
   @spec bar_height(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def bar_height(_count, 0), do: 0
-  def bar_height(count, max), do: round(count / max * 100)
+  def bar_height(count, max), do: Wording.percent(count, max)
 
   defp month_groups(dates) do
     dates
@@ -8921,13 +8880,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp range_text(dates) do
     {first, last} = Enum.min_max_by(dates, &Date.to_gregorian_days/1)
-    "#{format_date(first)} – #{format_date(last)}"
+    "#{Wording.date(first)} – #{Wording.date(last)}"
   end
 
-  defp format_date(date), do: Calendar.strftime(date, "%d %b %Y")
-
-  # A date inside its month's group: the weekday and the day of the month.
-  defp short_date(date), do: Calendar.strftime(date, "%a %-d")
+  # A date inside its month's group: the month and year are the group heading, so a
+  # chip names only the weekday and the day of the month instead of `Wording.short_date/1`.
+  defp weekday_day(date), do: Calendar.strftime(date, "%a %-d")
 
   # The kind of message a finding's severity draws.
   defp severity_status(:error), do: "error"
@@ -8977,16 +8935,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp code_label(code), do: code_meta(code).label
 
   defp finding_detail(%{code: :cannot_reach, detail: %{drive_secs: drive, gap_secs: secs}}) do
-    "The drive between these two trips needs #{minutes(drive)} and there are #{minutes(secs)}."
+    "The drive between these two trips needs #{Wording.duration(drive)} and there are #{Wording.duration(secs)}."
   end
 
   defp finding_detail(%{code: :too_long, detail: detail}) do
-    "The vehicle is out of the garage #{duration(div(detail.platform_secs, 60))}; the limit is #{minutes(detail.limit_minutes)}."
+    "The vehicle is out of the garage #{Wording.duration(detail.platform_secs)}; the limit is #{Wording.duration(detail.limit_minutes * 60)}."
   end
 
   defp finding_detail(%{code: :no_relief_opportunity, detail: detail}) do
-    "The vehicle runs #{duration(div(detail.secs, 60))} with no place to change operators; " <>
-      "the limit is #{minutes(detail.limit_secs)}."
+    "The vehicle runs #{Wording.duration(detail.secs)} with no place to change operators; " <>
+      "the limit is #{Wording.duration(detail.limit_secs)}."
   end
 
   defp finding_detail(%{code: :type_mismatch}) do
@@ -9002,21 +8960,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp finding_detail(%{code: :overlap, detail: %{overlap_secs: secs}}) do
-    "Two trips in this block overlap by #{minutes(secs)}."
+    "Two trips in this block overlap by #{Wording.duration(secs)}."
   end
 
   defp finding_detail(%{code: :short_layover, detail: %{gap_secs: secs}}) do
-    "Only #{minutes(secs)} between two trips in this block."
+    "Only #{Wording.duration(secs)} between two trips in this block."
   end
 
   defp finding_detail(%{code: :repositions, detail: %{meters: nil} = detail}) do
-    "The vehicle drives empty with #{minutes(detail.gap_secs)} available. " <>
+    "The vehicle drives empty with #{Wording.duration(detail.gap_secs)} available. " <>
       "The driving time is unknown."
   end
 
   defp finding_detail(%{code: :repositions, detail: detail}) do
     "The vehicle drives empty about #{distance_label(detail.meters)} with " <>
-      "#{minutes(detail.gap_secs)} available."
+      "#{Wording.duration(detail.gap_secs)} available."
   end
 
   defp finding_detail(%{code: :frequency_trip, detail: %{headway_secs: secs}}) do
@@ -9052,7 +9010,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp in_seat_reason({:not_next, failures}) do
     "Riders are told they can stay on board, but the second trip isn't next on this vehicle on " <>
-      Enum.map_join(failures, " or ", &"#{&1.label} (#{day_count_label(&1.date_count)})") <> "."
+      Enum.map_join(
+        failures,
+        " or ",
+        &"#{&1.label} (#{Wording.count_noun(&1.date_count, "day")})"
+      ) <> "."
   end
 
   defp in_seat_reason(:next_service_day),
@@ -9115,15 +9077,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp frequency_title(%{headway_secs: secs}), do: "Repeats every #{div(secs, 60)} min."
 
-  defp minutes(secs) when is_integer(secs), do: "#{div(secs, 60)} min"
-
   # The trip drawer's title: when the trip leaves and where it is headed, which is
   # what an operator calls it; a trip with no departure time falls back to its
   # headsign or its ID.
   defp trip_title(trip) do
-    case {is_integer(trip.first_departure), present(trip.trip_headsign)} do
-      {true, nil} -> clock(trip.first_departure)
-      {true, headsign} -> clock(trip.first_departure) <> " to " <> headsign
+    case {is_integer(trip.first_departure), Values.presence(trip.trip_headsign)} do
+      {true, nil} -> GtfsTime.display(trip.first_departure)
+      {true, headsign} -> GtfsTime.display(trip.first_departure) <> " to " <> headsign
       {false, nil} -> "Trip " <> trip.trip_id
       {false, headsign} -> "Trip to " <> headsign
     end
@@ -9178,9 +9138,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     end
   end
 
-  defp sort_arrow(:asc), do: "↑"
-  defp sort_arrow(_dir), do: "↓"
-
   defp axis_ticks(nil), do: []
 
   defp axis_ticks(axis) do
@@ -9194,7 +9151,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       %{
         first?: index == 0,
         style: if(index == 0, do: nil, else: "left: #{percent_value(left)}%"),
-        label: clock(start + index * @tick_secs)
+        label: GtfsTime.display(start + index * @tick_secs)
       }
     end)
   end
@@ -9205,7 +9162,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp track_style(axis) do
     {_start, span} = axis_geometry(axis)
-    "--blocks-grid: #{percent(@tick_secs, span)}%"
+    "--blocks-grid: #{css_percent(@tick_secs, span)}%"
   end
 
   defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
@@ -9226,7 +9183,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     wait_start = previous.last_arrival + (drive_secs || 0)
     center = wait_start - start + div(previous.last_arrival + gap.gap_secs - wait_start, 2)
 
-    "left: #{percent(center, span)}%; width: 18px; transform: translateX(-50%)"
+    "left: #{css_percent(center, span)}%; width: 18px; transform: translateX(-50%)"
   end
 
   defp gap_geometry(gap, previous, axis, drive_secs, false) do
@@ -9257,13 +9214,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp span_geometry(%{start_secs: start_secs, end_secs: end_secs}, axis) do
     {start, span} = axis_geometry(axis)
 
-    "left: #{percent(start_secs - start, span)}%; " <>
-      "width: #{percent(end_secs - start_secs, span)}%"
+    "left: #{css_percent(start_secs - start, span)}%; " <>
+      "width: #{css_percent(end_secs - start_secs, span)}%"
   end
 
+  # CSS geometry keeps its own name: it returns a two-decimal percentage string,
+  # not the whole-number percent the canonical helper returns.
   # Two decimals, so a test can read the geometry straight out of the style and
   # the bars line up with the axis ticks to the hundredth of a percent.
-  defp percent(value, span), do: percent_value(value * 100 / span)
+  defp css_percent(value, span), do: percent_value(value * 100 / span)
 
   defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
 
@@ -9392,7 +9351,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp bar_title(trip, route) do
     "Trip #{trip.trip_id} · Route #{route_label(route)} · " <>
-      "#{clock(trip.first_departure)}–#{clock(trip.last_arrival)} · " <>
+      "#{GtfsTime.display(trip.first_departure)}–#{GtfsTime.display(trip.last_arrival)} · " <>
       "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
   end
 
@@ -9410,20 +9369,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp blank_dash(_value), do: "—"
 
   # The stored GTFS clock of a parsed endpoint; a missing time has none.
+  # Named exception: the row shows the stored feed value verbatim, so it keeps HH:MM:SS.
   defp gtfs_time(nil), do: "—"
   defp gtfs_time(secs), do: GtfsTime.format(secs)
 
   # A gap's hover text: how long it is and what kind of handoff it is.
   defp gap_hover(%{handoff: {:moves, _}} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · deadhead, the vehicle drives empty"
+    do: "#{Wording.duration(gap.gap_secs)} gap · deadhead, the vehicle drives empty"
 
-  defp gap_hover(%{handoff: :same_stop} = gap), do: "#{minutes(gap.gap_secs)} gap · same stop"
+  defp gap_hover(%{handoff: :same_stop} = gap),
+    do: "#{Wording.duration(gap.gap_secs)} gap · same stop"
 
   defp gap_hover(%{handoff: :same_station} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · same station"
+    do: "#{Wording.duration(gap.gap_secs)} gap · same station"
 
   defp gap_hover(%{handoff: {:nearby, meters}} = gap),
-    do: "#{minutes(gap.gap_secs)} gap · nearby stop, #{meters} m"
+    do: "#{Wording.duration(gap.gap_secs)} gap · nearby stop, #{meters} m"
 
   # A decided gap's title names the decision beside the gap's own handoff text,
   # so the chip's icon is never the only thing that says what it means.
@@ -9438,17 +9399,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # Copy for where a driving time came from. An entered time is a human's known
   # route, an estimate is this version's own guess and an unknown is neither, so
   # the three never read alike.
-  defp source_phrase(:entered, seconds), do: "#{minutes(seconds)} entered"
-  defp source_phrase(:estimated, seconds), do: "#{minutes(seconds)} estimated"
+  defp source_phrase(:entered, seconds), do: "#{Wording.duration(seconds)} entered"
+  defp source_phrase(:estimated, seconds), do: "#{Wording.duration(seconds)} estimated"
   defp source_phrase(_unknown, _seconds), do: "driving time unknown"
 
   defp pull_title(pull, garage, :out) do
-    "Pull-out · leaves #{garage_label(garage)} at #{clock(pull.start_secs)}, " <>
+    "Pull-out · leaves #{garage_label(garage)} at #{GtfsTime.display(pull.start_secs)}, " <>
       "#{source_phrase(pull.source, pull.drive_secs)}"
   end
 
   defp pull_title(pull, garage, :back) do
-    "Pull-back · returns to #{garage_label(garage)} at #{clock(pull.end_secs)}, " <>
+    "Pull-back · returns to #{garage_label(garage)} at #{GtfsTime.display(pull.end_secs)}, " <>
       "#{source_phrase(pull.source, pull.drive_secs)}"
   end
 
@@ -9456,21 +9417,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp garage_label(name), do: "#{name} garage"
 
   defp drive_title(%{feasible?: false} = gap, _from, to) do
-    "Can't reach #{stop_name(to.first_stop)} · needs #{minutes(gap.drive_secs)} " <>
-      "to get there, has #{minutes(gap.gap_secs)}"
+    "Can't reach #{stop_name(to.first_stop)} · needs #{Wording.duration(gap.drive_secs)} " <>
+      "to get there, has #{Wording.duration(gap.gap_secs)}"
   end
 
   defp drive_title(%{kind: :unknown} = gap, from, to) do
     "Drive to #{stop_name(to.first_stop)} · the driving time from " <>
       "#{stop_name(from.last_stop)} is not known for " <>
-      "#{clock(gap.arrival_secs)}–#{clock(gap.departure_secs)}"
+      "#{GtfsTime.display(gap.arrival_secs)}–#{GtfsTime.display(gap.departure_secs)}"
   end
 
   defp drive_title(gap, _from, to) do
     "Drive to #{stop_name(to.first_stop)} · " <>
-      "#{clock(gap.arrival_secs)}–#{clock(gap.arrival_secs + gap.drive_secs)}, " <>
+      "#{GtfsTime.display(gap.arrival_secs)}–#{GtfsTime.display(gap.arrival_secs + gap.drive_secs)}, " <>
       "#{source_phrase(gap.source, gap.drive_secs)}, then wait " <>
-      "#{minutes(gap.wait_secs)}"
+      "#{Wording.duration(gap.wait_secs)}"
   end
 
   # --- the assignment form and the review --------------------------
@@ -9497,7 +9458,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp ineligible_callout_id(_assign), do: "assign-ineligible"
 
   defp ineligible_title(%{scope: :selection}, ineligible),
-    do: "#{count_label(length(ineligible), "selected trip", "selected trips")} can't be assigned."
+    do: "#{Wording.count_noun(length(ineligible), "selected trip")} can't be assigned."
 
   defp ineligible_title(_assign, ineligible) do
     case ineligible |> Enum.map(&eligibility_text/1) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
@@ -9522,10 +9483,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp confirm_label(%{command: {:merge, _source, _target}}), do: "Merge blocks"
 
   defp confirm_label(%{command: {:unassign, _ids}, changes: changes}),
-    do: "Remove " <> count_label(length(changes), "trip", "trips")
+    do: "Remove " <> Wording.count_noun(length(changes), "trip")
 
   defp confirm_label(%{changes: changes}),
-    do: "Assign " <> count_label(length(changes), "trip", "trips")
+    do: "Assign " <> Wording.count_noun(length(changes), "trip")
 
   defp confirm_label(_review), do: "Save changes"
 

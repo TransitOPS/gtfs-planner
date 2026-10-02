@@ -34,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
   """
 
   alias GtfsPlanner.Gtfs.Rosters.Roster
+  alias GtfsPlanner.Wording
 
   @type row :: %{
           date: Date.t(),
@@ -283,7 +284,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
 
   defp stale_sentence(n) do
     verb = if n == 1, do: "was", else: "were"
-    {"tods_assignments_stale", "#{n} stale #{slot_noun(n)} #{verb} skipped."}
+    {"tods_assignments_stale", "#{n} stale #{Wording.noun(n, "slot")} #{verb} skipped."}
   end
 
   defp left_out_sentence(0), do: nil
@@ -292,9 +293,6 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
     verb =
       if n == 1, do: "names a run with errors and was", else: "name runs with errors and were"
 
-    {"tods_assignments_left_out", "#{n} assigned #{slot_noun(n)} #{verb} left out."}
+    {"tods_assignments_left_out", "#{n} assigned #{Wording.noun(n, "slot")} #{verb} left out."}
   end
-
-  defp slot_noun(1), do: "slot"
-  defp slot_noun(_n), do: "slots"
 end

@@ -22,8 +22,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   import GtfsPlannerWeb.ResultComponents,
     only: [result_details: 1, result_section: 1, result_summary: 1, tone_badge: 1]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Validations
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -286,7 +289,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             >
               <span class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                 <span class="text-sm font-bold tabular-nums text-strong">
-                  {format_run_time(run.started_at)}
+                  {run_time(run.started_at)}
                 </span>
                 <.tone_badge tone={history_tone(run.status)}>
                   {history_status(run.status)}
@@ -362,7 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         Informational notices
       </:metric>
       <:foot>
-        This page shows the check from {format_run_time(@run.completed_at || @run.started_at)}. Fixed something?
+        This page shows the check from {run_time(@run.completed_at || @run.started_at)}. Fixed something?
         <.export_link version={@version}>Run validation again from Export</.export_link>
         to update these results.
       </:foot>
@@ -456,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           </span>
         </span>
         <span class="col-start-2 text-[13px] tabular-nums sm:col-start-auto sm:text-right">
-          <strong class="font-semibold text-strong">{format_count(@total)}</strong>
+          <strong class="font-semibold text-strong">{Wording.count(@total)}</strong>
           {if @total == 1, do: "occurrence", else: "occurrences"}
         </span>
       </summary>
@@ -552,7 +555,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         <dt class="text-muted">Run ID</dt>
         <dd><code class="break-all font-mono text-[13px]">{@run.id}</code></dd>
         <dt class="text-muted">Stopped</dt>
-        <dd class="tabular-nums">{format_run_time(@run.completed_at || @run.started_at)}</dd>
+        <dd class="tabular-nums">{run_time(@run.completed_at || @run.started_at)}</dd>
         <dt class="text-muted">Reported</dt>
         <dd>
           <pre
@@ -1192,23 +1195,23 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp run_meta(%{status: "completed", run_type: "pathways_tests"} = run) do
     join_meta([
-      "Ran " <> format_run_time(run.completed_at || run.started_at),
+      "Ran " <> run_time(run.completed_at || run.started_at),
       duration_text(run.duration_ms)
     ])
   end
 
   defp run_meta(%{status: "completed"} = run) do
     join_meta([
-      "Checked " <> format_run_time(run.completed_at || run.started_at),
+      "Checked " <> run_time(run.completed_at || run.started_at),
       duration_text(run.duration_ms)
     ])
   end
 
   defp run_meta(%{status: "failed"} = run) do
-    "Stopped " <> format_run_time(run.completed_at || run.started_at)
+    "Stopped " <> run_time(run.completed_at || run.started_at)
   end
 
-  defp run_meta(run), do: "Started " <> format_run_time(run.started_at)
+  defp run_meta(run), do: "Started " <> run_time(run.started_at)
 
   defp join_meta(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
 
@@ -1217,20 +1220,22 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp duration_text(ms) when is_integer(ms), do: "Took " <> format_pathways_seconds(ms / 1000)
   defp duration_text(_ms), do: nil
 
-  # Run times are stored in UTC; the agency time zone isn't applied here.
-  defp format_run_time(%DateTime{} = time) do
-    Calendar.strftime(time, "%b %-d, %Y at %-I:%M %P") <> " UTC"
+  # Run times are stored in UTC; the agency time zone isn't applied here. A
+  # run object built by hand may have no start instant, so the words for that
+  # stay here rather than in the shared formatter.
+  defp run_time(%DateTime{} = time) do
+    DisplayClock.format_datetime(time)
   end
 
-  defp format_run_time(_time), do: "at an unknown time"
+  defp run_time(_time), do: "at an unknown time"
 
   defp mobility_facts(run, version) do
     [
       {"Status", "Completed", :text},
       {"Checked with", "MobilityData GTFS validator", :text},
       {"Version", version.name, :text},
-      {"Started", format_run_time(run.started_at), :text},
-      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Started", run_time(run.started_at), :text},
+      {"Finished", run.completed_at && run_time(run.completed_at), :text},
       {"Run ID", run.id, :id}
     ]
   end
@@ -1240,8 +1245,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       {"Status", "Completed", :text},
       {"Checked with", "Walk tests (OpenTripPlanner, retired)", :text},
       {"Version", version.name, :text},
-      {"Started", format_run_time(run.started_at), :text},
-      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Started", run_time(run.started_at), :text},
+      {"Finished", run.completed_at && run_time(run.completed_at), :text},
       {"Run ID", run.id, :id}
     ]
   end
@@ -1263,7 +1268,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         %{
           tone: "error",
           badge: "Problems found",
-          title: "#{pluralize(run.errors_count, "problem", "problems")} to fix.",
+          title: "#{Wording.count_noun(run.errors_count || 0, "problem", "problems")} to fix.",
           body: "Start with the problems. Suggestions and notes below matter less."
         }
 
@@ -1272,7 +1277,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           tone: "warning",
           badge: "Suggestions only",
           title:
-            "No problems. #{pluralize(run.warnings_count, "suggestion", "suggestions")} to review.",
+            "No problems. #{Wording.count_noun(run.warnings_count || 0, "suggestion", "suggestions")} to review.",
           body: "Suggestions are potential issues. Notes are for your information."
         }
 
@@ -1357,18 +1362,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        when type != "pathways_tests" do
     Enum.join(
       [
-        pluralize(run.errors_count, "problem", "problems"),
-        pluralize(run.warnings_count, "suggestion", "suggestions"),
-        pluralize(run.infos_count, "note", "notes")
+        Wording.count_noun(run.errors_count || 0, "problem", "problems"),
+        Wording.count_noun(run.warnings_count || 0, "suggestion", "suggestions"),
+        Wording.count_noun(run.infos_count || 0, "note", "notes")
       ],
       " · "
     )
   end
 
   defp history_counts(_run), do: nil
-
-  defp pluralize(1, one, _many), do: "1 #{one}"
-  defp pluralize(count, _one, many), do: "#{format_count(count || 0)} #{many}"
 
   # ── Findings ──
 
@@ -1518,19 +1520,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     end
   end
 
-  defp format_count(count) when is_integer(count) do
-    count
-    |> Integer.to_string()
-    |> String.graphemes()
-    |> Enum.reverse()
-    |> Enum.chunk_every(3)
-    |> Enum.join(",")
-    |> String.reverse()
-  end
-
-  defp format_count(count), do: to_string(count)
-
-  defp format_pathways_overview_count(count) when is_integer(count), do: format_count(count)
+  defp format_pathways_overview_count(count) when is_integer(count), do: Wording.count(count)
   defp format_pathways_overview_count(_count), do: "0"
 
   defp format_pathways_overview_percentage(value) when is_number(value) do
@@ -1644,15 +1634,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp map_has_entries?(_map), do: false
 
   defp pathways_case_origin(row) do
-    row
-    |> pathways_walkability_test_address()
-    |> normalize_text()
+    Values.presence(pathways_walkability_test_address(row)) || "-"
   end
 
   defp pathways_case_destination(row) do
-    row
-    |> pathways_walkability_test_stop_id()
-    |> normalize_text()
+    Values.presence(pathways_walkability_test_stop_id(row)) || "-"
   end
 
   defp pathways_walkability_test_address(%{walkability_test: walkability_test})
@@ -1686,9 +1672,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     |> Enum.with_index()
     |> Enum.flat_map(fn {leg, leg_position} ->
       leg_index = normalize_index(pathways_map_value(leg, :index), leg_position)
-      leg_mode = normalize_text(pathways_map_value(leg, :mode))
-      from_name = normalize_text(pathways_map_value(leg, :from_name))
-      to_name = normalize_text(pathways_map_value(leg, :to_name))
+      leg_mode = Values.presence(pathways_map_value(leg, :mode)) || "-"
+      from_name = Values.presence(pathways_map_value(leg, :from_name)) || "-"
+      to_name = Values.presence(pathways_map_value(leg, :to_name)) || "-"
 
       leg
       |> pathways_map_value(:steps)
@@ -1699,9 +1685,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           leg_index: leg_index,
           step_index: normalize_index(pathways_map_value(step, :index), step_position),
           mode: leg_mode,
-          street_name: normalize_text(pathways_map_value(step, :street_name)),
-          relative_direction: normalize_text(pathways_map_value(step, :relative_direction)),
-          absolute_direction: normalize_text(pathways_map_value(step, :absolute_direction)),
+          street_name: Values.presence(pathways_map_value(step, :street_name)) || "-",
+          relative_direction:
+            Values.presence(pathways_map_value(step, :relative_direction)) || "-",
+          absolute_direction:
+            Values.presence(pathways_map_value(step, :absolute_direction)) || "-",
           distance_meters: normalize_distance(pathways_map_value(step, :distance_meters)),
           from_name: from_name,
           to_name: to_name
@@ -1729,9 +1717,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp normalize_index(value, _fallback) when is_integer(value) and value >= 0, do: value
   defp normalize_index(_value, fallback), do: fallback
-
-  defp normalize_text(value) when is_binary(value) and value != "", do: value
-  defp normalize_text(_value), do: "-"
 
   defp normalize_distance(value) when is_float(value), do: value
   defp normalize_distance(value) when is_integer(value), do: value * 1.0

@@ -21,7 +21,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.ProductSurfaces
 
   @conflict_code "garage_stop_id_conflict"
@@ -115,8 +117,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
     assigns =
       assigns
-      |> assign(:garages, format_count(Map.get(counts, "stops_supplement.txt", 0)))
-      |> assign(:vehicles, format_count(Map.get(counts, "vehicles.txt", 0)))
+      |> assign(:garages, Wording.count(Map.get(counts, "stops_supplement.txt", 0)))
+      |> assign(:vehicles, Wording.count(Map.get(counts, "vehicles.txt", 0)))
 
     ~H"""
     <div class="px-5 pt-4">
@@ -207,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             "mt-0.5 font-display text-[26px] font-semibold leading-none tracking-[-0.03em] tabular-nums",
             if(count > 0, do: "text-strong", else: "text-muted")
           ]}>
-            {format_count(count)}
+            {Wording.count(count)}
           </dd>
         </div>
       </dl>
@@ -298,7 +300,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
                   "px-4 py-2.5 text-right tabular-nums",
                   if(count > 0, do: "text-strong", else: "text-muted")
                 ]}>
-                  {format_count(count)}<span :if={count == 0} class="ml-2 text-[13px]">left out</span>
+                  {Wording.count(count)}<span :if={count == 0} class="ml-2 text-[13px]">left out</span>
                 </td>
               </tr>
             </tbody>
@@ -391,7 +393,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     estimable = summary.trips - length(summary.not_estimable)
 
     "#{summary.estimable_times} #{if(summary.estimable_times == 1, do: "time", else: "times")} " <>
-      "on #{pluralize(estimable, "trip")}, by #{estimate_method_label(defaults.estimate_method)}, " <>
+      "on #{Wording.count_noun(estimable, "trip")}, by #{estimate_method_label(defaults.estimate_method)}, " <>
       "marked as approximate. #{cant_sentence(summary)}"
   end
 
@@ -400,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   defp blank_sentence(summary) do
     "#{summary.missing_times} #{if(summary.missing_times == 1, do: "time", else: "times")} " <>
-      "on #{pluralize(summary.trips, "trip")} go out blank, " <>
+      "on #{Wording.count_noun(summary.trips, "trip")} go out blank, " <>
       "so each rider app will guess them its own way."
   end
 
@@ -415,9 +417,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   defp estimate_method_label(:even), do: "equal time per stop"
   defp estimate_method_label(_method), do: "distance along the path"
-
-  defp pluralize(1, noun), do: "1 #{noun}"
-  defp pluralize(count, noun), do: "#{count} #{noun}s"
 
   defp tiles(:full),
     do: [
@@ -833,8 +832,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   # the retention limit is stated as a time instead of "the retention period".
   defp ready_meta(%Run{} = run) do
     [
-      run.finished_at && "Created #{format_time(run.finished_at)}",
-      run.artifact_expires_at && "Available until #{format_time(run.artifact_expires_at)}"
+      run.finished_at && "Created #{DisplayClock.format_datetime(run.finished_at)}",
+      run.artifact_expires_at &&
+        "Available until #{DisplayClock.format_datetime(run.artifact_expires_at)}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
@@ -1298,7 +1298,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               {check.title}
             </span>
             <span class="mt-0.5 block text-[13px] tabular-nums text-muted">
-              {format_time(check.started_at)}
+              {DisplayClock.format_datetime(check.started_at)}
             </span>
             <span
               id={"recent-validation-counts-#{check.id}"}
@@ -1336,12 +1336,4 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp severity_class(:errors, count) when count > 0, do: "font-semibold text-error-fg"
   defp severity_class(:warnings, count) when count > 0, do: "font-semibold text-warning-fg"
   defp severity_class(_kind, _count), do: "text-muted"
-
-  # Times are stored in UTC and the app has no per-user time zone, so the zone is
-  # named instead of implied.
-  defp format_time(%DateTime{} = time),
-    do: Calendar.strftime(time, "%b %-d, %Y %-I:%M %p") <> " UTC"
-
-  defp format_count(count),
-    do: count |> Integer.to_string() |> String.replace(~r/\B(?=(\d{3})+(?!\d))/, ",")
 end

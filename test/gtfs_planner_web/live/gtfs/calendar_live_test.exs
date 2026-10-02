@@ -2073,6 +2073,26 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       assert_push_event(view, "focus_form_error", %{form_id: "calendar-form"})
     end
 
+    test "a forged list param is refused at the form boundary and the view stays open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), new_path(version))
+
+      # `merge_params/2` keeps only binary form values, so a forged list cannot
+      # reach the schedule-period parser as a non-binary; the submit still keeps
+      # the view mounted and reports the answer it can read.
+      render_submit(view, "submit_form", %{
+        "calendar" => %{"name" => "", "rating_start_date" => []}
+      })
+
+      assert has_element?(view, "#calendar-form-errors")
+      assert has_element?(view, "#calendar-name-error")
+    end
+
     test "shows no summary while the person is only typing", %{
       conn: conn,
       user: user,

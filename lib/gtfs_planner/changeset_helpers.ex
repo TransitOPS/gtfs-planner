@@ -5,17 +5,26 @@ defmodule GtfsPlanner.ChangesetHelpers do
 
   import Ecto.Changeset
 
+  alias GtfsPlanner.Values
+
   @http_url_message "must be a full web address starting with https:// or http://"
   @email_message "must be an email address, such as data@example.com"
   @email_format ~r/^[^\s]+@[^\s]+$/
 
+  @doc """
+  Trims every changed `:string` field and nils a blank result.
+
+  Requires a prior default `cast/4`: Ecto's default `empty_values` already turn a
+  whitespace-only string into `nil`, so this helper only sees `nil` or a non-blank
+  binary for a cast field.
+  """
   @spec trim_string_fields(Ecto.Changeset.t(), keyword()) :: Ecto.Changeset.t()
   def trim_string_fields(changeset, opts \\ []) do
     except = Keyword.get(opts, :except, [])
 
     Enum.reduce(changeset.types, changeset, fn
       {field, :string}, acc ->
-        if field in except, do: acc, else: update_change(acc, field, &trim/1)
+        if field in except, do: acc, else: update_change(acc, field, &Values.presence/1)
 
       _other, acc ->
         acc
@@ -31,7 +40,7 @@ defmodule GtfsPlanner.ChangesetHelpers do
   @spec validate_http_url(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_http_url(changeset, field) do
     validate_change(changeset, field, fn _field, value ->
-      if blank?(value) or http_url?(value), do: [], else: [{field, @http_url_message}]
+      if Values.blank?(value) or http_url?(value), do: [], else: [{field, @http_url_message}]
     end)
   end
 
@@ -44,7 +53,7 @@ defmodule GtfsPlanner.ChangesetHelpers do
   @spec validate_email_address(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_email_address(changeset, field) do
     validate_change(changeset, field, fn _field, value ->
-      if blank?(value) or email_address?(value), do: [], else: [{field, @email_message}]
+      if Values.blank?(value) or email_address?(value), do: [], else: [{field, @email_message}]
     end)
   end
 
@@ -62,10 +71,4 @@ defmodule GtfsPlanner.ChangesetHelpers do
 
   defp email_address?(value) when is_binary(value), do: Regex.match?(@email_format, value)
   defp email_address?(_value), do: false
-
-  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank?(_value), do: false
-
-  defp trim(value) when is_binary(value), do: String.trim(value)
-  defp trim(value), do: value
 end

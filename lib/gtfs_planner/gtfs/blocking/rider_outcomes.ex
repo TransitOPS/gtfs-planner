@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomes do
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.InSeat
+  alias GtfsPlanner.Values
 
   # A wait worth a hint: Transit's converter treats waits over 10 minutes as
   # must re-board, so a gap above it is a fact the editor is unlikely to know.
@@ -225,7 +226,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomes do
   defp towardward(to), do: headsign_phrase(to, " toward ")
 
   defp headsign_phrase(to, prefix) do
-    case presence(to.trip_headsign) do
+    case Values.presence(to.trip_headsign) do
       nil -> ""
       headsign -> prefix <> headsign
     end
@@ -365,16 +366,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RiderOutcomes do
   defp stop_name(nil), do: "an unnamed stop"
 
   defp stop_name(stop_ref) do
-    presence(stop_ref.name) || presence(stop_ref.parent_name) || presence(stop_ref.stop_id) ||
-      "an unnamed stop"
+    Values.presence(stop_ref.name) || Values.presence(stop_ref.parent_name) ||
+      Values.presence(stop_ref.stop_id) || "an unnamed stop"
   end
-
-  defp presence(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp presence(_value), do: nil
 end

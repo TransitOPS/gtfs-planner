@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   @type base :: %{
           id: Ecto.UUID.t(),
@@ -198,7 +199,7 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
     %{
       stage: parse_stage(Map.get(params, "stage")),
       q: parse_query(Map.get(params, "q")),
-      page: parse_page(Map.get(params, "page"))
+      page: Values.positive_integer(Map.get(params, "page"), 1)
     }
   end
 
@@ -534,15 +535,4 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
   end
 
   defp parse_query(_q), do: ""
-
-  defp parse_page(page) when is_integer(page) and page > 0, do: page
-
-  defp parse_page(page) when is_binary(page) do
-    case Integer.parse(page) do
-      {number, ""} when number > 0 -> number
-      _invalid -> 1
-    end
-  end
-
-  defp parse_page(_page), do: 1
 end

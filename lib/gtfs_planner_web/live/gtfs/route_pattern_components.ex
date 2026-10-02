@@ -16,6 +16,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.RouteWorkspace
 
@@ -92,7 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             <span :if={@creating} id="pattern-trip-total">No trips yet</span>
             <span :if={not @creating} id="pattern-trip-total">
               <strong class="font-[650] tabular-nums text-strong">{@trip_count}</strong>
-              {trip_count_noun(@trip_count)} {trip_verb(@trip_count)} this pattern
+              {Wording.noun(@trip_count, "trip")} {trip_verb(@trip_count)} this pattern
             </span>
             <span :if={not @creating} aria-hidden="true">·</span>
             <span :if={not @creating} id="pattern-timing-total">
@@ -427,7 +429,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <div :if={@blocked?} id="pattern-stops-custom" class="mt-3">
           <.message kind="warning" title="These trips have custom times">
             <strong class="tabular-nums">{@custom_trip_count}</strong>
-            custom-time {trip_count_noun(@custom_trip_count)} {trip_verb(@custom_trip_count)} this pattern. They keep the stop
+            custom-time {Wording.noun(@custom_trip_count, "trip")} {trip_verb(@custom_trip_count)} this pattern. They keep the stop
             times they were imported with, so the stop list can’t change while they do. Copy the
             pattern to work on separate service.
             <:action>
@@ -449,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           class="mt-3 text-[13px] text-default"
         >
           Adding or removing a stop updates <strong class="tabular-nums">{@trip_count}</strong>
-          {trip_count_noun(@trip_count)} across {@timing_count} {if @timing_count == 1,
+          {Wording.noun(@trip_count, "trip")} across {@timing_count} {if @timing_count == 1,
             do: "timing",
             else: "timings"}. Stops can’t be reordered while trips use this pattern. Copy the
           pattern to change the order.
@@ -845,9 +847,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
         <p id="timing-summary" class="min-w-[180px] flex-1 pb-3 text-sm text-default">
           <strong class="tabular-nums">{@trip_count}</strong>
-          {trip_count_noun(@trip_count)} {trip_verb(@trip_count)} this timing.
+          {Wording.noun(@trip_count, "trip")} {trip_verb(@trip_count)} this timing.
           <span :if={@custom_trip_count > 0} class="text-muted">
-            {@custom_trip_count} custom-time {trip_count_noun(@custom_trip_count)} won’t change.
+            {@custom_trip_count} custom-time {Wording.noun(@custom_trip_count, "trip")} won’t change.
           </span>
           <span :if={@trip_count == 0} class="text-muted">
             Nothing uses it yet, so it can be deleted.
@@ -1248,7 +1250,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             class={time_input_class(@row.arrival_error, @arrival_edited?, @estimated?)}
           />
           <p
-            :if={@failed_preview? and blank_value?(@row.arrival) and blank_value?(@row.departure)}
+            :if={@failed_preview? and Values.blank?(@row.arrival) and Values.blank?(@row.departure)}
             class="mt-0.5 text-[12px] italic text-muted"
           >
             Not filled
@@ -2251,9 +2253,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       >
         <p>
           <strong class="font-[650] text-strong">
-            {trip_noun(@offer.trip_count, "trip", "trips")}
+            {Wording.count_noun(@offer.trip_count, "trip", "trips")}
           </strong>
-          that aren’t in a pattern serve these same {stop_noun(@offer.stop_count)} in the same
+          that aren’t in a pattern serve these same {Wording.count_noun(@offer.stop_count, "stop")} in the same
           order. {service_sentence(@offer)} Link them so they use this pattern.
         </p>
         <:action>
@@ -2265,7 +2267,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             phx-click="link_open"
             disabled={@pending}
           >
-            Link {trip_noun(@offer.trip_count, "trip", "trips")}
+            Link {Wording.count_noun(@offer.trip_count, "trip", "trips")}
           </.button>
           <.button
             id="link-dismiss"
@@ -2296,7 +2298,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     <.message
       id="link-done"
       kind="success"
-      title={"Linked #{trip_noun(@done.trips_linked, "trip", "trips")} to #{@done.pattern_name}"}
+      title={"Linked #{Wording.count_noun(@done.trips_linked, "trip", "trips")} to #{@done.pattern_name}"}
     >
       {link_done_body(@done)}
     </.message>
@@ -2308,7 +2310,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   end
 
   defp link_done_body(%{timings_created: timings}) do
-    "They’re Direction 0 now and kept their own times as #{timings} new #{plural(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
+    "They’re Direction 0 now and kept their own times as #{timings} new #{Wording.noun(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
   end
 
   # The prototype names the services the trips run on; the preview's rule 6
@@ -2327,15 +2329,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   # ("1 trip") rather than a bare count.
   # The offer names its own counts ("18 trips"), so this reads as a count and
   # its noun rather than as a noun alone.
-  defp trip_noun(1, one, _many), do: "1 #{one}"
-  defp trip_noun(count, _one, many), do: "#{count} #{many}"
 
   # The offer names its own stops ("13 stops") for the same reason.
-  defp stop_noun(1), do: "1 stop"
-  defp stop_noun(count), do: "#{count} stops"
-
-  defp plural(1, one, _many), do: one
-  defp plural(_count, _one, many), do: many
 
   @doc """
   Renders the review that precedes a link, listing the trips it covers with the
@@ -2354,11 +2349,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       :if={@offer != nil}
       id="link-review"
       open={@offer != nil}
-      title={"Link #{trip_noun(@offer.trip_count, "trip", "trips")} to #{@offer.pattern_name}?"}
+      title={"Link #{Wording.count_noun(@offer.trip_count, "trip", "trips")} to #{@offer.pattern_name}?"}
       size="xl"
       chrome="planner"
       confirm_variant="primary"
-      confirm_label={"Link #{trip_noun(@offer.trip_count, "trip", "trips")}"}
+      confirm_label={"Link #{Wording.count_noun(@offer.trip_count, "trip", "trips")}"}
       pending_label="Linking…"
       cancel_label="Keep trips separate"
       on_confirm="link_confirm"
@@ -2368,7 +2363,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     >
       <div class="grid gap-4">
         <p class="text-default">
-          They serve the pattern’s {stop_noun(@offer.stop_count)} in the same order, with no
+          They serve the pattern’s {Wording.count_noun(@offer.stop_count, "stop")} in the same order, with no
           direction. Linking puts them in this pattern.
         </p>
 
@@ -2575,10 +2570,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp was_state({previous, _departure}, estimate) when previous == estimate, do: :same
   defp was_state({previous, _departure}, _estimate), do: {:changed, previous}
 
-  defp blank_value?(nil), do: true
-  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_value?(_value), do: false
-
   defp blank_note_text(1),
     do:
       "1 stop doesn’t have times yet. Fill it from the timepoints on either side, or type it. Every stop needs a time before you can save."
@@ -2763,10 +2754,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp map_stop_kind(row, false, blocked?) do
     cond do
-      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) and blocked? ->
+      Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure)) and
+          blocked? ->
         "blocked"
 
-      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) ->
+      Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure)) ->
         "blank"
 
       Map.get(row, :timepoint) == true ->
@@ -2987,11 +2979,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   # already refuse a half pair, so a blank row is only ever a stop between the
   # ends, and a timepoint is never one of them.
   defp blank_row?(row),
-    do: blank_time?(Map.get(row, :arrival)) and blank_time?(Map.get(row, :departure))
-
-  defp blank_time?(nil), do: true
-  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_time?(_value), do: false
+    do: Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure))
 
   defp label_class, do: "text-[13px] font-[650] text-default"
 
@@ -3100,9 +3088,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     </div>
     """
   end
-
-  defp trip_count_noun(1), do: "trip"
-  defp trip_count_noun(_count), do: "trips"
 
   defp trip_verb(1), do: "uses"
   defp trip_verb(_count), do: "use"

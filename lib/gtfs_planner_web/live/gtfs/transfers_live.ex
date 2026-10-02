@@ -98,6 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -216,7 +217,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("paginate", %{"page" => page}, socket) do
     {:noreply,
-     push_patch(clear_checked(socket), to: list_path(socket, page: parse_page(page), rule: nil))}
+     push_patch(clear_checked(socket),
+       to: list_path(socket, page: Values.positive_integer(page, 1), rule: nil)
+     )}
   end
 
   @impl true
@@ -239,7 +242,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @impl true
   def handle_event("search", params, socket) do
-    filters = %{socket.assigns.filters | q: parse_string(Map.get(params, "q"))}
+    filters = %{socket.assigns.filters | q: Values.presence(Map.get(params, "q"))}
 
     {:noreply,
      push_patch(clear_checked(socket),
@@ -830,7 +833,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
-  defp draft_present?(params, key), do: parse_string(Map.get(params, key)) != nil
+  defp draft_present?(params, key), do: Values.presence(Map.get(params, key)) != nil
 
   defp stored_value(nil), do: ""
   defp stored_value(value) when is_binary(value), do: value
@@ -1056,7 +1059,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # unreachable id leaves the draft without a stop and the save refuses it with the
   # server's own field error instead of a hint built from another version's stop.
   defp load_stop(socket, stop_id) do
-    case parse_string(stop_id) do
+    case Values.presence(stop_id) do
       nil ->
         nil
 
@@ -1166,7 +1169,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp save_rule(socket, editor, submitted), do: create_rule(socket, editor, submitted)
 
   defp create_rule(socket, editor, submitted) do
-    case Gtfs.create_general_transfer(submitted, audit_context(socket)) do
+    case Gtfs.create_general_transfer(submitted, AuditContext.from_assigns(socket.assigns)) do
       {:ok, transfer} ->
         saved(socket, transfer)
 
@@ -1195,7 +1198,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
            editor.row.id,
            submitted,
            editor.row.transfer.updated_at,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, transfer} ->
         saved(socket, transfer)
@@ -1270,7 +1273,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   defp put_route_error(errors, field, value, message) do
-    case parse_string(value) do
+    case Values.presence(value) do
       nil -> errors ++ [{field, message}]
       _value -> errors
     end
@@ -1304,7 +1307,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # a stop, route or trip id this page could have chosen.
   defp draft_param(editor, key) do
     case editor.params[key] do
-      value when is_binary(value) -> parse_string(value)
+      value when is_binary(value) -> Values.presence(value)
       _value -> nil
     end
   end
@@ -1329,18 +1332,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp version_id(socket), do: socket.assigns.current_gtfs_version.id
 
   defp put_editor(socket, editor), do: assign(socket, :editor, editor)
-
-  # The audit context every write is attributed to, as the calendar and schedule
-  # pages build it.
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: organization_id(socket),
-      gtfs_version_id: version_id(socket),
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   @impl true
   def render(assigns) do
@@ -1517,7 +1508,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     filters = parse_filters(url_params, view)
     sort_by = Map.get(@sort_keys, url_params["sort_by"]) || :from
     sort_dir = Map.get(@sort_dirs, url_params["sort_dir"]) || :asc
-    page = parse_page(url_params["page"])
+    page = Values.positive_integer(url_params["page"], 1)
     rule = parse_rule(url_params["rule"])
 
     opts = [
@@ -1700,6 +1691,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp attention_param(true), do: 1
   defp attention_param(_attention), do: nil
 
+  # An ordered keyword list, not a map: this stays local, not Values.put_present/3.
   defp put_param(params, _key, nil), do: params
   defp put_param(params, key, value), do: params ++ [{key, value}]
 
@@ -1716,17 +1708,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp rule_params(params, nil), do: params
   defp rule_params(params, rule), do: params ++ [rule: rule]
 
-  defp parse_page(nil), do: 1
-
-  defp parse_page(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {page, ""} when page > 0 -> page
-      _other -> 1
-    end
-  end
-
-  defp parse_page(_value), do: 1
-
   defp parse_rule(value) do
     case Ecto.UUID.cast(value) do
       {:ok, rule} -> rule
@@ -1742,9 +1723,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   defp parse_filters(url_params, view) do
     %{
-      q: parse_string(Map.get(url_params, "q")),
-      stop: parse_string(Map.get(url_params, "stop")),
-      route: parse_string(Map.get(url_params, "route")),
+      q: Values.presence(Map.get(url_params, "q")),
+      stop: Values.presence(Map.get(url_params, "stop")),
+      route: Values.presence(Map.get(url_params, "route")),
       type: parse_type(Map.get(url_params, "type"), view),
       attention: view == :general and Map.get(url_params, "attention") == "1"
     }
@@ -1755,8 +1736,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp merge_filters(filters, params, view) do
     %{
       filters
-      | stop: parse_string(Map.get(params, "stop")),
-        route: parse_string(Map.get(params, "route")),
+      | stop: Values.presence(Map.get(params, "stop")),
+        route: Values.presence(Map.get(params, "route")),
         type: parse_type(Map.get(params, "type"), view)
     }
   end
@@ -1775,15 +1756,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       "type" => (filters.type && to_string(filters.type)) || ""
     }
   end
-
-  defp parse_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp parse_string(_value), do: nil
 
   # A type is a filter only inside the range of the view being listed: 4 in the
   # general view is dropped rather than answered with an empty list, and the
@@ -1963,7 +1935,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp apply_delete(socket) do
     dialog = socket.assigns.delete_dialog
 
-    case delete_rows(dialog.pairs, delete_audit_context(socket)) do
+    case delete_rows(dialog.pairs, AuditContext.from_assigns(socket.assigns)) do
       {:ok, count} ->
         socket
         |> clear_checked()
@@ -1986,19 +1958,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   defp delete_rows(pairs, audit), do: Gtfs.delete_general_transfers(pairs, audit)
-
-  # The organization and the version come from the socket, never from a client
-  # payload, so a deletion can only land in the page's own version (R10); the
-  # actor is the signed-in user, as the other GTFS pages build it (R9).
-  defp delete_audit_context(socket) do
-    %GtfsPlanner.Gtfs.AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   defp deleted_message(1), do: "1 transfer rule deleted."
   defp deleted_message(count), do: "#{count} transfer rules deleted."

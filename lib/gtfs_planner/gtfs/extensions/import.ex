@@ -117,10 +117,10 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
 
     missing =
       %{}
-      |> maybe_put(:stops, missing_stops)
-      |> maybe_put(:levels, missing_levels)
-      |> maybe_put(:routes, missing_routes)
-      |> maybe_put(:diagram_images, invalid_diagram_images)
+      |> put_non_empty(:stops, missing_stops)
+      |> put_non_empty(:levels, missing_levels)
+      |> put_non_empty(:routes, missing_routes)
+      |> put_non_empty(:diagram_images, invalid_diagram_images)
 
     if map_size(missing) == 0 do
       :ok
@@ -129,8 +129,9 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
     end
   end
 
-  defp maybe_put(map, _key, []), do: map
-  defp maybe_put(map, key, list), do: Map.put(map, key, list)
+  # A complete reference list is omitted from the map, so an empty list is not present.
+  defp put_non_empty(map, _key, []), do: map
+  defp put_non_empty(map, key, list), do: Map.put(map, key, list)
 
   defp expected_image_pairs(stop_levels) do
     stop_levels

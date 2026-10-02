@@ -271,6 +271,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
     supplied <> ":" <> sequence_hash
   end
 
+  # Named exception: a supplied route_pattern_id must match exact stored bytes.
   defp nil_if_blank(""), do: nil
   defp nil_if_blank(supplied), do: supplied
 

@@ -13,12 +13,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   use GtfsPlannerWeb, :verified_routes
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.MapLineFiles
+  alias GtfsPlanner.Wording
   alias Phoenix.Component
 
   require Phoenix.LiveView
@@ -382,7 +382,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     Component.assign(
       socket,
       :status_message,
-      "#{removed} #{points_noun(removed)} removed. Undo restores them."
+      "#{removed} #{Wording.noun(removed, "point")} removed. Undo restores them."
     )
   end
 
@@ -1622,7 +1622,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       push_save_settled(socket)
     else
       draft = save_sections(params)
-      audit = save_audit_context(socket)
+      audit = AuditContext.from_assigns(socket.assigns)
       pattern = socket.assigns.pattern
 
       handle_save_request(socket, draft, Gtfs.review_alignment_save(pattern.id, draft, audit))
@@ -1783,16 +1783,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp save_sections(%{sections: sections}) when is_list(sections), do: sections
   defp save_sections(_params), do: []
 
-  defp save_audit_context(socket) do
-    %GtfsPlanner.Gtfs.AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # Applies immediately only when every choice is already decided: no
   # blockers, no replaced shapes awaiting confirmation (INV-5), no shared
   # deletion another pattern still uses, and every scope choice covered by
@@ -1927,7 +1917,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   defp apply_save(socket, draft, choices, fingerprint) do
     socket = Component.assign(socket, :applying?, true)
-    audit = save_audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     pattern = socket.assigns.pattern
 
     case Gtfs.apply_alignment_save(pattern.id, draft, choices, fingerprint, audit) do
@@ -1989,7 +1979,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> Component.assign(:alignment_pending, nil)
     |> Component.assign(:alignment_forced_local, [])
     |> Component.assign(:alignment_save_notice, nil)
-    |> Component.assign(:status_message, "Map line saved. #{trips} #{trip_noun(trips)} updated.")
+    |> Component.assign(
+      :status_message,
+      "Map line saved. #{trips} #{Wording.noun(trips, "trip")} updated."
+    )
     |> clear_draft_mirror()
     |> reload_alignment_model()
   end
@@ -2011,9 +2004,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
     |> assign_applying(false)
     |> open_blocked(draft, review, blockers)
   end
-
-  defp trip_noun(1), do: "trip"
-  defp trip_noun(_), do: "trips"
 
   # Latest base revisions for the drafted positions, so the hook keeps
   # its points against the newer shared path after "Keep as local draft".
@@ -2072,9 +2062,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # end in alignment:load or alignment:rebase.
   defp push_save_settled(socket),
     do: Phoenix.LiveView.push_event(socket, "alignment:save_settled", %{})
-
-  defp points_noun(1), do: "point"
-  defp points_noun(_), do: "points"
 
   defp parse_tolerance(value) when is_binary(value) do
     case Integer.parse(value) do
@@ -2186,12 +2173,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # and every future write event re-checks at its own mutation boundary.
   defp editor_access?(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      GtfsPlannerWeb.EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> false
+      _other -> false
     end
   end
 end

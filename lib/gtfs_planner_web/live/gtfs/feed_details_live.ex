@@ -59,7 +59,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -110,7 +112,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       {:noreply,
        socket
        |> push_event("gtfs_version_selected", %{version_id: version_id})
-       |> push_navigate(to: feed_details_path(version_id))}
+       |> push_navigate(to: ~p"/gtfs/#{version_id}/settings/feed-details")}
     else
       {:noreply, socket}
     end
@@ -125,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: feed_details_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/feed-details")}
     else
       {:noreply, socket}
     end
@@ -193,7 +195,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   @impl true
   def handle_event("save", %{"feed_info" => params}, socket) do
-    case FeedSettings.save_feed_info(audit_context(socket), params, socket.assigns.loaded_token) do
+    case FeedSettings.save_feed_info(
+           AuditContext.from_assigns(socket.assigns),
+           params,
+           socket.assigns.loaded_token
+         ) do
       {:ok, feed_info} ->
         {:noreply,
          socket
@@ -233,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
          socket
          |> close_editor()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -269,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="feed-details-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -585,12 +591,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Publisher name"
           hint="Apps may credit this name as your data’s source."
-          value={present(@feed_info.feed_publisher_name)}
+          value={Values.presence(@feed_info.feed_publisher_name)}
         />
         <:row
           label="Publisher website"
           hint="Where data users go to learn about the publisher."
-          value={present(@feed_info.feed_publisher_url)}
+          value={Values.presence(@feed_info.feed_publisher_url)}
           kind={:web}
         />
         <:row
@@ -613,19 +619,19 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Valid from"
           hint="First day apps treat this schedule as reliable."
-          value={date(@feed_info.feed_start_date)}
+          value={@feed_info.feed_start_date && Wording.date(@feed_info.feed_start_date)}
           kind={:date}
         />
         <:row
           label="Valid through"
           hint="Apps stop relying on this schedule after this day."
-          value={date(@feed_info.feed_end_date)}
+          value={@feed_info.feed_end_date && Wording.date(@feed_info.feed_end_date)}
           kind={:date}
         />
         <:row
           label="Feed version"
           hint="Apps compare this label to spot new releases."
-          value={present(@feed_info.feed_version)}
+          value={Values.presence(@feed_info.feed_version)}
         />
       </.summary_card>
 
@@ -637,13 +643,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Contact email"
           hint="Where trip-planner teams send data questions."
-          value={present(@feed_info.feed_contact_email)}
+          value={Values.presence(@feed_info.feed_contact_email)}
           kind={:email}
         />
         <:row
           label="Contact website"
           hint="A support page or web form for data questions."
-          value={present(@feed_info.feed_contact_url)}
+          value={Values.presence(@feed_info.feed_contact_url)}
           kind={:web}
         />
       </.summary_card>
@@ -739,7 +745,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           Phone numbers and websites riders use are set for each agency. These details describe the
           dataset itself.
         </p>
-        <.aside_link id="feed-details-manage-agencies" navigate={agencies_path(@gtfs_version_id)}>
+        <.aside_link
+          id="feed-details-manage-agencies"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/settings/agencies"}
+        >
           Manage agencies
         </.aside_link>
       </section>
@@ -750,7 +759,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           These details are included when this version is exported. Trip planners see them after
           you export the version and share the feed.
         </p>
-        <.aside_link id="feed-details-go-to-export" navigate={export_path(@gtfs_version_id)}>
+        <.aside_link id="feed-details-go-to-export" navigate={~p"/gtfs/#{@gtfs_version_id}/export"}>
           Go to export
         </.aside_link>
       </section>
@@ -813,15 +822,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   defp token(nil), do: nil
   defp token(%{updated_at: updated_at}), do: updated_at
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # The suggested label is the version's current date resolved the way the rest
   # of the app resolves it, and it is never written without the editor asking
   # (AC-5, R12).
@@ -867,9 +867,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     do: "Choose a language from the list."
 
   defp rule_message(form, :feed_end_date, {_message, []}) do
-    case date(Ecto.Changeset.get_field(form.source, :feed_start_date)) do
+    case Ecto.Changeset.get_field(form.source, :feed_start_date) do
       nil -> "Choose a date on or after the valid-from date."
-      start -> "Choose a date on or after #{start}, the valid-from date."
+      start -> "Choose a date on or after #{Wording.date(start)}, the valid-from date."
     end
   end
 
@@ -904,27 +904,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   end
 
   defp version_scope(version) do
-    "Applies to #{present(version.name) || "this version"} only. Each version keeps its own feed details."
+    "Applies to #{Values.presence(version.name) || "this version"} only. Each version keeps its own feed details."
   end
 
-  # The display helpers return nil for a value the version does not carry, so
+  # The display helper returns nil for a value the version does not carry, so
   # `summary_value/1` is the one place that words it "Not set".
-  defp present(nil), do: nil
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
   defp language(code), do: LanguageCodes.label(code)
-
-  defp date(nil), do: nil
-  defp date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
-
-  defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
-  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 end

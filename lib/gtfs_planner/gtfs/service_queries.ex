@@ -626,6 +626,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
     end
   end
 
+  # Identifier exception: whitespace is legal service_id data, so only "" is invalid.
   defp valid_reviewed_service?(service_id),
     do: is_nil(service_id) or (is_binary(service_id) and service_id != "")
 
@@ -637,6 +638,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
     end
   end
 
+  # Identifier exception: whitespace is legal route_id data, so only "" is invalid.
   defp valid_route_id?(route_id), do: is_binary(route_id) and route_id != ""
 
   # -- scoped reads ----------------------------------------------------------

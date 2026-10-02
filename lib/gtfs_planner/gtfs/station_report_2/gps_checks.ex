@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
   """
 
   alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Values
 
   @entrance_distance_threshold_m 500
   @clustering_distance_threshold_m 200
@@ -16,8 +17,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
   """
   @spec validate(map(), [map()]) :: [map()]
   def validate(station, child_stops) do
-    station_lat = Helpers.decimal_to_float(station.stop_lat)
-    station_lon = Helpers.decimal_to_float(station.stop_lon)
+    station_lat = Values.to_float(station.stop_lat)
+    station_lon = Values.to_float(station.stop_lon)
 
     [
       positive_longitude_check(station_lon, child_stops),
@@ -40,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
     flagged =
       child_stops
       |> Enum.filter(fn stop ->
-        child_lon = Helpers.decimal_to_float(stop.stop_lon)
+        child_lon = Values.to_float(stop.stop_lon)
         child_lon != nil and signs_differ?(station_lon, child_lon)
       end)
       |> Enum.map(& &1.stop_id)
@@ -81,13 +82,13 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
     flagged =
       entrances
       |> Enum.filter(fn stop ->
-        child_lat = Helpers.decimal_to_float(stop.stop_lat)
-        child_lon = Helpers.decimal_to_float(stop.stop_lon)
+        child_lat = Values.to_float(stop.stop_lat)
+        child_lon = Values.to_float(stop.stop_lon)
         child_lat != nil and child_lon != nil
       end)
       |> Enum.map(fn stop ->
-        child_lat = Helpers.decimal_to_float(stop.stop_lat)
-        child_lon = Helpers.decimal_to_float(stop.stop_lon)
+        child_lat = Values.to_float(stop.stop_lat)
+        child_lon = Values.to_float(stop.stop_lon)
         distance = Helpers.haversine(station_lat, station_lon, child_lat, child_lon)
         {stop.stop_id, distance}
       end)
@@ -133,12 +134,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.GpsChecks do
       child_stops
       |> Enum.filter(fn stop ->
         MapSet.member?(optional_types, stop.location_type) and
-          Helpers.decimal_to_float(stop.stop_lat) != nil and
-          Helpers.decimal_to_float(stop.stop_lon) != nil
+          Values.to_float(stop.stop_lat) != nil and
+          Values.to_float(stop.stop_lon) != nil
       end)
       |> Enum.map(fn stop ->
-        child_lat = Helpers.decimal_to_float(stop.stop_lat)
-        child_lon = Helpers.decimal_to_float(stop.stop_lon)
+        child_lat = Values.to_float(stop.stop_lat)
+        child_lon = Values.to_float(stop.stop_lon)
         distance = Helpers.haversine(station_lat, station_lon, child_lat, child_lon)
         {stop.stop_id, distance}
       end)

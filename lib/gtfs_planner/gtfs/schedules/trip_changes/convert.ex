@@ -352,8 +352,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
   end
 
   defp stored_window(row) do
-    start_secs = secs(value(row, :start_time))
-    end_secs = secs(value(row, :end_time))
+    start_secs = GtfsTime.coerce(value(row, :start_time))
+    end_secs = GtfsTime.coerce(value(row, :end_time))
     headway_secs = value(row, :headway_secs)
 
     if is_integer(start_secs) and is_integer(end_secs) and is_integer(headway_secs) and
@@ -442,21 +442,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
   # The template's anchor is the first row's departure, or its arrival at a stop that
   # stores only one clock (the same anchor a copy uses).
   defp first_departure([first | _rest]) do
-    secs(value(first, :departure_time)) || secs(value(first, :arrival_time))
+    GtfsTime.coerce(value(first, :departure_time)) || GtfsTime.coerce(value(first, :arrival_time))
   end
 
   defp first_departure(_rows), do: nil
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, seconds} -> seconds
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp finish({:ok, values}), do: {:ok, Enum.reverse(values)}
   defp finish({:error, _reason} = error), do: error

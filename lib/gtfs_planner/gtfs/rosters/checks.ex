@@ -112,6 +112,25 @@ defmodule GtfsPlanner.Gtfs.Rosters.Checks do
     }
   end
 
+  @doc """
+  The weekday after `weekday` in the cyclic week, wrapping Sunday (`7`) to
+  Monday (`1`).
+
+  Only adjacent weekdays are ever compared, so the walk wraps rather than
+  stopping at the end of the week.
+  """
+  @spec next_weekday(1..7) :: 1..7
+  def next_weekday(7), do: 1
+  def next_weekday(weekday), do: weekday + 1
+
+  @doc """
+  The weekday before `weekday` in the cyclic week, wrapping Monday (`1`) to
+  Sunday (`7`).
+  """
+  @spec previous_weekday(1..7) :: 1..7
+  def previous_weekday(1), do: 7
+  def previous_weekday(weekday), do: weekday - 1
+
   defp adjacent_rest(weekday_times, from, to) do
     case {Map.fetch(weekday_times, from), Map.fetch(weekday_times, to)} do
       {{:ok, previous}, {:ok, next_run}} -> rest_secs(previous, next_run)
@@ -142,10 +161,4 @@ defmodule GtfsPlanner.Gtfs.Rosters.Checks do
       off_run(next_weekday, working, [weekday | acc])
     end
   end
-
-  defp next_weekday(7), do: 1
-  defp next_weekday(weekday), do: weekday + 1
-
-  defp previous_weekday(1), do: 7
-  defp previous_weekday(weekday), do: weekday - 1
 end

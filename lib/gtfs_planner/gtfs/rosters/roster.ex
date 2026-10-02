@@ -255,8 +255,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.Roster do
     Map.new(fresh, fn {weekday, _slot} ->
       {weekday,
        %{
-         before_secs: adjacent_rest(fresh, previous_weekday(weekday), weekday),
-         after_secs: adjacent_rest(fresh, weekday, next_weekday(weekday))
+         before_secs: adjacent_rest(fresh, Checks.previous_weekday(weekday), weekday),
+         after_secs: adjacent_rest(fresh, weekday, Checks.next_weekday(weekday))
        }}
     end)
   end
@@ -481,10 +481,4 @@ defmodule GtfsPlanner.Gtfs.Rosters.Roster do
         Enum.count(paid_secs, &(&1 > rules.weekly_hours_warn_above * @seconds_per_hour))
     }
   end
-
-  defp next_weekday(7), do: 1
-  defp next_weekday(weekday), do: weekday + 1
-
-  defp previous_weekday(1), do: 7
-  defp previous_weekday(weekday), do: weekday - 1
 end

@@ -260,6 +260,43 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
              )
     end
 
+    test "a sub-hour piece of uncovered work reads in minutes, not hours", context do
+      world = two_runs(context)
+      [first | _] = world.blocks["101"]
+
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(world.organization.id, world.version.id, %{
+          stop_id: "G1_STOP",
+          stop_lat: world.garage.lat,
+          stop_lon: world.garage.lon
+        })
+
+      # Uncovered work includes garage travel. This trip starts and ends at the
+      # garage's coordinates, so its block is exactly 2700 s with no deadhead.
+      # Under an hour, the duration reads "45 min" rather than "0 h 45 min".
+      blocked_trip_fixture(world.organization.id, world.version.id, first.route_id, %{
+        trip_id: "G1",
+        service_id: "WK",
+        block_id: "103",
+        first_stop: stop.stop_id,
+        last_stop: stop.stop_id,
+        first_arrival: "14:00:00",
+        first_departure: "14:00:00",
+        last_arrival: "14:45:00"
+      })
+
+      view = signed_in(context, world)
+      stats = derived(world).derived.stats
+
+      assert stats.uncovered.trips == 1
+      assert stats.uncovered.secs == 2700
+
+      tile = view |> element("#runs-count-strip-item-uncovered") |> render()
+
+      assert tile =~ "45 min"
+      refute tile =~ "0 h 45 min"
+    end
+
     test "the tiles are buttons that name their own action", context do
       world = two_runs(context)
       view = signed_in(context, world)

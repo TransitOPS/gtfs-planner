@@ -14,6 +14,8 @@ defmodule GtfsPlanner.Operations.VehicleType do
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
 
+  alias GtfsPlanner.Values
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -70,7 +72,7 @@ defmodule GtfsPlanner.Operations.VehicleType do
   defp put_hours_change(changeset, :__absent__), do: initialize_max_out_hours(changeset)
 
   defp put_hours_change(changeset, raw) do
-    if blank_value?(raw) do
+    if Values.blank?(raw) do
       changeset
       |> put_change(:max_out_hours, nil)
       |> put_change(:max_out_minutes, nil)
@@ -78,10 +80,6 @@ defmodule GtfsPlanner.Operations.VehicleType do
       changeset
     end
   end
-
-  defp blank_value?(nil), do: true
-  defp blank_value?(raw) when is_binary(raw), do: String.trim(raw) == ""
-  defp blank_value?(_raw), do: false
 
   defp initialize_max_out_hours(changeset) do
     cond do

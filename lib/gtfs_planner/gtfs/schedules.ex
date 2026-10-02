@@ -70,6 +70,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   # A series is bounded so one drawer submission cannot create an unbounded
@@ -3597,8 +3598,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   defp expand_repeat(_start_secs, _repeat), do: {:error, :invalid_input}
 
-  # Spec 01's bounded retry: a serialization failure or lock contention retries
-  # the whole transaction; every other failure is returned unchanged.
+  # Spec 01's bounded retry: a serialization failure or a deadlock retries the
+  # whole transaction; every other failure is returned unchanged.
   defp run_write(transaction, attempts \\ @write_attempts, options \\ []) do
     case run_write_transaction(transaction, options) do
       {:ok, result} ->
@@ -3618,7 +3619,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp retry_write(_transaction, _attempts, _options), do: {:error, :busy}
 
   defp retry_write_error(reason, transaction, attempts, options) do
-    if serialization_failure?(reason),
+    if Repo.retryable_conflict?(reason),
       do: retry_write(transaction, attempts, options),
       else: {:error, reason}
   end
@@ -3626,36 +3627,22 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp run_write_transaction(transaction, []), do: run_write_transaction(transaction)
 
   defp run_write_transaction(transaction, options) do
-    write_transaction_module().run(transaction, options)
+    ReviewedApplyTransaction.adapter().run(transaction, options)
   rescue
     error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
   end
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
   end
 
   defp write_failure(error, stacktrace) do
-    if serialization_failure?(error),
+    if Repo.retryable_conflict?(error),
       do: {:serialization_failure, error},
       else: reraise(error, stacktrace)
   end
-
-  defp write_transaction_module do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
-  defp serialization_failure?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001"],
-       do: true
-
-  defp serialization_failure?(_error), do: false
 
   defp insert_trips!(route_id, starts, attrs, audit_context) do
     Authorization.lock_editor!(audit_context)
@@ -3665,7 +3652,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
 
-    unless uuid?(pattern_id) and uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(pattern_id) and Values.uuid?(timed_pattern_id),
+      do: Repo.rollback(:not_found)
 
     # Rule-table lock order: the calendar's version row `FOR SHARE` first, then the
     # route `FOR UPDATE`, then the pattern `FOR UPDATE`. Timing rows are loaded
@@ -4036,7 +4024,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
 
-    unless uuid?(trip_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(trip_id), do: Repo.rollback(:not_found)
 
     # The pre-lock read chooses the calendar identity and pattern to lock and
     # detects a trip that moved underneath the caller; the locked row read below
@@ -4321,7 +4309,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     version_id = audit_context.gtfs_version_id
     timed_pattern_id = attr(attrs, :timed_pattern_id)
 
-    unless uuid?(trip_id) and uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(trip_id) and Values.uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
 
     current = scoped_trip!(organization_id, version_id, route_id, trip_id)
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, current.service_id)
@@ -4414,7 +4402,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     version_id = audit_context.gtfs_version_id
     trip_uuids = Enum.uniq(trip_ids)
 
-    unless Enum.all?(trip_uuids, &uuid?/1), do: Repo.rollback(:not_found)
+    unless Enum.all?(trip_uuids, &Values.uuid?/1), do: Repo.rollback(:not_found)
 
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
     route = RoutePatterns.lock_published_route!(audit_context, route_id)
@@ -4565,7 +4553,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp lock_headsign_trips!(organization_id, version_id, changes) do
     ids = Enum.map(changes, & &1.id)
 
-    unless Enum.all?(ids, &uuid?/1), do: Repo.rollback(:invalid_selection)
+    unless Enum.all?(ids, &Values.uuid?/1), do: Repo.rollback(:invalid_selection)
 
     trips =
       from(t in Trip,
@@ -4887,8 +4875,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       {:ok, Enum.map(0..(count - 1), &(start_secs + &1 * every_secs))}
     end
   end
-
-  defp uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
 
   defp attr(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key)))
   defp attr(_map, _key), do: nil

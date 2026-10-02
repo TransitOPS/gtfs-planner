@@ -373,7 +373,7 @@ test.describe("Schedules editing journeys", () => {
     await page.locator(`#trip-${createdTrip}-menu`).click();
     await page.locator(`#trip-${createdTrip}-duplicate`).click();
     await page.locator("#trip-drawer").waitFor({ state: "visible" });
-    await expect(page.locator("#trip-start")).toHaveValue("07:00");
+    await expect(page.locator("#trip-start")).toHaveValue("07:00:00");
     await expect(page.locator("#trip-timing")).toContainText("Secondary");
 
     const beforeDuplicate = await page

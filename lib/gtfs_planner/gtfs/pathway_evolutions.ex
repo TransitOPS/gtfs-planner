@@ -77,6 +77,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   alias GtfsPlanner.Gtfs.StationReport2.Evolutions
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   # Fixed local resource bounds, not configuration. The candidate-date ceiling
@@ -618,7 +619,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   defp validate_service_reference(changeset, %AuditContext{} = audit_context) do
     service_id = get_field(changeset, :service_id)
 
-    if present?(service_id) and
+    if Values.present?(service_id) and
          not MapSet.member?(
            native_service_ids(audit_context.organization_id, audit_context.gtfs_version_id),
            service_id
@@ -632,7 +633,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   defp validate_pathway_reference(changeset, %AuditContext{} = audit_context, station) do
     pathway_id = get_field(changeset, :pathway_id)
 
-    if present?(pathway_id) do
+    if Values.present?(pathway_id) do
       cond do
         is_nil(scoped_pathway(audit_context, pathway_id)) ->
           add_error(changeset, :pathway_id, "does not exist in this version")
@@ -738,9 +739,6 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
 
     ServiceDates.active_dates(calendar, exceptions) != []
   end
-
-  defp present?(value) when is_binary(value), do: value != ""
-  defp present?(_value), do: false
 
   defp transact(fun) do
     case Repo.transaction(fun) do
@@ -1391,14 +1389,11 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   end
 
   defp validate_scope(organization_id, gtfs_version_id) do
-    if uuid?(organization_id) and uuid?(gtfs_version_id) and
+    if Values.uuid?(organization_id) and Values.uuid?(gtfs_version_id) and
          Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
       :ok
     else
       :error
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 end

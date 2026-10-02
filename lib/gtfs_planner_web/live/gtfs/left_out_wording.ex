@@ -14,6 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
   details disclosure.
   """
 
+  alias GtfsPlanner.Wording
+
   @doc """
   One row per derivation reason, in the order the reader returned them.
 
@@ -42,20 +44,20 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
   def code(nil), do: "unknown"
   def code(reason), do: reason
 
-  @doc "`1 trip`, `2 trips`; a plural that is not `noun <> s` is passed as `many`."
-  def plural(1, one, _many), do: "1 #{one}"
-  def plural(count, _one, many), do: "#{count} #{many}"
-
   # Only a trip with no direction can be grouped from a pattern list, so it is
   # the one reason that offers the review.
   defp reason_words("missing_direction", count) do
     %{
       tone: :warning,
-      title: "#{plural(count, "trip has", "trips have")} no direction",
+      title: "#{Wording.count_noun(count, "trip has", "trips have")} no direction",
       body:
         "Nothing on this route says which way they run, so there is nothing to group them by. " <>
           "We find their stop orders and suggest a direction for each, and nothing changes until you confirm it.",
-      action: %{label: "Group #{plural(count, "trip", "trips")}", primary?: true, target: :group}
+      action: %{
+        label: "Group #{Wording.count_noun(count, "trip", "trips")}",
+        primary?: true,
+        target: :group
+      }
     }
   end
 
@@ -63,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
        when code in ~w(invalid_chronology invalid_time invalid_attribute) do
     %{
       tone: :error,
-      title: "#{plural(count, "trip has", "trips have")} times out of order",
+      title: "#{Wording.count_noun(count, "trip has", "trips have")} times out of order",
       body:
         "A stop is served before the trip departs, so its times cannot be read in order. " <>
           "Fix the times in the source feed and re-import this version; until then these trips stay as imported.",
@@ -74,7 +76,8 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
   defp reason_words("unusable_stops", count) do
     %{
       tone: :error,
-      title: "#{plural(count, "trip serves", "trips serve")} a station, not a boarding stop",
+      title:
+        "#{Wording.count_noun(count, "trip serves", "trips serve")} a station, not a boarding stop",
       body:
         "A stop on the route is a station, which has no platform to board at. Fix the stop in " <>
           "the source feed and re-import this version; until then this trip stays as imported.",
@@ -86,7 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
     %{
       tone: :error,
       title:
-        "#{plural(count, "trip is", "trips are")} missing a time at the first or last stop, or at a timepoint",
+        "#{Wording.count_noun(count, "trip is", "trips are")} missing a time at the first or last stop, or at a timepoint",
       body:
         "Import needs those times before it can read the trip’s running time. Fix them in the " <>
           "source feed and re-import this version; until then these trips stay as imported.",
@@ -98,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
     %{
       tone: :error,
       title:
-        "#{plural(count, "trip doesn’t", "trips don’t")} match the route pattern it is labelled with",
+        "#{Wording.count_noun(count, "trip doesn’t", "trips don’t")} match the route pattern it is labelled with",
       body:
         "The feed points these trips at a route pattern for another direction or stop order. " <>
           "Fix the feed and re-import this version; until then these trips stay as imported.",
@@ -109,9 +112,10 @@ defmodule GtfsPlannerWeb.Gtfs.LeftOutWording do
   defp reason_words(_code, count) do
     %{
       tone: :error,
-      title: "#{plural(count, "trip wasn’t", "trips weren’t")} grouped into a pattern",
+      title:
+        "#{Wording.count_noun(count, "trip wasn’t", "trips weren’t")} grouped into a pattern",
       body:
-        "Import could not read enough of #{plural(count, "this trip", "these trips")} to place " <>
+        "Import could not read enough of #{Wording.count_noun(count, "this trip", "these trips")} to place " <>
           "#{if count == 1, do: "it", else: "them"} in a pattern. Open Technical details for the " <>
           "reason, fix the source feed and re-import this version.",
       action: %{label: "View trips", primary?: false, target: :schedules}

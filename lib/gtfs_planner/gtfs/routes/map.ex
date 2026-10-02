@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   # How many contextual routes one page carries. A code constant by contract
   # (R7), not runtime configuration.
@@ -417,7 +418,8 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
       Enum.all?(rows, &(&1.shape_pt_lat != nil and &1.shape_pt_lon != nil)) ->
         Map.merge(base, %{
           status: :saved,
-          coordinates: Enum.map(rows, &[number(&1.shape_pt_lon), number(&1.shape_pt_lat)])
+          coordinates:
+            Enum.map(rows, &[Values.to_float(&1.shape_pt_lon), Values.to_float(&1.shape_pt_lat)])
         })
 
       true ->
@@ -472,7 +474,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
 
     cond do
       row.stop_found and row.stop_lat != nil and row.stop_lon != nil ->
-        Map.put(base, :coordinates, [number(row.stop_lon), number(row.stop_lat)])
+        Map.put(base, :coordinates, [Values.to_float(row.stop_lon), Values.to_float(row.stop_lat)])
 
       row.stop_found ->
         Map.put(base, :unlocated, [%{ref: row.stop_id, reason: :coordinates_absent}])
@@ -603,7 +605,8 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
       Enum.all?(rows, &(&1.shape_pt_lat != nil and &1.shape_pt_lon != nil)) ->
         Map.merge(base, %{
           status: :saved,
-          coordinates: Enum.map(rows, &[number(&1.shape_pt_lon), number(&1.shape_pt_lat)])
+          coordinates:
+            Enum.map(rows, &[Values.to_float(&1.shape_pt_lon), Values.to_float(&1.shape_pt_lat)])
         })
 
       true ->
@@ -613,7 +616,4 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
         })
     end
   end
-
-  defp number(%Decimal{} = value), do: Decimal.to_float(value)
-  defp number(value) when is_number(value), do: value
 end

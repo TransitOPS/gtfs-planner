@@ -48,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
 
   # `stop_ref/0` and `trip_row/0` are the shapes `Checks` already declares and
   # consumes, so the read and the pure checks cannot drift apart.
@@ -674,13 +675,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       name: stop.name,
       parent_station: stop.parent_station,
       parent_name: parent && parent.name,
-      lat: coordinate(stop.lat) || coordinate(parent && parent.lat),
-      lon: coordinate(stop.lon) || coordinate(parent && parent.lon)
+      lat: Values.to_float(stop.lat) || Values.to_float(parent && parent.lat),
+      lon: Values.to_float(stop.lon) || Values.to_float(parent && parent.lon)
     }
   end
-
-  defp coordinate(nil), do: nil
-  defp coordinate(%Decimal{} = value), do: Decimal.to_float(value)
 
   # One `{key, lat, lon}` row becomes the `{lat, lon}` point both distance reads
   # and `Blocking.Distance.path_km/1` speak in, with the column's decimal already

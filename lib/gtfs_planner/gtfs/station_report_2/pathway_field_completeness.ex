@@ -4,7 +4,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
   """
 
   alias GtfsPlanner.Gtfs.Pathway
-  alias GtfsPlanner.Gtfs.StationReport2.Helpers
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @type status :: :pass | :warn | :fail
 
@@ -58,14 +59,14 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
 
   defp field_stat(field, pathways) do
     total = length(pathways)
-    present = Enum.count(pathways, &Helpers.present?(Map.get(&1, field)))
+    present = Enum.count(pathways, &Values.present?(Map.get(&1, field)))
 
     %{
       field: field,
       label: field_label(field),
       present: present,
       total: total,
-      percent: percent(present, total),
+      percent: Wording.percent(present, total),
       status: derive_status(present, total)
     }
   end
@@ -74,9 +75,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.PathwayFieldCompleteness do
   defp derive_status(total, total), do: :pass
   defp derive_status(0, _total), do: :fail
   defp derive_status(_present, _total), do: :warn
-
-  defp percent(_present, 0), do: 0
-  defp percent(present, total), do: round(present / total * 100)
 
   defp normalize_pathway_mode(%{pathway_mode: mode}) when is_integer(mode) and mode in 1..7,
     do: mode

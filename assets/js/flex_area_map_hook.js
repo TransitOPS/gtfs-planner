@@ -271,6 +271,9 @@ const FlexAreaMap = {
     }
 
     if (this._map) {
+      // Leaflet 1.9.4 leaves its zoom-transition timeout queued after remove().
+      // Abort the transition before it can access the removed map pane.
+      this._map._animatingZoom = false;
       try {
         this._map.remove();
       } catch (_) {

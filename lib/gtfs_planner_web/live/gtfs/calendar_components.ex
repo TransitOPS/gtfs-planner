@@ -14,19 +14,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Wording
 
   @tick_label_target 12
   @seasonal_threshold 14
   @year_only_months 36
 
-  @date_format "%b %-d, %Y"
-  @short_date_format "%b %-d"
   # The month title `ServiceDates.month_grid/3` derives for a grid, so a month
   # navigator and the grid it moves name the same month the same way.
   @month_format "%B %Y"
-
-  @doc "Formats one civil date for calendar surfaces."
-  def format_date(%Date{} = date), do: Elixir.Calendar.strftime(date, @date_format)
 
   @doc """
   Formats one civil month the way the month grid titles it, such as `October 2026`.
@@ -112,18 +108,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
       <p :if={@other_days_off != []} class="mt-3 text-sm">
         <strong>Other days off:</strong>
-        {Enum.map_join(@other_days_off, " · ", &format_date/1)}
+        {Enum.map_join(@other_days_off, " · ", &Wording.date/1)}
       </p>
 
       <p :if={@periods.extra_days != []} class="mt-3 text-sm">
         <strong>Extra service:</strong>
-        {Enum.map_join(@periods.extra_days, " · ", &format_date/1)}
+        {Enum.map_join(@periods.extra_days, " · ", &Wording.date/1)}
         <span class="text-base-content/70"> · outside the regular schedule</span>
       </p>
 
       <p :if={@periods.holidays != []} class="mt-3 text-sm">
         <strong>Single days off:</strong>
-        {Enum.map_join(@periods.holidays, " · ", &format_date/1)}
+        {Enum.map_join(@periods.holidays, " · ", &Wording.date/1)}
       </p>
     </div>
     """
@@ -147,7 +143,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         id={"#{@id}-#{entry.date}"}
         class="inline-flex items-center gap-2 rounded-full border border-control-border px-3 py-1 text-sm"
       >
-        <span class="font-medium">{format_date(entry.date)}</span>
+        <span class="font-medium">{Wording.date(entry.date)}</span>
         <span class="text-base-content/70">
           {if entry.exception_type == 1, do: "Service added", else: "Service removed"}
         </span>
@@ -160,7 +156,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           phx-value-date={Date.to_iso8601(entry.date)}
         >
           <span aria-hidden="true">Remove</span>
-          <span class="sr-only">Remove the service change on {format_date(entry.date)}</span>
+          <span class="sr-only">Remove the service change on {Wording.date(entry.date)}</span>
         </button>
       </li>
     </ul>
@@ -251,7 +247,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
               id={"#{@id}-chip-#{Date.to_iso8601(date)}"}
               class="inline-flex items-center rounded-badge bg-canvas text-[13px] font-[650] text-strong"
             >
-              <span class="py-1 pl-2">{format_date(date)}</span>
+              <span class="py-1 pl-2">{Wording.date(date)}</span>
               <button
                 id={"#{@id}-chip-remove-#{Date.to_iso8601(date)}"}
                 type="button"
@@ -260,7 +256,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
                 phx-value-date={Date.to_iso8601(date)}
               >
                 <.icon name="hero-x-mark" class="size-3.5" />
-                <span class="sr-only">Remove {format_date(date)} from the selected dates</span>
+                <span class="sr-only">Remove {Wording.date(date)} from the selected dates</span>
               </button>
             </li>
           </ul>
@@ -714,30 +710,28 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   def coverage_caption(%{active_dates: []}), do: "No service dates"
 
   def coverage_caption(%{kind: :dates_only} = row) do
-    "#{plural(length(row.active_dates), "date")} · #{span_label(row)}"
+    "#{Wording.count_noun(length(row.active_dates), "date")} · #{span_label(row)}"
   end
 
   def coverage_caption(row) do
-    [
-      span_label(row),
-      plural(length(row.periods.breaks), "break"),
-      plural(length(row.periods.holidays), "day off", "days off"),
-      plural(length(row.periods.extra_days), "added date")
-    ]
+    counts =
+      [
+        {length(row.periods.breaks), "break", nil},
+        {length(row.periods.holidays), "day off", "days off"},
+        {length(row.periods.extra_days), "added date", nil}
+      ]
+      |> Enum.reject(fn {count, _one, _many} -> count == 0 end)
+      |> Enum.map(fn {count, one, many} -> Wording.count_noun(count, one, many) end)
+
+    [span_label(row) | counts]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
   end
 
-  defp span_label(%{first_active_date: date, last_active_date: date}), do: format_date(date)
+  defp span_label(%{first_active_date: date, last_active_date: date}), do: Wording.date(date)
 
   defp span_label(row),
-    do: "#{format_date(row.first_active_date)} – #{format_date(row.last_active_date)}"
-
-  defp plural(0, _one, _many), do: nil
-  defp plural(1, one, _many), do: "1 #{one}"
-  defp plural(count, one, many), do: "#{count} #{many || one <> "s"}"
-
-  defp plural(count, one), do: plural(count, one, nil)
+    do: "#{Wording.date(row.first_active_date)} – #{Wording.date(row.last_active_date)}"
 
   # The inspector's next service is the first loaded exact date on or after the
   # agency-local today, so it states a real date instead of re-evaluating the range.
@@ -757,7 +751,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp next_service_label(%{next_service: nil}), do: "None scheduled"
 
   defp next_service_label(%{next_service: date, detail: %{today: today}}) do
-    label = Elixir.Calendar.strftime(date, "%a, %b %-d, %Y")
+    label = Wording.weekday_date_with_year(date)
 
     if date == today, do: "Today, #{label}", else: label
   end
@@ -790,17 +784,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp outside_line(_side, [], _edge), do: nil
 
   defp outside_line("before", dates, edge) do
-    "#{plural(length(dates), "service date")} before #{format_date(edge)}: #{date_span(dates)}"
+    "#{Wording.count_noun(length(dates), "service date")} before #{Wording.date(edge)}: #{date_span(dates)}"
   end
 
   defp outside_line("after", dates, edge) do
-    "#{plural(length(dates), "service date")} after #{format_date(edge)}: #{date_span(dates)}"
+    "#{Wording.count_noun(length(dates), "service date")} after #{Wording.date(edge)}: #{date_span(dates)}"
   end
 
-  defp date_span([date]), do: format_date(date)
+  defp date_span([date]), do: Wording.date(date)
 
   defp date_span([first | _rest] = dates),
-    do: "#{format_date(first)} – #{format_date(List.last(dates))}"
+    do: "#{Wording.date(first)} – #{Wording.date(List.last(dates))}"
 
   defp invalid_title(1), do: "1 calendar has a date range that cannot be read"
   defp invalid_title(count), do: "#{count} calendars have a date range that cannot be read"
@@ -860,10 +854,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     case Date.compare(mark.first_date, mark.last_date) do
       :eq ->
-        "#{format_date(mark.first_date)}: #{kind}"
+        "#{Wording.date(mark.first_date)}: #{kind}"
 
       _other ->
-        "#{exact}#{format_date(mark.first_date)} – #{format_date(mark.last_date)}: #{kind}"
+        "#{exact}#{Wording.date(mark.first_date)} – #{Wording.date(mark.last_date)}: #{kind}"
     end
   end
 
@@ -949,8 +943,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp axis_label(axis) do
     gaps = Enum.map(axis.gap_bands, &gap_days/1) |> Enum.sum()
 
-    "Coverage timeline, #{format_date(axis.first_date)} to #{format_date(axis.last_date)}." <>
-      if(gaps == 0, do: "", else: " #{plural(gaps, "day")} with no service on any calendar.")
+    "Coverage timeline, #{Wording.date(axis.first_date)} to #{Wording.date(axis.last_date)}." <>
+      if(gaps == 0,
+        do: "",
+        else: " #{Wording.count_noun(gaps, "day")} with no service on any calendar."
+      )
   end
 
   defp gap_days(band), do: Date.diff(band.last_date, band.first_date) + 1
@@ -1121,9 +1118,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     |> Enum.sort(Date)
   end
 
-  defp range_label(date, date), do: format_date(date)
+  defp range_label(date, date), do: Wording.date(date)
 
-  defp range_label(first, last), do: "#{format_date(first)} – #{format_date(last)}"
+  defp range_label(first, last), do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   ## Combination review
 
@@ -1354,7 +1351,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
             id={@id <> "-sources"}
             class="font-display text-[22px] font-semibold leading-tight tabular-nums text-strong"
           >
-            {plural(length(@review.retained_sources), "calendar")}
+            {Wording.count_noun(length(@review.retained_sources), "calendar")}
           </dd>
         </div>
       </dl>
@@ -1418,7 +1415,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     ~H"""
     <section :if={@items != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
       <h3 id={@id <> "-heading"} class="text-base font-bold text-strong">
-        Choose what happens on {plural(@date_count, "date")}
+        Choose what happens on {Wording.count_noun(@date_count, "date")}
       </h3>
       <p class="mt-1 text-[13px] text-muted">
         One calendar has {@these} off while another runs {@them}. A combined calendar can’t do
@@ -1518,7 +1515,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     >
       {moved_phrase(@success.moved_trip_count)} from {@success.retained_names}, which {@retained_verb} in the list with 0 trips. Delete {@retained_pronoun} from {@retained_pages} when you no longer need {@retained_pronoun}.
       <span :if={@success.cleared_trip_count > 0}>
-        {plural(@success.cleared_trip_count, "trip")} left {@block_phrase}.
+        {Wording.count_noun(@success.cleared_trip_count, "trip")} left {@block_phrase}.
       </span>
       <span :if={@success.hidden_names != []}>
         {@success.hidden_names} {@hidden_verb} outside the current filters, so clear them to see
@@ -1693,7 +1690,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       if moved > 0 do
         "Keeps #{row.trip_count} + #{moved} trips"
       else
-        "Keeps #{plural(row.trip_count, "trip")}"
+        "Keeps #{Wording.count_noun(row.trip_count, "trip")}"
       end
     else
       moving_trips_label(row.trip_count)
@@ -1777,17 +1774,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     |> Enum.map_join("; ", fn effect ->
       gains =
         if effect.upcoming_gained_dates != [] do
-          "gain #{plural(length(effect.upcoming_gained_dates), "upcoming date")}"
+          "gain #{Wording.count_noun(length(effect.upcoming_gained_dates), "upcoming date")}"
         end
 
       losses =
         if effect.upcoming_lost_dates != [] do
-          "lose #{plural(length(effect.upcoming_lost_dates), "upcoming date")}"
+          "lose #{Wording.count_noun(length(effect.upcoming_lost_dates), "upcoming date")}"
         end
 
       joined = [gains, losses] |> Enum.reject(&is_nil/1) |> Enum.join(" and ")
 
-      "#{plural(effect.trip_count, "trip")} from #{row_name(assigns.rows, effect.service_id)} #{joined}"
+      "#{Wording.count_noun(effect.trip_count, "trip")} from #{row_name(assigns.rows, effect.service_id)} #{joined}"
     end)
     |> Kernel.<>(".")
   end
@@ -1800,7 +1797,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp pending_sentence(review) do
     count = length(review.conflicts)
 
-    "#{plural(count, "date")} #{if count == 1, do: "needs", else: "need"} your choice."
+    "#{Wording.count_noun(count, "date")} #{if count == 1, do: "needs", else: "need"} your choice."
   end
 
   defp upcoming_destination_label(assigns) do
@@ -1830,22 +1827,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp stored_label(nil), do: nil
 
   defp stored_label(%{calendar: nil, exceptions: exceptions}) do
-    plural(length(exceptions), "specific date")
-  end
-
-  defp stored_label(%{calendar: calendar, exceptions: exceptions}) do
-    removed = Enum.count(exceptions, &(&1.exception_type == 2))
-    added = Enum.count(exceptions, &(&1.exception_type == 1))
-
-    "#{regular_days(%{calendar: calendar})}, #{format_date(calendar.start_date)} – " <>
-      "#{format_date(calendar.end_date)}, with #{count_label(removed, "day off", "days off")} and " <>
-      "#{count_label(added, "added date", "added dates")}"
+    Wording.count_noun(length(exceptions), "specific date")
   end
 
   # A stored count states zero as well: "with 0 added dates" is a fact about the result, while
   # an omitted count would read as if the number were not known.
-  defp count_label(1, one, _many), do: "1 #{one}"
-  defp count_label(count, one, many), do: "#{count} #{many || one <> "s"}"
+  defp stored_label(%{calendar: calendar, exceptions: exceptions}) do
+    removed = Enum.count(exceptions, &(&1.exception_type == 2))
+    added = Enum.count(exceptions, &(&1.exception_type == 1))
+
+    "#{regular_days(%{calendar: calendar})}, #{Wording.date(calendar.start_date)} – " <>
+      "#{Wording.date(calendar.end_date)}, with #{Wording.count_noun(removed, "day off", "days off")} and " <>
+      "#{Wording.count_noun(added, "added date", "added dates")}"
+  end
 
   defp dates_only_note(assigns) do
     stored = assigns.stored
@@ -1857,7 +1851,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       count = length(stored.exceptions)
 
       "#{destination.name || destination.service_id} stores dates one by one, so the result is " <>
-        "stored as #{plural(count, "specific date")}. Keeping #{weekly.name || weekly.service_id} " <>
+        "stored as #{Wording.count_noun(count, "specific date")}. Keeping #{weekly.name || weekly.service_id} " <>
         "stores a weekly schedule instead."
     else
       _other -> nil
@@ -1944,7 +1938,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       |> Enum.map(&{reviewed_trip_count(&1, assigns), &1})
       |> Enum.reject(fn {count, _service_id} -> count == 0 end)
       |> Enum.map(fn {count, service_id} ->
-        "#{plural(count, "trip")} from #{row_name(assigns.rows, service_id)} " <>
+        "#{Wording.count_noun(count, "trip")} from #{row_name(assigns.rows, service_id)} " <>
           "#{if count == 1, do: one, else: many}."
       end)
 
@@ -1963,19 +1957,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   defp conflict_dates(entries), do: entries |> Enum.map(& &1.date) |> Enum.sort(Date)
 
-  defp conflict_label([date]), do: format_date(date)
+  defp conflict_label([date]), do: Wording.date(date)
 
   defp conflict_label([first | _rest] = dates) do
-    "#{format_date(first)} – #{format_date(List.last(dates))} · #{plural(length(dates), "date")}"
+    "#{Wording.date(first)} – #{Wording.date(List.last(dates))} · #{Wording.count_noun(length(dates), "date")}"
   end
 
   # The marked group and the announced summary name the dates the group's own label already
   # carries in full, so the short form keeps them on one line.
-  defp conflict_short_label([date]), do: Elixir.Calendar.strftime(date, @short_date_format)
+  defp conflict_short_label([date]), do: Wording.short_date(date)
 
   defp conflict_short_label([first | _rest] = dates) do
-    "#{Elixir.Calendar.strftime(first, @short_date_format)} – " <>
-      Elixir.Calendar.strftime(List.last(dates), @short_date_format)
+    "#{Wording.short_date(first)} – #{Wording.short_date(List.last(dates))}"
   end
 
   # The conflict carries exact service IDs; the loaded rows supply their display names.
@@ -2015,8 +2008,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   defp effect_role(%{moving?: true, trip_count: 0}), do: "no trips"
   defp effect_role(%{moving?: true, trip_count: 1}), do: "1 trip moves"
-  defp effect_role(%{moving?: true, trip_count: count}), do: "#{plural(count, "trip")} move"
-  defp effect_role(%{trip_count: count}), do: "#{plural(count, "trip")} stay"
+
+  defp effect_role(%{moving?: true, trip_count: count}),
+    do: "#{Wording.count_noun(count, "trip")} move"
+
+  defp effect_role(%{trip_count: count}), do: "#{Wording.count_noun(count, "trip")} stay"
 
   defp effect_line(%{trip_count: 0}) do
     {"hero-minus-circle", "text-muted", "No trips, so nothing changes for riders."}
@@ -2039,7 +2035,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         past = length(effect.past_gained_dates) + length(effect.past_lost_dates)
 
         {"hero-information-circle", "text-muted",
-         "Only past dates change (#{plural(past, "date")} before today). Upcoming service stays the same."}
+         "Only past dates change (#{Wording.count_noun(past, "date")} before today). Upcoming service stays the same."}
 
       true ->
         {"hero-check-circle", "text-success-fg", "No change to the dates they run."}
@@ -2075,19 +2071,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp describe_dates(dates) do
     case dates do
       [date] ->
-        format_date(date)
+        Wording.date(date)
 
       [first, second] ->
-        "#{format_date(first)} and #{format_date(second)}"
+        "#{Wording.date(first)} and #{Wording.date(second)}"
 
       [first, second, third] ->
-        "#{format_date(first)}, #{format_date(second)} and #{format_date(third)}"
+        "#{Wording.date(first)}, #{Wording.date(second)} and #{Wording.date(third)}"
 
       [first | _rest] = all ->
         pattern = weekday_pattern(all)
 
-        "#{plural(length(all), "date")}#{if pattern, do: " (#{pattern})", else: ""}, " <>
-          "#{format_date(first)} – #{format_date(List.last(all))}"
+        "#{Wording.count_noun(length(all), "date")}#{if pattern, do: " (#{pattern})", else: ""}, " <>
+          "#{Wording.date(first)} – #{Wording.date(List.last(all))}"
     end
   end
 
@@ -2136,7 +2132,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         icon: "hero-exclamation-triangle",
         icon_class: "text-warning-fg",
         text:
-          "#{plural(count, "moved trip")} #{if count == 1, do: "leaves", else: "leave"} " <>
+          "#{Wording.count_noun(count, "moved trip")} #{if count == 1, do: "leaves", else: "leave"} " <>
             "#{block_label(blocks)} and #{if count == 1, do: "goes", else: "go"} to the unassigned pool on Blocks.",
         link: nil
       }
@@ -2168,7 +2164,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       icon: "hero-exclamation-triangle",
       icon_class: "text-warning-fg",
       text:
-        "#{plural(length(findings), "new #{finding_label(code)} warning")}" <>
+        "#{Wording.count_noun(length(findings), "new #{finding_label(code)} warning")}" <>
           if(blocks == [], do: " on the new dates.", else: " on #{block_label(blocks)}."),
       link: nil
     }
@@ -2246,7 +2242,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp in_seat_reason(:coupling), do: "the coupling time"
 
   defp in_seat_reason({:not_next, failures}) do
-    "not the next trip on #{plural(length(failures), "day type")}"
+    "not the next trip on #{Wording.count_noun(length(failures), "day type")}"
   end
 
   defp in_seat_reason(reason), do: "#{reason}"

@@ -74,10 +74,10 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @default_catalog_read_adapter CatalogReadAdapter.Repo
-  @default_reviewed_apply_transaction ReviewedApplyTransaction.Repo
 
   @type list_stations_opts :: [
           route_id: String.t() | nil,
@@ -759,16 +759,7 @@ defmodule GtfsPlanner.Gtfs do
 
   @spec row_block_id(term()) :: String.t() | nil
   defp row_block_id(row) when is_map(row) do
-    case Map.get(row, :block_id, Map.get(row, "block_id")) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> nil
-          trimmed -> trimmed
-        end
-
-      _value ->
-        nil
-    end
+    Values.presence(Map.get(row, :block_id, Map.get(row, "block_id")))
   end
 
   defp row_block_id(_row), do: nil
@@ -2249,12 +2240,6 @@ defmodule GtfsPlanner.Gtfs do
     Enum.map(rows, &Map.drop(&1, [:stop]))
   end
 
-  defp serialization_failure?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001"],
-       do: true
-
-  defp serialization_failure?(_), do: false
-
   @type reviewed_alignment_attrs :: %{
           floorplan_center_lat: number(),
           floorplan_center_lon: number(),
@@ -2269,7 +2254,8 @@ defmodule GtfsPlanner.Gtfs do
 
   Verifies the review fingerprint under a `FOR UPDATE` lock before any write.
   Only stops whose derived coordinates differ (via `Decimal.compare/2`) are
-  updated and audited. Publishes broadcasts after commit.
+  updated and audited. Returns the applied stop-level summary; no broadcast is
+  published on this path.
   """
   @spec save_and_apply_stop_level_alignment(
           Ecto.UUID.t(),
@@ -2372,7 +2358,7 @@ defmodule GtfsPlanner.Gtfs do
         {:error, :busy}
 
       {:error, reason} when attempts_remaining > 1 ->
-        if serialization_failure?(reason) do
+        if Repo.retryable_conflict?(reason) do
           apply_reviewed_with_retries(
             stop_level_id,
             alignment_attrs,
@@ -2387,27 +2373,19 @@ defmodule GtfsPlanner.Gtfs do
         end
 
       {:error, reason} ->
-        if serialization_failure?(reason), do: {:error, :busy}, else: {:error, reason}
+        if Repo.retryable_conflict?(reason), do: {:error, :busy}, else: {:error, reason}
     end
   end
 
   defp run_reviewed_apply_transaction(transaction) do
-    reviewed_apply_transaction().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     exception in Postgrex.Error ->
-      if serialization_failure?(exception) do
+      if Repo.retryable_conflict?(exception) do
         {:serialization_failure, exception}
       else
         reraise exception, __STACKTRACE__
       end
-  end
-
-  defp reviewed_apply_transaction do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      @default_reviewed_apply_transaction
-    )
   end
 
   defp publish_reviewed_result({:ok, result}) do
@@ -2662,8 +2640,8 @@ defmodule GtfsPlanner.Gtfs do
         stop_id: stop.id,
         svg_x: sx,
         svg_y: sy,
-        lat: decimal_to_float(stop.stop_lat),
-        lon: decimal_to_float(stop.stop_lon)
+        lat: Values.to_float(stop.stop_lat),
+        lon: Values.to_float(stop.stop_lon)
       }
     end)
   end
@@ -2722,8 +2700,8 @@ defmodule GtfsPlanner.Gtfs do
       level_index_delta: delta,
       svg_x: sx,
       svg_y: sy,
-      lat: decimal_to_float(partner_stop.stop_lat),
-      lon: decimal_to_float(partner_stop.stop_lon)
+      lat: Values.to_float(partner_stop.stop_lat),
+      lon: Values.to_float(partner_stop.stop_lon)
     }
   end
 
@@ -2765,10 +2743,6 @@ defmodule GtfsPlanner.Gtfs do
       nil -> {nil, nil}
     end
   end
-
-  defp decimal_to_float(%Decimal{} = d), do: Decimal.to_float(d)
-  defp decimal_to_float(n) when is_number(n), do: n * 1.0
-  defp decimal_to_float(_), do: nil
 
   @doc """
   Recalculates same-level pathway lengths from the diagram after a scale change.

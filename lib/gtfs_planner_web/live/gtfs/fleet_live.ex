@@ -76,7 +76,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
+  alias Plug.Conn.Query
 
   @vehicle_type_form_id "vehicle-type-form"
   @vehicle_type_form_error_id "vehicle-type-form-error"
@@ -634,7 +637,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         {:ok, count} ->
           {:noreply,
            socket
-           |> assign(:vehicle_notice, "#{vehicle_count_text(count)} deleted.")
+           |> assign(:vehicle_notice, "#{Wording.count_noun(count, "vehicle")} deleted.")
            |> reset_selection()
            |> load_fleet()}
 
@@ -892,7 +895,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               class="flex min-h-[60px] flex-wrap items-center gap-x-4 gap-y-2 border-b border-subtle bg-selection px-4 py-2 md:px-5"
             >
               <strong id="bulk-bar-count" class="mr-auto text-sm tabular-nums text-strong">
-                {vehicle_count_text(MapSet.size(@selected_ids))} selected
+                {Wording.count_noun(MapSet.size(@selected_ids), "vehicle")} selected
               </strong>
               <div class="flex flex-wrap items-center gap-2">
                 <.button
@@ -1012,8 +1015,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           id="bulk-delete-confirm"
           chrome="planner"
           open={true}
-          title={"Delete #{vehicle_count_text(@bulk_delete.total)}?"}
-          confirm_label={"Delete #{vehicle_count_text(@bulk_delete.total)}"}
+          title={"Delete #{Wording.count_noun(@bulk_delete.total, "vehicle")}?"}
+          confirm_label={"Delete #{Wording.count_noun(@bulk_delete.total, "vehicle")}"}
           pending_label="Deleting…"
           on_confirm="confirm_delete_selected_vehicles"
           on_cancel="cancel_delete_selected_vehicles"
@@ -1273,7 +1276,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
                   checked={@all_selected?}
                   phx-click="select_all_filtered"
                 />
-                <span class="md:sr-only">Select all {vehicle_count_text(@count)}</span>
+                <span class="md:sr-only">Select all {Wording.count_noun(@count, "vehicle")}</span>
               </label>
             </th>
             <th scope="col" class={[vehicle_head_class(), "w-[150px]"]}>Vehicle number</th>
@@ -1331,8 +1334,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               data-label="Label"
               class="px-4 py-2 max-md:col-start-3 max-md:row-start-1 max-md:p-0 max-md:pl-1 max-md:text-[13px] max-md:text-muted"
             >
-              <span :if={blank?(vehicle.vehicle_label)} class="text-muted max-md:hidden">—</span>
-              <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
+              <span :if={Values.blank?(vehicle.vehicle_label)} class="text-muted max-md:hidden">
+                —
+              </span>
+              <span :if={!Values.blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
             </td>
             <td
               data-label="Type"
@@ -1352,8 +1357,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
               data-label="License plate"
               class="px-4 py-2 tabular-nums md:max-lg:hidden max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:p-0 max-md:pb-1 max-md:text-[13px] max-md:text-muted"
             >
-              <span :if={blank?(vehicle.license_plate)} class="text-muted max-md:hidden">—</span>
-              <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
+              <span :if={Values.blank?(vehicle.license_plate)} class="text-muted max-md:hidden">
+                —
+              </span>
+              <span :if={!Values.blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
             </td>
           </tr>
         </tbody>
@@ -1805,7 +1812,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       class="max-w-[520px]"
     >
       <:lede>
-        <span id="bulk-drawer-scope">{vehicle_count_text(@count)} selected</span>
+        <span id="bulk-drawer-scope">{Wording.count_noun(@count, "vehicle")} selected</span>
       </:lede>
 
       <div id="bulk-drawer-content" class="flex min-h-0 flex-1 flex-col">
@@ -1817,7 +1824,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         >
           <.drawer_scroll>
             <p id="bulk-drawer-description" class="text-sm text-default">
-              Update {vehicle_count_text(@count)} at once. The {@noun} you choose replaces the current one on every selected vehicle.
+              Update {Wording.count_noun(@count, "vehicle")} at once. The {@noun} you choose replaces the current one on every selected vehicle.
             </p>
 
             <.input
@@ -1853,13 +1860,24 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     filters = filters_from_params(params)
 
     socket
-    |> assign(:fleet_query, URI.parse(uri).query)
+    |> assign(:fleet_query, fleet_query(uri))
     |> assign(:fleet_filters, filters)
     |> assign(:filters_form, filters_form(filters))
     |> assign(:filters_active?, filters_active?(filters))
     |> assign(:bulk_error, nil)
     |> assign(:selected_ids, MapSet.new())
     |> load_fleet()
+  end
+
+  # The current filters as the query map the verified route encodes, so a
+  # version switch rebuilds the URL from the parameters rather than re-encoding
+  # a query string that is already encoded.
+  defp fleet_query(uri) do
+    case URI.parse(uri).query do
+      nil -> nil
+      "" -> nil
+      query -> Query.decode(query)
+    end
   end
 
   # A file that finished uploading is parsed and previewed immediately, so the
@@ -2032,41 +2050,27 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     %{
       type: assignment_value(filters["type"]),
       garage: assignment_value(filters["garage"]),
-      q: present(filters["q"])
+      q: Values.presence(filters["q"])
     }
   end
 
+  # The drawer's "none" sentinel is its own value; blank handling follows Values.presence/1.
   defp assignment_value("none"), do: :none
-  defp assignment_value(""), do: nil
-  defp assignment_value(value), do: value
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      _trimmed -> value
-    end
-  end
+  defp assignment_value(value), do: Values.presence(value)
 
   defp filters_active?(filters) do
-    Enum.any?(~w(type garage), &(filters[&1] != "")) or present(filters["q"]) != nil
+    Enum.any?(~w(type garage), &(filters[&1] != "")) or Values.presence(filters["q"]) != nil
   end
 
   defp filter_query_params(params) do
     %{}
-    |> put_present("q", params["q"])
-    |> put_present("type", params["type"])
-    |> put_present("garage", params["garage"])
+    |> Values.put_present("q", params["q"])
+    |> Values.put_present("type", params["type"])
+    |> Values.put_present("garage", params["garage"])
   end
 
-  defp put_present(query, _key, value) when value in [nil, ""], do: query
-  defp put_present(query, key, value) when is_binary(value), do: Map.put(query, key, value)
-  defp put_present(query, _key, _value), do: query
-
   defp fleet_url(socket, query) do
-    case URI.encode_query(query) do
-      "" -> fleet_path(socket.assigns.current_gtfs_version.id, nil)
-      encoded -> fleet_path(socket.assigns.current_gtfs_version.id, encoded)
-    end
+    fleet_path(socket.assigns.current_gtfs_version.id, query)
   end
 
   # --- vehicle drawer state --------------------------------------------------
@@ -2206,6 +2210,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   # The blank prompt is “Not assigned”, which clears the assignment; every other
   # value reaches the context unchanged so its ownership check decides.
+  # Named exception: a forged non-binary must not clear an assignment, so only nil/"" become nil.
   defp bulk_target(value) when value in [nil, ""], do: nil
   defp bulk_target(value), do: value
 
@@ -2226,10 +2231,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   end
 
   defp bulk_updated_notice(:vehicle_type_id, count),
-    do: "Type updated on #{vehicle_count_text(count)}."
+    do: "Type updated on #{Wording.count_noun(count, "vehicle")}."
 
   defp bulk_updated_notice(:garage_id, count),
-    do: "Garage updated on #{vehicle_count_text(count)}."
+    do: "Garage updated on #{Wording.count_noun(count, "vehicle")}."
 
   # What the confirmation dialog names: the selected vehicles still on screen, in
   # list order, plus the count of selected ids it cannot name (a crafted or
@@ -2267,7 +2272,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       {:ok, ids} ->
         %{
           ok?: true,
-          text: "Adds #{hd(ids)}–#{List.last(ids)} (#{vehicle_count_text(length(ids))})"
+          text:
+            "Adds #{hd(ids)}–#{List.last(ids)} (#{Wording.count_noun(length(ids), "vehicle")})"
         }
 
       :error ->
@@ -2318,10 +2324,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp vehicle_saved_notice(vehicle_id, true), do: "#{vehicle_id} saved."
   defp vehicle_saved_notice(vehicle_id, false), do: "#{vehicle_id} added."
 
-  defp vehicles_added_notice(count), do: "#{vehicle_count_text(count)} added."
-
-  defp vehicle_count_text(1), do: "1 vehicle"
-  defp vehicle_count_text(count), do: "#{count} vehicles"
+  defp vehicles_added_notice(count), do: "#{Wording.count_noun(count, "vehicle")} added."
 
   defp ids_taken_message(ids) do
     "No vehicles were added. These IDs already exist: #{Enum.join(ids, ", ")}. Choose unused numbers."
@@ -2482,8 +2485,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   defp types_help(false, false), do: "Select a type name to edit it."
 
-  defp count_summary(_filtered, total, false), do: vehicle_count_text(total)
-  defp count_summary(filtered, total, true), do: "#{filtered} of #{vehicle_count_text(total)}"
+  defp count_summary(_filtered, total, false), do: Wording.count_noun(total, "vehicle")
+
+  defp count_summary(filtered, total, true),
+    do: "#{filtered} of #{Wording.count_noun(total, "vehicle")}"
 
   defp needs_assignment_title(1), do: "1 vehicle needs a garage or type"
   defp needs_assignment_title(count), do: "#{count} vehicles need a garage or type"
@@ -2531,15 +2536,15 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp bulk_field_noun(:garage_id), do: "garage"
   defp bulk_field_noun(_field), do: "type"
 
-  defp blank?(value), do: value in [nil, ""]
-
   # The Fleet query string carries its filters, so a version switch keeps it in
-  # the URL instead of dropping the operator's current view.
+  # the URL instead of dropping the operator's current view. The query reaches
+  # the verified route as the filter map, never as an already-encoded string,
+  # which `~p` would encode a second time.
   defp fleet_path(version_id, query) when query in [nil, ""] do
-    "/gtfs/#{version_id}/settings/fleet"
+    ~p"/gtfs/#{version_id}/settings/fleet"
   end
 
   defp fleet_path(version_id, query) do
-    "/gtfs/#{version_id}/settings/fleet?#{query}"
+    ~p"/gtfs/#{version_id}/settings/fleet?#{query}"
   end
 end

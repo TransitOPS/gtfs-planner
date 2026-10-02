@@ -62,7 +62,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingRules do
       half_timed?(row) ->
         {previous_departure, {index, :half_timed}}
 
-      blank?(row) ->
+      untimed_row?(row) ->
         {previous_departure, blank_violation(row, index, last_index)}
 
       true ->
@@ -98,7 +98,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingRules do
     is_nil(offset(row, :arrival_offset)) != is_nil(offset(row, :departure_offset))
   end
 
-  defp blank?(row) do
+  # Named exception: "untimed" here means neither offset is set, not blank text.
+  defp untimed_row?(row) do
     is_nil(offset(row, :arrival_offset)) and is_nil(offset(row, :departure_offset))
   end
 

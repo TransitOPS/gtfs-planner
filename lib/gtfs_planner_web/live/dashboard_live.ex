@@ -70,6 +70,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
     ]
 
   alias GtfsPlanner.Gtfs.StationBoard
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult
 
@@ -728,11 +729,11 @@ defmodule GtfsPlannerWeb.DashboardLive do
          ok?: true,
          result: %{coverage: coverage, published_on: published_on}
        }) do
-    published = format_day(published_on)
+    published = Wording.date(published_on)
 
     case coverage do
       {:through, last_date} ->
-        "Published #{published} · calendars run through #{format_day(last_date)}"
+        "Published #{published} · calendars run through #{Wording.date(last_date)}"
 
       :none ->
         "Published #{published} · no calendars yet"
@@ -767,6 +768,4 @@ defmodule GtfsPlannerWeb.DashboardLive do
     |> Enum.with_index(1)
     |> Enum.map(fn {row, index} -> Map.put(row, :row_id, "resume-row-#{index}") end)
   end
-
-  defp format_day(date), do: Calendar.strftime(date, "%b %-d, %Y")
 end

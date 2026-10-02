@@ -101,12 +101,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
@@ -968,12 +968,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp paste_mode(_params, input), do: input.mode || :add
 
-  defp paste_template(%{"template_timing_id" => id}, _input) when is_binary(id) do
-    case String.trim(id) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
+  defp paste_template(%{"template_timing_id" => id}, _input) when is_binary(id),
+    do: Values.presence(id)
 
   defp paste_template(_params, input), do: input.template_timing_id
 
@@ -1089,7 +1085,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp overlay_pattern_choices(decisions, _submitted), do: decisions
 
   defp overlay_pattern_choice({row, raw}, acc) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil -> acc
       row_num -> put_row_choice(acc, row_num, "pattern_id", raw)
     end
@@ -1112,7 +1108,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp overlay_pair_choices(decisions, _submitted), do: decisions
 
   defp overlay_pair_choice({row, raw}, acc) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil -> acc
       row_num -> put_row_choice(acc, row_num, "pair", raw)
     end
@@ -1131,7 +1127,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp overlay_row_cells(acc, row, cols, review, input) do
-    with row_num when not is_nil(row_num) <- to_decision_row(row),
+    with row_num when not is_nil(row_num) <- TimetablePaste.row_number(row),
          cols when is_map(cols) <- cols do
       Map.update(acc, row_num, overlay_cells(%{}, cols, review, input, row_num), fn current ->
         overlay_cells(current, cols, review, input, row_num)
@@ -1197,7 +1193,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # away so untouched controls compare equal to no decision at all.
   defp canonical_decisions(decisions) when is_map(decisions) do
     decisions
-    |> Enum.map(fn {row, decision} -> {to_decision_row(row), canonical_decision(decision)} end)
+    |> Enum.map(fn {row, decision} ->
+      {TimetablePaste.row_number(row), canonical_decision(decision)}
+    end)
     |> Enum.reject(fn {row, decision} -> is_nil(row) or decision == %{} end)
     |> Map.new()
   end
@@ -1238,17 +1236,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp prune_decisions(_decisions), do: %{}
-
-  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_decision_row(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _parse -> nil
-    end
-  end
-
-  defp to_decision_row(_row), do: nil
 
   defp to_decision_col(col) when is_integer(col) and col >= 0, do: col
 
@@ -1445,7 +1432,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # leave the input alone, and an emptied row drops out of the map so it
   # compares equal to no decision at all.
   defp update_row_decision(socket, row, fun) when is_function(fun, 1) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil ->
         socket
 
@@ -1619,6 +1606,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp layout_param(:stops_in_rows), do: "stops_in_rows"
   defp layout_param(_layout), do: "auto"
 
+  # A non-text paste counts as no paste, which canonical trimming would treat as present.
   defp blank_paste_text?(text) when is_binary(text), do: String.trim(text) == ""
   defp blank_paste_text?(_text), do: true
 
@@ -1634,13 +1622,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp canonical_scope_params(scope) do
     %{}
-    |> put_param("service_id", scope.calendar && scope.calendar.service_id)
-    |> put_param("direction", direction_param(scope.direction_id))
-    |> put_param("pattern", scope.pattern_id)
+    |> put_service_id(scope.calendar && scope.calendar.service_id)
+    |> Values.put_present("direction", direction_param(scope.direction_id))
+    |> Values.put_present("pattern", scope.pattern_id)
   end
-
-  defp put_param(query, _key, nil), do: query
-  defp put_param(query, key, value), do: Map.put(query, key, value)
 
   defp direction_param(0), do: "0"
   defp direction_param(1), do: "1"
@@ -1668,7 +1653,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
              apply_scope_params(scope),
              current_input(socket),
              review.fingerprint,
-             audit_context(socket)
+             AuditContext.from_assigns(socket.assigns)
            ) do
         {:ok, summary} ->
           apply_success(socket, scope, summary)
@@ -1734,12 +1719,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         {"removed", summary.removed, "trip"}
       ]
       |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
-      |> Enum.map(fn {label, count, one} -> "#{label} #{count} #{pluralize(count, one)}" end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{count} #{Wording.noun(count, one)}" end)
 
     headline =
       case counts do
         [] -> "Applied the paste"
-        counts -> Enum.join(counts, ", ") |> capitalize_first()
+        counts -> Enum.join(counts, ", ") |> Wording.capitalize_first()
       end
 
     [
@@ -1766,21 +1751,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     "Vehicles needed: #{count_before} → #{count_after}."
   end
 
-  defp pluralize(1, one), do: one
-  defp pluralize(_count, one), do: "#{one}s"
-
-  defp capitalize_first(""), do: ""
-  defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
-
   defp apply_schedules_path(socket, scope) do
-    query =
-      URI.encode_query([
-        {"service_id", scope.calendar && scope.calendar.service_id},
-        {"direction", to_string(scope.direction_id)},
-        {"pattern", to_string(scope.pattern_id)}
-      ])
+    query = [
+      service_id: scope.calendar && scope.calendar.service_id,
+      direction: to_string(scope.direction_id),
+      pattern: to_string(scope.pattern_id)
+    ]
 
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules?#{query}"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules?#{query}"
   end
 
   # Review again reloads the scope around the kept input: the review is
@@ -1851,33 +1829,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     "#{a}-#{b}"
   end
 
-  # The role is re-read from the membership on every apply, like every
+  # The membership is re-read from the database on every apply, like every
   # other mutating event in `RouteSchedulesLive`: the assign is only a
-  # snapshot from mount, so a role revoked while the page is open
-  # refuses the write.
+  # snapshot from mount, so a role revoked or a membership deactivated
+  # while the page is open refuses the write.
   defp editor_access?(socket) do
-    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
-  end
-
-  defp live_roles(socket) do
     with %{id: user_id} <- socket.assigns[:current_user],
-         %{id: organization_id} <- socket.assigns[:current_organization],
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id) do
-      membership.roles || []
+         %{id: organization_id} <- socket.assigns[:current_organization] do
+      EnsureRole.editor_member?(user_id, organization_id)
     else
-      _ -> []
+      _other -> false
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp route_not_found(socket) do
@@ -1923,7 +1885,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp leave_schedules_path(socket) do
     case socket.assigns[:scope] do
       nil ->
-        "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules"
+        ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules"
 
       scope ->
         apply_schedules_path(socket, scope)
@@ -1958,12 +1920,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp paste_path_for(version_id, route_id, query) do
-    path = "/gtfs/#{version_id}/routes/#{route_id}/schedules/paste"
-
-    case URI.encode_query(query) do
-      "" -> path
-      encoded -> path <> "?" <> encoded
-    end
+    ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules/paste?#{query}"
   end
 
   # The blank paste input step 23's timetable step fills in: no text, no
@@ -1994,7 +1951,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # New timings are named `Pasted <Mon D> · A` (R10/AC-12): the stamp is
   # today's date in the codebase's `%b %-d` display convention. The
   # fingerprint excludes the stamp, so dating a paste never stales it.
-  defp paste_stamp, do: Calendar.strftime(Date.utc_today(), "%b %-d")
+  # The stamp is UTC today, not the agency's local day: it names when the paste was read.
+  defp paste_stamp, do: Wording.short_date(Date.utc_today())
 
   defp input_text(socket) do
     case socket.assigns[:input] do
@@ -2057,8 +2015,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     version_id = socket.assigns.current_gtfs_version.id
 
     scope_params = %{
-      service_id: present(draft["service_id"]),
-      direction: present(draft["direction"])
+      service_id: exact_id_param(draft["service_id"]),
+      direction: exact_id_param(draft["direction"])
     }
 
     case Gtfs.prepare_timetable_paste(
@@ -2085,17 +2043,26 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp schedule_query(params) do
     %{}
-    |> put_param("service_id", present(params["service_id"] || params[:service_id]))
-    |> put_param("direction", schedule_direction(params["direction"] || params[:direction]))
-    |> put_param("pattern", present(params["pattern"] || params[:pattern]))
+    |> put_service_id(exact_id_param(params["service_id"] || params[:service_id]))
+    |> Values.put_present(
+      "direction",
+      schedule_direction(params["direction"] || params[:direction])
+    )
+    |> Values.put_present("pattern", exact_id_param(params["pattern"] || params[:pattern]))
   end
 
   defp schedule_direction(direction) when direction in ["0", "1"], do: direction
   defp schedule_direction(_direction), do: nil
 
-  defp present(nil), do: nil
-  defp present(""), do: nil
-  defp present(value), do: value
+  # Named exception: the scope lookup compares exact service_id bytes, so only a non-binary
+  # or "" becomes nil; canonical trimming would make a stored " RAW " unmatchable.
+  defp exact_id_param(value) when is_binary(value) and value != "", do: value
+  defp exact_id_param(_value), do: nil
+
+  # Imported service IDs keep their exact bytes, including an all-whitespace ID.
+  # Omitting one from the URL would resolve a different calendar on the next patch.
+  defp put_service_id(query, nil), do: query
+  defp put_service_id(query, service_id), do: Map.put(query, "service_id", service_id)
 
   defp close_scope_drawer(socket) do
     socket

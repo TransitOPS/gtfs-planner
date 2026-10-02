@@ -159,6 +159,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
       refute has_element?(view, "#last-reachability-run-none")
     end
 
+    test "shows a finished run's check time as a canonical UTC timestamp", ctx do
+      %{conn: conn, user: user, organization: organization, gtfs_version: version} = ctx
+      station = station_with_walks(organization, version)
+      run = finished_run(organization, version, station, "completed")
+
+      run
+      |> Ecto.Changeset.change(%{})
+      |> Ecto.Changeset.force_change(:inserted_at, ~U[2026-09-05 14:05:00.000000Z])
+      |> Repo.update!()
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/stops/#{station.stop_id}/reachability")
+
+      assert has_element?(view, "#last-reachability-run", "Checked Sep 5, 2026, 2:05 PM UTC")
+    end
+
     test "disables the run button and shows progress while a check runs", ctx do
       %{conn: conn, user: user, organization: organization, gtfs_version: version} = ctx
       station = station_with_walks(organization, version)

@@ -22,6 +22,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # keeps the surface's name.
   import GtfsPlannerWeb.CoreComponents, except: [count_strip: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
@@ -348,7 +350,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         <dt class="text-base-content/70">Paid break</dt>
         <dd>{@crew.paid_break_max_minutes} min or less</dd>
         <dt class="text-base-content/70">Longest spread</dt>
-        <dd>{duration(@crew.max_spread_minutes * 60)}, never exceeded</dd>
+        <dd>{Wording.duration(@crew.max_spread_minutes * 60)}, never exceeded</dd>
         <dt class="text-base-content/70">Report</dt>
         <dd>
           {@crew.report_pull_out_minutes} min before a pull-out, {@crew.report_relief_minutes} min before a relief
@@ -381,9 +383,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp notice_text({:error, message}), do: message
 
-  defp word(1, singular, _plural), do: singular
-  defp word(_count, _singular, plural), do: plural
-
   defp scope_id(:uncovered_only), do: "runs-scope-uncovered"
   defp scope_id(:replace_all), do: "runs-scope-rebuild"
 
@@ -394,7 +393,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     do: "Every blocked trip is already in a run."
 
   defp uncovered_scope_sentence(trips, next_run_id) do
-    planned = "Plan the #{trips} #{word(trips, "trip", "trips")} with no operator as new runs"
+    planned =
+      "Plan the #{trips} #{Wording.noun(trips, "trip", "trips")} with no operator as new runs"
 
     case next_run_id do
       nil -> planned <> "."
@@ -487,9 +487,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
         <details id="runs-suggestion-changed" class="text-sm">
           <summary class="inline-flex min-h-11 cursor-pointer items-center gap-2 font-semibold">
-            {length(@plan.moves)} {word(length(@plan.moves), "trip changes", "trips change")} run &middot; {length(
+            {length(@plan.moves)} {Wording.noun(length(@plan.moves), "trip changes", "trips change")} run &middot; {length(
               @changed_runs
-            )} {word(length(@changed_runs), "run", "runs")} new or changed
+            )} {Wording.noun(length(@changed_runs), "run", "runs")} new or changed
           </summary>
 
           <ul id="runs-suggestion-changed-list" class="mt-2 grid gap-1">
@@ -992,7 +992,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       label: "Uncovered work",
       count: trips,
       value: "#{trips} trips",
-      detail: duration(uncovered.secs),
+      detail: Wording.duration(uncovered.secs),
       tone: :warning
     }
   end
@@ -1167,7 +1167,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         <.rule
           id="runs-rule-spread"
           label="Longest spread"
-          value={duration(@crew.max_spread_minutes * 60)}
+          value={Wording.duration(@crew.max_spread_minutes * 60)}
         />
       </dl>
     </.drawer>
@@ -1227,18 +1227,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     "#{div(minutes, 60)}:#{pad(rem(minutes, 60))}"
   end
 
-  # Whole hours, then minutes only when there are some, so exactly two hours
-  # reads "2 h" rather than "2 h 0 min".
-  defp duration(secs) when is_integer(secs) do
-    minutes = div(secs, 60)
-
-    if rem(minutes, 60) == 0,
-      do: "#{div(minutes, 60)} h",
-      else: "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
-  end
-
   defp piece_limit(nil), do: "Not set"
-  defp piece_limit(minutes), do: duration(minutes * 60)
+  defp piece_limit(minutes), do: Wording.duration(minutes * 60)
 
   # The count, because a reader deciding whether relief is set up needs the
   # number; the names beside it, because a count alone cannot be checked against
@@ -1257,7 +1247,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp uncovered_note(%{trips: 0}), do: nil
 
   defp uncovered_note(%{trips: _trips, secs: secs}),
-    do: "#{duration(secs)} on vehicles with no operator"
+    do: "#{Wording.duration(secs)} on vehicles with no operator"
 
   defp pad(minutes) when minutes < 10, do: "0" <> Integer.to_string(minutes)
   defp pad(minutes), do: Integer.to_string(minutes)
@@ -1340,7 +1330,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               >
                 {column.label}
                 <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
-                  {sort_arrow(@dir)}
+                  {CoreComponents.sort_glyph(@dir)}
                 </span>
               </button>
             </th>
@@ -1464,12 +1454,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   Renders one 44 px run row: the sticky Run, Type, Sign-on, Sign-off, Spread,
   Paid and Status cells and the track of the run's piece bars.
 
-  Sign-on and Sign-off are `BlocksComponents.clock/1`, so a run that signs off
-  after midnight reads `01:30 +1d` rather than a bare `01:30` that would look
-  like it had signed on before it started. Spread and Paid are hours and
-  minutes, matching how the summary drawer prints the same two figures — a
-  chart that formatted them differently from the drawer would make the two
-  disagree about the same number.
+  Sign-on and Sign-off are `GtfsTime.display/1`, so a run that signs off after
+  midnight reads `25:30` rather than a bare `01:30` that would look like it had
+  signed on before it started. Spread and Paid are hours and minutes, matching
+  how the summary drawer prints the same two figures — a chart that formatted
+  them differently from the drawer would make the two disagree about the same
+  number.
 
   The track holds the run's **pieces** and the report, travel, break and
   sign-off marks between them. Everything on it is positioned by the day's own
@@ -1562,7 +1552,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               <button type="button" phx-click="sort" phx-value-key={column.key} class="runs-sort">
                 {column.label}
                 <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
-                  {sort_arrow(@dir)}
+                  {CoreComponents.sort_glyph(@dir)}
                 </span>
               </button>
             </th>
@@ -1610,7 +1600,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # this narrow. The places are not dropped — they are on the piece's `title`,
   # and the run drawer carries them in full.
   defp piece_line(piece) do
-    "B #{piece.block_id} #{BlocksComponents.clock(piece.start_secs)}–#{BlocksComponents.clock(piece.end_secs)}"
+    "B #{piece.block_id} #{GtfsTime.display(piece.start_secs)}–#{GtfsTime.display(piece.end_secs)}"
   end
 
   @doc """
@@ -1962,7 +1952,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             <.icon name="hero-exclamation-triangle" class="size-4" /> Not in a run
           </span>
           <span>
-            {count(@uncovered_trips, "trip")} across {count(length(@uncovered), "block")}: {Enum.map_join(
+            {Wording.count_noun(@uncovered_trips, "trip")} across {Wording.count_noun(
+              length(@uncovered),
+              "block"
+            )}: {Enum.map_join(
               @uncovered,
               " · ",
               &uncovered_label/1
@@ -1980,7 +1973,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       >
         <h3 class="text-base font-bold">Old run assignments</h3>
         <p class="mt-1 text-sm">
-          {count(@orphan_count, "assignment")} {orphan_tail(@orphan_count)}
+          {Wording.count_noun(@orphan_count, "assignment")} {orphan_tail(@orphan_count)}
         </p>
         <p class="mt-1 text-[13px] text-base-content/70">
           They are on no chart and in no run. Removing them deletes the rows and nothing else.
@@ -1992,7 +1985,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
           phx-disable-with="Removing…"
           class="mt-3 min-h-11"
         >
-          Remove {count(@orphan_count, "assignment")}
+          Remove {Wording.count_noun(@orphan_count, "assignment")}
         </.button>
       </div>
 
@@ -2066,7 +2059,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       <p id="run-drawer-summary" class="text-sm text-base-content/70">
         {run_type_label(@run.work.type)} &middot; {length(@run.pieces)} {if length(@run.pieces) == 1,
           do: "piece",
-          else: "pieces"} &middot; {duration(@run.work.spread_secs)} spread &middot; {duration(
+          else: "pieces"} &middot; {Wording.duration(@run.work.spread_secs)} spread &middot; {Wording.duration(
           @run.work.paid_secs
         )} paid
       </p>
@@ -2139,11 +2132,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
                 </div>
               </td>
               <td class="runs-uncovered-td tabular-nums" data-role="piece-time">
-                {BlocksComponents.clock(piece.start_secs)}&ndash;{BlocksComponents.clock(
-                  piece.end_secs
-                )}
+                {GtfsTime.display(piece.start_secs)}&ndash;{GtfsTime.display(piece.end_secs)}
                 <div class="text-[13px] text-base-content/70">
-                  {duration(piece.end_secs - piece.start_secs)}
+                  {Wording.duration(piece.end_secs - piece.start_secs)}
                 </div>
               </td>
               <td class="runs-uncovered-td" data-role="piece-places">
@@ -2323,7 +2314,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               data-role="pay-unpaid-length"
               class="text-base-content/70"
             >
-              ({duration(segment.end_secs - segment.start_secs)})
+              ({Wording.duration(segment.end_secs - segment.start_secs)})
             </span>
           </td>
           <td
@@ -2332,7 +2323,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             data-paid={to_string(segment.paid? and segment.end_secs >= segment.start_secs)}
           >
             <span :if={segment.paid? and segment.end_secs >= segment.start_secs}>
-              {duration(segment.end_secs - segment.start_secs)}
+              {Wording.duration(segment.end_secs - segment.start_secs)}
             </span>
           </td>
         </tr>
@@ -2345,7 +2336,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             data-role="pay-total"
             data-secs={@work.paid_secs}
           >
-            {duration(@work.paid_secs)}
+            {Wording.duration(@work.paid_secs)}
           </td>
         </tr>
       </tbody>
@@ -2473,7 +2464,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     stop = Map.get(stop_names, window.stop_id) || window.stop_id
     after_trip = Enum.at(piece.trips, position - 1)
 
-    "#{BlocksComponents.clock(window.start_secs)} at #{stop} (after #{trip_id(after_trip)})"
+    "#{GtfsTime.display(window.start_secs)} at #{stop} (after #{trip_id(after_trip)})"
   end
 
   defp trip_id(nil), do: "the end of this piece"
@@ -2491,8 +2482,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp move_option_text(run) do
     "Run #{run.run_id} · #{run_type_label(run.work.type)} · " <>
-      BlocksComponents.clock(run.work.sign_on_secs) <>
-      "–" <> BlocksComponents.clock(run.work.sign_off_secs)
+      GtfsTime.display(run.work.sign_on_secs) <>
+      "–" <> GtfsTime.display(run.work.sign_off_secs)
   end
 
   defp piece_place(_stop_names, nil, _kind), do: "Unknown stop"
@@ -2507,11 +2498,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   defp finding_detail(%{code: :piece_too_long, detail: %{secs: secs, limit_secs: limit}}) do
-    "#{duration(secs)} against a limit of #{duration(limit)}."
+    "#{Wording.duration(secs)} against a limit of #{Wording.duration(limit)}."
   end
 
   defp finding_detail(%{code: :spread_too_long, detail: %{secs: secs, limit_secs: limit}}) do
-    "#{duration(secs)} spread against a limit of #{duration(limit)}."
+    "#{Wording.duration(secs)} spread against a limit of #{Wording.duration(limit)}."
   end
 
   defp finding_detail(_finding), do: nil
@@ -2606,7 +2597,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     ~H"""
     <div :if={@segments != []} id="runs-uncovered-callout" class="mt-3">
       <.callout kind="warning" title={"#{uncovered_trip_count(@segments)} trips are not in a run."}>
-        {duration(@duration_secs)} of vehicle work has no operator.
+        {Wording.duration(@duration_secs)} of vehicle work has no operator.
         <div class="mt-2">
           <button
             type="button"
@@ -2706,11 +2697,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
                 {length(segment.trips)}
               </td>
               <td class="runs-uncovered-td tabular-nums" data-role="uncovered-time">
-                {BlocksComponents.clock(segment.start_secs)}&ndash;{BlocksComponents.clock(
-                  segment.end_secs
-                )}
+                {GtfsTime.display(segment.start_secs)}&ndash;{GtfsTime.display(segment.end_secs)}
                 <div class="text-[13px] text-base-content/70">
-                  {duration(segment.end_secs - segment.start_secs)} on the vehicle
+                  {Wording.duration(segment.end_secs - segment.start_secs)} on the vehicle
                 </div>
               </td>
               <td class="runs-uncovered-td" data-role="uncovered-places">
@@ -2737,9 +2726,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
                   data-locked={@locked_reason != nil}
                   title={
                     @locked_reason ||
-                      "Create a run for block #{segment.block_id}, #{BlocksComponents.clock(segment.start_secs)}-#{BlocksComponents.clock(segment.end_secs)}"
+                      "Create a run for block #{segment.block_id}, #{GtfsTime.display(segment.start_secs)}-#{GtfsTime.display(segment.end_secs)}"
                   }
-                  title={"Create a run for block #{segment.block_id}, #{BlocksComponents.clock(segment.start_secs)}-#{BlocksComponents.clock(segment.end_secs)}"}
+                  title={"Create a run for block #{segment.block_id}, #{GtfsTime.display(segment.start_secs)}-#{GtfsTime.display(segment.end_secs)}"}
                   class="min-h-11 rounded-control border border-base-content/20 px-3 text-sm font-semibold hover:bg-base-200"
                 >
                   Create run
@@ -2787,7 +2776,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     ~H"""
     <%= if @next do %>
       <span data-role="relief-window">
-        Next relief {BlocksComponents.clock(@next.start_secs)} at {place_name(@stop_names, %{
+        Next relief {GtfsTime.display(@next.start_secs)} at {place_name(@stop_names, %{
           stop_id: @next.stop_id
         })}
         <div :if={@extra > 0} class="text-[13px] text-base-content/70">and {@extra} more</div>
@@ -2914,8 +2903,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   **There is one implementation of these cells and both views call it.** The
   list shows the same values as the timeline, and a second copy of seven
-  cells is seven chances to drift - the day a `BlocksComponents.clock/1` is
-  swapped for a bare `fmt/1` on one view only, nothing would fail, and the two
+  cells is seven chances to drift - the day a `GtfsTime.display/1` is swapped
+  for a bare `fmt/1` on one view only, nothing would fail, and the two
   tables would quietly disagree about the same run.
 
   The list's eighth column, Pieces, is rendered here rather than passed in as a
@@ -2962,10 +2951,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     </td>
     <.list_pieces :if={@variant == :list} run={@run} />
     <td class={fact_class(@variant, "on")} data-role="run-sign-on">
-      {BlocksComponents.clock(@run.work.sign_on_secs)}
+      {GtfsTime.display(@run.work.sign_on_secs)}
     </td>
     <td class={fact_class(@variant, "off")} data-role="run-sign-off">
-      {BlocksComponents.clock(@run.work.sign_off_secs)}
+      {GtfsTime.display(@run.work.sign_off_secs)}
     </td>
     <td class={fact_class(@variant, "spread")} data-role="run-spread">
       {hm(@run.work.spread_secs)}
@@ -3061,7 +3050,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp piece_title(run, piece, index) do
     "Run #{run.run_id}, piece #{index}: block #{piece.block_id}, " <>
-      "#{BlocksComponents.clock(piece.start_secs)} to #{BlocksComponents.clock(piece.end_secs)}"
+      "#{GtfsTime.display(piece.start_secs)} to #{GtfsTime.display(piece.end_secs)}"
   end
 
   # A piece's position and width as percentages of the same span the axis uses,
@@ -3070,8 +3059,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp piece_geometry(piece, axis) do
     {start, span} = axis_geometry(axis)
 
-    "left: #{percent(piece.start_secs - start, span)}%; " <>
-      "width: #{percent(piece.end_secs - piece.start_secs, span)}%"
+    "left: #{css_percent(piece.start_secs - start, span)}%; " <>
+      "width: #{css_percent(piece.end_secs - piece.start_secs, span)}%"
   end
 
   # The route's own colour as a bottom rule on the bar. The fill stays the one
@@ -3112,9 +3101,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       true -> "descending"
     end
   end
-
-  defp sort_arrow(:asc), do: "↑"
-  defp sort_arrow(_dir), do: "↓"
 
   defp type_label(:one_piece), do: "One piece"
   defp type_label(:straight), do: "Straight"
@@ -3385,12 +3371,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp uncovered_label(segment) do
     "block #{segment.block_id} " <>
-      BlocksComponents.clock(segment.start_secs) <>
-      "–" <> BlocksComponents.clock(segment.end_secs)
+      GtfsTime.display(segment.start_secs) <>
+      "–" <> GtfsTime.display(segment.end_secs)
   end
-
-  defp count(1, noun), do: "1 #{noun}"
-  defp count(n, noun), do: "#{n} #{noun}s"
 
   defp severity_label(:error), do: "Problem"
   defp severity_label(:warning), do: "Warning"
@@ -3475,8 +3458,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       segment: Atom.to_string(segment.kind),
       source: segment.source,
       style:
-        "left: #{percent(from - start, span)}%; " <>
-          "width: #{percent(length_secs, span)}%",
+        "left: #{css_percent(from - start, span)}%; " <>
+          "width: #{css_percent(length_secs, span)}%",
       label: mark_label(segment, kind),
       title: mark_title(segment, kind)
     }
@@ -3502,24 +3485,24 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp mark_label(_segment, _kind), do: nil
 
   defp mark_title(%{kind: :report, start_secs: from, end_secs: to}, _kind),
-    do: "Report, #{duration(to - from)}, ending #{BlocksComponents.clock(to)}"
+    do: "Report, #{Wording.duration(to - from)}, ending #{GtfsTime.display(to)}"
 
   defp mark_title(%{kind: :sign_off, start_secs: from, end_secs: to}, _kind),
-    do: "Sign-off, #{duration(to - from)}, from #{BlocksComponents.clock(from)}"
+    do: "Sign-off, #{Wording.duration(to - from)}, from #{GtfsTime.display(from)}"
 
   defp mark_title(%{kind: :travel, start_secs: from, end_secs: to} = segment, _kind) do
-    "Travel, #{duration(to - from)}, estimated" <> unknown_note(segment.source)
+    "Travel, #{Wording.duration(to - from)}, estimated" <> unknown_note(segment.source)
   end
 
   defp mark_title(%{kind: :break, paid?: true} = segment, "break-paid"),
-    do: "Paid break, #{duration(segment.end_secs - segment.start_secs)}"
+    do: "Paid break, #{Wording.duration(segment.end_secs - segment.start_secs)}"
 
   defp mark_title(%{kind: :break, paid?: false} = segment, "break-unpaid"),
-    do: "Unpaid break, #{duration(segment.end_secs - segment.start_secs)}"
+    do: "Unpaid break, #{Wording.duration(segment.end_secs - segment.start_secs)}"
 
   defp mark_title(%{kind: :break} = segment, "cant-reach"),
     do:
-      "Can't reach the next piece in time, #{duration(abs(segment.end_secs - segment.start_secs))} short"
+      "Can't reach the next piece in time, #{Wording.duration(abs(segment.end_secs - segment.start_secs))} short"
 
   defp mark_title(_segment, _kind), do: ""
 
@@ -3537,7 +3520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     |> Enum.map(fn {index, left} ->
       %{
         style: "left: #{percent_value(left)}%",
-        label: BlocksComponents.clock(start + index * @tick_secs)
+        label: GtfsTime.display(start + index * @tick_secs)
       }
     end)
   end
@@ -3548,7 +3531,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp track_style(axis) do
     {_start, span} = axis_geometry(axis)
-    "--runs-grid: #{percent(@tick_secs, span)}%"
+    "--runs-grid: #{css_percent(@tick_secs, span)}%"
   end
 
   defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
@@ -3557,7 +3540,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp axis_geometry(_axis), do: {0, @min_track_span_secs}
 
-  defp percent(value, span), do: percent_value(value * 100 / span)
+  # CSS geometry keeps its own name: it returns a two-decimal percentage string,
+  # not the whole-number percent/2 the canonical helper returns.
+  defp css_percent(value, span), do: percent_value(value * 100 / span)
   defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
 
   defp join_style(styles) do

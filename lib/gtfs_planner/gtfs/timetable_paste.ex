@@ -127,6 +127,37 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
     |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  The paste set-flag rule: only the literal `true` is set.
+
+  The paste LiveView writes `true` for `keep`, `skip` and `keep_early`
+  (or deletes the key), and the decisions JSON hidden field round-trips
+  booleans unchanged, so a forged string, number or list must not keep,
+  skip or keep-early a row.
+  """
+  @spec truthy?(term()) :: boolean()
+  def truthy?(value), do: value == true
+
+  @doc """
+  The paste row-number rule: an integer >= 1, or a numeric string after
+  `String.trim/1`, otherwise `nil`.
+
+  Decision keys arrive as integers or numeric strings (the JSON hidden
+  field round trip); trimming keeps `" 3"` targeting row 3, and `nil`
+  marks a key that names no row.
+  """
+  @spec row_number(term()) :: pos_integer() | nil
+  def row_number(row) when is_integer(row) and row >= 1, do: row
+
+  def row_number(row) when is_binary(row) do
+    case Integer.parse(String.trim(row)) do
+      {num, ""} when num >= 1 -> num
+      _parse -> nil
+    end
+  end
+
+  def row_number(_row), do: nil
+
   # --- Review pipeline (fingerprint-free; shared by review/2 and fingerprint/2) ---
 
   @spec do_review(map(), map()) ::
@@ -683,24 +714,12 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
   @spec normalize_decisions(term()) :: map()
   defp normalize_decisions(decisions) when is_map(decisions) do
     decisions
-    |> Enum.map(fn {row, decision} -> {to_row_num(row), normalize_decision(decision)} end)
+    |> Enum.map(fn {row, decision} -> {row_number(row), normalize_decision(decision)} end)
     |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
     |> Map.new()
   end
 
   defp normalize_decisions(_decisions), do: %{}
-
-  @spec to_row_num(term()) :: pos_integer() | nil
-  defp to_row_num(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_row_num(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _parse -> nil
-    end
-  end
-
-  defp to_row_num(_row), do: nil
 
   @spec normalize_decision(term()) :: map()
   defp normalize_decision(decision) when is_map(decision) do
@@ -750,9 +769,4 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
       _value -> %{}
     end
   end
-
-  @spec truthy?(term()) :: boolean()
-  defp truthy?(nil), do: false
-  defp truthy?(false), do: false
-  defp truthy?(_value), do: true
 end

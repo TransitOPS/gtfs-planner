@@ -430,13 +430,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareSummaryTest do
         live(conn, compare_path(version, route, %{"a" => "FULL", "b" => "DEV"}))
 
       assert view |> element("[data-hour-bar='a-25']") |> render() =~
-               ~s(title="01:00–02:00 after midnight: 1 trip")
+               ~s(title="25:00–26:00: 1 trip")
 
       assert view |> element("[data-hour-bar='a-23']") |> render() =~
-               ~s(title="23:00–00:00: 0 trips")
+               ~s(title="23:00–24:00: 0 trips")
 
       assert view |> element("[data-hour-bar='b-25']") |> render() =~
-               ~s(title="01:00–02:00 after midnight: 0 trips")
+               ~s(title="25:00–26:00: 0 trips")
     end
 
     test "B absent renders up to three suggestions and patches b",

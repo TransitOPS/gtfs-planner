@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Boundaries
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -484,7 +485,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
       <form :if={@features != []} id="area-feature-form" phx-change="pick_feature" class="mt-3">
         <fieldset>
           <legend class="text-[13px] font-[650] text-default">
-            {@file_name} · {length(@features)} {plural_word(length(@features), "area")}
+            {@file_name} · {length(@features)} {Wording.noun(length(@features), "area")}
           </legend>
           <div class="mt-1 grid gap-2">
             <label
@@ -696,7 +697,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
         </div>
 
         <p id="area-vertices" class="ml-auto text-[13px] tabular-nums text-muted">
-          {vertices_text(@vertices)}
+          {if @vertices, do: Wording.count_noun(@vertices, "point"), else: ""}
         </p>
       </div>
 
@@ -789,10 +790,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
     </button>
     """
   end
-
-  defp vertices_text(nil), do: ""
-  defp vertices_text(1), do: "1 point"
-  defp vertices_text(count), do: "#{count} points"
 
   # --- shared parts -----------------------------------------------------------
 
@@ -930,7 +927,4 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
     sign = if now < before, do: "", else: "+"
     "#{sign}#{km2_text(now - before)} km² (#{km2_text(before)} → #{km2_text(now)} km²)"
   end
-
-  defp plural_word(1, word), do: word
-  defp plural_word(_count, word), do: word <> "s"
 end

@@ -124,28 +124,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
     end
   end
 
-  describe "present?/1" do
-    test "returns false for nil" do
-      refute Helpers.present?(nil)
-    end
-
-    test "returns false for empty string" do
-      refute Helpers.present?("")
-    end
-
-    test "returns false for whitespace-only string" do
-      refute Helpers.present?("   ")
-    end
-
-    test "returns true for non-empty string" do
-      assert Helpers.present?("x")
-    end
-
-    test "returns true for integer" do
-      assert Helpers.present?(0)
-    end
-  end
-
   describe "item/6" do
     test "returns a map with all 6 keys including category" do
       result = Helpers.item("test_id", "Test Label", :pass, :error, 42, ["detail"])
@@ -232,24 +210,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
 
     test "handles nil" do
       assert Helpers.extract_direction_tokens(nil) == MapSet.new()
-    end
-  end
-
-  describe "decimal_to_float/1" do
-    test "converts Decimal to float" do
-      assert Helpers.decimal_to_float(Decimal.new("1.5")) == 1.5
-    end
-
-    test "returns float as-is" do
-      assert Helpers.decimal_to_float(1.5) == 1.5
-    end
-
-    test "converts integer to float" do
-      assert Helpers.decimal_to_float(3) == 3.0
-    end
-
-    test "returns nil for nil" do
-      assert Helpers.decimal_to_float(nil) == nil
     end
   end
 end

@@ -102,7 +102,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
 
   # The zone field is the only place this page validates a zone, and the server
@@ -192,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       {:noreply,
        socket
        |> push_event("gtfs_version_selected", %{version_id: version_id})
-       |> push_navigate(to: agencies_path(version_id))}
+       |> push_navigate(to: ~p"/gtfs/#{version_id}/settings/agencies")}
     else
       {:noreply, socket}
     end
@@ -207,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: agencies_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/agencies")}
     else
       {:noreply, socket}
     end
@@ -276,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
   @impl true
   def handle_event("save_agency", %{"agency" => params}, socket) do
-    case FeedSettings.create_agency(audit_context(socket), params) do
+    case FeedSettings.create_agency(AuditContext.from_assigns(socket.assigns), params) do
       {:ok, agency} ->
         {:noreply,
          socket
@@ -315,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_agency()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -458,7 +460,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     review = socket.assigns.timezone_review
 
     case FeedSettings.apply_timezone_change(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            review.zone,
            review.fingerprint
          ) do
@@ -498,7 +500,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_timezone()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -531,7 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="agencies-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -759,20 +761,20 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
               id="agency-summary-phone"
               icon="hero-phone"
               label="Phone"
-              value={present(@agency.agency_phone)}
+              value={Values.presence(@agency.agency_phone)}
             />
             <.contact_row
               id="agency-summary-email"
               icon="hero-envelope"
               label="Email"
-              value={present(@agency.agency_email)}
+              value={Values.presence(@agency.agency_email)}
               kind={:email}
             />
             <.contact_row
               id="agency-summary-fare"
               icon="hero-ticket"
               label="Fare website"
-              value={present(@agency.agency_fare_url)}
+              value={Values.presence(@agency.agency_fare_url)}
               kind={:web}
             />
             <.contact_row
@@ -833,12 +835,14 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           <dt class="text-[13px] text-muted">Stored timezone</dt>
           <dd class="min-w-0 break-all">
             <code
-              :if={present(@agency.agency_timezone)}
+              :if={Values.presence(@agency.agency_timezone)}
               class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-strong"
             >
               {@agency.agency_timezone}
             </code>
-            <span :if={is_nil(present(@agency.agency_timezone))} class="text-muted">Not set</span>
+            <span :if={is_nil(Values.presence(@agency.agency_timezone))} class="text-muted">
+              Not set
+            </span>
           </dd>
           <dt class="text-[13px] text-muted">GTFS file</dt>
           <dd class="text-[13px] text-muted">
@@ -906,7 +910,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       <div class="overflow-hidden rounded-card border border-subtle bg-white">
         <div class="px-5 py-4">
           <h2 id="agencies-list-title" class="text-base font-bold text-strong">
-            {agency_count_label(@health.agency_count)}
+            {Wording.count_noun(@health.agency_count, "agency", "agencies")}
           </h2>
         </div>
 
@@ -965,8 +969,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                 </td>
                 <td data-label="Rider contact" class="px-5 py-1.5 max-md:mt-1 max-md:block max-md:p-0">
                   <.contact_lines
-                    phone={present(row.agency.agency_phone)}
-                    email={present(row.agency.agency_email)}
+                    phone={Values.presence(row.agency.agency_phone)}
+                    email={Values.presence(row.agency.agency_email)}
                   />
                 </td>
                 <td
@@ -996,7 +1000,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                     class="inline-flex min-h-11 items-center gap-2 whitespace-nowrap text-sm font-[650] tabular-nums text-action no-underline hover:text-action-hover hover:underline"
                     aria-label={"View #{row.route_count} routes for #{row.agency.agency_name}"}
                   >
-                    {routes_label(row.route_count)} <.icon name="hero-arrow-right" class="size-4" />
+                    {Wording.count_noun(row.route_count, "route")}
+                    <.icon name="hero-arrow-right" class="size-4" />
                   </.link>
                 </td>
               </tr>
@@ -1038,7 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           aria-hidden="true"
           class={[@sort == "none" && "text-muted", @sort != "none" && "text-action"]}
         >
-          {sort_arrow(@sort)}
+          {sort_glyph(@sort)}
         </span>
       </button>
     </th>
@@ -1048,10 +1053,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp sort_aria("asc"), do: "ascending"
   defp sort_aria("desc"), do: "descending"
   defp sort_aria(_none), do: "none"
-
-  defp sort_arrow("asc"), do: "↑"
-  defp sort_arrow("desc"), do: "↓"
-  defp sort_arrow(_none), do: "↕"
 
   # Phone first and email under it, so the row shows what riders would call
   # before what they would write.
@@ -1131,7 +1132,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         <%= if @health.agency_count == 0 do %>
           <h2 class="text-base font-bold leading-snug text-strong">Already have a GTFS feed?</h2>
           <p class="mt-2 text-sm text-default">Importing a feed brings its agencies with it.</p>
-          <.aside_link id="agencies-review-import" navigate={import_path(@version_id)}>
+          <.aside_link id="agencies-review-import" navigate={~p"/gtfs/#{@version_id}/import"}>
             Review an import
           </.aside_link>
         <% else %>
@@ -1142,7 +1143,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
             An agency identifies the service riders use. The organization publishing your dataset
             can be different.
           </p>
-          <.aside_link id="agencies-view-feed-details" navigate={feed_details_path(@version_id)}>
+          <.aside_link
+            id="agencies-view-feed-details"
+            navigate={~p"/gtfs/#{@version_id}/settings/feed-details"}
+          >
             View feed details
           </.aside_link>
         <% end %>
@@ -1362,7 +1366,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           </div>
         </div>
         <div class="whitespace-nowrap text-sm text-muted">
-          {routes_label(agency.route_count)}
+          {Wording.count_noun(agency.route_count, "route")}
         </div>
       </li>
     </ul>
@@ -1623,7 +1627,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                 class="rounded-control bg-canvas px-4 py-3 text-[13px] text-muted"
               >
                 Agency ID <strong class="text-strong">{@agency.agency_id}</strong>
-                · {routes_label(@route_count)}
+                · {Wording.count_noun(@route_count, "route")}
               </p>
 
               <.form_section :if={@route_count > 0} title="Move routes to" first?>
@@ -1832,7 +1836,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     do: "The organizations that run your routes, as riders see them in trip planners."
 
   defp version_scope(version) do
-    "Applies to #{present(version.name) || "this version"} only. Each version keeps its own agencies."
+    "Applies to #{Values.presence(version.name) || "this version"} only. Each version keeps its own agencies."
   end
 
   # One agency is a summary rather than a list; the row is the same one the table
@@ -1850,15 +1854,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp edit_variant(health), do: if(resolved_zone?(health.zone), do: "primary", else: "secondary")
 
   defp zone_problem?(health), do: health.agency_count > 0 and unresolved_zone?(health.zone)
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp present(_value), do: nil
 
   # Links and fields take the design system's focus outline from the page scope;
   # a bare button does not, so the buttons this page draws itself carry it.
@@ -1995,7 +1990,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # is, with the draft and the entries kept and nothing written (AC-16).
   defp update_edited_agency(socket, params) do
     case FeedSettings.update_agency(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.agency_baseline.id,
            params,
            socket.assigns.agency_loaded_updated_at
@@ -2125,7 +2120,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # command that cannot be applied (AC-19, AC-20, AC-21, INV-3).
   defp review_agency_deletion(socket, target_id) do
     case FeedSettings.review_agency_deletion(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.agency_baseline.id,
            target_id
          ) do
@@ -2177,7 +2172,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     review = socket.assigns.agency_delete_review
 
     case FeedSettings.delete_agency(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            review.agency.id,
            review.target && review.target.id,
            review.fingerprint
@@ -2205,7 +2200,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         socket
         |> close_agency()
         |> put_flash(:error, "This version is no longer available.")
-        |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))
+        |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")
     end
   end
 
@@ -2337,7 +2332,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp delete_review_summary(%{target: nil}), do: "No routes or fare references need to move."
 
   defp delete_review_summary(review) do
-    "#{routes_label(length(review.routes))} will move to #{review.target.agency_name}. " <>
+    "#{Wording.count_noun(length(review.routes), "route")} will move to #{review.target.agency_name}. " <>
       "No routes will be deleted."
   end
 
@@ -2410,7 +2405,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # stays on the zone field, and every scope refusal closes the drawer because
   # there is no version left to change.
   defp review_timezone(socket, zone) do
-    case FeedSettings.review_timezone_change(audit_context(socket), zone) do
+    case FeedSettings.review_timezone_change(AuditContext.from_assigns(socket.assigns), zone) do
       {:ok, review} ->
         {:noreply,
          socket
@@ -2447,7 +2442,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_timezone()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -2487,15 +2482,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     )
   end
 
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # The acknowledgement is a checkbox inside the review form, so the hook's own
   # invalid-control lookup finds it first and the fallback id only matters if the
   # error is ever rendered away from the control.
@@ -2519,12 +2505,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp agencies_label([_agency]), do: "1 agency"
   defp agencies_label(agencies), do: "#{length(agencies)} agencies"
 
-  defp agency_count_label(1), do: "1 agency"
-  defp agency_count_label(count), do: "#{count} agencies"
-
-  defp routes_label(1), do: "1 route"
-  defp routes_label(count), do: "#{count} routes"
-
   defp ack_errors(nil), do: []
   defp ack_errors(message), do: [message]
 
@@ -2533,10 +2513,4 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     |> Enum.reject(&(is_nil(&1) or String.trim(&1) == ""))
     |> Enum.join(" · ")
   end
-
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
-  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
-
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 end

@@ -43,13 +43,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   custom trip is flagged `stops_differ?: true` with no cells.
   """
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Values
 
   @seconds_per_day 86_400
-  @seconds_per_hour 3_600
   @seconds_per_minute 60
 
   @typedoc "A pattern occurrence, one per visit and in position order."
@@ -364,13 +365,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp blank_record?(record) do
-    blank_value?(Map.get(record, :arrival_time)) or
-      blank_value?(Map.get(record, :departure_time))
+    Values.blank?(Map.get(record, :arrival_time)) or
+      Values.blank?(Map.get(record, :departure_time))
   end
-
-  defp blank_value?(nil), do: true
-  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_value?(_value), do: false
 
   # A filled position is estimated only when its stored row had neither time
   # and the fill wrote one: kept rows (including the R1 one-sided copy) and
@@ -387,8 +384,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp both_blank?(record) do
-    blank_value?(Map.get(record, :arrival_time)) and
-      blank_value?(Map.get(record, :departure_time))
+    Values.blank?(Map.get(record, :arrival_time)) and
+      Values.blank?(Map.get(record, :departure_time))
   end
 
   defp has_time?(record) do
@@ -488,7 +485,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     days = div(secs, @seconds_per_day)
 
     %{
-      text: clock(secs),
+      text: GtfsTime.display(secs),
       marker: if(days >= 1, do: "+#{days}", else: nil),
       title: if(days >= 1, do: day_title(secs, days), else: nil),
       missing?: false,
@@ -496,35 +493,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     }
   end
 
-  defp clock(secs) do
-    base = hhmm(secs)
-    seconds = rem(secs, 60)
-    if seconds == 0, do: base, else: base <> ":" <> pad(seconds)
-  end
-
-  defp hhmm(secs) do
-    pad(div(secs, @seconds_per_hour)) <> ":" <> pad(div(rem(secs, @seconds_per_hour), 60))
-  end
-
   defp day_title(secs, days) do
     suffix = if days == 1, do: "next day", else: "#{days} days later"
-    human_clock(secs) <> ", " <> suffix
-  end
+    time = Time.from_seconds_after_midnight(rem(secs, @seconds_per_day))
 
-  defp human_clock(secs) do
-    hours = div(secs, @seconds_per_hour)
-    minutes = div(rem(secs, @seconds_per_hour), 60)
-    hour = rem(hours, 24)
-
-    {display_hour, meridiem} =
-      cond do
-        hour == 0 -> {12, "AM"}
-        hour < 12 -> {hour, "AM"}
-        hour == 12 -> {12, "PM"}
-        true -> {hour - 12, "PM"}
-      end
-
-    "#{display_hour}:#{pad(minutes)} #{meridiem}"
+    DisplayClock.format_time(time) <> ", " <> suffix
   end
 
   # Domain rule 2: the row headsign is decided only through `Headsigns` (CR-1).
@@ -576,9 +549,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   end
 
   defp hhmm_value(value) do
-    case GtfsTime.parse(value) do
-      {:ok, secs} -> hhmm(secs)
-      {:error, :invalid_time} -> if(is_binary(value), do: value, else: "—")
+    case GtfsTime.coerce(value) do
+      nil -> if(is_binary(value), do: value, else: "—")
+      secs -> GtfsTime.display(secs)
     end
   end
 
@@ -618,6 +591,4 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   defp row_sort_key(row) do
     {row.start_secs == nil, row.start_secs || 0, row.trip_id}
   end
-
-  defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 end

@@ -31,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.TimingFill do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.StopTimeEstimator
+  alias GtfsPlanner.Wording
 
   @mph_warn 60.0
 
@@ -440,13 +441,10 @@ defmodule GtfsPlanner.Gtfs.TimingFill do
     do: "Nothing to recalculate. Every stop already matches the timepoints."
 
   defp summary(:missing, changed, spans) do
-    "Fills #{plural(changed, "stop")} in #{plural(spans, "section")} between timepoints. Every time already here stays as it is."
+    "Fills #{Wording.count_noun(changed, "stop")} in #{Wording.count_noun(spans, "section")} between timepoints. Every time already here stays as it is."
   end
 
   defp summary(:between, changed, spans) do
-    "Recalculates #{plural(changed, "stop")} in #{plural(spans, "section")} between timepoints. Timepoint times never change."
+    "Recalculates #{Wording.count_noun(changed, "stop")} in #{Wording.count_noun(spans, "section")} between timepoints. Timepoint times never change."
   end
-
-  defp plural(1, noun), do: "1 #{noun}"
-  defp plural(count, noun), do: "#{count} #{noun}s"
 end

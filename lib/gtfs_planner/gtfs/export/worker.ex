@@ -308,11 +308,12 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp storage_options do
     []
-    |> maybe_put(:max_run_bytes, :gtfs_task_artifacts_max_run_bytes)
-    |> maybe_put(:max_total_bytes, :gtfs_task_artifacts_max_total_bytes)
+    |> put_configured_option(:max_run_bytes, :gtfs_task_artifacts_max_run_bytes)
+    |> put_configured_option(:max_total_bytes, :gtfs_task_artifacts_max_total_bytes)
   end
 
-  defp maybe_put(opts, option, config_key) do
+  # This option is a keyword-list entry read from application config, not a present-value test.
+  defp put_configured_option(opts, option, config_key) do
     case Application.get_env(:gtfs_planner, config_key) do
       nil -> opts
       value -> Keyword.put(opts, option, value)

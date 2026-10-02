@@ -340,6 +340,39 @@ defmodule GtfsPlanner.Gtfs.DisplayClockTest do
       assert "9:05:03 AM" == DisplayClock.format_time(~N[2026-01-15 09:05:03], seconds: true)
       assert "9:05 AM" == DisplayClock.format_time(~N[2026-01-15 09:05:03], seconds: false)
     end
+
+    test "accepts a Time" do
+      assert "1:10 AM" == DisplayClock.format_time(~T[01:10:00])
+    end
+
+    test "keeps NaiveDateTime formatting unchanged" do
+      assert "1:05 PM" == DisplayClock.format_time(~N[2026-01-01 13:05:00])
+    end
+  end
+
+  describe "format_datetime/1" do
+    test "labels a UTC DateTime with its zone" do
+      assert "Oct 1, 2026, 2:05 PM UTC" == DisplayClock.format_datetime(~U[2026-10-01 14:05:00Z])
+    end
+
+    test "leaves a NaiveDateTime unlabeled" do
+      assert "Sep 27, 2026, 2:18 PM" == DisplayClock.format_datetime(~N[2026-09-27 14:18:00])
+    end
+
+    test "shows a DateTime in another zone as its local wall clock without a label" do
+      # No time-zone database is configured, so the zone fields are set directly.
+      new_york = %{
+        ~U[2026-10-01 14:05:00Z]
+        | time_zone: "America/New_York",
+          zone_abbr: "EDT",
+          utc_offset: -14_400,
+          std_offset: 3_600,
+          hour: 10,
+          minute: 5
+      }
+
+      assert "Oct 1, 2026, 10:05 AM" == DisplayClock.format_datetime(new_york)
+    end
   end
 
   describe "Gtfs delegates" do

@@ -296,7 +296,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
     |> Enum.sort_by(fn row ->
       start = value(row, :start_time)
 
-      case secs(start) do
+      case GtfsTime.coerce(start) do
         nil -> {1, 0, to_string(start)}
         seconds -> {0, seconds, ""}
       end
@@ -319,7 +319,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
   # The earliest stored window's start: the clock a template shift is measured from.
   defp stored_first_start(stored) do
     stored
-    |> Enum.map(&secs(value(&1, :start_time)))
+    |> Enum.map(&GtfsTime.coerce(value(&1, :start_time)))
     |> Enum.reject(&is_nil/1)
     |> Enum.min(fn -> nil end)
     |> case do
@@ -350,7 +350,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
   # The anchor rule of the first stop: its departure, or its arrival when only one
   # clock is stored.
   defp anchor_secs([first | _rest]) do
-    secs(value(first, :departure_time)) || secs(value(first, :arrival_time))
+    GtfsTime.coerce(value(first, :departure_time)) || GtfsTime.coerce(value(first, :arrival_time))
   end
 
   defp anchor_secs(_rows), do: nil
@@ -358,8 +358,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
   defp stops(rows) do
     Enum.map(rows, fn row ->
       %{
-        arrival: secs(value(row, :arrival_time)),
-        departure: secs(value(row, :departure_time)),
+        arrival: GtfsTime.coerce(value(row, :arrival_time)),
+        departure: GtfsTime.coerce(value(row, :departure_time)),
         timepoint: value(row, :timepoint)
       }
     end)
@@ -372,8 +372,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
     |> Enum.map(fn {{row, stop}, position} ->
       %{
         position: position,
-        arrival_time: clock(stop.arrival),
-        departure_time: clock(stop.departure),
+        arrival_time: stop.arrival && GtfsTime.format(stop.arrival),
+        departure_time: stop.departure && GtfsTime.format(stop.departure),
         timepoint: value(row, :timepoint),
         pickup_type: value(row, :pickup_type),
         drop_off_type: value(row, :drop_off_type),
@@ -429,20 +429,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
   defp empty_change_set(consequences) do
     %{updates: [], inserts: [], deletes: [], consequences: consequences}
   end
-
-  defp clock(nil), do: nil
-  defp clock(seconds), do: GtfsTime.format(seconds)
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, seconds} -> seconds
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp value(_map, _key), do: nil
