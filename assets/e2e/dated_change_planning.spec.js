@@ -570,11 +570,16 @@ for (const viewport of VIEWPORTS) {
       const digest = await page.locator("#dated-change-digest").innerText();
 
       // A real native save through the page's own drawer control: a headsign
-      // edit on the selected trip, which writes a row the plan read.
+      // edit on the selected trip, which writes a row the plan read. The
+      // saved value differs from the trip's own default, so the row now claims
+      // a headsign of its own and the grid prints it.
       await page.locator(`#trip-${TRIP_IDS[0]}-edit`).click();
       await page.fill("#trip-headsign", "Dated change outbound (QA)");
       await page.locator("#trip-drawer-save").click();
       await expect(page.locator("#trip-headsign").first()).toHaveCount(0);
+      await expect(page.locator(`#trip-${TRIP_IDS[0]}-headsign`)).toHaveText(
+        "To Dated change outbound (QA)",
+      );
 
       // The plan is kept and relabelled rather than deleted, because a person
       // is still reading it, and it no longer claims currency.
@@ -619,9 +624,21 @@ for (const viewport of VIEWPORTS) {
       await page.locator(`#trip-${TRIP_IDS[0]}-edit`).click();
       await page.fill("#trip-headsign", "Dated change outbound");
       await page.locator("#trip-drawer-save").click();
-      await expect(page.locator(`#trip-${TRIP_IDS[0]}-headsign`)).toContainText(
-        "Dated change outbound",
+
+      // The restored value is this trip's own default, so the row stops
+      // claiming a headsign of its own and the grid line goes away entirely
+      // (Headsigns rule 2: a trip that follows its effective default shows
+      // nothing). Asserting the *absence* of the line is what distinguishes
+      // "the save landed" from "the row still reads (QA)": a stale row would
+      // still carry the `#trip-...-headsign` cell with its old text, and a
+      // substring match on that stale text would pass while proving nothing.
+      await expect(page.locator(`#trip-${TRIP_IDS[0]}-headsign`)).toHaveCount(
+        0,
       );
+
+      // The drawer closes on a successful save, so the grid is on screen again
+      // before the re-check below reads the restored timetable.
+      await expect(page.locator("#trip-headsign")).toHaveCount(0);
 
       await page.locator("#dated-change-refresh").click();
       await expect(page.locator("#dated-change-state-headline")).toHaveText(
