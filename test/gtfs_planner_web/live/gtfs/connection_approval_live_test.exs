@@ -40,6 +40,8 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
   @departure_trip "R2-0908"
   @stored_minimum 300
   @candidate_clock "09:07"
+  # What the page admits for it: the comparison reads HH:MM:SS.
+  @candidate_clock_admitted "09:07:00"
   @candidate_approval "Dispatch sheet 2026-11-26"
 
   @unavailable_notice "These routes, trips or stops are not part of this version"
@@ -69,7 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
 
   describe "the approval the helper may read" do
     test "an approved pair, date, minimum and candidate become immutable context", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       assert has_element?(view, "#connection-approval-form")
       assert has_element?(view, "#connection-approve")
@@ -134,8 +136,8 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
       assert [candidate] = payload["candidates"]
       assert candidate["pair_id"] == "pair-1"
       assert candidate["origin"] == "supplied"
-      assert candidate["arrival"] == @candidate_clock
-      assert candidate["departure"] == @candidate_clock
+      assert candidate["arrival"] == @candidate_clock_admitted
+      assert candidate["departure"] == @candidate_clock_admitted
       assert candidate["approval"] == @candidate_approval
 
       # The conversation key the page shows is the one the session binds.
@@ -151,7 +153,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
     end
 
     test "a supplied minimum is admitted as supplied evidence beside its approval", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       supplied =
         pair(ctx,
@@ -178,7 +180,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
     end
 
     test "the approved source opens the connections helper and nothing is written", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx))
 
@@ -198,7 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
 
   describe "refusals" do
     test "a receiving route from another organization is refused and the draft stays", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx, to_trip: ctx.foreign_trip.trip_id))
 
@@ -219,7 +221,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
     end
 
     test "a malformed draft is refused before any connection is read", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx, to_route: ""))
 
@@ -228,8 +230,73 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
       assert has_element?(view, "#connection-approval-form")
     end
 
+    test "a candidate that is not a clock is refused as a clock and nothing is admitted", ctx do
+      view = connections_view(ctx)
+
+      submit(view, ctx, pair(ctx, candidate_arrival: "quarter past nine"))
+
+      assert element(view, "#connection-approval-notice") |> render() =~
+               "A candidate clock has to be a time"
+
+      refute has_element?(view, "#connection-approval-receipt")
+      assert socket_assigns(view).agent_context.source_snapshot == nil
+    end
+
+    test "candidate times without their approval are refused as a missing approval", ctx do
+      view = connections_view(ctx)
+
+      submit(view, ctx, pair(ctx, candidate_approval: ""))
+
+      assert element(view, "#connection-approval-notice") |> render() =~
+               "Candidate times need the approval"
+
+      assert socket_assigns(view).agent_context.source_snapshot == nil
+    end
+
+    test "candidate times under two approval labels are refused where the form can fix them",
+         ctx do
+      view = connections_view(ctx)
+      element(view, "#connection-pair-add") |> render_click()
+
+      first = pair(ctx)
+      second = pair(ctx, candidate_approval: "A different dispatch sheet")
+
+      params = %{
+        "service_date" => @service_date_text,
+        "pairs" => %{
+          "0" => first["pairs"]["0"],
+          "1" => put_in(second["pairs"]["0"], ["id"], "pair-2")
+        }
+      }
+
+      view |> form("#connection-approval-form", %{"connection" => params}) |> render_submit()
+
+      assert element(view, "#connection-approval-notice") |> render() =~
+               "Give every candidate time the same approval label"
+
+      refute has_element?(view, "#connection-approval-receipt")
+      assert socket_assigns(view).agent_context.source_snapshot == nil
+    end
+
+    test "an approval that leaves out this page's route is refused rather than admitted", ctx do
+      view = connections_view(ctx)
+
+      elsewhere =
+        pair(ctx)
+        |> put_in(["pairs", "0", "from"], endpoint(ctx.to_route, ctx.departure_trip, @harbor))
+        |> put_in(["pairs", "0", "to"], endpoint(ctx.other_route, "R3-1010", @platform))
+
+      submit(view, ctx, elsewhere)
+
+      assert element(view, "#connection-approval-notice") |> render() =~
+               "The helper cannot read this approval"
+
+      refute has_element?(view, "#connection-approval-receipt")
+      assert socket_assigns(view).agent_context.source_snapshot == nil
+    end
+
     test "a whole approved context above the byte limit refuses with fewer than 500 pairs", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx, candidate_approval: String.duplicate("a", 70_000)))
 
@@ -246,7 +313,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
 
   describe "invalidation" do
     test "an edited approval drops the receipt and the source but keeps the draft", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx))
       assert socket_assigns(view).agent_context.source_snapshot != nil
@@ -271,7 +338,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
     end
 
     test "another route on the same version drops an approval made on this one", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx))
       assert socket_assigns(view).agent_context.source_snapshot != nil
@@ -285,7 +352,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
     end
 
     test "a native reload of the schedule drops the approval with its evidence", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       submit(view, ctx, pair(ctx))
       assert socket_assigns(view).agent_context.source_snapshot != nil
@@ -304,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
 
   describe "the helper this page offers" do
     test "a mode change keeps the native schedule draft and the approval draft", ctx do
-      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+      view = connections_view(ctx)
 
       # The page's own calendar filter, which is not the helper's to touch.
       view |> form("#schedule-calendar-form", %{"service_id" => "WEEK"}) |> render_change()
@@ -319,18 +386,30 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
       # The schedule questions helper reads the plain route context, and the
       # connections source is not input to it.
       assert assigns.agent_context.source_snapshot == nil
-      # Nothing the operator typed went with the switch.
+      # The approval card belongs to the connections helper, so it leaves the page.
+      refute has_element?(view, "#connection-approval-region")
       assert view |> element("#calendar-filter") |> render() =~ "WEEK"
-      assert has_element?(view, ~s(input#connection-pair-1-from-stop[value="#{@platform}"]))
-      assert has_element?(view, ~s(input#connection-pair-1-to-stop[value="#{@harbor}"]))
 
       # Switching back rebinds the source this page already admitted rather than
-      # asking for the same approval twice.
+      # asking for the same approval twice, and nothing the operator typed went.
       view |> element("#schedule-helper-mode-connections") |> render_click()
 
       assigns = socket_assigns(view)
       assert assigns.schedule_helper_mode == "connections"
       assert %{kind: "connections"} = assigns.agent_context.source_snapshot
+      assert has_element?(view, ~s(input#connection-pair-1-from-stop[value="#{@platform}"]))
+      assert has_element?(view, ~s(input#connection-pair-1-to-stop[value="#{@harbor}"]))
+    end
+
+    test "the approval card is the connections helper's and adds no second primary", ctx do
+      {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+
+      refute has_element?(view, "#connection-approval-region")
+
+      view |> element("#schedule-helper-mode-connections") |> render_click()
+
+      assert has_element?(view, "#connection-approval-region")
+      refute has_element?(view, "#connection-approval-region .btn-primary")
     end
 
     test "a forged mode changes nothing on this page or in the panel", ctx do
@@ -466,8 +545,8 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
           "minimum" =>
             Keyword.get(opts, :minimum, %{"origin" => "stored", "seconds" => "", "approval" => ""}),
           "candidate" => %{
-            "arrival" => @candidate_clock,
-            "departure" => @candidate_clock,
+            "arrival" => Keyword.get(opts, :candidate_arrival, @candidate_clock),
+            "departure" => Keyword.get(opts, :candidate_departure, @candidate_clock),
             "approval" => Keyword.get(opts, :candidate_approval, @candidate_approval)
           }
         }
@@ -504,6 +583,15 @@ defmodule GtfsPlannerWeb.Gtfs.ConnectionApprovalLiveTest do
   end
 
   ## Views and paths
+
+  # The approval card is the connections helper's, so a page opens it by choosing
+  # that helper.
+  defp connections_view(ctx) do
+    {:ok, view, _html} = live(ctx.conn, schedules_path(ctx))
+    view |> element("#schedule-helper-mode-connections") |> render_click()
+
+    view
+  end
 
   defp schedules_path(ctx, opts \\ []) do
     route = Keyword.get(opts, :route, ctx.from_route)

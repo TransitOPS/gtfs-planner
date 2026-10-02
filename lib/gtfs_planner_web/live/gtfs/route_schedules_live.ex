@@ -105,6 +105,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @connection_minimum_error "A supplied minimum needs whole seconds of 0 or more and the approval that states it."
   @connection_id_error "Each connection pair needs its own name."
   @connection_candidate_error "A candidate clock has to be a time such as 09:07."
+  @connection_candidate_approval_error "Candidate times need the approval that states where they come from."
+  @connection_unreadable_error "The helper cannot read this approval, so nothing was approved. Give every candidate time the same approval label, and include a pair on this page's route."
   @connection_unavailable_error "These routes, trips or stops are not part of this version, so nothing was approved."
   @connection_read_error "This version's connections could not be read, so nothing was approved."
   @connection_invalid_error "That approval was not a shape this page can admit, so nothing was approved."
@@ -4807,21 +4809,36 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         {:ok, nil}
 
       (not is_nil(arrival) or not is_nil(departure)) and is_nil(approval) ->
-        {:error, @connection_candidate_error}
+        {:error, @connection_candidate_approval_error}
 
       true ->
-        {:ok,
-         %{
-           "pair_id" => id,
-           "origin" => "supplied",
-           "arrival" => arrival,
-           "departure" => departure,
-           "approval" => approval
-         }}
+        with {:ok, arrival} <- candidate_clock(arrival),
+             {:ok, departure} <- candidate_clock(departure) do
+          {:ok,
+           %{
+             "pair_id" => String.trim(id),
+             "origin" => "supplied",
+             "arrival" => arrival,
+             "departure" => departure,
+             "approval" => approval
+           }}
+        end
     end
   end
 
   defp connection_candidate(_pair), do: {:ok, nil}
+
+  # The comparison reads a clock as HH:MM:SS, so the page's one R2 grammar reads what
+  # the person typed and the approval carries its normalized form: what the field
+  # invites ("09:07") is what the helper compares.
+  defp candidate_clock(nil), do: {:ok, nil}
+
+  defp candidate_clock(text) do
+    case TimeEntry.parse(text, []) do
+      {:ok, %{secs: secs}} -> {:ok, GtfsTime.format(secs)}
+      {:error, _reason} -> {:error, @connection_candidate_error}
+    end
+  end
 
   defp blank_to_nil(value) when is_binary(value) do
     case String.trim(value) do
@@ -4850,25 +4867,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp admit_connections(socket, request, snapshot) do
     payload = connection_payload(request, snapshot)
 
-    case Scope.with_source_snapshot(
-           base_helper_context(socket),
-           %{kind: @connection_source_kind, payload: payload}
-         ) do
-      {:ok, context} ->
-        # The approval is what the connections helper reads, so the person lands
-        # on the helper that owns it rather than on the one that cannot.
-        socket =
-          socket
-          |> assign(:connection_notice, @connection_approved_notice)
-          |> assign(:connection_context, context)
-          |> select_helper_mode("connections", context)
+    with {:ok, context} <-
+           Scope.with_source_snapshot(
+             base_helper_context(socket),
+             %{kind: @connection_source_kind, payload: payload}
+           ),
+         # The helper refuses an approval its own admission rejects, so it is asked
+         # here, where the person can still correct the form (INV-2).
+         true <- AgentPanel.admits?(socket, @connection_source_kind, context) do
+      # The approval is what the connections helper reads, so the person lands
+      # on the helper that owns it rather than on the one that cannot.
+      socket =
+        socket
+        |> assign(:connection_notice, @connection_approved_notice)
+        |> assign(:connection_context, context)
+        |> select_helper_mode("connections", context)
 
-        # The receipt is built after the switch, because the conversation key it
-        # shows is the one the connections session binds (INV-2).
-        assign(socket, :connection_approval, connection_receipt(socket, request, snapshot))
-
-      {:error, reason} ->
-        refuse_connections(socket, reason)
+      # The receipt is built after the switch, because the conversation key it
+      # shows is the one the connections session binds (INV-2).
+      assign(socket, :connection_approval, connection_receipt(socket, request, snapshot))
+    else
+      false -> refuse_connections(socket, @connection_unreadable_error)
+      {:error, reason} -> refuse_connections(socket, reason)
     end
   end
 
@@ -5273,7 +5293,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               <% @load_state == :loading and is_nil(@payload) -> %>
                 <ScheduleComponents.loading_skeleton />
               <% true -> %>
-                <div :if={@route} id="connection-approval-region" class="mb-6">
+                <div
+                  :if={@route && @schedule_helper_mode == "connections"}
+                  id="connection-approval-region"
+                  class="mb-6"
+                >
                   <ScheduleHelperComponents.connection_approval
                     form={@connection_form}
                     notice={@connection_notice}
