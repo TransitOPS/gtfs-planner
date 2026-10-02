@@ -256,6 +256,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       assert has_element?(view, "#main-navigation #nav-alerts", "Alerts")
     end
 
+    test "a version with no agency still renders the first-use panel", _context do
+      # The Pathways product has no agency row, so the display clock falls back to
+      # UTC for the list's tabs and times.
+      pathways = organization_fixture(%{product: :pathways})
+      actor = editor_fixture(pathways)
+      version = gtfs_version_fixture(pathways.id)
+
+      conn = log_in_user(build_conn(), actor, organization: pathways)
+
+      {:ok, view, _html} = live(conn, alerts_path(version))
+
+      assert has_element?(view, "#alerts-first-use", "No alerts yet")
+      assert has_element?(view, "#create-alert-first-use", "Create alert")
+    end
+
     test "a member without the editor role is refused the list", context do
       viewer = user_fixture()
       organization_membership_fixture(viewer, context.organization, [])

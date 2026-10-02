@@ -41,8 +41,13 @@ function capturePath(testInfo, name) {
     : testInfo.outputPath(name);
 }
 
+// Signing in is idempotent. A journey that opens the app more than once in one
+// session (the list loops two viewports) arrives signed in, and the log-in route
+// redirects a signed-in session to the app instead of rendering a form.
 async function logIn(page, account = EDITOR) {
   await page.goto("/users/log_in");
+  if (!new URL(page.url()).pathname.startsWith("/users/log_in")) return;
+
   await page.fill('input[name="user[email]"]', account.email);
   await page.fill('input[name="user[password]"]', account.password);
   await page.getByRole("button", { name: "Log in" }).click();
@@ -61,6 +66,13 @@ async function versionIdFor(page, versionName) {
   return versionId;
 }
 
+// The page is drawn by the server before its socket joins, and a tab or link
+// clicked in that gap is followed as a plain link and reloads the page. A
+// journey that interacts waits for the join first.
+async function waitForLiveConnected(page) {
+  await page.waitForSelector("[data-phx-main].phx-connected", { timeout: 15000 });
+}
+
 async function openAlerts(page, account = EDITOR) {
   await logIn(page, account);
   const versionId = await versionIdFor(page, ALERTS_VERSION);
@@ -69,6 +81,7 @@ async function openAlerts(page, account = EDITOR) {
     "#alerts-first-use, #alerts-list, #alerts-tab-empty-current",
     { timeout: 15000 },
   );
+  await waitForLiveConnected(page);
   return versionId;
 }
 
@@ -77,6 +90,7 @@ async function openFirstUseAlerts(page) {
   const versionId = await versionIdFor(page, "Browser Pathways Version");
   await page.goto(`/gtfs/${versionId}/alerts`);
   await page.waitForSelector("#alerts-first-use", { timeout: 15000 });
+  await waitForLiveConnected(page);
   return versionId;
 }
 
@@ -158,9 +172,14 @@ test.describe("alerts list", () => {
 
       if (currentCount > 0) {
         await expect(page.locator("#alerts-list")).toBeVisible();
-        await expect(
-          page.locator("#alerts tbody tr[id^='alert-row-']").first(),
-        ).toBeVisible();
+
+        // The table is the wide layout and the cards are the narrow one; each
+        // holds the same rows, so the one that is drawn has to show them.
+        const rows =
+          viewport === NARROW
+            ? page.locator("#alerts-mobile li[id^='alert-card-']")
+            : page.locator("#alerts tr[id^='alert-row-']");
+        await expect(rows.first()).toBeVisible();
       }
 
       // The publication states and actions this package removed must not appear.
@@ -263,6 +282,7 @@ async function openNewAlert(page) {
   const versionId = await editorVersionId(page);
   await page.goto(`/gtfs/${versionId}/alerts/new`);
   await page.waitForSelector("#alert-question", { timeout: 15000 });
+  await waitForLiveConnected(page);
   return versionId;
 }
 
@@ -279,6 +299,7 @@ async function openCreatedAlert(page, step) {
   if (step) {
     await page.goto(`${url}?mode=form&step=${step}`);
     await page.waitForSelector("#alert-question", { timeout: 15000 });
+    await waitForLiveConnected(page);
   }
 
   return url;
@@ -447,7 +468,7 @@ test.describe("alert editor shell", () => {
       "true",
     );
     await expect(page.locator("#delete-alert-dialog")).toContainText(
-      "This cannot be undone",
+      "This can't be undone",
     );
 
     await page.screenshot({
@@ -507,10 +528,12 @@ async function openMessageAlert(page) {
   }
 
   await page.waitForSelector("#alert-question", { timeout: 15_000 });
+  await waitForLiveConnected(page);
 
   const url = page.url().split("?")[0];
   await page.goto(`${url}?mode=form&step=message`);
-  await page.waitForSelector("#alert_message_header", { timeout: 15_000 });
+  await page.waitForSelector("#message-header", { timeout: 15_000 });
+  await waitForLiveConnected(page);
 
   return url;
 }
@@ -524,10 +547,13 @@ test.describe("alert autosave", () => {
     await page.setViewportSize(DESKTOP);
     await openMessageAlert(page);
 
-    const header = page.locator("#alert_message_header");
-    await header.fill("Route 12 detour: Harbor Hospital stop not served");
+    const header = page.locator("#message-header");
 
-    // "Saved" only after the server acknowledged, never optimistically.
+    // The row's revision moving is the server's acknowledgement. The bar reads
+    // Saved before the change is even sent, so it cannot be what this waits on.
+    await settledWrite(page, () =>
+      header.fill("Route 12 detour: Harbor Hospital stop not served"),
+    );
     await expect(page.locator("#alert-save-status")).toHaveText("Saved");
     await expect(page.locator("#alert-save-retry")).toHaveCount(0);
     await expect(page.locator("#alert-save-close")).toBeVisible();
@@ -535,8 +561,8 @@ test.describe("alert autosave", () => {
     // The same URL after a reload is the same question with the same answer:
     // the draft is on the server, not in the browser.
     await page.reload();
-    await page.waitForSelector("#alert_message_header", { timeout: 15000 });
-    await expect(page.locator("#alert_message_header")).toHaveValue(
+    await page.waitForSelector("#message-header", { timeout: 15000 });
+    await expect(page.locator("#message-header")).toHaveValue(
       "Route 12 detour: Harbor Hospital stop not served",
     );
 
@@ -547,18 +573,47 @@ test.describe("alert autosave", () => {
     });
   });
 
-  test("typing then reloading within 2 s still shows the typed header @autosave", async ({
+  test("the bar reads Saving… while a change is in flight @autosave", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    await openMessageAlert(page);
+
+    const status = page.locator("#alert-save-status");
+    const covering = () =>
+      status.evaluate((el) => getComputedStyle(el, "::after").content);
+
+    // The server answers a change in one render, so it never sends Saving…. The
+    // browser marks the form with phx-change-loading from the moment a change is
+    // sent until its reply is applied, and the bar covers its own text for that
+    // time. The class is set by hand here because a real change is too quick to
+    // catch; what this proves is that the bar, which sits outside the form,
+    // reads the form's state.
+    await page.evaluate(() =>
+      document.querySelector("#alert-form").classList.add("phx-change-loading"),
+    );
+    await expect.poll(covering).toBe('"Saving…"');
+
+    await page.evaluate(() =>
+      document.querySelector("#alert-form").classList.remove("phx-change-loading"),
+    );
+    await expect.poll(covering).not.toContain("Saving");
+    await expect(status).toHaveText("Saved");
+  });
+
+  test("typing then reloading as soon as the write lands still shows the typed header @autosave", async ({
     page,
   }) => {
     await page.setViewportSize(DESKTOP);
     await openMessageAlert(page);
 
-    await page.locator("#alert_message_header").fill("Reloaded quickly header");
-    await page.waitForTimeout(2000);
+    // A reload before the change event is sent (the field debounces 450 ms)
+    // would lose the typing, so the reload waits for the revision to move.
+    await settledWrite(page, () =>
+      page.locator("#message-header").fill("Reloaded quickly header"),
+    );
     await page.reload();
-    await page.waitForSelector("#alert_message_header", { timeout: 15000 });
+    await page.waitForSelector("#message-header", { timeout: 15000 });
 
-    await expect(page.locator("#alert_message_header")).toHaveValue(
+    await expect(page.locator("#message-header")).toHaveValue(
       "Reloaded quickly header",
     );
   });
@@ -569,15 +624,16 @@ test.describe("alert autosave", () => {
     await page.setViewportSize(DESKTOP);
     await openMessageAlert(page);
 
-    const tooLong = "a".repeat(121);
-    await page.locator("#alert_message_header").fill(tooLong);
+    // The header field stops at 120 characters in the browser, so the server's
+    // refusal is reached through the address field, which accepts only http and
+    // https.
+    const notAWebAddress = "ftp://example.test/notice";
+    await page.locator("#message-url").fill(notAWebAddress);
 
     await expect(page.locator("#alert-save-status")).toHaveText("Not saved.");
     await expect(page.locator("#alert-save-retry")).toBeVisible();
-    await expect(page.locator("#alert_message_header")).toHaveValue(tooLong);
-    await expect(page.locator("#alert_message_header-error")).toContainText(
-      "120 character",
-    );
+    await expect(page.locator("#message-url")).toHaveValue(notAWebAddress);
+    await expect(page.locator("#message-url-error")).toBeVisible();
 
     await page.screenshot({
       path: capturePath(testInfo, "autosave-failure-1440.png"),
@@ -585,9 +641,10 @@ test.describe("alert autosave", () => {
     });
     await captureAutosaveReference(page, testInfo, "form-message", "1440");
 
-    // Fixing the header saves it, which is what Retry's presence promised.
-    await page.locator("#alert_message_header").fill("Short enough now");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    // Fixing the address saves it, which is what Retry's presence promised.
+    await settledWrite(page, () =>
+      page.locator("#message-url").fill("https://example.test/notice"),
+    );
     await expect(page.locator("#alert-save-retry")).toHaveCount(0);
   });
 
@@ -601,12 +658,14 @@ test.describe("alert autosave", () => {
     // which is the interleaving AC-16 describes.
     const other = await page.context().newPage();
     await other.goto(`${url}?mode=form&step=message`);
-    await other.waitForSelector("#alert_message_header", { timeout: 15000 });
-    await other.locator("#alert_message_header").fill("Saved in the other tab");
-    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await other.waitForSelector("#message-header", { timeout: 15000 });
+    await waitForLiveConnected(other);
+    await settledWrite(other, () =>
+      other.locator("#message-header").fill("Saved in the other tab"),
+    );
     await other.close();
 
-    await page.locator("#alert_message_header").fill("Typed in this tab");
+    await page.locator("#message-header").fill("Typed in this tab");
     await expect(page.locator("#alert-conflict")).toBeVisible();
     await expect(page.locator("#alert-conflict")).toContainText(
       "another tab or by another editor",
@@ -624,7 +683,7 @@ test.describe("alert autosave", () => {
     // Load latest takes the other side of the conflict.
     await page.locator("#conflict-load-latest").click();
     await expect(page.locator("#alert-conflict")).toHaveCount(0);
-    await expect(page.locator("#alert_message_header")).toHaveValue(
+    await expect(page.locator("#message-header")).toHaveValue(
       "Saved in the other tab",
     );
   });
@@ -637,12 +696,14 @@ test.describe("alert autosave", () => {
 
     const other = await page.context().newPage();
     await other.goto(`${url}?mode=form&step=message`);
-    await other.waitForSelector("#alert_message_header", { timeout: 15000 });
-    await other.locator("#alert_message_header").fill("Saved elsewhere");
-    await expect(other.locator("#alert-save-status")).toHaveText("Saved");
+    await other.waitForSelector("#message-header", { timeout: 15000 });
+    await waitForLiveConnected(other);
+    await settledWrite(other, () =>
+      other.locator("#message-header").fill("Saved elsewhere"),
+    );
     await other.close();
 
-    await page.locator("#alert_message_header").fill("Typed here at 320 px");
+    await page.locator("#message-header").fill("Typed here at 320 px");
     await expect(page.locator("#alert-conflict")).toBeVisible();
     expect(await fitsViewport(page)).toBe(true);
 
@@ -652,7 +713,7 @@ test.describe("alert autosave", () => {
     });
 
     await page.locator("#conflict-load-latest").click();
-    await expect(page.locator("#alert_message_header")).toHaveValue(
+    await expect(page.locator("#message-header")).toHaveValue(
       "Saved elsewhere",
     );
     await page.screenshot({
@@ -667,7 +728,7 @@ test.describe("alert autosave", () => {
     await page.setViewportSize(DESKTOP);
     await openMessageAlert(page);
 
-    await page.locator("#alert_message_header").fill("Typed then closed");
+    await page.locator("#message-header").fill("Typed then closed");
     await page.locator("#alert-save-close").click();
 
     await page.waitForURL(/\/alerts(\?|$)/, { timeout: 15000 });
@@ -989,12 +1050,14 @@ test.describe("alert stop questions", () => {
     await page
       .locator("#alert-stretch-from")
       .selectOption({ label: "N Coast Hwy & NE 6th St" });
-    await page
-      .locator("#alert-stretch-to")
-      .selectOption({ label: "N Coast Hwy & NE 20th St" });
-    await page.locator("#alert-stretch-select").click();
+    // Both ends are fields of the autosave form, so the second one is what
+    // writes the stretch: the first alone names half of it.
+    await settledWrite(page, () =>
+      page
+        .locator("#alert-stretch-to")
+        .selectOption({ label: "N Coast Hwy & NE 20th St" }),
+    );
 
-    await expect(page.locator("#alert-stop-AL_CST6-shown")).toHaveCount(0);
     const pressed = page.locator("#alert-stops-list button[aria-pressed='true']");
     await expect(pressed).toHaveCount(3);
     await expect(pressed.first()).toContainText("N Coast Hwy & NE 6th St");
@@ -1050,6 +1113,11 @@ test.describe("alert stop questions", () => {
       .filter({ hasText: "N Coast Hwy & NE 20th St" })
       .click();
     await page.locator("#alert-stops-continue").click();
+
+    // Route 50 also stops at NE 20th St, so the shared-stop question comes
+    // first; the boarding alternative follows the answer.
+    await page.waitForSelector("#alert-shared", { timeout: 15_000 });
+    await page.locator("#alert-shared button[id$='-no']").first().click();
     await page.waitForSelector("#alert-boarding", { timeout: 15_000 });
 
     // The combobox is a search: typing offers stops and stores nothing, which is
@@ -1069,21 +1137,22 @@ test.describe("alert stop questions", () => {
     // Escape closes the list without changing the answer...
     await search.press("Escape");
     await expect(page.locator("#alert-boarding-stop ul")).toHaveCount(0);
-    await expect(page.locator("#alert-save-status")).not.toHaveText("Saving…");
 
     // ...and the keyboard picks from the same list a pointer does.
-    await search.press("ArrowDown");
-    await search.press("Enter");
+    await settledWrite(page, async () => {
+      await search.press("ArrowDown");
+      await search.press("Enter");
+    });
     await expect(page.locator("#alternative_stop_id")).not.toHaveValue("");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     // Written directions replace the chosen stop rather than joining it.
-    await page.locator("#write-directions").click();
+    await settledWrite(page, () => page.locator("#write-directions").click());
     await page.waitForSelector("#write-directions-field", { timeout: 15_000 });
-    await page
-      .locator("#write-directions-field")
-      .fill("Board at the temporary stop on NE Main St.");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(page, () =>
+      page
+        .locator("#write-directions-field")
+        .fill("Board at the temporary stop on NE Main St."),
+    );
     await page.screenshot({
       path: capturePath(testInfo, "stops-boarding-search-1440.png"),
       fullPage: false,
@@ -1208,12 +1277,10 @@ test.describe("alert cancelled departures", () => {
       /\d{1,2}:\d{2} (AM|PM) to Lincoln City/,
     );
 
-    // The seeded night trip leaves at 24:40, so on weekday service its own row
-    // says the departure is the next day rather than reading as 12:40 AM.
-    const weekday = new Date(`${first_date}T00:00:00Z`).getUTCDay();
-    if (weekday >= 1 && weekday <= 5) {
-      await expect(page.locator("#alert-departures")).toContainText("(next day)");
-    }
+    // The seeded night trip leaves at 24:40 on weekday and on weekend service,
+    // so whatever day this runs on, its own row says the departure is the next
+    // day rather than reading as 12:40 AM.
+    await expect(first_list).toContainText("12:40 AM (next day)");
 
     await page.screenshot({
       path: capturePath(testInfo, "departures-open-1440.png"),
@@ -1228,16 +1295,29 @@ test.describe("alert cancelled departures", () => {
     // Each chosen departure writes at once, so the pair is on the row before
     // Continue is pressed.
     const chosen = second_list.locator("input[type='checkbox']");
-    await chosen.nth(0).click();
+    await settledWrite(page, () => chosen.nth(0).click());
     await expect(chosen.nth(0)).toBeChecked();
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
-    await chosen.nth(1).click();
+    await settledWrite(page, () => chosen.nth(1).click());
     await expect(chosen.nth(1)).toBeChecked();
 
     // The same departure on the first date is a separate pair, because a trip
     // repeats across its service dates.
-    await first_list.locator("input[type='checkbox']").first().click();
+    await settledWrite(page, () =>
+      first_list.locator("input[type='checkbox']").first().click(),
+    );
     await expect(first_list.locator("input[type='checkbox']").first()).toBeChecked();
+
+    // The three pairs are on the row, not only in the browser: a reload draws the
+    // two dates again from what was stored, each with its own choices.
+    await page.reload();
+    await page.waitForSelector("#alert-departures", { timeout: 15_000 });
+    await expect(page.locator("input[id^='alert-departure-']:checked")).toHaveCount(3);
+    await expect(
+      page.locator(`#alert-departure-list-${first_date} input:checked`),
+    ).toHaveCount(1);
+    await expect(
+      page.locator(`#alert-departure-list-${second_date} input:checked`),
+    ).toHaveCount(2);
 
     await page.screenshot({
       path: capturePath(testInfo, "departures-dated-1440.png"),
@@ -1260,16 +1340,18 @@ test.describe("alert cancelled departures", () => {
     const first_date = await firstDepartureDate(page);
     const second_date = await addDayAfter(page, first_date);
 
-    await page
-      .locator(`#alert-departure-list-${second_date} input[type='checkbox']`)
-      .first()
-      .click();
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+    await settledWrite(page, () =>
+      page
+        .locator(`#alert-departure-list-${second_date} input[type='checkbox']`)
+        .first()
+        .click(),
+    );
 
-    await page.locator(`#alert-remove-date-${second_date}`).click();
+    await settledWrite(page, () =>
+      page.locator(`#alert-remove-date-${second_date}`).click(),
+    );
     await expect(page.locator(`#alert-departures-${second_date}`)).toHaveCount(0);
     await expect(page.locator(`#alert-departures-${first_date}`)).toBeVisible();
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     await page.screenshot({
       path: capturePath(testInfo, "departures-removed-1440.png"),
@@ -1293,9 +1375,8 @@ test.describe("alert cancelled departures", () => {
     // departure is stored the same way a pointer click stores it.
     await first_box.focus();
     await expect(first_box).toBeFocused();
-    await page.keyboard.press("Space");
+    await settledWrite(page, () => page.keyboard.press("Space"));
     await expect(first_box).toBeChecked();
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
     // The narrow viewport is shorter than the checklist, so this capture is
     // the whole page: a cropped one would show the heading and no departures.
@@ -1462,10 +1543,13 @@ test.describe("alert timing", () => {
     );
     await expect(page.locator("#alert-timing-occurrence-2026-10-10")).toHaveCount(0);
 
-    // Riders are told from the later of today and a week before the first date,
-    // and the field says so before anything is stored.
-    const notice = await page.locator("#timing-notice-on").inputValue();
-    expect(notice).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Riders are told from the later of today and a week before the first date.
+    // The field stays empty until the editor types a date, and the default is
+    // named beside it, so an unrelated edit never stores it.
+    await expect(page.locator("#timing-notice-on")).toHaveValue("");
+    await expect(page.locator("#timing-notice-on-help")).toContainText(
+      /Left empty, riders are told from [A-Z][a-z]{2} \d{1,2}\./,
+    );
 
     await page.screenshot({
       path: capturePath(testInfo, "timing-planned-1440.png"),
@@ -1513,16 +1597,19 @@ test.describe("alert timing", () => {
     const monday = page.locator("#timing-weekday-1");
     await monday.focus();
     await expect(monday).toBeFocused();
-    await page.keyboard.press("Enter");
+    await settledWrite(page, () => page.keyboard.press("Enter"));
     await expect(monday).toHaveAttribute("aria-pressed", "true");
-    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
 
-    await page.keyboard.press("Space");
+    await settledWrite(page, () => page.keyboard.press("Space"));
     await expect(monday).toHaveAttribute("aria-pressed", "false");
 
     await chooseWeekdays(page);
     await page.locator("#timing-first-date").fill("2026-10-05");
     await page.locator("#timing-weeks").fill("1");
+
+    // The preview needs the time of day, or an all-day answer, before it can
+    // list the dates.
+    await settledWrite(page, () => page.locator("#timing-all-day").check());
 
     await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(5);
 
@@ -1534,8 +1621,7 @@ test.describe("alert timing", () => {
 
     // Tab reaches Add date and Enter presses it. The Monday named is one the
     // pattern already covers, so it is removed rather than added.
-    await page.keyboard.press("Tab");
-    await expect(page.locator("#add-timing-date")).toBeFocused();
+    await tabTo(page, "#add-timing-date");
     await page.keyboard.press("Enter");
 
     await expect(page.locator("#alert-timing-removed-2026-10-05")).toBeVisible();
@@ -2079,9 +2165,13 @@ async function settleScriptDrawer(page) {
       const element = document.querySelector("#script-drawer");
       if (!element) return false;
 
+      // The panel sits against the edge of the page's own content box. A
+      // vertical scrollbar (15 px at 1440) takes its width out of
+      // `clientWidth` and leaves it in `innerWidth`, so the edge is read from
+      // `clientWidth`.
+      const edge = document.documentElement.clientWidth;
       const rect = element.getBoundingClientRect();
-      const settled =
-        Math.abs(rect.right - window.innerWidth) <= 2 && rect.left < window.innerWidth;
+      const settled = Math.abs(rect.right - edge) <= 2 && rect.left < edge;
       const stillMoving = element
         .getAnimations()
         .some((animation) => animation.playState === "running");
@@ -2337,6 +2427,9 @@ async function runRoute12Interview(page) {
 
   await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
   await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+  // The example button is a LiveView event, and a click before the socket joins
+  // is dropped.
+  await waitForLiveConnected(page);
 
   await page.locator("#alert-assistant-example-1").click();
   await expect(page.locator("#alert-assistant-note")).toHaveValue(/Route 12 is detouring/);
@@ -2367,6 +2460,7 @@ test.describe("alert editor assistant", () => {
       await page.setViewportSize(viewport);
       await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
       await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+      await waitForLiveConnected(page);
 
       await expect(page.locator("#alert-editor")).toBeVisible();
       await expect(page.locator("#alert-mode")).toBeVisible();
@@ -2413,6 +2507,7 @@ test.describe("alert editor assistant", () => {
     await page.setViewportSize(DESKTOP);
     await page.goto(`/gtfs/${versionId}/alerts/new?mode=assistant`);
     await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
+    await waitForLiveConnected(page);
 
     await page.locator("#alert-assistant-example-1").click();
 
@@ -2473,6 +2568,7 @@ test.describe("alert editor assistant", () => {
     await page.locator('label[for="alert-mode-control-option-form"]').click();
     await page.waitForURL(/mode=form/, { timeout: 15_000 });
     await page.waitForSelector("#alert-question", { timeout: 15_000 });
+    await waitForLiveConnected(page);
 
     await page.goto(`${url}?mode=form&step=situation`);
     await page.waitForSelector("#situation-detour", { timeout: 15_000 });
@@ -2482,6 +2578,7 @@ test.describe("alert editor assistant", () => {
     // visible after the same search a reader would type.
     await page.goto(`${url}?mode=form&step=routes`);
     await page.waitForSelector("#alert-route-search", { timeout: 15_000 });
+    await waitForLiveConnected(page);
     await page.locator("#alert-route-search").pressSequentially("Route 1");
     await page.waitForSelector("#alert-route-options button[aria-pressed='true']", {
       timeout: 15_000,
@@ -2535,8 +2632,23 @@ async function openJourneyAlert(page) {
   const versionId = await editorVersionId(page);
   await page.goto(`/gtfs/${versionId}/alerts/new?mode=form`);
   await page.waitForSelector("#alert-question", { timeout: 15_000 });
+  await waitForLiveConnected(page);
   await waitForEditorMounted(page);
   return versionId;
+}
+
+// Tab until the control has the focus. A date input is several fields and a
+// calendar button, so how many Tabs lead out of it is the browser's business;
+// what the journey asserts is that the keyboard gets there.
+async function tabTo(page, selector, limit = 5) {
+  const control = page.locator(selector);
+
+  for (let pressed = 0; pressed < limit; pressed += 1) {
+    await page.keyboard.press("Tab");
+    if (await control.evaluate((el) => el === document.activeElement)) return;
+  }
+
+  await expect(control).toBeFocused();
 }
 
 // A card or a button is a real button, so Enter on the focused one is the
@@ -2714,8 +2826,10 @@ function alertIdFrom(page) {
 test.describe("alert authoring journeys", () => {
   // Each journey walks a whole situation's sequence from the first question to
   // the review, and one of them walks it twice at two widths, so these carry
-  // more than a single question's budget.
-  test.describe.configure({ timeout: 240_000 });
+  // more than a single question's budget. The budget is what a passing journey
+  // needs, so a stuck one fails fast: eight journeys at 240 s could outlast the
+  // run's own deadline and end it by killing the server, which reads as a crash.
+  test.describe.configure({ timeout: 120_000 });
 
   test("an urgent Route 1 delay with a check-in completes and lists under Current @journey", async ({
     page,
@@ -2972,8 +3086,7 @@ test.describe("alert authoring journeys", () => {
     );
 
     await typeDate(page, "#timing-date", "2026-10-09");
-    await page.keyboard.press("Tab");
-    await expect(page.locator("#add-timing-date")).toBeFocused();
+    await tabTo(page, "#add-timing-date");
     await page.keyboard.press("Enter");
 
     // Nine nights are what the pattern now covers, listed one date at a time.
@@ -3022,7 +3135,7 @@ test.describe("alert authoring journeys", () => {
     // alternatives it already asks for (AC-18).
     await page.waitForSelector("#alert-alternative", { timeout: 15_000 });
     await settledWrite(page, async () => {
-      const facility = page.locator("#alert_scope_facility");
+      const facility = page.locator("input[name='alert[scope][facility]']");
       await facility.focus();
       await facility.pressSequentially("North entrance ramp");
     });
@@ -3077,14 +3190,12 @@ test.describe("alert authoring journeys", () => {
 
     const url = page.url().split("?")[0];
     const header = page.locator("#message-header");
-    await settledWrite(page, async () => {
-      await header.focus();
-      await header.pressSequentially("Route 1 delayed by a stalled truck");
-    });
+    // Arriving on the message step generated wording, so the header is replaced
+    // rather than typed after it.
+    await settledWrite(page, () => header.fill("Route 1 delayed by a stalled truck"));
 
-    // A reload inside the browser's own recovery window is the same question
-    // with the same answer, because the draft is on the server (AC-16).
-    await page.waitForTimeout(2000);
+    // A reload once the write has landed is the same question with the same
+    // answer, because the draft is on the server (AC-16).
     await page.reload();
     await waitForEditorMounted(page);
     await expect(page.locator("#message-header")).toHaveValue(
@@ -3096,15 +3207,12 @@ test.describe("alert authoring journeys", () => {
     const other = await page.context().newPage();
     await other.goto(`${url}?mode=form&step=message`);
     await other.waitForSelector("#message-header", { timeout: 15_000 });
+    await waitForLiveConnected(other);
     const other_header = other.locator("#message-header");
-    await settledWrite(other, async () => {
-      await other_header.focus();
-      await other_header.pressSequentially("Saved in the other tab");
-    });
+    await settledWrite(other, () => other_header.fill("Saved in the other tab"));
     await other.close();
 
-    await header.focus();
-    await header.pressSequentially("Typed in this tab");
+    await header.fill("Typed in this tab");
     await expect(page.locator("#alert-conflict")).toBeVisible();
     await expect(page.locator("#alert-conflict")).toContainText(
       "another tab or by another editor",
@@ -3141,6 +3249,10 @@ test.describe("alert authoring journeys", () => {
     await assertFits();
 
     await pressChoice(page, "#situation-stop_moved");
+    await page.waitForSelector("#mode-3", { timeout: 15_000 });
+    await assertFits();
+
+    await pressChoice(page, "#mode-3");
     await page.waitForSelector("#alert-place", { timeout: 15_000 });
     await assertFits();
 

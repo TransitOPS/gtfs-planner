@@ -81,6 +81,25 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       refute has_element?(view, "#alert-departure-2026-10-10-#{schedule.late.id}")
     end
 
+    test "adding a date keeps the date the question opened on", context do
+      schedule = schedule(context)
+      alert = cancelled_alert(context, schedule.route)
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=departures")
+
+      # With nothing named, the question offers the agency's own today.
+      today = context.audit |> Alerts.agency_now() |> NaiveDateTime.to_date()
+      later = Date.add(today, 3)
+
+      assert has_element?(view, "#alert-departures-#{Date.to_iso8601(today)}")
+
+      add_date(view, later)
+
+      assert has_element?(view, "#alert-departures-#{Date.to_iso8601(today)}")
+      assert has_element?(view, "#alert-departures-#{Date.to_iso8601(later)}")
+    end
+
     test "a date the route does not run says so", context do
       schedule = schedule(context)
       alert = cancelled_alert(context, schedule.route)

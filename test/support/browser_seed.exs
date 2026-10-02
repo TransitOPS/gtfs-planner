@@ -11309,6 +11309,8 @@ case Accounts.register_first_admin(%{
        "Lincoln City"},
       {alerts_route_1, route_1_outbound, "AL-R1-T8", "17:30:00", "ALERTS_WEEKEND",
        "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T11", "24:40:00", "ALERTS_WEEKEND",
+       "Lincoln City"},
       {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY", "Newport"},
       {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY", "Newport"},
       {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY", "Hospital"},

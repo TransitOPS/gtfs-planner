@@ -667,6 +667,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert view |> element("#write-directions-field") |> render() =~ "Board on the corner."
     end
 
+    test "written directions are saved from the whole form, empty combobox included", context do
+      %{depot: depot} = stops(context)
+      _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "stop_moved",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=alternative")
+
+      view |> element("#write-directions") |> render_click()
+      assert {:ok, opened} = Alerts.get_alert(context.audit, alert.id)
+
+      # The browser sends the combobox's hidden field with every change, empty
+      # when nothing was picked, beside the field that changed.
+      render_change(view, "autosave", %{
+        "alert" => %{
+          "revision" => Integer.to_string(opened.revision),
+          "scope" => %{"alternative_directions" => "Board at the temporary stop."}
+        },
+        "alternative" => %{"stop_id" => "", "stop_id_text_input" => ""}
+      })
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.alternative_directions == "Board at the temporary stop."
+      assert saved.revision == opened.revision + 1
+    end
+
     test "a moved stop cannot advance without a stop or written directions", context do
       %{depot: depot} = stops(context)
       _coast_route = pattern(context, "R1", [{"S_DEPOT", 0}])
