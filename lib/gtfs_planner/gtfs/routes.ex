@@ -1422,7 +1422,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
         retry_command_transaction(transaction, attempts)
 
       {:error, reason} ->
-        if retryable_conflict?(reason),
+        if Repo.retryable_conflict?(reason),
           do: retry_command_transaction(transaction, attempts),
           else: {:error, reason}
     end
@@ -1434,28 +1434,13 @@ defmodule GtfsPlanner.Gtfs.Routes do
   defp retry_command_transaction(_transaction, _attempts), do: {:error, :busy}
 
   defp run_apply_transaction(transaction) do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    ).run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable_conflict?(error),
+      if Repo.retryable_conflict?(error),
         do: {:retryable_conflict, error},
         else: reraise(error, __STACKTRACE__)
   end
-
-  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [
-              :serialization_failure,
-              "40001",
-              :deadlock_detected,
-              "40P01"
-            ],
-       do: true
-
-  defp retryable_conflict?(_reason), do: false
 
   # --- comparison internals -----------------------------------------------
 

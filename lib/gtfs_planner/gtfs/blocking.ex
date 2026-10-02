@@ -177,7 +177,6 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The transaction boundary is retried as a whole three times, for a serialization
   # failure or a deadlock, before the command reports `:busy` (AC-14, INV-1).
   @write_attempts 3
-  @retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
 
   @type block :: %{
           summary: Summary.block_summary(),
@@ -4607,7 +4606,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   rescue
     error in [Postgrex.Error, Ecto.ConstraintError, DBConnection.ConnectionError] ->
       # A serialization failure or deadlock goes to the transaction retry instead.
-      if retryable?(error),
+      if Repo.retryable_conflict?(error),
         do: reraise(error, __STACKTRACE__),
         else: Repo.rollback({:audit_failed, error})
   end
@@ -4872,25 +4871,18 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp retry_write(reason, transaction, attempts) do
     cond do
-      not retryable?(reason) -> {:error, reason}
+      not Repo.retryable_conflict?(reason) -> {:error, reason}
       attempts > 1 -> run_write(transaction, attempts - 1)
       true -> {:error, :busy}
     end
   end
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable?(error), do: {:error, error}, else: reraise(error, __STACKTRACE__)
+      if Repo.retryable_conflict?(error),
+        do: {:error, error},
+        else: reraise(error, __STACKTRACE__)
   end
-
-  defp write_transaction_module do
-    Application.get_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransaction.Repo)
-  end
-
-  defp retryable?(%Postgrex.Error{postgres: %{code: code}}) when code in @retryable_codes,
-    do: true
-
-  defp retryable?(_error), do: false
 end

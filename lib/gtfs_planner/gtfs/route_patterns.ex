@@ -1784,34 +1784,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp retry_serializable_write(_transaction, _attempts), do: {:error, :busy}
 
   defp retry_serializable_write_error(reason, transaction, attempts) do
-    if retryable_conflict?(reason),
+    if Repo.retryable_conflict?(reason),
       do: retry_serializable_write(transaction, attempts),
       else: {:error, reason}
   end
 
   defp run_apply_transaction(transaction) do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    ).run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error ->
-      if retryable_conflict?(error),
+      if Repo.retryable_conflict?(error),
         do: {:retryable_conflict, error},
         else: reraise(error, __STACKTRACE__)
   end
-
-  defp retryable_conflict?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [
-              :serialization_failure,
-              "40001",
-              :deadlock_detected,
-              "40P01"
-            ],
-       do: true
-
-  defp retryable_conflict?(_), do: false
 
   defp apply_review_transaction(pattern_id, operation, route_id, fingerprint, audit_context) do
     route = lock_published_route!(audit_context, route_id)

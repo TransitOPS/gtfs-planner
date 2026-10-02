@@ -2823,18 +2823,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   def apply_save(_, _, _, _, _), do: {:error, :invalid_input}
 
-  defp apply_transaction_runner do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
   defp apply_with_retries(pattern_id, draft_params, choices, fingerprint, audit_context, attempts) do
     result =
       try do
-        apply_transaction_runner().run(fn ->
+        ReviewedApplyTransaction.adapter().run(fn ->
           apply_transaction(pattern_id, draft_params, choices, fingerprint, audit_context)
         end)
       rescue
@@ -2912,9 +2904,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   # one of the four apply indexes, or as a stale optimistic lock on the
   # same lost race. Each retries with a fresh snapshot, where the
   # recomputed review surfaces the race as a conflict or stale review.
-  defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields}) do
+  defp apply_retryable?(%Postgrex.Error{postgres: %{code: code} = fields} = error) do
     cond do
-      code in [:serialization_failure, "40001", :deadlock_detected, "40P01"] ->
+      Repo.retryable_conflict?(error) ->
         true
 
       code in [:unique_violation, "23505"] ->

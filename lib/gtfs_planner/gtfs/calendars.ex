@@ -86,7 +86,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   @extension_field :approval_text
   @combination_attempts 3
   @combination_trip_batch 500
-  @combination_retryable_codes [:serialization_failure, "40001", :deadlock_detected, "40P01"]
   @type kind :: :weekly | :dates_only
   @type coverage_error :: %{service_id: String.t(), reason: :reversed_range}
   @type command ::
@@ -2382,7 +2381,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     end
   rescue
     error in [Postgrex.Error] ->
-      if retryable_combination_error?(error) do
+      if Repo.retryable_conflict?(error) do
         reraise error, __STACKTRACE__
       else
         Repo.rollback({:audit_failed, error})
@@ -2400,7 +2399,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   defp retry_combination(reason, normalized, review_fingerprint, audit_context, attempts) do
     cond do
-      not retryable_combination_error?(reason) ->
+      not Repo.retryable_conflict?(reason) ->
         {:error, reason}
 
       attempts > 1 ->
@@ -2410,12 +2409,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
         {:error, :busy}
     end
   end
-
-  defp retryable_combination_error?(%Postgrex.Error{postgres: %{code: code}})
-       when code in @combination_retryable_codes,
-       do: true
-
-  defp retryable_combination_error?(_reason), do: false
 
   # -- Review and apply ------------------------------------------------------
 

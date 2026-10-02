@@ -393,11 +393,29 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationApplyTest do
       scope = seed_moving_scope(context)
       token = review_token(context)
 
-      install_serialization_failure_once_trigger!()
+      install_conflict_once_trigger!("40001", "serialization")
 
       assert {:ok, result} = apply_combination(context, token)
 
-      drop_serialization_failure_once_trigger()
+      drop_conflict_once_trigger("serialization")
+
+      # The failed attempt wrote nothing that survived: the committed state is exactly one
+      # operation's, with one calendar log and one trip log sharing one operation UUID.
+      assert result.action == :combined
+      assert reload_trip(context, scope.trips.source.id).service_id == "DEST"
+      assert Enum.map(change_logs(context), & &1.entity_type) == ["calendar", "trip"]
+      assert_written_logs(context, result)
+    end
+
+    test "retries the whole transaction after one injected deadlock", context do
+      scope = seed_moving_scope(context)
+      token = review_token(context)
+
+      install_conflict_once_trigger!("40P01", "deadlock")
+
+      assert {:ok, result} = apply_combination(context, token)
+
+      drop_conflict_once_trigger("deadlock")
 
       # The failed attempt wrote nothing that survived: the committed state is exactly one
       # operation's, with one calendar log and one trip log sharing one operation UUID.
@@ -971,19 +989,19 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationApplyTest do
     Repo.query!("DROP FUNCTION IF EXISTS combination_trip_update_skip()")
   end
 
-  # A sequence advances outside the transaction, so this trigger raises a serialization failure for
-  # the first moving-trip update only: the whole transaction is retried and the second attempt
-  # commits. `nextval` is the one state a rolled-back transaction cannot undo, which is what makes
-  # the injection deterministic without a sleep or an arbitrary attempt counter.
-  defp install_serialization_failure_once_trigger! do
-    Repo.query!("DROP SEQUENCE IF EXISTS combination_serialization_probe_seq")
-    Repo.query!("CREATE SEQUENCE combination_serialization_probe_seq START 1")
+  # A sequence advances outside the transaction, so this trigger raises the named conflict for the
+  # first moving-trip update only: the whole transaction is retried and the second attempt commits.
+  # `nextval` is the one state a rolled-back transaction cannot undo, which is what makes the
+  # injection deterministic without a sleep or an arbitrary attempt counter.
+  defp install_conflict_once_trigger!(errcode, probe) do
+    Repo.query!("DROP SEQUENCE IF EXISTS combination_#{probe}_probe_seq")
+    Repo.query!("CREATE SEQUENCE combination_#{probe}_probe_seq START 1")
 
     Repo.query!("""
-    CREATE FUNCTION combination_serialization_probe() RETURNS trigger LANGUAGE plpgsql AS $$
+    CREATE FUNCTION combination_#{probe}_probe() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
-      IF nextval('combination_serialization_probe_seq') = 1 THEN
-        RAISE EXCEPTION 'injected serialization failure' USING ERRCODE = '40001';
+      IF nextval('combination_#{probe}_probe_seq') = 1 THEN
+        RAISE EXCEPTION 'injected #{probe} failure' USING ERRCODE = '#{errcode}';
       END IF;
       RETURN NEW;
     END;
@@ -991,17 +1009,17 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationApplyTest do
     """)
 
     Repo.query!("""
-    CREATE TRIGGER combination_serialization_probe_trigger
+    CREATE TRIGGER combination_#{probe}_probe_trigger
     BEFORE UPDATE ON trips
     FOR EACH ROW
     WHEN (NEW.service_id = 'DEST')
-    EXECUTE FUNCTION combination_serialization_probe();
+    EXECUTE FUNCTION combination_#{probe}_probe();
     """)
   end
 
-  defp drop_serialization_failure_once_trigger do
-    Repo.query!("DROP TRIGGER IF EXISTS combination_serialization_probe_trigger ON trips")
-    Repo.query!("DROP FUNCTION IF EXISTS combination_serialization_probe()")
-    Repo.query!("DROP SEQUENCE IF EXISTS combination_serialization_probe_seq")
+  defp drop_conflict_once_trigger(probe) do
+    Repo.query!("DROP TRIGGER IF EXISTS combination_#{probe}_probe_trigger ON trips")
+    Repo.query!("DROP FUNCTION IF EXISTS combination_#{probe}_probe()")
+    Repo.query!("DROP SEQUENCE IF EXISTS combination_#{probe}_probe_seq")
   end
 end

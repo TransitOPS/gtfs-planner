@@ -5,6 +5,7 @@ defmodule GtfsPlanner.GtfsTest do
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.JournalEntry
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal.Scope
@@ -3772,6 +3773,72 @@ defmodule GtfsPlanner.GtfsTest do
                )
 
       assert Agent.get(attempts, & &1) == 3
+    end
+
+    test "retries a raised PostgreSQL deadlock and applies the reviewed alignment once", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      level: level,
+      stop_level: stop_level,
+      audit_ctx: audit_ctx
+    } do
+      changed_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "AUDITED_DEADLOCK",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{x: 50, y: 40},
+          stop_lat: Decimal.new("1.0"),
+          stop_lon: Decimal.new("2.0")
+        })
+
+      {:ok, review} =
+        Gtfs.preview_stop_level_alignment(stop_level.id, reviewed_apply_attrs(), 1000, 800)
+
+      attrs = Map.put(reviewed_apply_attrs(), :fingerprint, review.fingerprint)
+
+      use_reviewed_apply_transaction_mock()
+      attempts = start_supervised!({Agent, fn -> 0 end})
+
+      expect(ReviewedApplyTransactionMock, :run, 2, fn transaction ->
+        attempt = Agent.get_and_update(attempts, fn count -> {count + 1, count + 1} end)
+
+        if attempt == 1 do
+          raise postgrex_error("40P01", "deadlock detected")
+        else
+          ReviewedApplyTransaction.Sandbox.run(transaction)
+        end
+      end)
+
+      assert {:ok,
+              %{
+                active_stop_level: updated_sl,
+                apply_result: %{
+                  updated_stop_count: 1,
+                  unchanged_count: 0,
+                  unplaced_count: 0
+                }
+              }} =
+               Gtfs.save_and_apply_stop_level_alignment(
+                 stop_level.id,
+                 attrs,
+                 1000,
+                 800,
+                 audit_ctx
+               )
+
+      assert Agent.get(attempts, & &1) == 2
+      assert updated_sl.id == stop_level.id
+      assert updated_sl.floorplan_center_lat == 40.7128
+
+      reloaded = Repo.get!(Stop, changed_stop.id)
+      assert_in_delta Decimal.to_float(reloaded.stop_lat), 40.7128, 1.0e-9
+      assert_in_delta Decimal.to_float(reloaded.stop_lon), -74.006, 1.0e-9
+
+      assert [_log] =
+               Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", changed_stop.id)
     end
 
     test "maps three raised PostgreSQL serialization failures to :busy", %{

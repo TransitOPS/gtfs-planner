@@ -3598,8 +3598,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   defp expand_repeat(_start_secs, _repeat), do: {:error, :invalid_input}
 
-  # Spec 01's bounded retry: a serialization failure or lock contention retries
-  # the whole transaction; every other failure is returned unchanged.
+  # Spec 01's bounded retry: a serialization failure or a deadlock retries the
+  # whole transaction; every other failure is returned unchanged.
   defp run_write(transaction, attempts \\ @write_attempts, options \\ []) do
     case run_write_transaction(transaction, options) do
       {:ok, result} ->
@@ -3619,7 +3619,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp retry_write(_transaction, _attempts, _options), do: {:error, :busy}
 
   defp retry_write_error(reason, transaction, attempts, options) do
-    if serialization_failure?(reason),
+    if Repo.retryable_conflict?(reason),
       do: retry_write(transaction, attempts, options),
       else: {:error, reason}
   end
@@ -3627,36 +3627,22 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp run_write_transaction(transaction, []), do: run_write_transaction(transaction)
 
   defp run_write_transaction(transaction, options) do
-    write_transaction_module().run(transaction, options)
+    ReviewedApplyTransaction.adapter().run(transaction, options)
   rescue
     error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
   end
 
   defp run_write_transaction(transaction) do
-    write_transaction_module().run(transaction)
+    ReviewedApplyTransaction.adapter().run(transaction)
   rescue
     error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
   end
 
   defp write_failure(error, stacktrace) do
-    if serialization_failure?(error),
+    if Repo.retryable_conflict?(error),
       do: {:serialization_failure, error},
       else: reraise(error, stacktrace)
   end
-
-  defp write_transaction_module do
-    Application.get_env(
-      :gtfs_planner,
-      :reviewed_apply_transaction,
-      ReviewedApplyTransaction.Repo
-    )
-  end
-
-  defp serialization_failure?(%Postgrex.Error{postgres: %{code: code}})
-       when code in [:serialization_failure, "40001"],
-       do: true
-
-  defp serialization_failure?(_error), do: false
 
   defp insert_trips!(route_id, starts, attrs, audit_context) do
     Authorization.lock_editor!(audit_context)
