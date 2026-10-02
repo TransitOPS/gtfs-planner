@@ -2264,13 +2264,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     <script :type={Phoenix.LiveView.ColocatedHook} name=".ImportErrorFocus">
       export default {
         mounted() {
+          // LiveView puts focus back on the control a submit came from right
+          // after the patch, so the move waits one frame to land last.
+          const focusLater = (el) => {
+            if (el) window.requestAnimationFrame(() => el.focus())
+          }
           this.handleEvent("focus_first_error", ({selector}) => {
-            const el = this.el.querySelector(selector)
-            if (el) el.focus()
+            focusLater(this.el.querySelector(selector))
           })
           this.handleEvent("focus_station_target", ({id}) => {
-            const el = this.el.querySelector(`#${CSS.escape(id)}`)
-            if (el) el.focus()
+            focusLater(this.el.querySelector(`#${CSS.escape(id)}`))
           })
           this.handleEvent("focus_gtfs_import_files", () => {
             const el = this.el.querySelector("#gtfs-import-upload-input input")
