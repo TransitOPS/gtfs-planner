@@ -1037,6 +1037,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
+  # A sequence closed or skipped after some of its rules were saved is not opened
+  # again from its first rule: that rule would read as a new one and be refused as
+  # a duplicate, with the rules after it out of reach. The helper is asked again
+  # for the rest instead. Simplification: only the entry opened last is remembered
+  # (`policy_origin`); an older partly saved card opened after another proposal
+  # reviews from its first rule, and Apply still refuses the saved rule. Tracking
+  # the saved rules per entry would close that.
+  defp open_policy_review(
+         %{assigns: %{policy_origin: %{entry_id: entry_id, saved: saved}}} = socket,
+         entry_id,
+         items,
+         _digest
+       )
+       when saved > 0 and saved < length(items),
+       do: assign(socket, :agent_notice, @prepared_edited_notice)
+
   # Every item of the sequence gets its own review against the catalog as it
   # stands now, so each confirmation the operator gives covers exactly one rule.
   defp open_policy_review(socket, entry_id, items, digest) do
@@ -1301,11 +1317,35 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # at all (AC-12).
   defp close_policy(socket) do
     socket
+    |> abandon_unreviewed()
     |> assign(:policy_open?, false)
     |> assign(:policy_pending?, false)
     |> assign(:policy_review, nil)
     |> assign(:policy_generation, socket.assigns.policy_generation + 1)
   end
+
+  # Closing leaves the rule on screen and the rules after it unapplied. When an
+  # earlier rule of the sequence was saved they are counted as not applied, the
+  # "Review the next rule." status of a drawer that is gone is replaced, and the
+  # entry is reported as partly saved, as when the rest is refused. With nothing
+  # saved the proposal is untouched and can be reviewed again from its first rule.
+  # A rule whose apply is still in flight has no known outcome, so it is not counted.
+  defp abandon_unreviewed(
+         %{assigns: %{policy_review: %{}, policy_pending?: false, policy_origin: %{saved: saved}}} =
+           socket
+       )
+       when saved > 0 do
+    counts = socket.assigns.policy_counts
+    unreviewed = 1 + length(socket.assigns.policy_remaining)
+
+    socket
+    |> assign(:policy_counts, %{counts | not_applied: counts.not_applied + unreviewed})
+    |> assign(:policy_remaining, [])
+    |> assign(:policy_status, "Closed. The rules already saved from this proposal stay saved.")
+    |> assign(:agent_notice, @prepared_edited_notice)
+  end
+
+  defp abandon_unreviewed(socket), do: socket
 
   # --- create editor ---------------------------------------------------------
 
