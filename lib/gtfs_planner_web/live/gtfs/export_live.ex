@@ -32,7 +32,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       check_panel: 1,
       closures_omitted: 1,
       comparison: 1,
+      comparison_difference_row: 1,
       comparison_results: 1,
+      comparison_structural_row: 1,
+      comparison_unknown_row: 1,
+      comparison_unresolved_row: 1,
       contents: 1,
       guide: 1,
       operations_note: 1,
@@ -145,7 +149,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:comparison_inspected, nil)
      |> assign(:comparison_page, comparison_page_defaults())
      |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
-     |> assign(:comparison_lists, empty_comparison_lists())
      |> configure_comparison_streams()
      |> stream(:comparison_differences, [])
      |> stream(:comparison_structural, [])
@@ -892,24 +895,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       :comparison_true_totals,
       Map.put(socket.assigns.comparison_true_totals, collection, true_total)
     )
-    |> assign(
-      :comparison_lists,
-      Map.put(
-        Map.get(socket.assigns, :comparison_lists) || empty_comparison_lists(),
-        collection,
-        Enum.map(rows, &{comparison_row_id(collection, &1), &1})
-      )
-    )
     |> stream(collection, rows, reset: true)
   end
-
-  # A stream's DOM id is computed inside the stream, and a stream may only be
-  # consumed by a for comprehension in the template that owns it. The page's
-  # render hands the same rows to the results component as `{dom_id, row}` pairs
-  # built by that same id function, so the rendered ids are exactly the stream's
-  # own and a row is never addressed by one identity here and another there.
-  defp empty_comparison_lists,
-    do: Map.new(@comparison_collections, &{&1, []})
 
   # A page is a slice of the immutable result's own already-stable list. The
   # true total is the whole collection's length, computed from the same result,
@@ -1318,8 +1305,52 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   inspected={@comparison_inspected}
                   page={@comparison_page}
                   true_totals={@comparison_true_totals}
-                  lists={@comparison_lists}
-                />
+                >
+                  <:differences_list>
+                    <div id="comparison-rows" phx-update="stream" class="divide-y divide-subtle">
+                      <.comparison_difference_row
+                        :for={{dom_id, change} <- @streams.comparison_differences}
+                        dom_id={dom_id}
+                        change={change}
+                      />
+                    </div>
+                  </:differences_list>
+                  <:structural_list>
+                    <div
+                      id="comparison-structural-rows"
+                      phx-update="stream"
+                      class="divide-y divide-subtle"
+                    >
+                      <.comparison_structural_row
+                        :for={{dom_id, change} <- @streams.comparison_structural}
+                        dom_id={dom_id}
+                        change={change}
+                      />
+                    </div>
+                  </:structural_list>
+                  <:unresolved_list>
+                    <div
+                      id="comparison-unresolved-rows"
+                      phx-update="stream"
+                      class="divide-y divide-subtle"
+                    >
+                      <.comparison_unresolved_row
+                        :for={{dom_id, entry} <- @streams.comparison_unresolved}
+                        dom_id={dom_id}
+                        entry={entry}
+                      />
+                    </div>
+                  </:unresolved_list>
+                  <:unknowns_list>
+                    <div id="comparison-unknowns" phx-update="stream" class="divide-y divide-subtle">
+                      <.comparison_unknown_row
+                        :for={{dom_id, unknown} <- @streams.comparison_unknowns}
+                        dom_id={dom_id}
+                        unknown={unknown}
+                      />
+                    </div>
+                  </:unknowns_list>
+                </.comparison_results>
 
                 <.guide
                   export_type={@export_type}

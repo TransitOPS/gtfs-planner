@@ -1345,7 +1345,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp chosen_label(%{version_name: name} = row) when is_binary(name) and name != "",
     do: "#{name} (exported #{format_timestamp(row.created_at)})"
 
-  defp chosen_label(_row), do: "the other export"
+  # A run that recorded no version name still names itself by what it is and
+  # when it was exported, so the finished band never reads "the other export"
+  # twice and leaves the reader with no way to tell the two files apart.
+  defp chosen_label(%{created_at: created_at}) when not is_nil(created_at),
+    do: "the export made #{format_timestamp(created_at)}"
+
+  defp chosen_label(_row), do: "an export with no recorded time"
 
   @doc """
   What the completed comparison found: the two files' identities, the shared
@@ -1370,9 +1376,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :page, :map, required: true
   attr :true_totals, :map, required: true
 
-  attr :lists, :map,
-    required: true,
-    doc: "one `{dom_id, row}` page per collection, in the page's own stream order"
+  # Each list is passed in as a slot because only the template that owns a
+  # stream may iterate it. A stream consumed anywhere else renders its first
+  # page and then stops pruning, so a narrowed scope would leave the full
+  # comparison's rows on the page.
+  slot :differences_list, required: true
+  slot :structural_list, required: true
+  slot :unresolved_list, required: true
+  slot :unknowns_list, required: true
 
   def comparison_results(assigns) do
     assigns =
@@ -1438,6 +1449,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               </dl>
               <p class="mt-1.5 text-[13px] text-muted">{measured_units_label(@totals)}</p>
             <% end %>
+
+            <p
+              :if={@true_totals.comparison_unknowns > 0}
+              id="comparison-totals-unknown-coverage"
+              class="mt-1.5 text-[13px] leading-relaxed text-muted"
+            >
+              {@true_totals.comparison_unknowns} row{if @true_totals.comparison_unknowns == 1,
+                do: "",
+                else: "s"} could not be read from the bytes admitted above, so nothing above states
+              anything about {if @true_totals.comparison_unknowns == 1, do: "it", else: "them"}.
+              The reason and the file it came from are listed under Unknowns.
+            </p>
           </div>
 
           <div id="comparison-completeness">
@@ -1489,47 +1512,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         count={@true_totals.comparison_differences}
         lede="What changed in the compared service, one row per difference."
       >
-        <div id="comparison-rows" phx-update="stream" class="divide-y divide-subtle">
-          <div
-            :for={{dom_id, change} <- @lists.comparison_differences}
-            id={dom_id}
-            class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-strong">
-                {change_kind(change.kind)} · {route_label(change.route_ids)}
-              </p>
-              <p class="mt-0.5 text-[13px] text-muted">
-                {change_dates(change)}
-                {if change.direction_id, do: " · direction #{change.direction_id}"}
-              </p>
-              <p :if={change.reason} class="mt-0.5 text-[13px] text-muted">
-                {difference_reason(change.reason)}
-              </p>
-            </div>
-            <div class="flex shrink-0 items-center gap-2">
-              <span id={"#{dom_id}-delta"} class="text-sm font-semibold tabular-nums text-strong">
-                {change_delta(change)}
-              </span>
-              <.button
-                id={"#{dom_id}-inspect"}
-                variant="quiet"
-                size="sm"
-                phx-click="inspect_comparison_row"
-                phx-value-collection={:comparison_differences}
-                phx-value-row={dom_id}
-              >
-                Inspect
-              </.button>
-            </div>
-          </div>
-          <div
-            id="comparison-differences-empty"
-            class="hidden px-5 py-6 text-center text-[13px] text-muted only:block"
-          >
-            No service differences were found in this scope.
-          </div>
-        </div>
+        {render_slot(@differences_list)}
+        <p
+          :if={@true_totals.comparison_differences == 0}
+          id="comparison-differences-empty"
+          class="px-5 py-6 text-center text-[13px] text-muted"
+        >
+          No service differences were found in this scope.
+        </p>
         <.page_bar
           collection={:comparison_differences}
           page={@page.comparison_differences}
@@ -1544,45 +1534,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         count={@true_totals.comparison_structural}
         lede="Renamed, added and removed entities. These are not service loss on their own."
       >
-        <div id="comparison-structural-rows" phx-update="stream" class="divide-y divide-subtle">
-          <div
-            :for={{dom_id, change} <- @lists.comparison_structural}
-            id={dom_id}
-            class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-strong">
-                {change_kind(change.change)} {change.entity}
-                <span class="font-mono text-[13px]">{change.id}</span>
-              </p>
-              <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
-                <%= if change.change == :identifier do %>
-                  Renamed; the service it carries was compared under both identifiers.
-                <% else %>
-                  This entity is {if(change.change == :removed, do: "missing from", else: "new in")} the candidate file.
-                <% end %>
-                {if change.meaning_changed,
-                  do: " Its meaning changed, so aligned timing was not claimed."}
-              </p>
-            </div>
-            <.button
-              id={"#{dom_id}-inspect"}
-              variant="quiet"
-              size="sm"
-              phx-click="inspect_comparison_row"
-              phx-value-collection={:comparison_structural}
-              phx-value-row={dom_id}
-            >
-              Inspect
-            </.button>
-          </div>
-          <div
-            id="comparison-structural-empty"
-            class="hidden px-5 py-6 text-center text-[13px] text-muted only:block"
-          >
-            No identifiers changed.
-          </div>
-        </div>
+        {render_slot(@structural_list)}
+        <p
+          :if={@true_totals.comparison_structural == 0}
+          id="comparison-structural-empty"
+          class="px-5 py-6 text-center text-[13px] text-muted"
+        >
+          No identifiers changed.
+        </p>
         <.page_bar
           collection={:comparison_structural}
           page={@page.comparison_structural}
@@ -1597,38 +1556,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         count={@true_totals.comparison_unresolved}
         lede="Entities this comparison could not pair with confidence. They are never counted as a loss."
       >
-        <div id="comparison-unresolved-rows" phx-update="stream" class="divide-y divide-subtle">
-          <div
-            :for={{dom_id, entry} <- @lists.comparison_unresolved}
-            id={dom_id}
-            class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-strong">
-                {entry.entity} · {unresolved_reason(entry.reason)}
-              </p>
-              <p class="mt-0.5 font-mono text-[13px] leading-relaxed text-muted">
-                {unresolved_refs(entry)}
-              </p>
-            </div>
-            <.button
-              id={"#{dom_id}-inspect"}
-              variant="quiet"
-              size="sm"
-              phx-click="inspect_comparison_row"
-              phx-value-collection={:comparison_unresolved}
-              phx-value-row={dom_id}
-            >
-              Inspect
-            </.button>
-          </div>
-          <div
-            id="comparison-unresolved-empty"
-            class="hidden px-5 py-6 text-center text-[13px] text-muted only:block"
-          >
-            Every entity was paired.
-          </div>
-        </div>
+        {render_slot(@unresolved_list)}
+        <p
+          :if={@true_totals.comparison_unresolved == 0}
+          id="comparison-unresolved-empty"
+          class="px-5 py-6 text-center text-[13px] text-muted"
+        >
+          Every entity was paired.
+        </p>
         <.page_bar
           collection={:comparison_unresolved}
           page={@page.comparison_unresolved}
@@ -1643,42 +1578,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         count={@true_totals.comparison_unknowns}
         lede="Rows the files did not state clearly. They are never counted as zero service."
       >
-        <div id="comparison-unknowns" phx-update="stream" class="divide-y divide-subtle">
-          <div
-            :for={{dom_id, unknown} <- @lists.comparison_unknowns}
-            id={dom_id}
-            class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-strong">
-                {side_label(unknown.side)} file · {unknown_reason(unknown.reason)}
-              </p>
-              <p class="mt-0.5 text-[13px] leading-relaxed text-muted">{unknown.detail}</p>
-              <p
-                :if={unknown[:source] && unknown.source[:file]}
-                class="mt-0.5 font-mono text-[13px] text-muted"
-              >
-                {unknown.source.file} row {unknown.source.row}
-              </p>
-            </div>
-            <.button
-              id={"#{dom_id}-inspect"}
-              variant="quiet"
-              size="sm"
-              phx-click="inspect_comparison_row"
-              phx-value-collection={:comparison_unknowns}
-              phx-value-row={dom_id}
-            >
-              Inspect
-            </.button>
-          </div>
-          <div
-            id="comparison-unknowns-empty"
-            class="hidden px-5 py-6 text-center text-[13px] text-muted only:block"
-          >
-            Nothing was unreadable.
-          </div>
-        </div>
+        {render_slot(@unknowns_list)}
+        <p
+          :if={@true_totals.comparison_unknowns == 0}
+          id="comparison-unknowns-empty"
+          class="px-5 py-6 text-center text-[13px] text-muted"
+        >
+          Nothing was unreadable.
+        </p>
         <.page_bar
           collection={:comparison_unknowns}
           page={@page.comparison_unknowns}
@@ -1845,7 +1752,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     ~H"""
     <div
       :if={@true_total > @page.limit}
-      id={"comparison-#{@collection}-paging"}
+      id={"comparison-#{short_collection(@collection)}-paging"}
       class="flex flex-wrap items-center justify-between gap-2 border-t border-subtle bg-canvas px-5 py-3"
     >
       <p class="text-[13px] tabular-nums text-muted">
@@ -2054,14 +1961,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     end
   end
 
+  # A side, when a row has one, is what a reader needs first: an unreadable row
+  # is evidence about one named file, not about the comparison in general.
+  defp inspect_kind(%{side: side, reason: reason}),
+    do: "#{side_label(side)} file · #{unknown_reason(reason)}"
+
   defp inspect_kind(%{kind: kind}), do: change_kind(kind)
   defp inspect_kind(%{change: change}), do: change_kind(change)
 
-  defp inspect_kind(%{entity: entity, reason: reason}),
+  defp inspect_kind(%{entity: entity, reason: reason}) when is_binary(entity),
     do: "#{entity} · #{unresolved_reason(reason)}"
-
-  defp inspect_kind(%{side: side, reason: reason}),
-    do: "#{side_label(side)} file · #{unknown_reason(reason)}"
 
   defp inspect_route(%{route_ids: route_ids}), do: route_label(route_ids)
   defp inspect_route(_row), do: "Not tied to a route pair."
@@ -2422,4 +2331,164 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp severity_class(:errors, count) when count > 0, do: "font-semibold text-error-fg"
   defp severity_class(:warnings, count) when count > 0, do: "font-semibold text-warning-fg"
   defp severity_class(_kind, _count), do: "text-muted"
+
+  # Times are stored in UTC and the app has no per-user time zone, so the zone is
+  # named instead of implied.
+  defp format_time(%DateTime{} = time),
+    do: Calendar.strftime(time, "%b %-d, %Y %-I:%M %p") <> " UTC"
+
+  defp format_count(count),
+    do: count |> Integer.to_string() |> String.replace(~r/\B(?=(\d{3})+(?!\d))/, ",")
+
+  @doc """
+  One row of the differences list. The list itself is a slot on
+  `comparison_results/1`; this is only the row's own markup, so the owning
+  template stays the one that iterates the stream.
+  """
+  attr :dom_id, :string, required: true
+  attr :change, :map, required: true
+
+  def comparison_difference_row(assigns) do
+    ~H"""
+    <div
+      id={@dom_id}
+      class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
+    >
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-strong">
+          {change_kind(@change.kind)} · {route_label(@change.route_ids)}
+        </p>
+        <p class="mt-0.5 text-[13px] text-muted">
+          {change_dates(@change)}
+          {if @change.direction_id, do: " · direction #{@change.direction_id}"}
+        </p>
+        <p :if={@change.reason} class="mt-0.5 text-[13px] text-muted">
+          {difference_reason(@change.reason)}
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <span id={"#{@dom_id}-delta"} class="text-sm font-semibold tabular-nums text-strong">
+          {change_delta(@change)}
+        </span>
+        <.button
+          id={"#{@dom_id}-inspect"}
+          variant="quiet"
+          size="sm"
+          phx-click="inspect_comparison_row"
+          phx-value-collection={:comparison_differences}
+          phx-value-row={@dom_id}
+        >
+          Inspect
+        </.button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc "One row of the identifier and presence changes list."
+  attr :dom_id, :string, required: true
+  attr :change, :map, required: true
+
+  def comparison_structural_row(assigns) do
+    ~H"""
+    <div
+      id={@dom_id}
+      class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
+    >
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-strong">
+          {change_kind(@change.change)} {@change.entity}
+          <span class="font-mono text-[13px]">{@change.id}</span>
+        </p>
+        <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
+          <%= if @change.change == :identifier do %>
+            Renamed; the service it carries was compared under both identifiers.
+          <% else %>
+            This entity is {if @change.change == :removed, do: "missing from", else: "new in"} the candidate file.
+          <% end %>
+          {if @change.meaning_changed,
+            do: " Its meaning changed, so aligned timing was not claimed."}
+        </p>
+      </div>
+      <.button
+        id={"#{@dom_id}-inspect"}
+        variant="quiet"
+        size="sm"
+        phx-click="inspect_comparison_row"
+        phx-value-collection={:comparison_structural}
+        phx-value-row={@dom_id}
+      >
+        Inspect
+      </.button>
+    </div>
+    """
+  end
+
+  @doc "One row of the unresolved entity matches list."
+  attr :dom_id, :string, required: true
+  attr :entry, :map, required: true
+
+  def comparison_unresolved_row(assigns) do
+    ~H"""
+    <div
+      id={@dom_id}
+      class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
+    >
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-strong">
+          {@entry.entity} · {unresolved_reason(@entry.reason)}
+        </p>
+        <p class="mt-0.5 font-mono text-[13px] leading-relaxed text-muted">
+          {unresolved_refs(@entry)}
+        </p>
+      </div>
+      <.button
+        id={"#{@dom_id}-inspect"}
+        variant="quiet"
+        size="sm"
+        phx-click="inspect_comparison_row"
+        phx-value-collection={:comparison_unresolved}
+        phx-value-row={@dom_id}
+      >
+        Inspect
+      </.button>
+    </div>
+    """
+  end
+
+  @doc "One row of the rows this comparison could not read list."
+  attr :dom_id, :string, required: true
+  attr :unknown, :map, required: true
+
+  def comparison_unknown_row(assigns) do
+    ~H"""
+    <div
+      id={@dom_id}
+      class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
+    >
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-strong">
+          {side_label(@unknown.side)} file · {unknown_reason(@unknown.reason)}
+        </p>
+        <p class="mt-0.5 text-[13px] leading-relaxed text-muted">{@unknown.detail}</p>
+        <p
+          :if={@unknown[:source] && @unknown.source[:file]}
+          class="mt-0.5 font-mono text-[13px] text-muted"
+        >
+          {@unknown.source.file} row {@unknown.source.row}
+        </p>
+      </div>
+      <.button
+        id={"#{@dom_id}-inspect"}
+        variant="quiet"
+        size="sm"
+        phx-click="inspect_comparison_row"
+        phx-value-collection={:comparison_unknowns}
+        phx-value-row={@dom_id}
+      >
+        Inspect
+      </.button>
+    </div>
+    """
+  end
 end
