@@ -11192,7 +11192,7 @@ case Accounts.register_first_admin(%{
     # Route 1 both directions. The direction-0 offsets span 70 minutes, so a
     # 23:30 departure reaches Lincoln City at 24:40 — the after-midnight value
     # the departures question renders.
-    alerts_pattern = fn route, attrs ->
+    alerts_pattern = fn _route, attrs ->
       GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, alerts_version.id, attrs)
     end
 
