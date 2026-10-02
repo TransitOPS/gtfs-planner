@@ -11380,6 +11380,60 @@ case Accounts.register_first_admin(%{
         "BROWSER_INTERP_IMPORT pattern with a blank-middle custom trip)"
     )
 
+    # ── Dated change planning journey (spec 11, step 10; EV-10) ──
+    #
+    # Two dedicated backdated published versions carry the dated-change
+    # browser journey, so no other spec's calendar, route, trip or count
+    # moves and neither version becomes the organization's latest published
+    # default. The journey reaches both by version name.
+    #
+    #   * "Browser Dated Change Version" — BROWSER_DATED_CHANGE carries the
+    #     nine-date case the plan reports:
+    #
+    #       DC_WEEKDAY  Mon-Fri over 2026-01-01..2026-12-31 with one removed
+    #                    exception, 2026-11-11. The accepted window
+    #                    2026-11-02..2026-11-13 holds ten weekdays, and the
+    #                    removed Wednesday leaves exactly nine in-window dates,
+    #                    which is also why 2026-11-11 must appear in no date
+    #                    list at all.
+    #       DC_WEEKEND  Sat-Sun over the same range, so the report's calendar
+    #                    switch has a second real calendar to page and the
+    #                    fixture is genuinely multi-calendar.
+    #
+    #     Four trips: DC_T_0700 and DC_T_2510 are the journey's selection on
+    #     DC_WEEKDAY (the second starts at 25:10, so a +300s shift projects
+    #     25:15 on the same service day), DC_T_0800 is an unselected trip
+    #     sharing DC_WEEKDAY, and DC_S_0930 is the single trip on DC_WEEKEND.
+    #
+    #   * "Browser Dated Change Wide Version" — BROWSER_DATED_CHANGE_WIDE
+    #     carries one Saturday-only calendar whose declared range is 200,001
+    #     civil days, one cell over the planner's date-work cap. Nothing is
+    #     enumerated to find that out: the cap is counted from the stored
+    #     range, so the page stays ordinary and the plan is refused whole.
+    #
+    # The expected totals, read straight off the fixture above and never off
+    # the planner's output: DC_WEEKDAY runs 261 weekdays in 2026 minus the
+    # removed 11-11 = 260 original dates, nine of them in the accepted window
+    # and 251 kept. Selecting DC_T_0700 and DC_T_2510 therefore gives 2
+    # selected trips, 2x9 = 18 changed trip-dates, 2x251 = 502 unchanged
+    # trip-dates and exactly 1 unaffected calendar user (DC_T_0800).
+    #
+    # The selection stays inside DC_WEEKDAY on purpose: the Schedule page
+    # resolves one calendar at a time, and changing that filter is a parameter
+    # change that clears the selection, so a two-calendar selection is not
+    # reachable through the page's own controls. DC_WEEKEND and DC_S_0930 make
+    # the route and the version genuinely multi-calendar, so the calendar
+    # filter and the calendars page have a second real identity to read.
+    {:ok, dated_change_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Dated Change Version"})
+
+    dated_change_version =
+      Repo.update!(
+        Ecto.Changeset.change(dated_change_version,
+          published_at: ~U[2020-04-01 00:00:00.000000Z]
+        )
+      )
+
     # ── Stops Map seed data ──
     #
     # A planner-product organization of its own, so the Map view journey reads
@@ -11958,6 +12012,250 @@ case Accounts.register_first_admin(%{
           published_at: ~U[2020-04-01 00:00:00.000000Z]
         )
       )
+
+    dated_change_today =
+      Gtfs.DisplayClock.today(org.id, dated_change_version.id).date
+
+    Enum.each(1..4, fn index ->
+      {lat, lon} =
+        Enum.at(
+          [
+            {"39.9800", "-75.1900"},
+            {"39.9830", "-75.1840"},
+            {"39.9860", "-75.1780"},
+            {"39.9890", "-75.1720"}
+          ],
+          index - 1
+        )
+
+      {:ok, _stop} =
+        GtfsFixtures.insert_stop(%{
+          stop_id: "BDC_#{index}",
+          stop_name: "Dated Change Stop #{index}",
+          location_type: 0,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon),
+          organization_id: org.id,
+          gtfs_version_id: dated_change_version.id
+        })
+    end)
+
+    # Fixed 2026 dates rather than dates relative to today, so the report's
+    # exact totals and its nine in-window dates are the same on every day the
+    # suite runs.
+    dated_change_weekly = [
+      %{
+        service_id: "DC_WEEKDAY",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      },
+      %{
+        service_id: "DC_WEEKEND",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 1,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      }
+    ]
+
+    Enum.each(dated_change_weekly, fn calendar ->
+      _calendar =
+        GtfsFixtures.calendar_fixture(org.id, dated_change_version.id, calendar)
+
+      _attribute =
+        GtfsFixtures.calendar_attribute_fixture(org.id, dated_change_version.id, %{
+          service_id: calendar.service_id,
+          service_description: calendar.service_id,
+          service_schedule_name: nil,
+          service_schedule_type: nil,
+          service_schedule_typicality: 0,
+          rating_start_date: nil,
+          rating_end_date: nil,
+          rating_description: nil
+        })
+    end)
+
+    # The removed Veterans Day is the one date the original service never runs,
+    # so the plan must keep it out of the in-window list and out of the kept
+    # list, and name it as absent rather than moving it.
+    _removed_day =
+      GtfsFixtures.calendar_date_fixture(org.id, dated_change_version.id, %{
+        service_id: "DC_WEEKDAY",
+        date: ~D[2026-11-11],
+        exception_type: 2
+      })
+
+    {:ok, dated_change_route} =
+      GtfsFixtures.insert_route(%{
+        organization_id: org.id,
+        gtfs_version_id: dated_change_version.id,
+        route_id: "BROWSER_DATED_CHANGE",
+        route_short_name: "DC",
+        route_long_name: "Browser dated change",
+        route_type: 3
+      })
+
+    dated_change_bundle =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, dated_change_version.id, %{
+        route_id: dated_change_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-DC-P1",
+        route_pattern_name: "Dated change outbound",
+        route_pattern_typicality: 1,
+        timing_name: "Base",
+        timing_headsign: "Dated change outbound",
+        stops: [
+          {"BDC_1", 0, 0, 1},
+          {"BDC_2", 420, 450, 0},
+          {"BDC_3", 900, 900, 1},
+          {"BDC_4", 1500, 1500, 0}
+        ]
+      })
+
+    for {trip_id, start_time, short_name, service_id} <- [
+          {"DC_T_0700", "07:00:00", "7101", "DC_WEEKDAY"},
+          {"DC_T_0800", "08:00:00", "7102", "DC_WEEKDAY"},
+          {"DC_T_2510", "25:10:00", "7103", "DC_WEEKDAY"},
+          {"DC_S_0930", "09:30:00", "7201", "DC_WEEKEND"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        dated_change_version.id,
+        dated_change_route.route_id,
+        dated_change_bundle,
+        %{
+          service_id: service_id,
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Dated change outbound"
+        }
+      )
+    end
+
+    {:ok, wide_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Dated Change Wide Version"})
+
+    wide_version =
+      Repo.update!(
+        Ecto.Changeset.change(wide_version, published_at: ~U[2020-04-02 00:00:00.000000Z])
+      )
+
+    Enum.each(1..2, fn index ->
+      {lat, lon} =
+        Enum.at(
+          [
+            {"40.0100", "-75.2100"},
+            {"40.0140", "-75.2030"}
+          ],
+          index - 1
+        )
+
+      {:ok, _stop} =
+        GtfsFixtures.insert_stop(%{
+          stop_id: "BDW_#{index}",
+          stop_name: "Dated Change Wide Stop #{index}",
+          location_type: 0,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon),
+          organization_id: org.id,
+          gtfs_version_id: wide_version.id
+        })
+    end)
+
+    _wide_calendar =
+      GtfsFixtures.calendar_fixture(org.id, wide_version.id, %{
+        service_id: "DC_WIDE",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: Date.add(~D[2026-01-01], 200_000)
+      })
+
+    _wide_attribute =
+      GtfsFixtures.calendar_attribute_fixture(org.id, wide_version.id, %{
+        service_id: "DC_WIDE",
+        service_description: "DC_WIDE",
+        service_schedule_name: nil,
+        service_schedule_type: nil,
+        service_schedule_typicality: 0,
+        rating_start_date: nil,
+        rating_end_date: nil,
+        rating_description: nil
+      })
+
+    {:ok, wide_route} =
+      GtfsFixtures.insert_route(%{
+        organization_id: org.id,
+        gtfs_version_id: wide_version.id,
+        route_id: "BROWSER_DATED_CHANGE_WIDE",
+        route_short_name: "DW",
+        route_long_name: "Browser dated change wide",
+        route_type: 3
+      })
+
+    wide_bundle =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, wide_version.id, %{
+        route_id: wide_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-DW-P1",
+        route_pattern_name: "Wide outbound",
+        route_pattern_typicality: 1,
+        timing_name: "Base",
+        timing_headsign: "Wide outbound",
+        stops: [
+          {"BDW_1", 0, 0, 1},
+          {"BDW_2", 600, 600, 0}
+        ]
+      })
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      wide_version.id,
+      wide_route.route_id,
+      wide_bundle,
+      %{
+        service_id: "DC_WIDE",
+        trip_id: "DW_T_1000",
+        trip_short_name: "7301",
+        start_time: "10:00:00",
+        trip_headsign: "Wide outbound"
+      }
+    )
+
+    IO.puts(
+      "Browser seed: dated change version #{dated_change_version.id} " <>
+        "(BROWSER_DATED_CHANGE: DC_WEEKDAY with 2026-11-11 removed, DC_WEEKEND, " <>
+        "DC_T_0700/DC_T_0800/DC_T_2510/DC_S_0930) and wide version #{wide_version.id} " <>
+        "(BROWSER_DATED_CHANGE_WIDE, DC_WIDE 200,001-day Saturday range, today #{dated_change_today})"
+    )
+
+    # The seed bulk-loads its rows, and a new database has no planner statistics
+    # until autovacuum's first pass. A query planned before then estimates one row
+    # per table and nests its joins, so the Stops page's routes-serving-stations
+    # lookup runs for about a minute on the first visit. Analyze once the data is in.
+    Repo.query!("ANALYZE")
+
+  {:error, changeset} ->
+    raise "Browser seed failed: #{inspect(changeset.errors)}"
+end
 
     {:ok, _alerts_agency} =
       GtfsFixtures.insert_agency(%{
