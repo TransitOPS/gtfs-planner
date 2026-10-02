@@ -504,6 +504,45 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert answered_no.scope.route_stop_pairs == []
     end
 
+    test "the question stays after yes, so Back reaches it and the answer can change",
+         context do
+      %{depot: depot} = stops(context)
+      coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}])
+      other_route = pattern(context, "R12", [{"S_DEPOT", 0}, {"S_NYE", 600}])
+
+      alert =
+        alert_with(context, %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [coast_route.id],
+            "stop_ids" => [depot.id]
+          }
+        })
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=shared")
+
+      view |> element("#alert-shared-#{other_route.id}-yes") |> render_click()
+
+      assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
+      assert has_element?(view, "#alert-step-shared")
+
+      # Back from the next question lands on the shared question, with the
+      # stored answer shown as chosen.
+      view |> element("#alert-question-back") |> render_click()
+
+      assert has_element?(view, "#alert-shared")
+      assert has_element?(view, "#alert-shared-#{other_route.id}-yes[aria-pressed='true']")
+
+      view |> element("#alert-shared-#{other_route.id}-no") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.all_routes_at_stops == false
+      assert saved.scope.route_stop_pairs == []
+    end
+
     test "no unchosen route at the stops means the question is not asked", context do
       %{coast: coast} = stops(context)
       coast_route = pattern(context, "R1", [{"S_COAST", 0}])

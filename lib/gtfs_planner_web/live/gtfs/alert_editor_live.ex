@@ -2793,14 +2793,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # "Shared" applies when a stop the alert names is also served by a route the
   # alert does not name, because then the editor has to say whether those routes
-  # are affected too. Both reads are the alert's own version's.
+  # are affected too. The routes and stops are the ones the question itself
+  # lists (`shared_route_options/2`): answering "yes" stores route and stop
+  # pairs, and counting those routes as named would drop the question the
+  # moment it is answered, leaving no way to change the answer. Both reads are
+  # the alert's own version's.
   defp shared_routes?(audit, alert) do
-    referenced = Listing.referenced_ids(alert)
-    chosen = MapSet.new(referenced.routes, &to_string/1)
+    answer = scope(alert)
+    chosen = MapSet.new(answer.route_ids || [])
 
     audit
-    |> Alerts.routes_at_stops(referenced.stops)
-    |> Enum.any?(fn route -> not MapSet.member?(chosen, to_string(route.id)) end)
+    |> Alerts.routes_at_stops(answer.stop_ids || [])
+    |> Enum.any?(fn route -> not MapSet.member?(chosen, route.id) end)
   end
 
   @doc """

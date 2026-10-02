@@ -310,10 +310,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           "situation" => "stop_closed",
           "scope" => %{
             "shape" => "route_stops",
-            "route_stop_pairs" => [
-              %{"route_id" => chosen.id, "stop_id" => shared.id},
-              %{"route_id" => other.id, "stop_id" => shared.id}
-            ],
+            "route_ids" => [chosen.id, other.id],
             "stop_ids" => [shared.id]
           }
         })
