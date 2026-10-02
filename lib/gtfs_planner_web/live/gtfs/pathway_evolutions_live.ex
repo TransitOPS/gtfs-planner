@@ -2029,7 +2029,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     case Gtfs.delete_pathway_evolution(
            socket.assigns.editor_id,
            socket.assigns.editor_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, _result} -> deleted_closure(socket, target)
       {:error, reason} -> refused_delete(socket, reason)
@@ -2449,7 +2449,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp submit_create(socket, params) do
-    case Gtfs.create_pathway_evolution(params, audit_context(socket)) do
+    case Gtfs.create_pathway_evolution(params, AuditContext.from_assigns(socket.assigns)) do
       {:ok, result} ->
         applied_closure(socket, result)
 
@@ -2468,7 +2468,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
            socket.assigns.editor_id,
            params,
            submitted_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, result} ->
         applied_closure(socket, result, unchanged?: result.fingerprint == submitted_fingerprint)
@@ -2682,16 +2682,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp evolutions_view_path(assigns) do
     version_id = assigns.current_gtfs_version.id
     "/gtfs/#{version_id}/stops/#{URI.encode(assigns.stop_id)}/evolutions"
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: socket.assigns.stop_id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # The scoped focus hook only focuses an element the editor already owns.

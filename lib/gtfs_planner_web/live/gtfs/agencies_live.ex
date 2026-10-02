@@ -278,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
   @impl true
   def handle_event("save_agency", %{"agency" => params}, socket) do
-    case FeedSettings.create_agency(audit_context(socket), params) do
+    case FeedSettings.create_agency(AuditContext.from_assigns(socket.assigns), params) do
       {:ok, agency} ->
         {:noreply,
          socket
@@ -460,7 +460,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     review = socket.assigns.timezone_review
 
     case FeedSettings.apply_timezone_change(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            review.zone,
            review.fingerprint
          ) do
@@ -1991,7 +1991,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # is, with the draft and the entries kept and nothing written (AC-16).
   defp update_edited_agency(socket, params) do
     case FeedSettings.update_agency(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.agency_baseline.id,
            params,
            socket.assigns.agency_loaded_updated_at
@@ -2121,7 +2121,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # command that cannot be applied (AC-19, AC-20, AC-21, INV-3).
   defp review_agency_deletion(socket, target_id) do
     case FeedSettings.review_agency_deletion(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.agency_baseline.id,
            target_id
          ) do
@@ -2173,7 +2173,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     review = socket.assigns.agency_delete_review
 
     case FeedSettings.delete_agency(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            review.agency.id,
            review.target && review.target.id,
            review.fingerprint
@@ -2406,7 +2406,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # stays on the zone field, and every scope refusal closes the drawer because
   # there is no version left to change.
   defp review_timezone(socket, zone) do
-    case FeedSettings.review_timezone_change(audit_context(socket), zone) do
+    case FeedSettings.review_timezone_change(AuditContext.from_assigns(socket.assigns), zone) do
       {:ok, review} ->
         {:noreply,
          socket
@@ -2481,15 +2481,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       socket.assigns.current_organization.id,
       socket.assigns.current_gtfs_version.id
     )
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # The acknowledgement is a checkbox inside the review form, so the hook's own

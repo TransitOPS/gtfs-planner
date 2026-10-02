@@ -409,7 +409,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
     version_id = socket.assigns.current_gtfs_version.id
     attrs = create_attrs(values)
 
-    case Flex.create_service(audit_context(socket), attrs) do
+    case Flex.create_service(AuditContext.from_assigns(socket.assigns), attrs) do
       {:ok, service} ->
         push_navigate(socket, to: "/gtfs/#{version_id}/flex/#{service.id}")
 
@@ -487,7 +487,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   # --- the copy action --------------------------------------------------------
 
   defp copy_services(socket, source) do
-    case Flex.copy_from_version(audit_context(socket), source.id) do
+    case Flex.copy_from_version(AuditContext.from_assigns(socket.assigns), source.id) do
       {:ok, 0} ->
         assign(socket,
           copy_target: nil,
@@ -523,15 +523,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
           copy_error: @permission_error
         )
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # The copy action needs a source version only when this version has no

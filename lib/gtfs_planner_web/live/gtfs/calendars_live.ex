@@ -849,7 +849,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         case Gtfs.review_calendar_change(
                {:combine, destination_id, sources, decision_dates},
                fingerprints,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, review} ->
             socket
@@ -1042,7 +1042,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       {:combine, socket.assigns.combine_destination_id,
        socket.assigns.combine_review.retained_sources, socket.assigns.combine_decision_dates}
 
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     generation = socket.assigns.combine_generation
 
     socket
@@ -1647,7 +1647,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     case Gtfs.review_calendar_change(
            command,
            %{service_id => fingerprint},
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{extension: extension} = review} when not is_nil(extension) ->
         socket
@@ -1789,7 +1789,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp dispatch_extension(socket) do
     case socket.assigns.extension_review do
       %{command: command, fingerprint: fingerprint} ->
-        audit = audit_context(socket)
+        audit = AuditContext.from_assigns(socket.assigns)
         # Every dispatch owns a generation, and the socket carries it: a result
         # from a superseded review is never presented as the outcome of the one
         # on screen.
@@ -2299,7 +2299,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
       true ->
         command = {:date_change, dates, remove_from, add_to}
-        audit = audit_context(socket)
+        audit = AuditContext.from_assigns(socket.assigns)
 
         fingerprints =
           target_fingerprints(socket.assigns.date_change_sources, remove_from ++ add_to)
@@ -2339,7 +2339,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       %{command: command, fingerprint: fingerprint} ->
         socket = assign(socket, :date_change_pending?, true)
 
-        case Gtfs.apply_calendar_change(command, fingerprint, audit_context(socket)) do
+        case Gtfs.apply_calendar_change(
+               command,
+               fingerprint,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, result} ->
             socket
             |> assign(:date_change_pending?, false)
@@ -2385,16 +2389,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     socket
     |> assign(:date_change_errors, %{field => message})
     |> assign(:date_change_review, nil)
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp write_error_message(:stale_review) do

@@ -1601,7 +1601,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # locks the published version, resolves the zone, chooses the ID and runs the
   # backfill in one transaction (R1, R2, R6, R10, INV-2, INV-5).
   defp create_agency_setup(socket, params) do
-    case FeedSettings.create_agency(audit_context(socket), params) do
+    case FeedSettings.create_agency(AuditContext.from_assigns(socket.assigns), params) do
       {:ok, agency} ->
         {:noreply, finish_agency_setup(socket, agency)}
 
@@ -1691,15 +1691,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       %{agency: %{id: ^agency_id}, route_count: count} -> count
       _row -> nil
     end)
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp parse_agency_setup_origin("assign_routes"), do: :assign_routes
@@ -2010,7 +2001,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   defp strip_managed_route_id(attrs, :auto), do: Map.delete(attrs, "route_id")
 
   defp run_creation(socket, attrs, attempt) do
-    case Gtfs.create_editor_route(attrs, attempt, audit_context(socket)) do
+    case Gtfs.create_editor_route(attrs, attempt, AuditContext.from_assigns(socket.assigns)) do
       {:ok, %{route: route}} ->
         {:noreply, finish_new_route(socket, route)}
 
@@ -2096,7 +2087,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   defp reconcile_recovered_creation(socket, attempt) do
-    case Gtfs.reconcile_creation(attempt, audit_context(socket)) do
+    case Gtfs.reconcile_creation(attempt, AuditContext.from_assigns(socket.assigns)) do
       {:ok, route} ->
         {:noreply, finish_recovered_creation(socket, route)}
 

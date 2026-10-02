@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.Alignments.Materializer
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.MapLineFiles
   alias GtfsPlanner.Wording
   alias Phoenix.Component
@@ -1621,7 +1622,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       push_save_settled(socket)
     else
       draft = save_sections(params)
-      audit = save_audit_context(socket)
+      audit = AuditContext.from_assigns(socket.assigns)
       pattern = socket.assigns.pattern
 
       handle_save_request(socket, draft, Gtfs.review_alignment_save(pattern.id, draft, audit))
@@ -1782,16 +1783,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp save_sections(%{sections: sections}) when is_list(sections), do: sections
   defp save_sections(_params), do: []
 
-  defp save_audit_context(socket) do
-    %GtfsPlanner.Gtfs.AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
-
   # Applies immediately only when every choice is already decided: no
   # blockers, no replaced shapes awaiting confirmation (INV-5), no shared
   # deletion another pattern still uses, and every scope choice covered by
@@ -1926,7 +1917,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   defp apply_save(socket, draft, choices, fingerprint) do
     socket = Component.assign(socket, :applying?, true)
-    audit = save_audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     pattern = socket.assigns.pattern
 
     case Gtfs.apply_alignment_save(pattern.id, draft, choices, fingerprint, audit) do

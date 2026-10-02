@@ -1215,7 +1215,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp save_zone(%{assigns: %{zone_drawer_open: false}} = socket, _params), do: socket
 
   defp save_zone(socket, params) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     case socket.assigns.zone_drawer_zone_id do
       nil -> save_new_zone(socket, audit, params)
@@ -1409,7 +1409,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     delete = socket.assigns.zone_delete
 
     case FareZones.delete_zone(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            delete.zone.zone_id,
            delete.replacement,
            delete.expected
@@ -1561,7 +1561,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp save_rule(socket, params) do
     case FareZones.save_rule_group(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.reviewed_rule,
            params
          ) do
@@ -1668,7 +1668,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   defp remove_rule(socket) do
     case FareZones.delete_rule_group(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.remove_rule.rule
          ) do
       {:ok, _count} ->
@@ -1770,7 +1770,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     assignment = socket.assigns.assignment
 
     case FareZones.apply_assignment(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            assignment.preview.changes
          ) do
       {:ok, %{applied: applied}} ->
@@ -1823,7 +1823,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # bytes, including a zone that left the inventory in the meantime.
   defp undo_assignment(socket) do
     case FareZones.undo_assignment(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.undo.applied
          ) do
       {:ok, %{applied: applied}} ->
@@ -2071,15 +2071,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp checks_tone(%{stopless_referenced: [_ | _]}), do: :error
   defp checks_tone(%{unassigned_count: unassigned}) when unassigned > 0, do: :warning
   defp checks_tone(_checks), do: :ok
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
   defp import_path(version_id), do: "/gtfs/#{version_id}/import"

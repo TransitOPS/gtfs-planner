@@ -1657,7 +1657,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
              apply_scope_params(scope),
              current_input(socket),
              review.fingerprint,
-             audit_context(socket)
+             AuditContext.from_assigns(socket.assigns)
            ) do
         {:ok, summary} ->
           apply_success(socket, scope, summary)
@@ -1848,16 +1848,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     else
       _other -> false
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   defp route_not_found(socket) do

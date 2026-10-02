@@ -669,7 +669,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp delete_visible(socket, dialog, ids) do
-    case Gtfs.delete_trips(socket.assigns.route_id, dialog.service_id, ids, audit_context(socket)) do
+    case Gtfs.delete_trips(
+           socket.assigns.route_id,
+           dialog.service_id,
+           ids,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, %{trips: trips, transfers: transfers}} ->
         deleted(socket, dialog, trips, transfers, ids)
 
@@ -1008,7 +1013,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = edit_stop_command(socket, context, :clear, :later)
     fence = {:expected, %{context.row.id => context.row.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> committed_cell(socket, context, :clear, nil, result)
       {:error, {:refused, errors}} -> cell_error(socket, context, refusal_message(errors))
       {:error, reason} -> cell_error(socket, context, ScheduleComponents.error_message(reason))
@@ -1019,7 +1029,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = edit_stop_command(socket, context, secs, mode)
     fence = {:expected, %{context.row.id => context.row.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         {:ok, committed_cell(socket, context, mode, secs, result)}
 
@@ -1345,7 +1360,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     command = {:shift, ids, minutes * 60, nil}
     fence = {:expected, Map.new(rows, &{&1.id, &1.updated_at})}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> nudged(socket, ids, minutes, result)
       {:error, {:refused, errors}} -> nudge_refused(socket, errors)
       {:error, reason} -> warning_outcome(socket, ScheduleComponents.error_message(reason))
@@ -1397,7 +1417,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp restore_entry(socket, %{payload: payload, message: message}) do
-    case Gtfs.restore_trips(socket.assigns.route_id, payload, audit_context(socket)) do
+    case Gtfs.restore_trips(
+           socket.assigns.route_id,
+           payload,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         undone(socket, result, message)
 
@@ -1839,7 +1863,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     case change_command(socket, change) do
       {:ok, command} ->
-        case Gtfs.review_trip_change(socket.assigns.route_id, command, audit_context(socket)) do
+        case Gtfs.review_trip_change(
+               socket.assigns.route_id,
+               command,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, review} ->
             assign(socket, :change, %{change | review: review, refusal: nil, stale?: false})
 
@@ -2231,7 +2259,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            socket.assigns.route_id,
            command,
            {:reviewed, fingerprint},
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, result} ->
         applied_change(socket, change, result)
@@ -2925,7 +2953,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                socket.assigns.route_id,
                drawer.trip.id,
                attrs,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:noreply, duplicated(socket, drawer, trip)}
@@ -2952,7 +2980,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                drawer.trip.id,
                attrs,
                drawer.trip.updated_at,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:noreply, saved_trip(socket, drawer, trip, attrs)}
@@ -3007,7 +3035,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp apply_frequency_command(socket, drawer, command) do
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, :none, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           :none,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         added_frequency(socket, drawer, command, result)
 
@@ -3073,7 +3106,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp apply_frequency_edit(socket, drawer, command) do
     fence = {:expected, %{drawer.trip.id => drawer.trip.updated_at}}
 
-    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           fence,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} ->
         case write_frequency_details(socket, drawer, result) do
           {:ok, result} -> {:noreply, frequency_saved(socket, command, result)}
@@ -3120,7 +3158,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                drawer.trip.id,
                attrs,
                updated_at,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, trip} ->
             {:ok, refence_restore(result, drawer.trip.id, trip.updated_at)}
@@ -3206,7 +3244,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp add_trips(socket, drawer) do
     case create_attrs(drawer) do
       {:ok, attrs} ->
-        case Gtfs.create_trips(socket.assigns.route_id, attrs, audit_context(socket)) do
+        case Gtfs.create_trips(
+               socket.assigns.route_id,
+               attrs,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, %{trips: [first | _] = trips}} ->
             {:noreply, added(socket, attrs, trips, first)}
 
@@ -3407,7 +3449,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            route.route_id,
            true,
            Gtfs.route_source(route),
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: _saved}} ->
         {:noreply,
@@ -3598,16 +3640,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       nil -> socket.assigns.filters.pattern
       pattern -> pattern.id
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # --- editor authority ------------------------------------------------------

@@ -124,19 +124,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
   end
 
-  defp audit_context(socket) do
-    %{current_user: user, current_organization: organization, current_gtfs_version: version} =
-      socket.assigns
-
-    %AuditContext{
-      actor_id: user.id,
-      actor_email: user.email,
-      organization_id: organization.id,
-      gtfs_version_id: version.id,
-      station_stop_id: nil
-    }
-  end
-
   defp editor_refusal(socket),
     do: put_toast(socket, "You no longer have editor access to this organization.", :refused)
 
@@ -563,7 +550,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("remove_orphans", _params, socket) do
     %{day: day} = socket.assigns
 
-    case Gtfs.remove_run_orphans(audit_context(socket), day) do
+    case Gtfs.remove_run_orphans(AuditContext.from_assigns(socket.assigns), day) do
       # A count, not `:ok`: the drawer says how many rows it deleted, and the
       # domain counts the rows it actually removed rather than the rows it
       # believed were there.
@@ -613,7 +600,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("rename_run", %{"run" => %{"run_id" => new_id}}, socket) do
     %{day: day} = socket.assigns
 
-    case Gtfs.rename_run(audit_context(socket), day, socket.assigns.run, new_id) do
+    case Gtfs.rename_run(
+           AuditContext.from_assigns(socket.assigns),
+           day,
+           socket.assigns.run,
+           new_id
+         ) do
       {:ok, %{undo: moves}} ->
         # `push_patch/2` returns a socket, not `{:noreply, socket}`. Returning it
         # bare fails the whole LiveView with an ArgumentError that dumps the
@@ -850,7 +842,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
     socket = assign(socket, :apply_state, :pending)
 
-    case Gtfs.apply_run_plan(audit_context(socket), plan) do
+    case Gtfs.apply_run_plan(AuditContext.from_assigns(socket.assigns), plan) do
       {:ok, %{undo: undo_moves}} when undo_moves != [] ->
         {:noreply,
          socket
@@ -962,7 +954,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp save_crew_settings(socket, entries) do
     attrs = crew_attrs(entries)
 
-    case Gtfs.update_crew_settings(audit_context(socket), attrs) do
+    case Gtfs.update_crew_settings(AuditContext.from_assigns(socket.assigns), attrs) do
       {:ok, _crew} ->
         # The rules feed every derivation, so the day is reloaded and the drawer
         # closes: the reader asked to change the rules, not to keep editing them.
@@ -1418,7 +1410,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp apply_moves_now(socket, day, moves, success, refusal, after_success) do
-    case Gtfs.apply_run_moves(audit_context(socket), day, moves) do
+    case Gtfs.apply_run_moves(AuditContext.from_assigns(socket.assigns), day, moves) do
       {:ok, %{new_run_id: id, undo: undo_moves}} ->
         socket
         |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})

@@ -1169,7 +1169,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp save_rule(socket, editor, submitted), do: create_rule(socket, editor, submitted)
 
   defp create_rule(socket, editor, submitted) do
-    case Gtfs.create_general_transfer(submitted, audit_context(socket)) do
+    case Gtfs.create_general_transfer(submitted, AuditContext.from_assigns(socket.assigns)) do
       {:ok, transfer} ->
         saved(socket, transfer)
 
@@ -1198,7 +1198,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
            editor.row.id,
            submitted,
            editor.row.transfer.updated_at,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, transfer} ->
         saved(socket, transfer)
@@ -1332,18 +1332,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp version_id(socket), do: socket.assigns.current_gtfs_version.id
 
   defp put_editor(socket, editor), do: assign(socket, :editor, editor)
-
-  # The audit context every write is attributed to, as the calendar and schedule
-  # pages build it.
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: organization_id(socket),
-      gtfs_version_id: version_id(socket),
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   @impl true
   def render(assigns) do
@@ -1947,7 +1935,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp apply_delete(socket) do
     dialog = socket.assigns.delete_dialog
 
-    case delete_rows(dialog.pairs, delete_audit_context(socket)) do
+    case delete_rows(dialog.pairs, AuditContext.from_assigns(socket.assigns)) do
       {:ok, count} ->
         socket
         |> clear_checked()
@@ -1970,19 +1958,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   defp delete_rows(pairs, audit), do: Gtfs.delete_general_transfers(pairs, audit)
-
-  # The organization and the version come from the socket, never from a client
-  # payload, so a deletion can only land in the page's own version (R10); the
-  # actor is the signed-in user, as the other GTFS pages build it (R9).
-  defp delete_audit_context(socket) do
-    %GtfsPlanner.Gtfs.AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   defp deleted_message(1), do: "1 transfer rule deleted."
   defp deleted_message(count), do: "#{count} transfer rules deleted."

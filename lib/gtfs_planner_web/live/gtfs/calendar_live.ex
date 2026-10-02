@@ -317,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   def handle_event("duplicate", _params, socket) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     case Gtfs.duplicate_calendar(socket.assigns.service_id, %{}, audit) do
       {:ok, %{service_id: copy_id}} ->
@@ -345,7 +345,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       %{command: command, fingerprint: fingerprint} ->
         socket = assign(socket, :review_dialog, nil)
 
-        case Gtfs.apply_calendar_change(command, fingerprint, audit_context(socket)) do
+        case Gtfs.apply_calendar_change(
+               command,
+               fingerprint,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, %{action: :deleted}} ->
             {:noreply,
              socket
@@ -791,7 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp create(socket, params, attrs) do
-    case Gtfs.create_calendar(attrs, audit_context(socket)) do
+    case Gtfs.create_calendar(attrs, AuditContext.from_assigns(socket.assigns)) do
       {:ok, %{service_id: service_id}} ->
         {:noreply,
          socket
@@ -808,7 +812,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   # is detected instead of silently overwritten.
   defp review_or_apply(socket, params, command) do
     socket = assign(socket, :pending?, true)
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     fingerprints = %{socket.assigns.service_id => socket.assigns.fingerprint}
 
     case Gtfs.review_calendar_change(command, fingerprints, audit) do
@@ -838,7 +842,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp apply_reviewed(socket, command, review) do
-    case Gtfs.apply_calendar_change(command, review.fingerprint, audit_context(socket)) do
+    case Gtfs.apply_calendar_change(
+           command,
+           review.fingerprint,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, result} -> {:noreply, socket |> after_write(command, result) |> focus_after(command)}
       {:error, reason} -> {:noreply, write_failed(socket, reason, command)}
     end
@@ -1438,18 +1446,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp date_error, do: [date_input: "Choose a valid date."]
-
-  ## Audit
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   ## Input helpers
 

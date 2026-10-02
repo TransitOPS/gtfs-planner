@@ -299,7 +299,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp load_grouping(socket) do
-    case Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)) do
+    case Gtfs.preview_left_out(socket.assigns.route_id, AuditContext.from_assigns(socket.assigns)) do
       {:ok, preview} ->
         socket
         |> assign(:grouping, grouping_state(preview, initial_grouping_params(preview), :ready))
@@ -347,7 +347,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_event("build_patterns", _params, socket) do
     socket = assign(socket, :build_state, :building)
 
-    result = Gtfs.build_route_patterns(socket.assigns.route_id, audit_context(socket))
+    result =
+      Gtfs.build_route_patterns(
+        socket.assigns.route_id,
+        AuditContext.from_assigns(socket.assigns)
+      )
 
     case result do
       {:ok, summary} ->
@@ -489,7 +493,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_event("undo_headsign", _params, socket) do
     case active_headsign_undo(socket) do
       {_source, undo} when is_map(undo) ->
-        case Gtfs.undo_headsign_update(pattern_uuid(socket), undo, audit_context(socket)) do
+        case Gtfs.undo_headsign_update(
+               pattern_uuid(socket),
+               undo,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, %{applied: applied}} ->
             {:noreply,
              socket
@@ -684,7 +692,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          {:ok, attrs} <- validate_details(params) do
       attrs = Map.put(attrs, :stops, Enum.map(socket.assigns.staged_occurrences, & &1.stop_id))
 
-      case Gtfs.create_pattern(socket.assigns.route_id, attrs, audit_context(socket)) do
+      case Gtfs.create_pattern(
+             socket.assigns.route_id,
+             attrs,
+             AuditContext.from_assigns(socket.assigns)
+           ) do
         {:ok, pattern} ->
           {:noreply,
            socket
@@ -1544,7 +1556,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                pattern_uuid(socket),
                {:delete_timing, timing.id},
                socket.assigns.source_fingerprint,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, %{fingerprint: fingerprint}} ->
             {:noreply,
@@ -1585,7 +1597,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                pattern_uuid(socket),
                {:delete_timing, timing_id},
                fingerprint,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, _result} ->
             {:noreply,
@@ -1658,7 +1670,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply, socket}
 
       %{fingerprint: fingerprint} ->
-        case Gtfs.apply_review(pattern_uuid(socket), :delete, fingerprint, audit_context(socket)) do
+        case Gtfs.apply_review(
+               pattern_uuid(socket),
+               :delete,
+               fingerprint,
+               AuditContext.from_assigns(socket.assigns)
+             ) do
           {:ok, _result} ->
             {:noreply,
              socket
@@ -1791,7 +1808,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            route.route_id,
            true,
            Gtfs.route_source(route),
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: _saved}} ->
         {:noreply,
@@ -1888,7 +1905,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     case Gtfs.remove_route_pattern_label(
            socket.assigns.route_id,
            remove.uuid,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, _pattern} ->
         {:noreply,
@@ -1954,7 +1971,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     socket = socket |> assign(:link_pending, true) |> assign(:link_error, nil)
 
-    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+    case Gtfs.group_left_out_trips(
+           socket.assigns.route_id,
+           review,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, summary} ->
         {:noreply,
          socket
@@ -2625,7 +2646,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp apply_grouping(socket, grouping, selections) do
     review = %{selections: selections, fingerprint: grouping.preview.fingerprint}
 
-    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+    case Gtfs.group_left_out_trips(
+           socket.assigns.route_id,
+           review,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, summary} ->
         {:noreply,
          socket
@@ -2842,7 +2867,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     marker = socket.assigns.link_marker
 
     with {:ok, {pattern, occurrences}} <- link_offer_target_pattern(socket, marker),
-         {:ok, preview} <- Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)),
+         {:ok, preview} <-
+           Gtfs.preview_left_out(
+             socket.assigns.route_id,
+             AuditContext.from_assigns(socket.assigns)
+           ),
          group when not is_nil(group) <-
            Enum.find(preview.groups, &link_group?(&1, occurrences, pattern)) do
       assign(socket, :link_offer, link_offer(pattern, group, preview.fingerprint))
@@ -3269,7 +3298,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp submit_details_review(socket, attrs) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
     operation = details_operation(socket, attrs)
 
     case Gtfs.review(
@@ -3310,7 +3339,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp changed_attrs(_pattern, attrs), do: attrs
 
   defp apply_details(socket, operation, fingerprint) do
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     case Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit) do
       {:ok, %{trips_updated: updated, headsign_undo: undo}} ->
@@ -3532,7 +3561,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            pattern_uuid(socket),
            review.scope,
            selections,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{applied: applied, undo: undo}} ->
         socket = saved(socket, affected_message(length(applied)), :details)
@@ -4274,7 +4303,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp refresh_stop_review(socket, review) do
     operation = stop_operation(socket, review.values, review.acks)
 
-    case Gtfs.preview_stop_edit(pattern_uuid(socket), operation, audit_context(socket)) do
+    case Gtfs.preview_stop_edit(
+           pattern_uuid(socket),
+           operation,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, %{proposed: proposed, impact: impact}} ->
         review = %{
           review
@@ -4518,14 +4551,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            pattern_uuid(socket),
            operation,
            socket.assigns.source_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{fingerprint: fingerprint}} ->
         case Gtfs.apply_review(
                pattern_uuid(socket),
                operation,
                fingerprint,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, %{trips_updated: updated}} ->
             {:noreply, saved(socket, affected_message(updated), :stops)}
@@ -5141,7 +5174,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            pattern_uuid(socket),
            operation,
            socket.assigns.source_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: 0} = impact}}
       when not confirm? ->
@@ -5193,7 +5226,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp apply_timing(socket, operation, fingerprint, _impact) do
-    case Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit_context(socket)) do
+    case Gtfs.apply_review(
+           pattern_uuid(socket),
+           operation,
+           fingerprint,
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, %{trips_updated: updated, headsign_undo: undo}} ->
         # trips_updated counts the row re-materialization (the timing's whole
         # trip set when rows are present); the headsign writes are a subset of
@@ -5301,14 +5339,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
            pattern_uuid(socket),
            operation,
            socket.assigns.source_fingerprint,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{fingerprint: fingerprint}} ->
         case Gtfs.apply_review(
                pattern_uuid(socket),
                operation,
                fingerprint,
-               audit_context(socket)
+               AuditContext.from_assigns(socket.assigns)
              ) do
           {:ok, _result} ->
             {:noreply,
@@ -5377,7 +5415,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp reviewed_apply(socket, operation, _unused) do
     with {:ok, %{fingerprint: fingerprint}} <- reviewed_apply_review_only(socket, operation) do
-      Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit_context(socket))
+      Gtfs.apply_review(
+        pattern_uuid(socket),
+        operation,
+        fingerprint,
+        AuditContext.from_assigns(socket.assigns)
+      )
     end
   end
 
@@ -5386,7 +5429,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       pattern_uuid(socket),
       operation,
       socket.assigns.source_fingerprint,
-      audit_context(socket)
+      AuditContext.from_assigns(socket.assigns)
     )
   end
 
@@ -6153,15 +6196,5 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       nil -> "task=#{task}"
       timing_id -> "task=#{task}&timing=#{timing_id}"
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 end

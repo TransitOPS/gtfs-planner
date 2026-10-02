@@ -524,7 +524,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # never classify as this delete's result.
   defp start_route_delete(socket, review) do
     route_id = socket.assigns.route.route_id
-    audit = audit_context(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
 
     task =
       Task.Supervisor.async_nolink(GtfsPlanner.TaskSupervisor, fn ->
@@ -891,7 +891,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            attrs,
            socket.assigns.source,
            choices,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: _saved}} when is_binary(pending) ->
         {:noreply, guarded_navigate(socket, pending)}
@@ -1083,7 +1083,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            route.route_id,
            desired_active,
            socket.assigns.source,
-           audit_context(socket)
+           AuditContext.from_assigns(socket.assigns)
          ) do
       {:ok, %{route: saved}} ->
         message = route_status_message(saved)
@@ -1184,7 +1184,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp open_delete_review(socket) do
     route = socket.assigns.route
 
-    case Gtfs.review_route_deletion(route.route_id, audit_context(socket)) do
+    case Gtfs.review_route_deletion(route.route_id, AuditContext.from_assigns(socket.assigns)) do
       {:ok, review} ->
         socket
         |> assign(:delete_review, review)
@@ -1621,15 +1621,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       value = fields["route_text_color"] -> Map.put(fields, "route_color", value)
       true -> fields
     end
-  end
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
   end
 
   # The submitted form data: the `route[...]` fields plus the top-level transient

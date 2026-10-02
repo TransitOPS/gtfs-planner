@@ -1397,7 +1397,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("save_block_rules", params, socket) do
     case Gtfs.update_blocking_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            block_rules_attrs(socket, params)
          ) do
       {:ok, _setting} ->
@@ -1448,7 +1448,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     with {from_ref, to_ref} <- listed_pair(state, pair),
          :ok <-
            Gtfs.clear_deadhead_time(
-             audit_context(socket),
+             AuditContext.from_assigns(socket.assigns),
              {from_ref, to_ref}
            ) do
       {:noreply,
@@ -1625,7 +1625,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          previous: assigns.connection_saved || :not_stated,
          restorable?: connection_restorable?(gap.records),
          gap: gap_param(gap.from.id, gap.to.id),
-         audit: audit_context(socket)
+         audit: AuditContext.from_assigns(socket.assigns)
        }}
     else
       _other -> :error
@@ -2176,7 +2176,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          # review's own refusal sentence, so the answer accounts for every row
          # the reader saw rather than only the ones that reached the write.
          blocked: bulk_blocked(review.rows, bulk_connections(socket.assigns.connections_all)),
-         audit: audit_context(socket)
+         audit: AuditContext.from_assigns(socket.assigns)
        }}
     end
   end
@@ -2917,7 +2917,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     case Gtfs.apply_block_change(
            socket.assigns.day_type.key,
            command,
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            confirmation
          ) do
       {:ok, result} -> applied(socket, command, result)
@@ -3166,7 +3166,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
            socket.assigns.day_type.key,
            block_id,
            %{"garage_id" => garage_id, "vehicle_type_id" => vehicle_type_id},
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            confirmation
          ) do
       {:ok, _result} -> {:noreply, attributes_applied(socket, block_id)}
@@ -3563,7 +3563,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # says the settings are already stored rather than claiming a failed save.
   defp save_route_settings(socket, params) do
     case Gtfs.update_route_operating_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            route_setting_entries(socket, params)
          ) do
       :ok ->
@@ -3642,7 +3642,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     result =
       Enum.reduce_while(entries, {:ok, 0}, fn {_key, pair, minutes}, {:ok, count} ->
         case Gtfs.put_deadhead_time(
-               audit_context(socket),
+               AuditContext.from_assigns(socket.assigns),
                pair,
                minutes
              ) do
@@ -4059,7 +4059,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       version_id: socket.assigns.current_gtfs_version.id,
       day_type_key: socket.assigns.day_type && socket.assigns.day_type.key,
       plan: socket.assigns.plan_preview,
-      audit: audit_context(socket)
+      audit: AuditContext.from_assigns(socket.assigns)
     }
   end
 
@@ -4309,7 +4309,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp write_operator_changes(socket, state, minutes, marked, limit) do
     case Gtfs.update_relief_settings(
-           audit_context(socket),
+           AuditContext.from_assigns(socket.assigns),
            socket.assigns.day_type && socket.assigns.day_type.key,
            %{max_piece_minutes: minutes, marked: marked}
          ) do
@@ -4455,7 +4455,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp remove_stale_record(socket) do
     row = socket.assigns.remove_record.row
 
-    case Gtfs.remove_in_seat_records([{row.id, row.updated_at}], audit_context(socket)) do
+    case Gtfs.remove_in_seat_records(
+           [{row.id, row.updated_at}],
+           AuditContext.from_assigns(socket.assigns)
+         ) do
       {:ok, _removed} ->
         {:noreply,
          socket
@@ -4590,7 +4593,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: {:noreply, socket}
 
   defp remove_in_seat_batch(socket, %{rows: rows}, key) do
-    case Gtfs.remove_in_seat_records(rows, audit_context(socket)) do
+    case Gtfs.remove_in_seat_records(rows, AuditContext.from_assigns(socket.assigns)) do
       {:ok, removed} ->
         {:noreply,
          socket
@@ -4683,16 +4686,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: load_unmatched_in_seat(socket)
 
   defp resolve_unmatched(socket, _drawer), do: socket
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      station_stop_id: nil,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   defp effective_page(page, visible_count) do
     min(page, max(div(visible_count + @page_size - 1, @page_size), 1))

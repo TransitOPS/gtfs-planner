@@ -195,7 +195,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   @impl true
   def handle_event("save", %{"feed_info" => params}, socket) do
-    case FeedSettings.save_feed_info(audit_context(socket), params, socket.assigns.loaded_token) do
+    case FeedSettings.save_feed_info(
+           AuditContext.from_assigns(socket.assigns),
+           params,
+           socket.assigns.loaded_token
+         ) do
       {:ok, feed_info} ->
         {:noreply,
          socket
@@ -814,15 +818,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   defp token(nil), do: nil
   defp token(%{updated_at: updated_at}), do: updated_at
-
-  defp audit_context(socket) do
-    %AuditContext{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      actor_id: socket.assigns.current_user.id,
-      actor_email: socket.assigns.current_user.email
-    }
-  end
 
   # The suggested label is the version's current date resolved the way the rest
   # of the app resolves it, and it is never written without the editor asking
