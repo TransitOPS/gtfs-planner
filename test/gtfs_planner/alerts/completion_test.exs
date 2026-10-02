@@ -331,6 +331,39 @@ defmodule GtfsPlanner.Alerts.CompletionTest do
     end
   end
 
+  describe "a period that ends before it starts" do
+    test "a continuous planned period with its last date before its first is reported" do
+      alert =
+        alert(
+          urgency: :planned,
+          timing:
+            struct(planned_timing(),
+              pattern: :continuous,
+              first_date: ~D[2026-10-09],
+              last_date: ~D[2026-10-05]
+            )
+        )
+
+      assert [{:timing, :last_date, "Choose an end date after the start date."}] =
+               Completion.errors(alert)
+    end
+
+    test "a current alert whose confirmed end date is before its start date is reported" do
+      alert =
+        alert(timing: struct(now_timing(), start_date: ~D[2026-10-09], end_date: ~D[2026-10-05]))
+
+      assert [{:timing, :end_date, "Choose an end date after the start date."}] =
+               Completion.errors(alert)
+    end
+
+    test "a current alert that starts and ends on one date is complete" do
+      alert =
+        alert(timing: struct(now_timing(), start_date: ~D[2026-10-05], end_date: ~D[2026-10-05]))
+
+      assert Completion.errors(alert) == []
+    end
+  end
+
   defp error_on(alert, step) do
     matches =
       Enum.filter(Completion.errors(alert), fn {candidate, _field, _message} ->

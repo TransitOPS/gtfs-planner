@@ -54,12 +54,20 @@ defmodule GtfsPlanner.Alerts.Completion do
   @pattern_message "Choose when this repeats."
   @first_date_message "Choose the first date."
   @continuous_end_message "Choose the last date."
+  @reversed_period_message "Choose an end date after the start date."
   @weeks_message "Choose how many weeks this repeats."
   @weekdays_message "Choose the days of the week."
   @header_message "Write the headline riders will see."
   @description_message "Describe what to expect and what to do instead."
 
   @type error :: {step :: atom(), field :: atom(), message :: String.t()}
+
+  @doc """
+  The sentence for a period whose last date is before its first, shared with the
+  editor's inline message so the question and the review say the same thing.
+  """
+  @spec reversed_period_message() :: String.t()
+  def reversed_period_message, do: @reversed_period_message
 
   @doc """
   Derives the GTFS-Realtime effect an alert's situation implies, or `nil` when
@@ -212,6 +220,12 @@ defmodule GtfsPlanner.Alerts.Completion do
   defp end_errors(%{end_kind: :confirmed, end_date: nil}),
     do: [{:timing, :end_date, @confirmed_end_message}]
 
+  defp end_errors(%{end_kind: :confirmed} = timing) do
+    if reversed_period?(timing.start_date, timing.end_date),
+      do: [{:timing, :end_date, @reversed_period_message}],
+      else: []
+  end
+
   defp end_errors(%{end_kind: kind, check_in_at: nil}) when kind in [:estimated, :unknown],
     do: [{:timing, :check_in_at, @check_in_message}]
 
@@ -220,12 +234,21 @@ defmodule GtfsPlanner.Alerts.Completion do
   defp pattern_errors(%{pattern: :continuous, last_date: nil}),
     do: [{:timing, :last_date, @continuous_end_message}]
 
+  defp pattern_errors(%{pattern: :continuous} = timing) do
+    if reversed_period?(timing.first_date, timing.last_date),
+      do: [{:timing, :last_date, @reversed_period_message}],
+      else: []
+  end
+
   defp pattern_errors(%{pattern: :weekly, weeks: nil}), do: [{:timing, :weeks, @weeks_message}]
 
   defp pattern_errors(%{pattern: :weekly, weekdays: weekdays}) when weekdays in [nil, []],
     do: [{:timing, :weekdays, @weekdays_message}]
 
   defp pattern_errors(%{pattern: _pattern}), do: []
+
+  defp reversed_period?(%Date{} = first, %Date{} = last), do: Date.compare(last, first) == :lt
+  defp reversed_period?(_first, _last), do: false
 
   defp message_errors(%Alert{message: nil}) do
     [{:message, :header, @header_message}, {:message, :description, @description_message}]

@@ -1905,7 +1905,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     with %Date{} = first <- timing.first_date,
          %Date{} = last <- timing.last_date,
          :lt <- Date.compare(last, first) do
-      "Choose an end date after the start date."
+      Completion.reversed_period_message()
     else
       _not_reversed -> nil
     end
