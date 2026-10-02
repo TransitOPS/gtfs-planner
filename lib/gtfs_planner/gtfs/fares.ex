@@ -647,7 +647,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
       groups: groups,
       routes: build_routes(organization_id, gtfs_version_id),
       matrices: build_matrices(rows, groups, pass_ids, names),
-      transfers: build_transfers(rows.fare_transfer_rules),
+      transfers: build_transfers(rows.fare_transfer_rules, groups, rows.fare_products),
       time_periods: build_time_periods(periods, rows.timeframes),
       joins: joins,
       history: history_rows(organization_id, gtfs_version_id),
@@ -1005,10 +1005,13 @@ defmodule GtfsPlanner.Gtfs.Fares do
   # is no longer stored still has its cell. `pay` is the editor's own word for
   # `fare_transfer_type`: 0 is a free transfer, 1 charges the named product and
   # 2 pays the difference.
-  defp build_transfers(fare_transfer_rules) do
+  defp build_transfers(fare_transfer_rules, groups, fare_products) do
     leg_groups =
-      fare_transfer_rules
-      |> Enum.flat_map(&[&1.from_leg_group_id, &1.to_leg_group_id])
+      groups
+      |> Enum.map(& &1.network_id)
+      |> Kernel.++(
+        Enum.flat_map(fare_transfer_rules, &[&1.from_leg_group_id, &1.to_leg_group_id])
+      )
       |> Enum.reject(&is_nil(&1))
       |> Enum.uniq()
       |> Enum.sort()
@@ -1017,14 +1020,14 @@ defmodule GtfsPlanner.Gtfs.Fares do
       %{
         from_leg_group_id: from,
         to_leg_group_id: to,
-        policy: transfer_policy(fare_transfer_rules, from, to)
+        policy: transfer_policy(fare_transfer_rules, from, to, fare_products)
       }
     end
   end
 
   # The rule that prices a group pair: a rule with no `transfer_count` covers
   # every change, so it is the fallback and a counted rule is preferred.
-  defp transfer_policy(rules, from, to) do
+  defp transfer_policy(rules, from, to, fare_products) do
     rules
     |> Enum.filter(&(&1.from_leg_group_id == from and &1.to_leg_group_id == to))
     |> Enum.sort_by(
@@ -1041,6 +1044,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
           minutes: minutes(rule),
           count: rule.transfer_count,
           fee: fee(rule),
+          fee_amount: transfer_fee_amount(fare_products, rule),
           fare_transfer_type: rule.fare_transfer_type,
           transfer_count: rule.transfer_count,
           duration_limit: rule.duration_limit,
@@ -1048,6 +1052,16 @@ defmodule GtfsPlanner.Gtfs.Fares do
         }
     end
   end
+
+  defp transfer_fee_amount(products, %{fare_transfer_type: 0, fare_product_id: product_id})
+       when not is_nil(product_id) do
+    case Enum.find(products, &(&1.fare_product_id == product_id)) do
+      %{amount: amount} -> amount
+      nil -> nil
+    end
+  end
+
+  defp transfer_fee_amount(_products, _rule), do: nil
 
   defp pay(0), do: :free
   defp pay(1), do: :fee

@@ -118,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
     do: {:button, "add-fare-rule", "Add fare rule", "primary", "open_rule_drawer"}
 
   defp header_action(:transfers, true, true, _dirty?, _prices_ready?),
-    do: {:button, "add-transfer-rule", "Add transfer rule", "primary", nil}
+    do: {:button, "add-transfer-rule", "Add transfer rule", "primary", "open_transfer_create"}
 
   defp header_action(_active_tab, _ready?, _transfers?, _dirty?, _prices_ready?), do: :none
 
@@ -3497,6 +3497,313 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       </ul>
     </section>
     """
+  end
+
+  attr :workspace, :map, required: true
+  attr :older_allowances, :list, default: []
+  attr :has_rules?, :boolean, default: false
+
+  def transfers_tab(assigns) do
+    ~H"""
+    <div class="grid gap-4" id="transfers-tab">
+      <section :if={@has_rules?} class="rounded-card border border-subtle bg-white px-4 py-3 sm:px-5">
+        <h2 class="text-base font-bold text-strong">Transfers in plain words</h2>
+        <ul class="mt-1 grid gap-1 text-sm text-default">
+          <li :for={transfer <- @workspace.transfers} :if={transfer.policy}>
+            {transfer_sentence(@workspace, transfer)}
+          </li>
+          <li class="text-muted">Any other change: riders pay a new full fare.</li>
+        </ul>
+      </section>
+      <section
+        :if={@has_rules?}
+        id="transfer-matrix"
+        class="overflow-clip rounded-card border border-subtle bg-white"
+      >
+        <div class="px-4 py-3 sm:px-5">
+          <h2 class="text-base font-bold text-strong">Transfers between route groups</h2>
+          <p class="text-[13px] text-muted">
+            Rows are the route group a rider leaves; columns are the one they board. Select a cell to change it.
+          </p>
+        </div>
+        <div class="overflow-x-auto px-4 pb-4 sm:px-5">
+          <table class="w-full min-w-[520px] border-collapse rounded-card border border-subtle">
+            <thead>
+              <tr>
+                <th class="bg-canvas p-3 text-left text-[12px] text-muted">From ↓ · To →</th>
+                <th
+                  :for={group <- @workspace.groups}
+                  class="border-l border-subtle bg-canvas p-3 text-left text-[13px] font-semibold text-strong"
+                >
+                  {group.name || group.network_id}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={from <- @workspace.groups}>
+                <th scope="row" class="bg-canvas p-3 text-left text-[13px] font-semibold text-strong">
+                  {from.name || from.network_id}
+                </th>
+                <td :for={to <- @workspace.groups} class="border-l border-t border-subtle p-0">
+                  <button
+                    type="button"
+                    class="flex min-h-14 w-full flex-col justify-center px-3 py-2 text-left hover:bg-canvas"
+                    phx-click="open_transfer_edit"
+                    phx-value-from={from.network_id}
+                    phx-value-to={to.network_id}
+                    aria-label={"Edit transfer from #{from.name || from.network_id} to #{to.name || to.network_id}"}
+                  >
+                    <span class="text-sm font-semibold text-strong">
+                      {transfer_label(@workspace, from.network_id, to.network_id)}
+                    </span>
+                    <span class="text-[12px] text-muted">
+                      {transfer_limit(@workspace, from.network_id, to.network_id)}
+                    </span>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="rounded-card border border-subtle bg-white">
+        <div class="border-b border-subtle px-4 py-3 sm:px-5">
+          <h2 class="text-base font-bold text-strong">Changes that count as one ride</h2>
+          <p class="text-[13px] text-muted">
+            For example, two rail lines riders change between inside one station.
+          </p>
+        </div>
+        <p :if={@workspace.joins == []} class="px-4 py-4 text-sm text-default sm:px-5">
+          None in this version. Each vehicle a rider boards is a separate ride.<span class="block text-[13px] text-muted">Not editable yet. Imported rules are listed here and exported unchanged.</span>
+        </p>
+        <ul :if={@workspace.joins != []} class="divide-y divide-subtle">
+          <li :for={join <- @workspace.joins} class="px-4 py-3 text-sm text-default">
+            {inspect(join)}
+          </li>
+        </ul>
+        <p class="border-t border-subtle px-4 py-3 text-[13px] text-muted sm:px-5">
+          fare_leg_join_rules.txt · newer format only
+        </p>
+      </section>
+      <section class="rounded-card border border-subtle bg-white">
+        <div class="border-b border-subtle px-4 py-3 sm:px-5">
+          <h2 class="text-base font-bold text-strong">In the older GTFS fare format</h2>
+          <p class="text-[13px] text-muted">
+            That format stores one transfer allowance on each fare, for any route.
+          </p>
+        </div>
+        <ul>
+          <li
+            :for={fare <- @workspace.fares}
+            class="flex flex-wrap items-center gap-x-4 border-b border-subtle px-4 py-2 last:border-b-0 sm:px-5"
+          >
+            <span class="min-w-[160px] text-sm font-bold text-strong">{fare.name}</span><span class="text-sm text-default">{older_allowance(@older_allowances, fare.name)}</span>
+          </li>
+        </ul>
+        <p class="border-t border-subtle px-4 py-3 text-[13px] text-muted sm:px-5">
+          The older format cannot describe transfers between route groups or pay-the-difference rules.
+        </p>
+      </section>
+      <section
+        :if={!@has_rules?}
+        id="transfers-empty"
+        class="rounded-card border border-subtle bg-white px-5 py-6"
+      >
+        <h2 class="text-base font-bold text-strong">Riders pay a new fare every time they board</h2>
+        <p class="mt-1 text-sm text-muted">
+          Add a transfer rule if riders can change vehicles for free or for less.
+        </p>
+        <.button id="add-first-transfer-rule" class="mt-4 min-h-11" phx-click="open_transfer_create">
+          Add first transfer rule
+        </.button>
+      </section>
+    </div>
+    """
+  end
+
+  attr :draft, :map, required: true
+  attr :workspace, :map, required: true
+  attr :scope, :map, required: true
+  attr :form, :any, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: false
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def transfer_drawer(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :difference_allowed?,
+        GtfsPlanner.Gtfs.Fares.Transfers.difference_allowed?(
+          assigns.scope,
+          assigns.draft.from,
+          assigns.draft.to
+        )
+      )
+
+    ~H"""
+    <.drawer
+      id="transfer-drawer"
+      open={true}
+      modal={true}
+      title={"Transfer from #{group_name(@workspace, @draft.from)} to #{group_name(@workspace, @draft.to)}"}
+      on_close="close_transfer_drawer"
+      return_focus_id={@return_focus_id}
+      pending={@pending?}
+    >
+      <.form for={@form} id="transfer-form" phx-change="change_transfer" phx-submit="save_transfer">
+        <.drawer_scroll>
+          <div
+            :if={@draft.failures != []}
+            id="transfer-error"
+            role="alert"
+            class="rounded-card border border-error-line bg-error-soft px-4 py-3 text-sm text-error-fg"
+          >
+            <p :for={failure <- @draft.failures}>{failure}</p>
+          </div>
+          <.choice_cards
+            id="transfer-pay"
+            name="transfer[pay]"
+            type="radio"
+            label="What does the rider pay for the next ride?"
+            options={[
+              %{value: "free", label: "Nothing", description: "The change is free."},
+              %{
+                value: "difference",
+                label: "The difference",
+                description: "Only the extra cost when the next fare is higher.",
+                disabled?: not @difference_allowed?
+              },
+              %{
+                value: "fee",
+                label: "A transfer fee",
+                description: "A fixed amount instead of the next fare."
+              },
+              %{
+                value: "full",
+                label: "A new full fare",
+                description: "No discount. This is what happens without a rule."
+              }
+            ]}
+            selected={[@draft.pay]}
+          />
+          <p
+            :if={!@difference_allowed?}
+            id="transfer-difference-reason"
+            class="text-[13px] text-muted"
+          >
+            This pair cannot express a difference without undercharging a rider.
+          </p>
+          <div :if={@draft.pay != "full"} class="mt-5 grid gap-4">
+            <div class="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
+              <label class="grid gap-1 text-sm font-semibold">
+                Time limit
+                <span class="flex items-center gap-2">
+                  <.input
+                    field={@form[:minutes]}
+                    type="number"
+                    min="0"
+                    class="min-h-11 w-24 rounded-control border border-control bg-white px-3 py-2 text-sm text-default focus-visible:outline-2 focus-visible:outline-focus"
+                  />
+                  <span class="font-normal text-muted">minutes</span>
+                </span>
+              </label>
+              <label class="grid gap-1 text-sm font-semibold">
+                Counted from
+                <.input
+                  field={@form[:basis]}
+                  type="select"
+                  options={[
+                    {"1", "First boarding to boarding the next vehicle"},
+                    {"0", "First boarding to getting off the last vehicle"},
+                    {"2", "Getting off to boarding the next vehicle"},
+                    {"3", "Getting off to getting off the next vehicle"}
+                  ]}
+                />
+                <span class="text-[13px] font-normal text-muted">
+                  Most agencies count from first boarding. The older format can only count that way.
+                </span>
+              </label>
+            </div>
+            <label :if={@draft.from == @draft.to} class="grid gap-1 text-sm font-semibold">
+              How many changes
+              <.input
+                field={@form[:count]}
+                type="select"
+                options={[{"1", "1"}, {"2", "2"}, {"-1", "No limit"}]}
+              />
+            </label>
+            <p :if={@draft.from != @draft.to} class="text-[13px] text-muted">
+              A change between two different route groups covers one change. Add another rule for the next group.
+            </p>
+            <label :if={@draft.pay == "fee"} class="grid gap-1 text-sm font-semibold">
+              Transfer fee <.input field={@form[:fee]} type="number" step="0.01" />
+            </label>
+          </div>
+        </.drawer_scroll>
+        <.drawer_footer>
+          <p class="basis-full text-[13px] text-muted">
+            Changes apply to {@version_name} service as soon as you save.
+          </p>
+          <.button
+            id="cancel-transfer"
+            type="button"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="close_transfer_drawer"
+          >
+            Cancel
+          </.button>
+          <.button id="save-transfer" type="submit" class="min-h-11">Save transfer rule</.button>
+        </.drawer_footer>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  defp transfer_label(workspace, from, to) do
+    case Enum.find(
+           workspace.transfers,
+           &(&1.from_leg_group_id == from and &1.to_leg_group_id == to)
+         ) do
+      %{policy: %{pay: :free}} -> "Free"
+      %{policy: %{pay: :fee}} -> "Transfer fee"
+      %{policy: %{pay: :difference}} -> "Pays the difference"
+      _ -> "New full fare"
+    end
+  end
+
+  defp transfer_limit(workspace, from, to) do
+    case Enum.find(
+           workspace.transfers,
+           &(&1.from_leg_group_id == from and &1.to_leg_group_id == to)
+         ) do
+      %{policy: %{minutes: minutes}} when is_integer(minutes) -> "Within #{minutes} minutes"
+      _ -> "No transfer rule"
+    end
+  end
+
+  defp transfer_sentence(workspace, transfer) do
+    "Changing from #{group_name(workspace, transfer.from_leg_group_id)} to #{group_name(workspace, transfer.to_leg_group_id)}: #{transfer_label(workspace, transfer.from_leg_group_id, transfer.to_leg_group_id)} within #{transfer.policy.minutes || 0} minutes."
+  end
+
+  defp older_allowance(rows, fare_name) do
+    fare_id = Stop.slugify(fare_name)
+
+    case Enum.find(rows, &(&1.fare_id == fare_id)) do
+      %{transfers: 0} ->
+        "No free transfers"
+
+      %{transfers: nil} ->
+        "Unlimited transfers"
+
+      %{transfers: count, transfer_duration: duration} when is_integer(count) ->
+        "#{count} free #{if count == 1, do: "transfer", else: "transfers"}#{if duration, do: " within #{div(duration, 60)} min", else: ""}"
+
+      _ ->
+        "No older-format allowance"
+    end
   end
 
   attr :rules, :list, required: true

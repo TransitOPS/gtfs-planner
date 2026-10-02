@@ -45,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
   alias GtfsPlanner.Gtfs.FareLegRule
   alias GtfsPlanner.Gtfs.FareProduct
   alias GtfsPlanner.Gtfs.FareProductDetail
+  alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.FareVersionSetting
@@ -157,6 +158,21 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
       assert length(areas(context)) == 3
     end
 
+    test "rewrites legacy transfer endpoints with the normalized route groups", context do
+      # R12's North Coast feed names transfer endpoints LG_LOCAL/LG_INTERCITY,
+      # while conversion normalizes those groups to their network ids. The
+      # transfer policy must follow that identity change or the scoped editor
+      # cannot find the imported rule to display or edit it.
+      assert transfer_pairs(context) == [
+               {"N_INTERCITY", "N_LOCAL"},
+               {"N_LOCAL", "N_INTERCITY"},
+               {"N_LOCAL", "N_LOCAL"}
+             ]
+
+      assert Enum.sort(context.applied.inverse.conversion.transfer_groups) ==
+               [{"LG_INTERCITY", "N_INTERCITY"}, {"LG_LOCAL", "N_LOCAL"}]
+    end
+
     test "records one change-log entry naming the settings row", context do
       [entry] =
         Repo.all(
@@ -212,6 +228,12 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
         assert is_nil(rule.to_timeframe_group_id)
         assert rule.leg_group_id in ["LG_LOCAL", "LG_INTERCITY", nil]
       end
+
+      assert transfer_pairs(context) == [
+               {"LG_INTERCITY", "LG_LOCAL"},
+               {"LG_LOCAL", "LG_INTERCITY"},
+               {"LG_LOCAL", "LG_LOCAL"}
+             ]
     end
 
     test "exports the same bytes the import read", context do
@@ -421,6 +443,13 @@ defmodule GtfsPlanner.Gtfs.Fares.ConversionV2Test do
   end
 
   defp rules(context), do: rows_in(context, FareLegRule)
+
+  defp transfer_pairs(context),
+    do:
+      rows_in(context, FareTransferRule)
+      |> Enum.map(&{&1.from_leg_group_id, &1.to_leg_group_id})
+      |> Enum.sort()
+
   defp details(context), do: rows_in(context, FareProductDetail)
   defp networks(context), do: rows_in(context, Network)
   defp route_networks(context), do: rows_in(context, RouteNetwork)

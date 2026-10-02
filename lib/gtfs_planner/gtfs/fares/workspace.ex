@@ -145,6 +145,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
               minutes: non_neg_integer() | nil,
               count: integer() | nil,
               fee: String.t() | nil,
+              fee_amount: Decimal.t() | nil,
               fare_transfer_type: integer(),
               transfer_count: integer() | nil,
               duration_limit: integer() | nil,

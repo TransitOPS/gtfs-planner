@@ -96,7 +96,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
 
   # The facts of a stored policy a reviewed map may carry, and each one is read
   # back out of the pair's rule in the drawer's own words for the fence.
-  @reviewed_fields [:pay, :minutes, :count, :fee]
+  @reviewed_fields [:pay, :minutes, :basis, :count, :fee]
 
   @doc """
   Stores one pair of route groups' transfer policy and answers the inverse
@@ -154,6 +154,35 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
       when is_binary(from_network) and is_binary(to_network) and is_map(params) do
     with {:ok, choice} <- transfer_choice(params) do
       write_transfer(scope, from_network, to_network, choice, reviewed)
+    end
+  end
+
+  @doc """
+  Answers whether the drawer can offer "pays the difference" for one scoped pair.
+
+  The editor calls this on the version workspace it already loaded, so a
+  choice that could undercharge is disabled with the same R6 check the writer
+  repeats transactionally at save time.
+  """
+  @spec difference_allowed?(Fares.scope(), String.t(), String.t()) :: boolean()
+  def difference_allowed?(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id},
+        from_network,
+        to_network
+      )
+      when is_binary(from_network) and is_binary(to_network) do
+    with :ok <- require_leg_groups(organization_id, gtfs_version_id, [from_network, to_network]),
+         {:ok, _product} <-
+           difference_product(
+             organization_id,
+             gtfs_version_id,
+             from_network,
+             to_network,
+             %{pay: :difference}
+           ) do
+      true
+    else
+      {:error, _reason} -> false
     end
   end
 
@@ -309,12 +338,13 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
   defp stored_policy(organization_id, gtfs_version_id, from, to) do
     case pair_rule(organization_id, gtfs_version_id, from, to) do
       nil ->
-        %{pay: :full, minutes: nil, count: nil, fee: nil}
+        %{pay: :full, minutes: nil, basis: @default_basis, count: nil, fee: nil}
 
       rule ->
         %{
           pay: pay_of(rule),
           minutes: minutes_of(rule),
+          basis: rule.duration_limit_type || @default_basis,
           count: rule.transfer_count,
           fee: stored_fee(organization_id, gtfs_version_id, rule)
         }
@@ -326,11 +356,21 @@ defmodule GtfsPlanner.Gtfs.Fares.Transfers do
   defp pay_of(_rule), do: :fee
 
   defp minutes_of(%{duration_limit: nil}), do: nil
-  defp minutes_of(%{duration_limit_type: 1, duration_limit: limit}), do: div(limit, 60)
+  defp minutes_of(%{duration_limit: limit}) when is_integer(limit), do: div(limit, 60)
   defp minutes_of(_rule), do: nil
 
-  defp stored_fee(_organization_id, _gtfs_version_id, rule) do
-    if pay_of(rule) == :fee, do: rule.fare_product_id, else: nil
+  defp stored_fee(organization_id, gtfs_version_id, rule) do
+    if pay_of(rule) == :fee do
+      Repo.one(
+        from(product in FareProduct,
+          where:
+            product.organization_id == ^organization_id and
+              product.gtfs_version_id == ^gtfs_version_id and
+              product.fare_product_id == ^rule.fare_product_id,
+          select: product.amount
+        )
+      )
+    end
   end
 
   # -- R6's guard ----------------------------------------------------------------

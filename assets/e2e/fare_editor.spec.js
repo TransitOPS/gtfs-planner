@@ -1391,3 +1391,54 @@ test("rules", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=rule-overlap", "ref-rules-overlap");
   await captureReference(page, testInfo, "?state=rule-list", "ref-rules-list");
 });
+
+// Transfer policy editing uses the normalized route-group pair in both the
+// matrix and the scoped writer. The reverse direction is deliberately
+// inexpressible under R6 for the North Coast sample.
+test("transfers", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+  const openTransfers = async () => {
+    await page.goto(`/gtfs/${versionId}/settings/fares/transfers`);
+    await waitForLiveView(page);
+    await expect(page.locator("#transfer-matrix")).toBeAttached();
+  };
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openTransfers();
+
+    await page
+      .locator('#transfer-matrix button[phx-value-from="N_LOCAL"][phx-value-to="N_INTERCITY"]')
+      .click();
+    await expect(page.locator("#transfer-drawer")).toBeAttached();
+    await expect(page.locator("#transfer-pay")).toContainText("The difference");
+    await expect(page.locator("#transfer-form select[name='transfer[count]']")).toHaveCount(0);
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `transfers-edit-${viewport.label}`);
+
+    await page.locator("#transfer-form input[name='transfer[minutes]']").fill("75");
+    await page.locator("#save-transfer").click();
+    await expect(page.locator("#transfer-drawer")).toHaveCount(0);
+    await expect(
+      page.locator('#transfer-matrix button[phx-value-from="N_LOCAL"][phx-value-to="N_INTERCITY"]'),
+    ).toContainText("75 minutes");
+
+    await page
+      .locator('#transfer-matrix button[phx-value-from="N_INTERCITY"][phx-value-to="N_LOCAL"]')
+      .click();
+    await expect(page.locator("#transfer-pay-difference")).toBeDisabled();
+    await expect(page.locator("#transfer-difference-reason")).toBeAttached();
+    await captureDrawer(page, testInfo, `transfers-r6-disabled-${viewport.label}`);
+    await page.locator("#cancel-transfer").click();
+    await expect(page.locator("#transfer-drawer")).toHaveCount(0);
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `transfers-matrix-${viewport.label}`);
+  }
+
+  await captureReference(page, testInfo, "?state=transfers", "ref-transfers");
+  await captureReference(page, testInfo, "?state=transfer-edit", "ref-transfer-edit");
+  await captureReference(page, testInfo, "?state=transfers-empty", "ref-transfers-empty");
+});

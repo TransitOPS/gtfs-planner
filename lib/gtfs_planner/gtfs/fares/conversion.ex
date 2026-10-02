@@ -674,6 +674,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
       source: :v2,
       networks: networks,
       route_networks: route_networks,
+      transfer_groups: transfer_group_map(rows),
       details: details,
       passes: details |> Enum.filter(&(&1.kind == @pass_kind)) |> Enum.map(& &1.fare_product_id),
       areas: areas,
@@ -1052,6 +1053,28 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     |> Enum.group_by(&leg_group(&1))
     |> Map.new(fn {group, group_rules} ->
       {group, group_rules |> Enum.map(& &1.network_id) |> Enum.uniq()}
+    end)
+  end
+
+  # Imported transfer rows name the feed's leg_group_id, while a managed
+  # version's transfer editor addresses the normalized network ID (R5). The
+  # conversion has already refused groups that do not map one-to-one, so retain
+  # the resolved mapping in the plan before Normalize replaces the imported leg
+  # group values.
+  defp transfer_group_map(%Rows{fare_leg_rules: rules, fare_transfer_rules: transfers}) do
+    normalized_by_imported_group =
+      rules
+      |> Enum.group_by(&leg_group/1)
+      |> Map.new(fn {imported_group, group_rules} ->
+        [normalized_group] = group_rules |> Enum.map(&Normalize.leg_group_id/1) |> Enum.uniq()
+        {imported_group, normalized_group}
+      end)
+
+    transfers
+    |> Enum.flat_map(&[&1.from_leg_group_id, &1.to_leg_group_id])
+    |> Enum.uniq()
+    |> Map.new(fn imported_group ->
+      {imported_group, Map.fetch!(normalized_by_imported_group, imported_group)}
     end)
   end
 
@@ -2361,6 +2384,12 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
     leg_rules_before = leg_rule_states(organization_id, gtfs_version_id)
     transfers_before = transfer_states(organization_id, gtfs_version_id)
 
+    rewrite_transfer_groups(
+      organization_id,
+      gtfs_version_id,
+      plan.transfer_groups
+    )
+
     {:ok, adopted} =
       FareZones.adopt_areas_as_zones(
         organization_id,
@@ -2434,11 +2463,41 @@ defmodule GtfsPlanner.Gtfs.Fares.Conversion do
       rows_in(FareTransferRule, organization_id, gtfs_version_id),
       &{&1.id,
        %{
+         from_leg_group_id: &1.from_leg_group_id,
+         to_leg_group_id: &1.to_leg_group_id,
          fare_product_id: &1.fare_product_id,
          duration_limit: &1.duration_limit,
          transfer_count: &1.transfer_count
        }}
     )
+  end
+
+  # FareTransferRule endpoints use the raw imported leg group until the first
+  # managed conversion. The editor and its scoped writer address the normalized
+  # leg groups; rewrite each endpoint inside the same conversion transaction so
+  # the policies remain attached to the same fares and undo can restore them.
+  defp rewrite_transfer_groups(organization_id, gtfs_version_id, groups) do
+    now = DateTime.utc_now()
+
+    Enum.each(groups, fn {imported_group, normalized_group} ->
+      from(transfer in FareTransferRule,
+        where:
+          transfer.organization_id == ^organization_id and
+            transfer.gtfs_version_id == ^gtfs_version_id and
+            transfer.from_leg_group_id == ^imported_group
+      )
+      |> Repo.update_all(set: [from_leg_group_id: normalized_group, updated_at: now])
+
+      from(transfer in FareTransferRule,
+        where:
+          transfer.organization_id == ^organization_id and
+            transfer.gtfs_version_id == ^gtfs_version_id and
+            transfer.to_leg_group_id == ^imported_group
+      )
+      |> Repo.update_all(set: [to_leg_group_id: normalized_group, updated_at: now])
+    end)
+
+    :ok
   end
 
   defp write_plan_or_refuse(scope, %Rows{} = rows, fingerprint) do

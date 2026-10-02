@@ -77,6 +77,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       rule_list_card: 1,
       time_period_drawer: 1,
       time_periods_card: 1,
+      transfer_drawer: 1,
+      transfers_tab: 1,
       unmanaged_fares: 1,
       zone_matrix: 1
     ]
@@ -91,6 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.Fares.Pricing
   alias GtfsPlanner.Gtfs.Fares.Projection
+  alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
@@ -105,6 +108,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:load_state, :loading)
      |> assign(:workspace, nil)
+     |> assign(:older_allowances, [])
+     |> assign(:has_transfer_rules?, false)
      |> assign(:checks, nil)
      |> assign(:price_edits, %{})
      |> assign(:price_conflict, nil)
@@ -138,6 +143,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:cell_focus, nil)
      |> assign(:time_period_draft, nil)
      |> assign(:time_period_focus, nil)
+     |> assign(:transfer_draft, nil)
+     |> assign(:transfer_focus, nil)
      |> assign(:rule_draft, nil)
      |> assign(:rule_form, to_form(%{}, as: :rule))
      |> assign(:rule_focus, nil)
@@ -164,6 +171,78 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   @impl true
   def handle_event("reload", _params, socket), do: {:noreply, load_workspace(socket)}
+
+  def handle_event("open_transfer_create", _params, socket) do
+    case socket.assigns.workspace.groups do
+      [group | _] ->
+        {:noreply,
+         put_transfer(
+           socket,
+           new_transfer_draft(group.network_id, group.network_id, nil),
+           "add-first-transfer-rule"
+         )}
+
+      [] ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_transfer_edit", %{"from" => from, "to" => to}, socket) do
+    case Enum.find(
+           socket.assigns.workspace.transfers,
+           &(&1.from_leg_group_id == from and &1.to_leg_group_id == to)
+         ) do
+      nil -> {:noreply, put_transfer(socket, new_transfer_draft(from, to, nil))}
+      transfer -> {:noreply, put_transfer(socket, new_transfer_draft(from, to, transfer.policy))}
+    end
+  end
+
+  def handle_event("change_transfer", %{"transfer" => params}, socket) do
+    draft = update_transfer_draft(socket.assigns.transfer_draft, params)
+    {:noreply, put_transfer(socket, draft)}
+  end
+
+  def handle_event("change_transfer", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_transfer_drawer", _params, socket) do
+    {:noreply, socket |> assign(:transfer_draft, nil) |> assign(:transfer_focus, nil)}
+  end
+
+  def handle_event("save_transfer", %{"transfer" => params}, socket) do
+    draft = update_transfer_draft(socket.assigns.transfer_draft, params)
+    pay = transfer_pay(draft.pay)
+    count = if draft.from == draft.to, do: transfer_count(draft.count), else: nil
+
+    writer_params = %{
+      pay: pay,
+      minutes: draft.minutes,
+      basis: transfer_basis(draft.basis),
+      count: count,
+      fee: draft.fee
+    }
+
+    reviewed = draft.reviewed
+
+    case Transfers.save(fare_scope(socket), draft.from, draft.to, writer_params, reviewed) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:transfer_draft, nil)
+         |> assign(:transfer_focus, nil)
+         |> assign(:price_note, %{text: "Transfer rule saved.", undo: [{operation_id, inverse}]})}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_transfer(%{
+           draft
+           | failures: ["Transfer rule could not be saved: #{inspect(reason)}"]
+         })}
+    end
+  end
+
+  def handle_event("save_transfer", _params, socket), do: {:noreply, socket}
 
   # A price edit is one cell. The raw text is kept exactly as it was typed
   # beside what `Fares.Money.parse/1` made of it, so an unreadable cell shows the
@@ -1067,6 +1146,80 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   end
 
   def handle_event("delete_rule", _params, socket), do: {:noreply, socket}
+
+  defp new_transfer_draft(from, to, nil) do
+    %{
+      from: from,
+      to: to,
+      pay: "full",
+      minutes: 90,
+      basis: 1,
+      count: "-1",
+      fee: nil,
+      reviewed: nil,
+      failures: []
+    }
+  end
+
+  defp new_transfer_draft(from, to, policy) do
+    %{
+      from: from,
+      to: to,
+      pay: Atom.to_string(policy.pay),
+      minutes: policy.minutes || 90,
+      basis: policy.duration_limit_type || 1,
+      count: to_string(policy.count || -1),
+      fee: policy.fee_amount,
+      reviewed: %{
+        pay: policy.pay,
+        minutes: policy.minutes,
+        basis: policy.duration_limit_type || 1,
+        count: policy.count,
+        fee: policy.fee_amount
+      },
+      failures: []
+    }
+  end
+
+  defp put_transfer(socket, draft, focus_id \\ nil) do
+    socket
+    |> assign(:transfer_draft, draft)
+    |> assign(:transfer_focus, focus_id || socket.assigns.transfer_focus)
+    |> assign(:transfer_scope, fare_scope(socket))
+  end
+
+  defp update_transfer_draft(draft, params) do
+    %{
+      draft
+      | pay: Map.get(params, "pay", draft.pay),
+        minutes: Map.get(params, "minutes", draft.minutes),
+        basis: Map.get(params, "basis", draft.basis),
+        count: Map.get(params, "count", draft.count),
+        fee: Map.get(params, "fee", draft.fee)
+    }
+  end
+
+  defp transfer_pay(value) do
+    case value do
+      "free" -> :free
+      "fee" -> :fee
+      "difference" -> :difference
+      "full" -> :full
+      _ -> :full
+    end
+  end
+
+  defp transfer_count("-1"), do: -1
+  defp transfer_count("1"), do: 1
+  defp transfer_count("2"), do: 2
+  defp transfer_count(_), do: nil
+
+  defp transfer_basis("0"), do: 0
+  defp transfer_basis("1"), do: 1
+  defp transfer_basis("2"), do: 2
+  defp transfer_basis("3"), do: 3
+  defp transfer_basis(basis) when is_integer(basis) and basis in 0..3, do: basis
+  defp transfer_basis(_), do: 1
 
   defp put_time_period(socket, draft, focus_id \\ nil) do
     socket
@@ -2957,7 +3110,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
             <.header_primary
               active_tab={@live_action}
               ready?={@load_state == :ready}
-              transfers?={@workspace != nil and @workspace.transfers != []}
+              transfers?={@has_transfer_rules?}
               dirty?={@price_edits != %{} and @load_state == :ready}
               prices_ready?={@load_state == :ready and @prices_mode == :grid}
             />
@@ -3006,6 +3159,15 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
                 rules={editor_rules(@workspace)}
                 workspace={@workspace}
                 show_ids?={@show_rule_ids?}
+              />
+            </div>
+
+            <div :if={@live_action == :transfers} id="fare-transfers-panel">
+              <.fare_note note={@price_note} />
+              <.transfers_tab
+                workspace={@workspace}
+                older_allowances={@older_allowances}
+                has_rules?={@has_transfer_rules?}
               />
             </div>
 
@@ -3184,6 +3346,27 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           return_focus_id={@rule_focus}
           pending?={@drawer_pending?}
         />
+        <.transfer_drawer
+          :if={@transfer_draft}
+          draft={@transfer_draft}
+          form={
+            to_form(
+              %{
+                "minutes" => @transfer_draft.minutes,
+                "basis" => to_string(@transfer_draft.basis),
+                "count" => @transfer_draft.count,
+                "fee" => @transfer_draft.fee
+              },
+              as: :transfer
+            )
+          }
+          scope={@transfer_scope}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@transfer_focus}
+          pending?={@drawer_pending?}
+        />
       </div>
     </Layouts.app>
     """
@@ -3209,11 +3392,18 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           older_mismatches(workspace, organization_id, gtfs_version_id)
         )
         |> assign(:load_state, :ready)
+        |> assign(:older_allowances, older_allowances(organization_id, gtfs_version_id))
+        |> assign(:has_transfer_rules?, Enum.any?(workspace.transfers, & &1.policy))
         |> refresh_setup()
 
       {:error, :unavailable} ->
         assign(socket, :load_state, :unavailable)
     end
+  end
+
+  defp older_allowances(organization_id, version_id) do
+    Projection.v1_rows(organization_id, version_id)
+    |> Map.fetch!("fare_attributes.txt")
   end
 
   # Which of the Prices tab's four bodies this version is in, decided from the
