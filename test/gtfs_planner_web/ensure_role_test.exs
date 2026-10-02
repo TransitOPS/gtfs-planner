@@ -38,6 +38,14 @@ defmodule GtfsPlannerWeb.EnsureRoleTest do
       refute EnsureRole.editor_member?(user.id, organization_fixture().id)
     end
 
+    test "is false, rather than raising, for a malformed ID" do
+      organization = organization_fixture()
+      user = editor_fixture(organization)
+
+      refute EnsureRole.editor_member?("not-a-uuid", organization.id)
+      refute EnsureRole.editor_member?(user.id, "not-a-uuid")
+    end
+
     test "is false, rather than raising, when the user or the organization is missing" do
       organization = organization_fixture()
       user = editor_fixture(organization)

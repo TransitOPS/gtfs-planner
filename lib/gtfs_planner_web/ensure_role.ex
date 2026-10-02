@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.EnsureRole do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
 
   @doc """
   LiveView mount hook for role-based authorization.
@@ -191,19 +192,15 @@ defmodule GtfsPlannerWeb.EnsureRole do
   A deactivated membership counts as no membership, and a missing user,
   organization or membership counts as no access, so a caller can hand it
   whatever the socket holds and get a boolean rather than a match to handle.
+  The rule itself is `GtfsPlanner.Authorization.authorize_editor/1`, so the
+  definition of an active editor stays in one place.
   """
   @spec editor_member?(Ecto.UUID.t() | nil, Ecto.UUID.t() | nil) :: boolean()
   def editor_member?(nil, _organization_id), do: false
   def editor_member?(_user_id, nil), do: false
 
   def editor_member?(user_id, organization_id) do
-    with %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(user_id, organization_id),
-         true <- is_nil(membership.deactivated_at) do
-      has_role?(membership.roles, :pathways_studio_editor)
-    else
-      _other -> false
-    end
+    Authorization.authorize_editor(%{actor_id: user_id, organization_id: organization_id}) == :ok
   end
 
   @doc """
