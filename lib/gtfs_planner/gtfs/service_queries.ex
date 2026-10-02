@@ -410,24 +410,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
   # digest is derived from the rows it returned. The transaction is closed
   # before the caller builds a model request, so no provider call is ever made
   # while the snapshot is held.
-  defp in_snapshot(fun) when is_function(fun, 0) do
-    Repo.transaction(
-      fn ->
-        snapshot_module().begin_read()
-        fun.()
-      end,
-      timeout: :infinity
-    )
-    |> case do
-      {:ok, {:ok, result}} -> {:ok, result}
-      {:ok, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp snapshot_module do
-    Application.get_env(:gtfs_planner, :gtfs_service_query_snapshot, Snapshot.Repo)
-  end
+  defp in_snapshot(fun) when is_function(fun, 0), do: Snapshot.read_snapshot(fun)
 
   # -- scope and selection ---------------------------------------------------
 
