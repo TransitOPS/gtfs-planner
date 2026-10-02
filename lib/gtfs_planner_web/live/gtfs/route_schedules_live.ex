@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DatedChangePlan
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -114,6 +115,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:drawer, nil)
      |> assign(:block_notice, nil)
      |> assign(:delete_dialog, nil)
+     |> assign(:dated_change_form, dated_change_form(%{}))
+     |> assign(:dated_change_errors, %{})
+     |> assign(:dated_change_accepted, nil)
+     |> assign(:dated_change_notice, nil)
+     |> assign(:dated_change_refusal, nil)
      |> assign(:calendar_form, to_form(%{"service_id" => nil}))
      |> assign(:pattern_form, to_form(%{"pattern" => "all"}))
      |> stream_configure(:sections, dom_id: &"section-#{&1.pattern.route_pattern_id}")
@@ -141,6 +147,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> assign(:block_notice, nil)
       |> clear_vehicle_change()
       |> report_cleared_selection(cleared_selection?)
+      # An accepted dated source names the trips it was accepted for, so
+      # navigating away from them drops the acceptance rather than carrying a
+      # source this page no longer owns into the next route's conversation.
+      # `handle_params/3` rebinds the context below once the new route has
+      # loaded, so only the assigns are cleared here. Field messages name this
+      # route's own selection, so they go with the acceptance; the typed draft
+      # itself is kept.
+      |> clear_dated_change_source()
+      |> assign(:dated_change_errors, %{})
 
     if connected?(socket) do
       {:noreply, socket |> load_schedule(params) |> bind_agent_context()}
@@ -155,13 +170,71 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # transcript; a page whose route did not load falls back to the whole-version
   # context, which the Schedule pack refuses with the one unavailable result.
   defp bind_agent_context(socket) do
+    AgentPanel.set_context(socket, agent_resource_context(socket))
+  end
+
+  # The context this panel holds is the route identity plus, once an editor has
+  # accepted a dated intent, the frozen source the pack reads. The snapshot is
+  # admitted through AI-04's seam, so the server hashes the envelope and refuses
+  # a payload it never verified; an over-ceiling payload leaves the plain
+  # identity context in place rather than attaching a subset (CR-3).
+  defp agent_resource_context(socket) do
     identity =
       case socket.assigns[:route] do
         %GtfsPlanner.Gtfs.Route{} = route -> {:route, route.id}
         _other -> {:version, socket.assigns.current_gtfs_version.id}
       end
 
-    AgentPanel.set_context(socket, Scope.context(identity))
+    context = Scope.context(identity)
+
+    case socket.assigns[:dated_change_accepted] do
+      nil ->
+        context
+
+      accepted ->
+        case Scope.with_source_snapshot(context, dated_change_snapshot(accepted)) do
+          {:ok, admitted} -> admitted
+          {:error, _reason} -> context
+        end
+    end
+  end
+
+  # The accepted source as the pack's JSON-safe payload: the two dates as ISO
+  # strings, the sorted UUID selection and the server's own `input_digest`. The
+  # pack re-derives that digest and refuses a payload that does not match its
+  # own values, so a client-supplied one can never reach a read (AC-1).
+  defp dated_change_snapshot(accepted) do
+    %{
+      kind: "dated_changes",
+      payload: %{
+        "schema_version" => accepted.schema_version,
+        "trip_ids" => accepted.trip_ids,
+        "first_date" => Date.to_iso8601(accepted.first_date),
+        "last_date" => Date.to_iso8601(accepted.last_date),
+        "delta_seconds" => accepted.delta_seconds,
+        "approval_note" => accepted.approval_note,
+        "source_label" => accepted.source_label,
+        "input_digest" => accepted.input_digest
+      }
+    }
+  end
+
+  # The selection is page state, so every mutation of it drops an acceptance:
+  # `accept_intent/2` would refuse the same source, but dropping it here means
+  # the page never renders an acceptance whose selection it no longer holds
+  # (AC-2). The typed draft is deliberately kept.
+  defp drop_dated_change_source(%{assigns: %{dated_change_accepted: nil}} = socket), do: socket
+
+  defp drop_dated_change_source(socket) do
+    socket |> clear_dated_change_source() |> bind_agent_context()
+  end
+
+  defp clear_dated_change_source(socket) do
+    assign(socket,
+      dated_change_accepted: nil,
+      dated_change_notice: nil,
+      dated_change_refusal: nil
+    )
   end
 
   # The selection is page state, so a parameter change clears it. Only a change
@@ -322,6 +395,31 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_event("cancel_change", _params, socket), do: {:noreply, cancel_change(socket)}
+
+  # The dated change form posts on every keystroke (`phx-change`) and on submit.
+  # A change to the draft is an interpretation change, so it drops the
+  # acceptance it would otherwise leave behind; the typed values are retained
+  # either way, because a refused submit must never discard what was typed
+  # (AC-2).
+  @impl true
+  def handle_event("dated_change_params", %{} = params, socket) do
+    {:noreply,
+     socket |> assign(:dated_change_form, dated_change_form(params)) |> drop_dated_change_source()}
+  end
+
+  def handle_event("dated_change_params", _params, socket), do: {:noreply, socket}
+
+  # Acceptance is a server observation: the editor's form values are normalized
+  # against the page's own currently-selected trip UUIDs, and the accepted source
+  # is frozen only if that same selection still matches. No route, organization,
+  # actor, version, digest or accepted flag is read from the client: the domain
+  # refuses a payload carrying one (AC-1, AC-2).
+  @impl true
+  def handle_event("dated_change_accept", %{} = params, socket) do
+    {:noreply, accept_dated_change(socket, params)}
+  end
+
+  def handle_event("dated_change_accept", _params, socket), do: {:noreply, socket}
 
   # Copy trips keeps the selection's UUIDs in this process (INV-6, §7's
   # server-held clipboard) and reports the shortcut that pastes them. The paste
@@ -818,6 +916,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> assign(:selected_ids, selected)
     |> assign(:selected_count, MapSet.size(selected))
     |> stream_insert(:sections, Map.put(section, :grid, current_grid(socket)))
+    |> drop_dated_change_source()
   end
 
   # A range or a select-all replaces the whole selection, so every section whose
@@ -829,6 +928,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> assign(:selected_ids, selected)
     |> assign(:selected_count, MapSet.size(selected))
     |> restream_changed_sections(changed)
+    |> drop_dated_change_source()
   end
 
   defp restream_changed_sections(socket, changed) do
@@ -4693,6 +4793,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                         change={@change}
                         strip={strip}
                         version_name={@current_gtfs_version.name}
+                      />
+
+                      <ScheduleComponents.dated_change_form
+                        form={@dated_change_form}
+                        errors={@dated_change_errors}
+                        selected_count={@selected_count}
+                        accepted={@dated_change_accepted}
+                        notice={@dated_change_notice}
+                        helper_refusal={@dated_change_refusal}
                       />
                   <% end %>
 
