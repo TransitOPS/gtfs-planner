@@ -77,7 +77,7 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
       |> Enum.map(&"#{&1}_version_owner_fkey")
 
     {later, original} = Enum.split_with(rows, fn [name, _] -> name in fare_constraints end)
-    assert length(original) == 73
+    assert length(original) == 78
     assert Enum.all?(original, fn [_name, validated?] -> validated? end)
     assert Enum.sort(Enum.map(later, &hd/1)) == Enum.sort(fare_constraints)
     assert Enum.all?(later, fn [_name, validated?] -> not validated? end)
