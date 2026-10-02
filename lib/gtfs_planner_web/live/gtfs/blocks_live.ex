@@ -2416,11 +2416,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # pair the rule now refuses keeps the drawer's own refusal rather than taking a
   # prepared choice (AC-12, CR-2).
   defp in_seat_current_pair?(socket, from, to, setting) do
-    with %{from: %{id: from_id}, to: %{id: to_id}} <- socket.assigns.gap_view do
-      from_id == from.id and to_id == to.id and
-        not connection_blocked?(socket.assigns.connection_check, setting)
-    else
-      _other -> false
+    case socket.assigns.gap_view do
+      %{from: %{id: from_id}, to: %{id: to_id}} ->
+        from_id == from.id and to_id == to.id and
+          not connection_blocked?(socket.assigns.connection_check, setting)
+
+      _no_drawer ->
+        false
     end
   end
 
