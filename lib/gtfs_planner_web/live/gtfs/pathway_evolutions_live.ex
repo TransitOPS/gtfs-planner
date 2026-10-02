@@ -1236,14 +1236,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp preview_moment_label(assigns) do
     with %{local_time: %NaiveDateTime{} = local} <- assigns.preview,
          %{fallback?: false} <- assigns.preview_zone do
-      elsewhere =
+      stamp =
         if NaiveDateTime.to_date(local) == assigns.preview.service_date,
-          do: "",
-          else: " #{Wording.short_date(NaiveDateTime.to_date(local))}"
+          do: DisplayClock.format_time(local),
+          else: clock_with_short_date(local)
 
       "#{full_date(assigns.preview.service_date)} · " <>
-        "#{GtfsTime.display(assigns.preview.service_time)} service time " <>
-        "(#{DisplayClock.format_time(local)}#{elsewhere})"
+        "#{GtfsTime.display(assigns.preview.service_time)} service time (#{stamp})"
     else
       _absent -> nil
     end
@@ -1372,8 +1371,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     "#{count} #{if count == 1, do: "period", else: "periods"} with lost connections · "
   end
 
+  # Named exception (R16): a wall-clock annotation beside a sentence that
+  # already names the service date and year, so the date stays short.
+  defp clock_with_short_date(%NaiveDateTime{} = local),
+    do: "#{DisplayClock.format_time(local)} #{Wording.short_date(NaiveDateTime.to_date(local))}"
+
+  # The range span reads date first ("Jan 15 12:00 AM to Jan 16 2:00 AM"); its
+  # sentence names the year, so each end stays date-first and short.
   defp range_local_stamp(%NaiveDateTime{} = local),
-    do: "#{Calendar.strftime(local, "%b %-d")} #{DisplayClock.format_time(local)}"
+    do: "#{Wording.short_date(NaiveDateTime.to_date(local))} #{DisplayClock.format_time(local)}"
 
   # The stale label belongs to the retained range, never to the new request: it
   # names the range still on screen, when it was checked, and either what is
@@ -1570,7 +1576,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp local_end_label(%DateTime{} = instant, %{fallback?: false} = zone) do
     [local] = DisplayClock.localize_many([instant], zone)
-    "#{DisplayClock.format_time(local)} #{Wording.short_date(NaiveDateTime.to_date(local))}"
+    clock_with_short_date(local)
   end
 
   defp local_end_label(_instant, _zone), do: nil

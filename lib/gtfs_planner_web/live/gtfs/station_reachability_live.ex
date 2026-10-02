@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
@@ -405,11 +406,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
             The last check stopped before it finished.
           </p>
           <p class="mt-2 text-sm text-muted tabular-nums">
-            Started {format_time(@run.inserted_at)} · no walks were scored
+            Started {DisplayClock.format_datetime(@run.inserted_at)} · no walks were scored
           </p>
         <% else %>
           <p class="mt-3 text-sm text-default tabular-nums">
-            Checked {format_time(@run.inserted_at)}
+            Checked {DisplayClock.format_datetime(@run.inserted_at)}
           </p>
         <% end %>
       </div>

@@ -92,7 +92,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
              ]
 
       assert text(html, "#export-run-status") =~
-               "Created Sep 29, 2026 2:14 PM UTC · Available until Sep 30, 2026 2:14 PM UTC"
+               "Created Sep 29, 2026, 2:14 PM UTC · Available until Sep 30, 2026, 2:14 PM UTC"
 
       assert text(html, "#start-export") == "Export again"
       assert count(html, ".btn-primary") == 1
@@ -513,7 +513,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
                "/gtfs/#{@version.id}/validation/c1"
              ]
 
-      assert text(html, "#recent-check-c1 a") =~ "Sep 29, 2026 2:02 PM UTC"
+      assert text(html, "#recent-check-c1 a") =~ "Sep 29, 2026, 2:02 PM UTC"
     end
 
     test "counts errors and warnings with their words, using the singular for one" do

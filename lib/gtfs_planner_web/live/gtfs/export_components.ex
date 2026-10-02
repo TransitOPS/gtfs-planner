@@ -21,6 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.ProductSurfaces
@@ -831,8 +832,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   # the retention limit is stated as a time instead of "the retention period".
   defp ready_meta(%Run{} = run) do
     [
-      run.finished_at && "Created #{format_time(run.finished_at)}",
-      run.artifact_expires_at && "Available until #{format_time(run.artifact_expires_at)}"
+      run.finished_at && "Created #{DisplayClock.format_datetime(run.finished_at)}",
+      run.artifact_expires_at &&
+        "Available until #{DisplayClock.format_datetime(run.artifact_expires_at)}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
@@ -1296,7 +1298,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               {check.title}
             </span>
             <span class="mt-0.5 block text-[13px] tabular-nums text-muted">
-              {format_time(check.started_at)}
+              {DisplayClock.format_datetime(check.started_at)}
             </span>
             <span
               id={"recent-validation-counts-#{check.id}"}
@@ -1334,9 +1336,4 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp severity_class(:errors, count) when count > 0, do: "font-semibold text-error-fg"
   defp severity_class(:warnings, count) when count > 0, do: "font-semibold text-warning-fg"
   defp severity_class(_kind, _count), do: "text-muted"
-
-  # Times are stored in UTC and the app has no per-user time zone, so the zone is
-  # named instead of implied.
-  defp format_time(%DateTime{} = time),
-    do: Calendar.strftime(time, "%b %-d, %Y %-I:%M %p") <> " UTC"
 end

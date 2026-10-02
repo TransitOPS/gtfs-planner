@@ -120,11 +120,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
       assert StationJournalComponents.relative_time(~N[2026-07-13 14:35:00], now) == "5d ago"
       assert StationJournalComponents.relative_time(~N[2026-07-02 14:35:00], now) == "Jul 2"
     end
-
-    test "formats an absolute caller-localized wall clock" do
-      assert StationJournalComponents.absolute_time(~N[2026-07-16 14:32:00]) ==
-               "Jul 16, 2026 · 2:32 PM"
-    end
   end
 
   describe "journal_panel/1 ready presentation" do
@@ -193,7 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
                "Confirm the field note before the next export."
 
       assert LazyHTML.attribute(time, "datetime") == ["2026-07-16T18:32:00Z"]
-      assert LazyHTML.attribute(time, "title") |> List.first() =~ "Jul 16, 2026 · 2:32 PM"
+      assert LazyHTML.attribute(time, "title") |> List.first() =~ "Jul 16, 2026, 2:32 PM"
 
       assert LazyHTML.attribute(photo, "phx-click") == ["open_journal_photo"]
       assert LazyHTML.attribute(photo, "phx-value-photo_id") == [@photo_id]

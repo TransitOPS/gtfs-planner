@@ -26,13 +26,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   import GtfsPlannerWeb.Gtfs.StationDiagramComponents
 
   import GtfsPlannerWeb.Gtfs.StationJournalComponents,
-    only: [journal_panel: 1, author_label: 1, relative_time: 2, absolute_time: 1]
+    only: [journal_panel: 1, author_label: 1, relative_time: 2]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DiagramUploadValidator
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Pathway
@@ -4701,7 +4702,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp journal_context_captured_label(payload, entry) do
     case {Map.get(payload.local_times, {entry.id, :captured}), payload.now} do
       {%NaiveDateTime{} = local, %NaiveDateTime{} = now} -> relative_time(local, now)
-      {%NaiveDateTime{} = local, _now} -> absolute_time(local)
+      {%NaiveDateTime{} = local, _now} -> DisplayClock.format_datetime(local)
       _ -> nil
     end
   end

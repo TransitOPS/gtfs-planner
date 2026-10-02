@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
     assert item.kind == :schedules
     assert item.title == "Downtown – Riverside"
     assert item.detail == "6 trips changed on Weekday"
-    assert item.context == "Schedules · Sep 20, 12:00 PM"
+    assert item.context == "Schedules · Sep 20, 2026, 12:00 PM"
 
     assert item.route == %{
              route_id: "12",

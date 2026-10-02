@@ -35,7 +35,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       check_tone: 1,
       day_count: 1,
       featured_label: 1,
-      format_time: 1,
       region_error: 1
     ]
 
@@ -802,7 +801,9 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
     </td>
     <td class="px-5 py-1.5 max-sm:hidden">
       <%= if @row.base.last_edited_local do %>
-        <span class="block text-default">{format_time(@row.base.last_edited_local)}</span>
+        <span class="block text-default">
+          {DisplayClock.format_datetime(@row.base.last_edited_local)}
+        </span>
         <span class="block truncate text-[13px] text-muted">{@row.base.last_edited_by}</span>
       <% else %>
         <span class="text-muted">—</span>
@@ -846,7 +847,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       </span>
     </span>
     <span class="shrink-0 text-[13px] text-muted tabular-nums">
-      {format_time(@item.local_at)}
+      {DisplayClock.format_datetime(@item.local_at)}
     </span>
     """
   end

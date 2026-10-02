@@ -60,6 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
@@ -1803,7 +1804,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
     saved_at =
       case merge.source.updated_at do
-        %DateTime{} = at -> " at " <> Calendar.strftime(at, "%H:%M")
+        %DateTime{} = at -> " on " <> DisplayClock.format_datetime(at)
         _other -> ""
       end
 
@@ -1851,7 +1852,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp last_saved_label(nil), do: "never — imported or unknown attribution"
 
   defp last_saved_label(%{saved_at: %DateTime{} = saved_at} = saved) do
-    "#{Calendar.strftime(saved_at, "%b %-d, %Y at %H:%M")} UTC by #{actor_label(saved)}"
+    "#{DisplayClock.format_datetime(saved_at)} by #{actor_label(saved)}"
   end
 
   defp last_saved_label(%{action: action} = saved), do: "#{action} by #{actor_label(saved)}"

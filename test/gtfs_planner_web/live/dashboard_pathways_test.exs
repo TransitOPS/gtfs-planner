@@ -357,8 +357,8 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
       {:ok, view, _html} = live(conn, ~p"/")
       render_board(view)
 
-      assert has_element?(view, "#board-row-UNS", "Mar 10, 6:28 AM")
-      assert has_element?(view, "#resume-row-1", "Mar 10, 6:28 AM")
+      assert has_element?(view, "#board-row-UNS", "Mar 10, 2026, 6:28 AM")
+      assert has_element?(view, "#resume-row-1", "Mar 10, 2026, 6:28 AM")
     end
 
     test "the rail's export day is the agency's calendar day", ctx do

@@ -382,14 +382,11 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     do: %{stop_id: station_stop_id, level_id: level_id}
 
   defp context(label, local_at, level_name) when is_binary(level_name) and level_name != "" do
-    "#{label} · #{level_name} · #{local_time(local_at)}"
+    "#{label} · #{level_name} · #{DisplayClock.format_datetime(local_at)}"
   end
 
-  defp context(label, local_at, _level_name), do: "#{label} · #{local_time(local_at)}"
-
-  defp local_time(local_at) do
-    Calendar.strftime(local_at, "%b %-d") <> ", " <> DisplayClock.format_time(local_at)
-  end
+  defp context(label, local_at, _level_name),
+    do: "#{label} · #{DisplayClock.format_datetime(local_at)}"
 
   defp route_title(nil, fallback), do: fallback || "Unknown"
 

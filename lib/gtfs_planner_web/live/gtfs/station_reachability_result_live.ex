@@ -2,6 +2,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Legacy
@@ -1471,13 +1472,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp run_subtitle(run, version) do
     case run.status do
       "completed" ->
-        "Checked #{format_time(run.completed_at || run.inserted_at)} · #{version.name}"
+        "Checked #{DisplayClock.format_datetime(run.completed_at || run.inserted_at)} · #{version.name}"
 
       "failed" ->
-        "Started #{format_time(run.started_at || run.inserted_at)} · didn't finish"
+        "Started #{DisplayClock.format_datetime(run.started_at || run.inserted_at)} · didn't finish"
 
       _ ->
-        "Started #{format_time(run.started_at || run.inserted_at)} · in progress"
+        "Started #{DisplayClock.format_datetime(run.started_at || run.inserted_at)} · in progress"
     end
   end
 end

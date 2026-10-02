@@ -940,9 +940,9 @@ test.describe("Route details save and merge", () => {
     const conflict = pageA.locator("#route-conflict");
     await expect(conflict).toBeVisible();
     // The landed surface names the saving actor and time beside the merge:
-    // "<actor> saved this route at HH:MM while you were editing".
+    // "<actor> saved this route on <timestamp> while you were editing".
     await expect(conflict).toContainText(
-      /\S+ saved this route at \d{2}:\d{2} while you were editing/,
+      /\S+ saved this route on \w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M UTC while you were editing/,
     );
     await expect(pageA.locator("#route-conflict-table")).toContainText(
       theirDesc,

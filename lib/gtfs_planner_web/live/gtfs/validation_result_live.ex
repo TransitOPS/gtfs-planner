@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   import GtfsPlannerWeb.ResultComponents,
     only: [result_details: 1, result_section: 1, result_summary: 1, tone_badge: 1]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
@@ -288,7 +289,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             >
               <span class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                 <span class="text-sm font-bold tabular-nums text-strong">
-                  {format_run_time(run.started_at)}
+                  {run_time(run.started_at)}
                 </span>
                 <.tone_badge tone={history_tone(run.status)}>
                   {history_status(run.status)}
@@ -364,7 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         Informational notices
       </:metric>
       <:foot>
-        This page shows the check from {format_run_time(@run.completed_at || @run.started_at)}. Fixed something?
+        This page shows the check from {run_time(@run.completed_at || @run.started_at)}. Fixed something?
         <.export_link version={@version}>Run validation again from Export</.export_link>
         to update these results.
       </:foot>
@@ -554,7 +555,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         <dt class="text-muted">Run ID</dt>
         <dd><code class="break-all font-mono text-[13px]">{@run.id}</code></dd>
         <dt class="text-muted">Stopped</dt>
-        <dd class="tabular-nums">{format_run_time(@run.completed_at || @run.started_at)}</dd>
+        <dd class="tabular-nums">{run_time(@run.completed_at || @run.started_at)}</dd>
         <dt class="text-muted">Reported</dt>
         <dd>
           <pre
@@ -1194,23 +1195,23 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp run_meta(%{status: "completed", run_type: "pathways_tests"} = run) do
     join_meta([
-      "Ran " <> format_run_time(run.completed_at || run.started_at),
+      "Ran " <> run_time(run.completed_at || run.started_at),
       duration_text(run.duration_ms)
     ])
   end
 
   defp run_meta(%{status: "completed"} = run) do
     join_meta([
-      "Checked " <> format_run_time(run.completed_at || run.started_at),
+      "Checked " <> run_time(run.completed_at || run.started_at),
       duration_text(run.duration_ms)
     ])
   end
 
   defp run_meta(%{status: "failed"} = run) do
-    "Stopped " <> format_run_time(run.completed_at || run.started_at)
+    "Stopped " <> run_time(run.completed_at || run.started_at)
   end
 
-  defp run_meta(run), do: "Started " <> format_run_time(run.started_at)
+  defp run_meta(run), do: "Started " <> run_time(run.started_at)
 
   defp join_meta(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
 
@@ -1219,20 +1220,22 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp duration_text(ms) when is_integer(ms), do: "Took " <> format_pathways_seconds(ms / 1000)
   defp duration_text(_ms), do: nil
 
-  # Run times are stored in UTC; the agency time zone isn't applied here.
-  defp format_run_time(%DateTime{} = time) do
-    Calendar.strftime(time, "%b %-d, %Y at %-I:%M %P") <> " UTC"
+  # Run times are stored in UTC; the agency time zone isn't applied here. A
+  # run object built by hand may have no start instant, so the words for that
+  # stay here rather than in the shared formatter.
+  defp run_time(%DateTime{} = time) do
+    DisplayClock.format_datetime(time)
   end
 
-  defp format_run_time(_time), do: "at an unknown time"
+  defp run_time(_time), do: "at an unknown time"
 
   defp mobility_facts(run, version) do
     [
       {"Status", "Completed", :text},
       {"Checked with", "MobilityData GTFS validator", :text},
       {"Version", version.name, :text},
-      {"Started", format_run_time(run.started_at), :text},
-      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Started", run_time(run.started_at), :text},
+      {"Finished", run.completed_at && run_time(run.completed_at), :text},
       {"Run ID", run.id, :id}
     ]
   end
@@ -1242,8 +1245,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       {"Status", "Completed", :text},
       {"Checked with", "Walk tests (OpenTripPlanner, retired)", :text},
       {"Version", version.name, :text},
-      {"Started", format_run_time(run.started_at), :text},
-      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Started", run_time(run.started_at), :text},
+      {"Finished", run.completed_at && run_time(run.completed_at), :text},
       {"Run ID", run.id, :id}
     ]
   end
