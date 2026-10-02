@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules
@@ -1185,7 +1186,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # spelled the way the timetable titles them.
   defp preview_note(nil, _secs), do: nil
   defp preview_note(:plus_12h, _secs), do: "12 hours later"
-  defp preview_note(:next_day, secs), do: "#{human_clock(secs)} next day"
+
+  defp preview_note(:next_day, secs) do
+    time = Time.from_seconds_after_midnight(rem(secs, 86_400))
+
+    "#{DisplayClock.format_time(time)} next day"
+  end
 
   # What Enter would do to the rest of the trip; nothing when the entry keeps the
   # current value or the cell has no time to move.
@@ -1221,9 +1227,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     title =
       if first? or mode == :anchor do
-        "The #{departs} trip now leaves at #{cell_clock(first_departure(context, mode, secs))}."
+        "The #{departs} trip now leaves at #{GtfsTime.display(first_departure(context, mode, secs))}."
       else
-        "#{stop} on the #{departs} trip is now #{cell_clock(secs)}."
+        "#{stop} on the #{departs} trip is now #{GtfsTime.display(secs)}."
       end
 
     body =
@@ -1235,7 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           nil
 
         mode == :anchor ->
-          "Every stop moved #{signed_minutes(secs - current)}; #{stop} is at #{cell_clock(secs)}."
+          "Every stop moved #{signed_minutes(secs - current)}; #{stop} is at #{GtfsTime.display(secs)}."
 
         mode == :later ->
           "#{later_stops(row, position)} moved #{signed_minutes(secs - current)}." <>
@@ -1290,30 +1296,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp signed_minutes(seconds) do
     sign = if seconds < 0, do: "−", else: "+"
     "#{sign}#{abs(round(seconds / 60))} min"
-  end
-
-  # The same clock the reading uses: seconds only when they are nonzero.
-  defp cell_clock(secs) do
-    formatted = GtfsTime.format(secs)
-
-    if String.ends_with?(formatted, ":00"),
-      do: String.replace_suffix(formatted, ":00", ""),
-      else: formatted
-  end
-
-  defp human_clock(secs) do
-    hour = rem(div(secs, 3_600), 24)
-    minutes = div(rem(secs, 3_600), 60)
-
-    {display_hour, meridiem} =
-      cond do
-        hour == 0 -> {12, "AM"}
-        hour < 12 -> {hour, "AM"}
-        hour == 12 -> {12, "PM"}
-        true -> {hour - 12, "PM"}
-      end
-
-    "#{display_hour}:#{pad(minutes)} #{meridiem}"
   end
 
   # --- nudges and undo ---------------------------------------------------------

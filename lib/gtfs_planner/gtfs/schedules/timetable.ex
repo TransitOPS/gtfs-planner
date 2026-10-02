@@ -43,6 +43,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   custom trip is flagged `stops_differ?: true` with no cells.
   """
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -485,18 +486,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     days = div(secs, @seconds_per_day)
 
     %{
-      text: clock(secs),
+      text: GtfsTime.display(secs),
       marker: if(days >= 1, do: "+#{days}", else: nil),
       title: if(days >= 1, do: day_title(secs, days), else: nil),
       missing?: false,
       estimated?: estimated?
     }
-  end
-
-  defp clock(secs) do
-    base = hhmm(secs)
-    seconds = rem(secs, 60)
-    if seconds == 0, do: base, else: base <> ":" <> pad(seconds)
   end
 
   defp hhmm(secs) do
@@ -505,23 +500,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
 
   defp day_title(secs, days) do
     suffix = if days == 1, do: "next day", else: "#{days} days later"
-    human_clock(secs) <> ", " <> suffix
-  end
+    time = Time.from_seconds_after_midnight(rem(secs, @seconds_per_day))
 
-  defp human_clock(secs) do
-    hours = div(secs, @seconds_per_hour)
-    minutes = div(rem(secs, @seconds_per_hour), 60)
-    hour = rem(hours, 24)
-
-    {display_hour, meridiem} =
-      cond do
-        hour == 0 -> {12, "AM"}
-        hour < 12 -> {hour, "AM"}
-        hour == 12 -> {12, "PM"}
-        true -> {hour - 12, "PM"}
-      end
-
-    "#{display_hour}:#{pad(minutes)} #{meridiem}"
+    DisplayClock.format_time(time) <> ", " <> suffix
   end
 
   # Domain rule 2: the row headsign is decided only through `Headsigns` (CR-1).

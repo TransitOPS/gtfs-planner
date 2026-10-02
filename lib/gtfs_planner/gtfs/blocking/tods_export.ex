@@ -51,6 +51,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.Blocking.Movements
+  alias GtfsPlanner.Gtfs.GtfsTime
 
   @seconds_per_day 86_400
 
@@ -554,13 +555,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
 
   defp clock(secs, _previous?), do: clock_secs(secs)
 
-  defp clock_secs(secs) when secs >= 0 do
-    Enum.map_join([div(secs, 3600), rem(div(secs, 60), 60), rem(secs, 60)], ":", &pad/1)
-  end
+  defp clock_secs(secs) when secs >= 0, do: GtfsTime.format(secs)
 
   defp clock_secs(negative) do
     raise ArgumentError, "a negative service-day time cannot be formatted: #{negative} s"
   end
-
-  defp pad(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 end

@@ -173,17 +173,17 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
     row = Enum.at(rows, position - 1)
 
     if position == length(rows) do
-      secs(value(row, :arrival_time)) || secs(value(row, :departure_time))
+      GtfsTime.coerce(value(row, :arrival_time)) || GtfsTime.coerce(value(row, :departure_time))
     else
-      secs(value(row, :departure_time)) || secs(value(row, :arrival_time))
+      GtfsTime.coerce(value(row, :departure_time)) || GtfsTime.coerce(value(row, :arrival_time))
     end
   end
 
   defp stops(rows) do
     Enum.map(rows, fn row ->
       %{
-        arrival: secs(value(row, :arrival_time)),
-        departure: secs(value(row, :departure_time)),
+        arrival: GtfsTime.coerce(value(row, :arrival_time)),
+        departure: GtfsTime.coerce(value(row, :departure_time)),
         timepoint: value(row, :timepoint)
       }
     end)
@@ -196,8 +196,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
     |> Enum.map(fn {{row, stop}, position} ->
       %{
         position: position,
-        arrival_time: clock(stop.arrival),
-        departure_time: clock(stop.departure),
+        arrival_time: stop.arrival && GtfsTime.format(stop.arrival),
+        departure_time: stop.departure && GtfsTime.format(stop.departure),
         timepoint: value(row, :timepoint),
         pickup_type: value(row, :pickup_type),
         drop_off_type: value(row, :drop_off_type),
@@ -205,20 +205,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
       }
     end)
   end
-
-  defp clock(nil), do: nil
-  defp clock(seconds), do: GtfsTime.format(seconds)
-
-  defp secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, seconds} -> seconds
-      {:error, :invalid_time} -> nil
-    end
-  end
-
-  defp secs(_value), do: nil
 
   defp shift_windows(frequencies, delta) do
     frequencies
@@ -500,8 +486,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
 
   defp first_time(rows) when is_list(rows) do
     case rows do
-      [first | _rest] -> secs(value(first, :departure_time)) || secs(value(first, :arrival_time))
-      [] -> nil
+      [first | _rest] ->
+        GtfsTime.coerce(value(first, :departure_time)) ||
+          GtfsTime.coerce(value(first, :arrival_time))
+
+      [] ->
+        nil
     end
   end
 
@@ -509,7 +499,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
 
   defp first_departure(rows) when is_list(rows) do
     case rows do
-      [first | _rest] -> secs(value(first, :departure_time))
+      [first | _rest] -> GtfsTime.coerce(value(first, :departure_time))
       [] -> nil
     end
   end
@@ -520,8 +510,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Shift do
     first = List.first(rows)
     last = List.last(rows)
 
-    {secs(value(first, :arrival_time)), secs(value(first, :departure_time)),
-     secs(value(last, :arrival_time)), secs(value(last, :departure_time))}
+    {GtfsTime.coerce(value(first, :arrival_time)), GtfsTime.coerce(value(first, :departure_time)),
+     GtfsTime.coerce(value(last, :arrival_time)), GtfsTime.coerce(value(last, :departure_time))}
   end
 
   defp endpoints(_rows), do: {nil, nil, nil, nil}

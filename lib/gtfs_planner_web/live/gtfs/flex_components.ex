@@ -924,7 +924,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
        when is_integer(days) do
     business = if rule.business_days, do: "business ", else: ""
     unit = if days == 1, do: "day", else: "days"
-    ", by #{compact_clock(by)}, #{days} #{business}#{unit} ahead"
+    # Rider-facing wall-clock text, not a service time: RiderText.t12/2 owns it.
+    ", by #{RiderText.t12(by, true)}, #{days} #{business}#{unit} ahead"
   end
 
   defp notice_suffix(%FlexBookingRule{}), do: ""
@@ -933,33 +934,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     do: "#{div(minutes, 60)} hr"
 
   defp duration_short(minutes), do: "#{minutes} min"
-
-  # "HH:MM" as riders read it: "4 pm" on the hour, "4:30 pm" otherwise.
-  defp compact_clock(time) when is_binary(time) do
-    case String.split(time, ":") do
-      [hours, minutes] -> clock_from_parts(hours, minutes)
-      _other -> time
-    end
-  end
-
-  defp compact_clock(time), do: time
-
-  defp clock_from_parts(hours, minutes) do
-    case {Integer.parse(hours), Integer.parse(minutes)} do
-      {{hours, ""}, {minutes, ""}} -> clock(hours, minutes)
-      _unreadable -> hours <> ":" <> minutes
-    end
-  end
-
-  defp clock(hours, 0), do: "#{hour12(hours)} #{meridiem(hours)}"
-
-  defp clock(hours, minutes) do
-    "#{hour12(hours)}:#{String.pad_leading(Integer.to_string(minutes), 2, "0")} #{meridiem(hours)}"
-  end
-
-  defp hour12(hours), do: rem(rem(hours, 24) + 11, 12) + 1
-
-  defp meridiem(hours), do: if(rem(hours, 24) >= 12, do: "pm", else: "am")
 
   # --- the service page (AC-5) -------------------------------------------------
 

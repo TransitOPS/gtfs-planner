@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
 
   @minutes_per_day 1_440
@@ -201,8 +202,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
   # before the start taken as the next day (R6). A row without both times is not
   # a window.
   defp window(row) do
-    with start_minutes when is_integer(start_minutes) <- minutes_of(row.start),
-         finish_minutes when is_integer(finish_minutes) <- minutes_of(row.end) do
+    with start_minutes when is_integer(start_minutes) <- GtfsTime.parse_hhmm(row.start),
+         finish_minutes when is_integer(finish_minutes) <- GtfsTime.parse_hhmm(row.end) do
       if finish_minutes <= start_minutes do
         {start_minutes, finish_minutes + @minutes_per_day}
       else
@@ -210,18 +211,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
       end
     end
   end
-
-  defp minutes_of(time) when is_binary(time) do
-    with [hours, minutes] <- String.split(time, ":"),
-         {hours, ""} <- Integer.parse(hours),
-         {minutes, ""} <- Integer.parse(minutes) do
-      hours * 60 + minutes
-    else
-      _other -> nil
-    end
-  end
-
-  defp minutes_of(_time), do: nil
 
   # --- rows -------------------------------------------------------------------
 
@@ -430,14 +419,14 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
   # --- values -----------------------------------------------------------------
 
   defp window_time_from_time(time) do
-    case minutes_of(time) do
+    case GtfsTime.parse_hhmm(time) do
       nil -> nil
       minutes -> window_time(minutes)
     end
   end
 
   # A GTFS time, with an end past midnight as 24:00:00 or later (R6).
-  defp window_time(minutes), do: "#{pad(div(minutes, 60))}:#{pad(rem(minutes, 60))}:00"
+  defp window_time(minutes), do: GtfsTime.format(minutes * 60)
 
   defp hhmm(minutes), do: "#{pad(div(minutes, 60))}#{pad(rem(minutes, 60))}"
 

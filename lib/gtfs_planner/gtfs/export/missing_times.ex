@@ -257,11 +257,8 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   defp keep_or_copy(stored, seconds) do
-    if Values.present?(stored), do: stored, else: format_or_nil(seconds)
+    if Values.present?(stored), do: stored, else: seconds && GtfsTime.format(seconds)
   end
-
-  defp format_or_nil(nil), do: nil
-  defp format_or_nil(seconds), do: GtfsTime.format(seconds)
 
   defp keep_or_normalize_flag(nil), do: 1
   defp keep_or_normalize_flag(flag), do: flag

@@ -438,7 +438,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   defp timing_owned(rows) do
     Enum.map(rows, fn row ->
-      {clock_secs(value(row, :arrival_time)), clock_secs(value(row, :departure_time)),
+      {GtfsTime.coerce(value(row, :arrival_time)) || value(row, :arrival_time),
+       GtfsTime.coerce(value(row, :departure_time)) || value(row, :departure_time),
        value(row, :pickup_type) || 0, value(row, :drop_off_type) || 0,
        empty_headsign_to_nil(value(row, :stop_headsign))}
     end)
@@ -673,7 +674,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   defp added_finding_keys(_change_set), do: []
 
   defp first_departure([first | _rest]) do
-    case clock_secs(value(first, :departure_time)) do
+    case GtfsTime.coerce(value(first, :departure_time)) || value(first, :departure_time) do
       secs when is_integer(secs) -> secs
       _other -> nil
     end
@@ -683,22 +684,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   defp comparison_rows(rows) do
     Enum.map(rows, fn row ->
-      {clock_secs(value(row, :arrival_time)), clock_secs(value(row, :departure_time)),
+      {GtfsTime.coerce(value(row, :arrival_time)) || value(row, :arrival_time),
+       GtfsTime.coerce(value(row, :departure_time)) || value(row, :departure_time),
        value(row, :timepoint), value(row, :pickup_type), value(row, :drop_off_type),
        value(row, :stop_headsign)}
     end)
   end
-
-  defp clock_secs(value) when is_integer(value) and value >= 0, do: value
-
-  defp clock_secs(value) when is_binary(value) do
-    case GtfsTime.parse(value) do
-      {:ok, secs} -> secs
-      {:error, :invalid_time} -> value
-    end
-  end
-
-  defp clock_secs(value), do: value
 
   defp match_timing(%{timing: timing, rows: timing_rows}, departure, occurrences, rows) do
     case Materializer.materialize(departure, occurrences, timing_rows) do

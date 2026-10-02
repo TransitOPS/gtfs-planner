@@ -110,7 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   """
   @spec window_label(map()) :: String.t()
   def window_label(%{start_time: start_time, end_time: end_time}) do
-    "#{compact_time(start_time)}–#{compact_time(end_time)}"
+    "#{GtfsTime.display(start_time)}–#{GtfsTime.display(end_time)}"
   end
 
   @doc """
@@ -1119,7 +1119,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   seconds it carries.
   """
   @spec service_time_value(non_neg_integer()) :: String.t()
-  def service_time_value(seconds) when is_integer(seconds), do: compact_time(seconds)
+  # Named exception: the closure field accepts H:MM and keeps nonzero seconds.
+  def service_time_value(seconds) when is_integer(seconds) do
+    case String.split(GtfsTime.format(seconds), ":") do
+      [hours, minutes, "00"] -> "#{hours}:#{minutes}"
+      parts -> Enum.join(parts, ":")
+    end
+  end
+
   def service_time_value(_seconds), do: ""
 
   # -- editor ----------------------------------------------------------------
@@ -1250,8 +1257,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp window_phrase(0, 86_400), do: "all day (00:00–24:00)"
 
   defp window_phrase(start_time, end_time) when end_time > 86_400 do
+    time = Time.from_seconds_after_midnight(rem(end_time, 86_400))
+
     "#{window_label(%{start_time: start_time, end_time: end_time})} " <>
-      "(until #{clock_label(end_time)} #{later_label(end_time)})"
+      "(until #{DisplayClock.format_time(time)} #{later_label(end_time)})"
   end
 
   defp window_phrase(start_time, end_time),
@@ -1266,10 +1275,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp reopen_at(86_400), do: "at midnight (24:00)"
 
-  defp reopen_at(end_time) when end_time > 86_400,
-    do: "at #{clock_label(end_time)} #{later_label(end_time)}"
+  defp reopen_at(end_time) when end_time > 86_400 do
+    time = Time.from_seconds_after_midnight(rem(end_time, 86_400))
 
-  defp reopen_at(end_time), do: "at #{compact_time(end_time)}"
+    "at #{DisplayClock.format_time(time)} #{later_label(end_time)}"
+  end
+
+  defp reopen_at(end_time), do: "at #{GtfsTime.display(end_time)}"
 
   defp calendar_phrase(%{label: label}), do: label
   defp calendar_phrase(_calendar), do: "the calendar"
@@ -1281,17 +1293,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     do: " #{label} has no active service dates, so this closure does not apply yet."
 
   defp no_active_dates_suffix(_calendar), do: ""
-
-  # The clock time a service time falls on: 26:00 reads as 2:00 AM on the day
-  # after the service date, which is what a reader needs to see.
-  defp clock_label(seconds) do
-    hours = div(seconds, 3600)
-    minutes = div(rem(seconds, 3600), 60)
-    hour = rem(hours, 12)
-    hour = if hour == 0, do: 12, else: hour
-    suffix = if rem(hours, 24) < 12, do: "AM", else: "PM"
-    "#{hour}:#{String.pad_leading(to_string(minutes), 2, "0")} #{suffix}"
-  end
 
   defp later_label(seconds) do
     case div(seconds, 86_400) do
@@ -1962,7 +1963,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     %{
       axis: axis,
       date_label: Calendar.strftime(preview.service_date, "%a, %b %-d"),
-      cursor_label: service_time_value(cursor),
+      cursor_label: GtfsTime.display(cursor),
       cursor_pct: if(cursor <= axis, do: pct(cursor, axis), else: nil),
       ticks: axis_ticks(axis),
       rows:
@@ -2018,7 +2019,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               kind: Atom.to_string(phase),
               service_date: Date.to_iso8601(date),
               time: time,
-              time_label: service_time_value(time),
+              time_label: GtfsTime.display(time),
               weekday:
                 if(Date.compare(date, preview.service_date) == :eq, do: nil, else: weekday(date)),
               pressed?:
@@ -2044,7 +2045,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     |> Enum.map(fn seconds ->
       %{
         seconds: seconds,
-        label: service_time_value(seconds),
+        label: GtfsTime.display(seconds),
         pct: pct(seconds, axis),
         position: axis_position(seconds, axis)
       }
@@ -2207,7 +2208,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       causes: range_causes(finding.instances, service_date, snapshot),
       target_date: Date.to_iso8601(service_date),
       target_time: target.time,
-      target_label: service_time_value(target.time),
+      target_label: GtfsTime.display(target.time),
       href: access_moment_path(version_id, stop_id, target.date, target.time),
       show_id: "range-show-#{index}",
       # Only a grouped row discloses a list of dates; a period row is one date.
@@ -2707,13 +2708,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp direction_label(:to_platform), do: "To platform"
   defp direction_label(:to_exit), do: "From platform"
-
-  defp compact_time(seconds) do
-    case String.split(GtfsTime.format(seconds), ":") do
-      [hours, minutes, "00"] -> "#{hours}:#{minutes}"
-      parts -> Enum.join(parts, ":")
-    end
-  end
 
   defp stop_label(%{stop_name: name}) when is_binary(name) and name != "", do: name
   defp stop_label(%{stop_id: stop_id}), do: stop_id

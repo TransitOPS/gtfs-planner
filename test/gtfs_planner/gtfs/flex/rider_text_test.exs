@@ -573,6 +573,16 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
     end
   end
 
+  describe "t12/2" do
+    test "reads a stored clock in the riders' 12-hour form" do
+      assert RiderText.t12("16:00") == "4:00 pm"
+      assert RiderText.t12("16:00", true) == "4 pm"
+      assert RiderText.t12("16:30", true) == "4:30 pm"
+      assert RiderText.t12("25:10") == "1:10 am"
+      assert RiderText.t12("") == ""
+    end
+  end
+
   defp calendars do
     %{"weekday" => @weekday, "saturday" => @saturday, "sunday" => @sunday}
   end

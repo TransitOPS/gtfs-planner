@@ -39,6 +39,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       region_error: 1
     ]
 
+  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.StationBoard
   alias GtfsPlannerWeb.Home.ChangeLinks
 
@@ -564,7 +565,9 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
             {editor.station_name || editor.station_stop_id}
           </a>
           <span class="truncate text-[13px] text-muted">
-            {ChangeLinks.display_name(editor.email)} · since {clock_time(editor.started_at)}
+            {ChangeLinks.display_name(editor.email)} · since {DisplayClock.format_time(
+              editor.started_at
+            )}
           </span>
         </li>
       </ul>
@@ -1008,8 +1011,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       :success -> "text-success-fg"
     end
   end
-
-  defp clock_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%-I:%M %p")
 
   defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 

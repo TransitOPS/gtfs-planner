@@ -2767,13 +2767,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   # The same clock rules a stored cell uses: seconds appear only when nonzero.
-  defp preview_clock(seconds) do
-    formatted = GtfsTime.format(seconds)
-
-    if String.ends_with?(formatted, ":00"),
-      do: binary_part(formatted, 0, byte_size(formatted) - 3),
-      else: formatted
-  end
+  defp preview_clock(seconds), do: GtfsTime.display(seconds)
 
   defp preview_marker(seconds) do
     days = div(seconds, 86_400)

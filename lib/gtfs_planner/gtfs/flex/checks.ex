@@ -41,6 +41,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
@@ -951,8 +952,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   # before the start taken as the next day (R6). A row without both times is not
   # a window.
   defp window(%{start: start, end: finish}) do
-    with start_minutes when is_integer(start_minutes) <- minutes_of(start),
-         finish_minutes when is_integer(finish_minutes) <- minutes_of(finish) do
+    with start_minutes when is_integer(start_minutes) <- GtfsTime.parse_hhmm(start),
+         finish_minutes when is_integer(finish_minutes) <- GtfsTime.parse_hhmm(finish) do
       if finish_minutes <= start_minutes do
         {start_minutes, finish_minutes + @minutes_per_day}
       else
@@ -988,16 +989,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
     Enum.any?([0, @minutes_per_day, -@minutes_per_day], fn day ->
       max(a_start, b_start + day) < min(a_end, b_end + day)
     end)
-  end
-
-  defp minutes_of(time) do
-    with [hours, minutes] <- String.split(to_string(time), ":"),
-         {hours, ""} <- Integer.parse(hours),
-         {minutes, ""} <- Integer.parse(minutes) do
-      hours * 60 + minutes
-    else
-      _other -> nil
-    end
   end
 
   # --- small helpers ----------------------------------------------------------

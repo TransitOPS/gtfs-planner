@@ -1226,13 +1226,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # -- access preview: presentation ------------------------------------------
 
-  defp moment_label(%Date{} = date, time), do: "#{service_clock(time)} on #{long_date(date)}"
+  defp moment_label(%Date{} = date, time), do: "#{GtfsTime.display(time)} on #{long_date(date)}"
 
   defp long_date(%Date{} = date), do: Calendar.strftime(date, "%A, %B %-d, %Y")
 
   defp short_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
-
-  defp service_clock(seconds) when is_integer(seconds), do: service_time_value(seconds)
 
   # The moment the result describes: its service date and time, and the local
   # clock time it falls on. The agency zone and its offset are secondary text
@@ -1247,7 +1245,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
           else: " #{short_date(NaiveDateTime.to_date(local))}"
 
       "#{long_date(assigns.preview.service_date)} · " <>
-        "#{service_clock(assigns.preview.service_time)} service time " <>
+        "#{GtfsTime.display(assigns.preview.service_time)} service time " <>
         "(#{DisplayClock.format_time(local)}#{elsewhere})"
     else
       _absent -> nil
@@ -1309,7 +1307,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp short_moment(%Date{} = date, time),
-    do: "#{service_clock(time)} on #{Calendar.strftime(date, "%a, %b %-d")}"
+    do: "#{GtfsTime.display(time)} on #{Calendar.strftime(date, "%a, %b %-d")}"
 
   defp preview_error_detail(%{preview_error: :too_large}) do
     "That date and time need too many service dates to check. Choose a moment within the version's calendar range."
@@ -1469,11 +1467,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             [midnight, local_last] =
               DisplayClock.localize_many([DateTime.add(starts_at, 86_400, :second), last], zone)
 
-            "Service hours 00:00–#{service_time_value(axis)}. 24:00–#{service_time_value(axis)} is " <>
+            "Service hours 00:00–#{GtfsTime.display(axis)}. 24:00–#{GtfsTime.display(axis)} is " <>
               "#{DisplayClock.format_time(midnight)}–#{DisplayClock.format_time(local_last)} on " <>
               "#{Calendar.strftime(NaiveDateTime.to_date(local_last), "%a, %b %-d")}."
           else
-            "Service hours 00:00–#{service_time_value(axis)}."
+            "Service hours 00:00–#{GtfsTime.display(axis)}."
           end
 
         cond do
@@ -3343,7 +3341,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               display={@floorplan}
               snapshot={@station_data}
               closed_instances={@preview.closed}
-              moment={service_clock(@preview.service_time)}
+              moment={GtfsTime.display(@preview.service_time)}
             />
           </div>
         <% end %>

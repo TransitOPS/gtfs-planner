@@ -9399,6 +9399,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp blank_dash(_value), do: "—"
 
   # The stored GTFS clock of a parsed endpoint; a missing time has none.
+  # Named exception: the row shows the stored feed value verbatim, so it keeps HH:MM:SS.
   defp gtfs_time(nil), do: "—"
   defp gtfs_time(secs), do: GtfsTime.format(secs)
 

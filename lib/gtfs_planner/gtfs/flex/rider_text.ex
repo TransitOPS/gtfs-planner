@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
 
   @registered_suffix " (registered riders)"
@@ -360,7 +361,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   """
   @spec window(map()) :: %{start: non_neg_integer(), finish: non_neg_integer()} | nil
   def window(%{start: start, end: finish}) do
-    case {minutes_of(start), minutes_of(finish)} do
+    case {GtfsTime.parse_hhmm(start), GtfsTime.parse_hhmm(finish)} do
       {start_minutes, finish_minutes}
       when is_integer(start_minutes) and is_integer(finish_minutes) ->
         %{
@@ -691,7 +692,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   end
 
   defp overnight?(start, finish) do
-    case {minutes_of(start), minutes_of(finish)} do
+    case {GtfsTime.parse_hhmm(start), GtfsTime.parse_hhmm(finish)} do
       {start_minutes, finish_minutes}
       when is_integer(start_minutes) and is_integer(finish_minutes) ->
         finish_minutes <= start_minutes
@@ -701,8 +702,15 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
     end
   end
 
-  defp t12(time, compact \\ false) do
-    case minutes_of(time) do
+  @doc """
+  Returns a stored `H:MM` time as the lowercase 12-hour reading riders see.
+
+  `compact: true` drops `:00` from an on-the-hour time ("4 pm" instead of
+  "4:00 pm"). An unreadable value reads as an empty string.
+  """
+  @spec t12(term(), boolean()) :: String.t()
+  def t12(time, compact \\ false) do
+    case GtfsTime.parse_hhmm(time) do
       nil ->
         ""
 
@@ -717,18 +725,6 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
         end
     end
   end
-
-  defp minutes_of(time) when is_binary(time) do
-    with [hours, minutes] <- String.split(time, ":"),
-         {hours, ""} <- Integer.parse(hours),
-         {minutes, ""} <- Integer.parse(minutes) do
-      hours * 60 + minutes
-    else
-      _other -> nil
-    end
-  end
-
-  defp minutes_of(_time), do: nil
 
   defp pad(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 
