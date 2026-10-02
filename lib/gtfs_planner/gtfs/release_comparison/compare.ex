@@ -165,6 +165,199 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     end
   end
 
+  @doc """
+  The route pairs this result actually proved, in a stable order.
+
+  A pair is the pair of route identifiers one unit was keyed by: both sides
+  when correspondence was proven, and the single side that exists otherwise.
+  The `:key` is the opaque identity a caller narrows by; `:label` is what a
+  person reads. An unmapped route keeps its own identity here, so it is
+  offerable and never silently merged with an unrelated route.
+  """
+  @spec route_pairs(map()) :: [map()]
+  def route_pairs(%{groups: groups}) do
+    groups
+    |> Enum.map(&{&1.route_ids, pair_key(&1.route_ids)})
+    |> Enum.uniq_by(&elem(&1, 1))
+    |> Enum.sort_by(&elem(&1, 1))
+    |> Enum.map(fn {route_ids, key} ->
+      %{key: key, left: route_ids.left, right: route_ids.right, label: pair_label(route_ids)}
+    end)
+  end
+
+  defp pair_key(%{left: left, right: right}),
+    do: "#{left || "?"}/#{right || "?"}"
+
+  defp pair_label(%{left: left, right: right}) do
+    cond do
+      is_binary(left) and is_binary(right) -> "#{left} → #{right}"
+      is_binary(left) -> "#{left} (earlier file only)"
+      is_binary(right) -> "#{right} (candidate file only)"
+      true -> "Unnamed route"
+    end
+  end
+
+  @doc """
+  Narrows a finished result to an explicit subset of its own route pairs and
+  service dates.
+
+  The selection is validated against the result it narrows: a route-pair key
+  that names no unit, a date outside the compared window, or an empty subset is
+  `{:error, :invalid_scope}`. Nothing is invented, and a narrowed result is
+  still a complete `run/3` result: its counts, totals and completeness are
+  recomputed for the scope rather than copied from the full comparison, and its
+  `:digest` covers the narrowed body, so two different scopes can never share
+  one identity.
+
+  Every omitted route/date group is disclosed in `:exclusions`, so a narrowed
+  result can never read as though the whole comparison had been shown.
+  `:unknowns` and `:unresolved` are *not* narrowed: an unknown reason is
+  evidence in its own right, and hiding one behind a narrower view would turn
+  disclosed uncertainty into apparent certainty. They travel through unchanged,
+  and the scope is recorded in `:scope` so a later consumer can tell a narrowed
+  result from the full one.
+  """
+  @spec narrow(map(), map()) :: {:ok, map()} | {:error, :invalid_scope}
+  def narrow(result, %{route_pair_keys: keys, dates: dates})
+      when is_map(result) and is_list(keys) and is_list(dates) do
+    available = MapSet.new(Enum.map(route_pairs(result), & &1.key))
+    window = Date.range(result.window.from, result.window.to) |> Enum.to_list()
+
+    if keys != [] and dates != [] and Enum.all?(keys, &MapSet.member?(available, &1)) and
+         Enum.all?(dates, &(&1 in window)) do
+      {:ok, scope_result(result, keys, dates)}
+    else
+      {:error, :invalid_scope}
+    end
+  end
+
+  def narrow(_result, _selection), do: {:error, :invalid_scope}
+
+  defp scope_result(result, keys, dates) do
+    selected = MapSet.new(keys)
+    in_scope = MapSet.new(dates)
+    units = Enum.filter(result.groups, &unit_in_scope?(&1, selected, in_scope))
+    kept_route_ids = route_ids_of(units)
+
+    omitted =
+      Enum.reject(result.groups, &unit_in_scope?(&1, selected, in_scope))
+
+    narrowed =
+      result
+      |> Map.merge(%{
+        groups: units,
+        effective_changes:
+          Enum.filter(result.effective_changes, &change_in_scope?(&1, selected, in_scope)),
+        structural_changes:
+          Enum.filter(result.structural_changes, &structural_in_scope?(&1, kept_route_ids)),
+        totals: scoped_totals(units, result.totals),
+        completeness: scoped_completeness(units, result.completeness),
+        exclusions: result.exclusions ++ omitted_units(omitted) ++ [non_narrowed_disclosure()],
+        scope: %{route_pair_keys: Enum.sort(keys), dates: Enum.sort(dates)}
+      })
+
+    Map.put(narrowed, :digest, digest(narrowed))
+  end
+
+  defp unit_in_scope?(unit, selected, in_scope),
+    do: pair_key(unit.route_ids) in selected and unit.date in in_scope
+
+  defp change_in_scope?(%{dates: dates} = change, selected, in_scope) do
+    case change.route_ids do
+      nil ->
+        false
+
+      route_ids ->
+        pair_key(route_ids) in selected and dates != [] and Enum.any?(dates, &(&1 in in_scope))
+    end
+  end
+
+  # Only a route's own change is attributable to a selected route pair. Stop,
+  # trip and agency changes carry no route identity in this result, so they
+  # stay in the narrowed result and the disclosure below says so.
+  defp structural_in_scope?(change, kept_route_ids),
+    do: change.entity == :route and change.id in kept_route_ids
+
+  defp route_ids_of(units) do
+    Enum.flat_map(units, fn unit ->
+      [unit.route_ids.left, unit.route_ids.right]
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp omitted_units(omitted) do
+    omitted
+    |> Enum.sort_by(&{pair_key(&1.route_ids), Date.to_iso8601(&1.date), &1.direction_id || -1})
+    |> Enum.map(fn unit ->
+      %{
+        entity: :route_date_unit,
+        reason: :narrowed_out_of_scope,
+        detail:
+          "#{pair_label(unit.route_ids)} on #{Date.to_iso8601(unit.date)}" <>
+            " was left out of the selected scope",
+        left_id: unit.route_ids.left,
+        right_id: unit.route_ids.right,
+        date: unit.date
+      }
+    end)
+  end
+
+  defp non_narrowed_disclosure() do
+    %{
+      entity: :unknowns,
+      reason: :not_narrowed_by_scope,
+      detail:
+        "Unknown rows and unresolved entity matches are not narrowed by a route or date scope"
+    }
+  end
+
+  # An evaluation that was incomplete on either side stays a reason: narrowing
+  # the units does not make an incomplete evaluation complete.
+  defp scoped_totals(units, previous) do
+    reasons =
+      (Enum.map(units, & &1.reason) ++ evaluation_reasons(previous.reasons))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    base = %{
+      reasons: reasons,
+      measured_units: Enum.count(units, & &1.comparable?),
+      total_units: length(units)
+    }
+
+    if reasons == [] do
+      Map.merge(base, %{
+        exact_count_delta:
+          counted(units, :right, :exact_count) - counted(units, :left, :exact_count),
+        scheduled_count_delta:
+          counted(units, :right, :scheduled_count) - counted(units, :left, :scheduled_count)
+      })
+    else
+      Map.merge(base, %{exact_count_delta: nil, scheduled_count_delta: nil})
+    end
+  end
+
+  defp evaluation_reasons(reasons),
+    do: Enum.filter(reasons, &String.ends_with?(to_string(&1), "_evaluation_incomplete"))
+
+  defp scoped_completeness(units, previous) do
+    reasons =
+      (previous.reasons -- [:no_service_groups, :unmeasured_units]) ++
+        completeness_reasons(units)
+
+    reasons = reasons |> Enum.uniq() |> Enum.sort()
+
+    %{status: if(reasons == [], do: :complete, else: :incomplete), reasons: reasons}
+  end
+
+  defp completeness_reasons(units) do
+    []
+    |> add_unless(units != [], :no_service_groups)
+    |> add_unless(Enum.all?(units, & &1.comparable?), :unmeasured_units)
+  end
+
   # -- assembly ---------------------------------------------------------------
 
   defp assemble(left_projection, right_projection, window, matches, left, right) do

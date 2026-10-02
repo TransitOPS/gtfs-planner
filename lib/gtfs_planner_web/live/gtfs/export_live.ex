@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.ReleaseComparison
+  alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Evidence
@@ -31,6 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       check_panel: 1,
       closures_omitted: 1,
       comparison: 1,
+      comparison_results: 1,
       contents: 1,
       guide: 1,
       operations_note: 1,
@@ -52,6 +54,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # identities are kept server-side, so a selection made on one page survives
   # the next page load and is never taken from a submitted value.
   @comparison_page_size 25
+
+  # One page of a bounded native result. The result itself is never replaced by
+  # its page: only the rows the page renders are sliced, so a native result
+  # stays fully inspectable however many rows it holds.
+  @comparison_row_limit 25
+  @comparison_row_limit_max 100
+  @comparison_collections [
+    :comparison_differences,
+    :comparison_structural,
+    :comparison_unresolved,
+    :comparison_unknowns
+  ]
+  @comparison_scope_notice "Choose at least one route and one date to narrow this comparison."
+  @comparison_scope_invalid_notice "Those routes or dates aren’t part of this comparison."
 
   @comparison_unavailable_notice "Those exports aren’t available to compare."
   @comparison_window_notice "Enter both dates, with the last date on or after the first."
@@ -122,6 +138,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:comparison_coordinator, nil)
      |> assign(:comparison_monitor, nil)
      |> assign(:comparison_result, nil)
+     |> assign(:comparison_view, nil)
+     |> assign(:comparison_scope, nil)
+     |> assign(:comparison_scope_form, comparison_scope_form(%{}))
+     |> assign(:comparison_scope_notice, nil)
+     |> assign(:comparison_inspected, nil)
+     |> assign(:comparison_page, comparison_page_defaults())
+     |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+     |> assign(:comparison_lists, empty_comparison_lists())
+     |> configure_comparison_streams()
+     |> stream(:comparison_differences, [])
+     |> stream(:comparison_structural, [])
+     |> stream(:comparison_unresolved, [])
+     |> stream(:comparison_unknowns, [])
      |> AgentPanel.mount("feed_quality")}
   end
 
@@ -443,7 +472,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> retain_chosen_comparison(draft)
      |> assign(:comparison_status, :idle)
      |> assign(:comparison_notice, nil)
-     |> assign(:comparison_result, nil)}
+     |> assign(:comparison_result, nil)
+     |> reset_comparison_view()}
   end
 
   def handle_event("select_comparison", _params, socket), do: {:noreply, socket}
@@ -471,6 +501,116 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   def handle_event("start_comparison", _params, socket), do: {:noreply, socket}
+
+  # Inspecting a row reveals that row's own detail. It never changes the scope
+  # and never re-reads anything: the row is already in the held result.
+  @impl Phoenix.LiveView
+  def handle_event(
+        "inspect_comparison_row",
+        %{"collection" => collection, "row" => row} = params,
+        socket
+      ) do
+    if (stream = comparison_stream(collection)) && is_binary(row) do
+      detail =
+        socket.assigns.comparison_view
+        |> inspected_row(stream, row)
+        |> case do
+          nil -> nil
+          entry -> Map.put(entry, :limit, page_limit(params["limit"]))
+        end
+
+      {:noreply,
+       socket
+       |> assign(:comparison_inspected, detail)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("inspect_comparison_row", _params, socket), do: {:noreply, socket}
+
+  # One bounded page of one collection. The page only ever re-reads the
+  # immutable result already held in assigns: the native result itself is never
+  # replaced, so paging cannot make a row disappear from the comparison.
+  @impl Phoenix.LiveView
+  def handle_event(
+        "page_comparison",
+        %{"collection" => collection, "offset" => offset} = params,
+        socket
+      ) do
+    with stream when not is_nil(stream) <- comparison_stream(collection),
+         offset when is_binary(offset) <- offset,
+         {page, ""} <- Integer.parse(offset) do
+      if page >= 0 do
+        {:noreply,
+         stream_comparison_collection(socket, stream, page, page_limit(params["limit"]))}
+      else
+        {:noreply, socket}
+      end
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("page_comparison", _params, socket), do: {:noreply, socket}
+
+  # Narrowing is explicit and additive only: the form names route pairs and
+  # dates this comparison already proved, and the server revalidates both
+  # against the held result. An empty or unknown selection is refused with the
+  # draft retained, and never narrows anything.
+  @impl Phoenix.LiveView
+  def handle_event("narrow_comparison", %{"comparison_scope" => draft}, socket) do
+    socket = assign(socket, :comparison_scope_form, comparison_scope_form(draft))
+
+    case socket.assigns.comparison_view do
+      nil ->
+        {:noreply, socket}
+
+      view ->
+        case scope_selection(draft, view) do
+          {:ok, selection} ->
+            {:noreply, apply_comparison_scope(socket, selection)}
+
+          :empty ->
+            {:noreply,
+             socket
+             |> assign(:comparison_scope_notice, @comparison_scope_notice)
+             |> assign(:comparison_scope, nil)
+             |> stream_comparison(view)}
+
+          :invalid ->
+            {:noreply,
+             socket
+             |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
+             |> assign(:comparison_scope, nil)
+             |> stream_comparison(view)}
+        end
+    end
+  end
+
+  def handle_event("close_comparison_detail", _params, socket),
+    do: {:noreply, assign(socket, :comparison_inspected, nil)}
+
+  def handle_event("narrow_comparison", _params, socket), do: {:noreply, socket}
+
+  # Clearing the scope shows the whole comparison again. The full native result
+  # was never replaced, so this restores it without recomputing anything.
+  @impl Phoenix.LiveView
+  def handle_event("clear_comparison_scope", _params, socket) do
+    case socket.assigns.comparison_result do
+      nil ->
+        {:noreply, socket}
+
+      result ->
+        {:noreply,
+         socket
+         |> assign(:comparison_view, result.comparison)
+         |> assign(:comparison_scope, nil)
+         |> assign(:comparison_scope_notice, nil)
+         |> assign(:comparison_scope_form, comparison_scope_form(%{}))
+         |> stream_comparison(result.comparison)}
+    end
+  end
 
   @impl Phoenix.LiveView
   def handle_event("cancel_comparison", _params, socket) do
@@ -510,6 +650,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> assign(:comparison_status, :running)
         |> assign(:comparison_notice, nil)
         |> assign(:comparison_result, nil)
+        |> reset_comparison_view()
         |> assign(:comparison_request_ref, request_ref)
         |> assign(:comparison_coordinator, pid)
         |> assign(:comparison_monitor, Process.monitor(pid))
@@ -550,6 +691,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         # than the one that was read.
         |> assign(:comparison_chosen, compared_rows(socket, result))
         |> assign(:comparison_notice, nil)
+        |> assign(:comparison_view, result.comparison)
+        |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+        |> stream_comparison(result.comparison)
       else
         socket
         |> assign(:comparison_status, :refused)
@@ -700,6 +844,186 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  # -- comparison result -----------------------------------------------------
+
+  def comparison_page_defaults,
+    do: Map.new(@comparison_collections, &{&1, %{offset: 0, limit: @comparison_row_limit}})
+
+  # The page's own collection names are accepted, and nothing else: a name this
+  # result does not have is refused rather than read as some other collection.
+  defp comparison_stream(collection) when is_binary(collection) do
+    Enum.find(@comparison_collections, fn name -> to_string(name) == collection end)
+  end
+
+  defp comparison_stream(_collection), do: nil
+
+  # A page limit is a display choice, so it is clamped rather than refused, and
+  # never exceeds the documented maximum.
+  defp page_limit(nil), do: @comparison_row_limit
+
+  defp page_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} -> limit |> max(1) |> min(@comparison_row_limit_max)
+      :error -> @comparison_row_limit
+    end
+  end
+
+  defp page_limit(_value), do: @comparison_row_limit
+
+  # Every collection is re-streamed from the result currently in view. A
+  # completion, a narrowing and a cleared scope all land here, so there is one
+  # place that decides what the page shows and the counters beside it.
+  defp stream_comparison(socket, view) do
+    Enum.reduce(@comparison_collections, socket, fn collection, acc ->
+      stream_comparison_collection(acc, collection, 0, @comparison_row_limit, view)
+    end)
+  end
+
+  defp stream_comparison_collection(socket, collection, offset, limit, view \\ nil) do
+    view = view || socket.assigns.comparison_view
+    {rows, true_total} = page(collection, view, offset, limit)
+
+    socket
+    |> assign(
+      :comparison_page,
+      Map.put(socket.assigns.comparison_page, collection, %{offset: offset, limit: limit})
+    )
+    |> assign(
+      :comparison_true_totals,
+      Map.put(socket.assigns.comparison_true_totals, collection, true_total)
+    )
+    |> assign(
+      :comparison_lists,
+      Map.put(
+        Map.get(socket.assigns, :comparison_lists) || empty_comparison_lists(),
+        collection,
+        Enum.map(rows, &{comparison_row_id(collection, &1), &1})
+      )
+    )
+    |> stream(collection, rows, reset: true)
+  end
+
+  # A stream's DOM id is computed inside the stream, and a stream may only be
+  # consumed by a for comprehension in the template that owns it. The page's
+  # render hands the same rows to the results component as `{dom_id, row}` pairs
+  # built by that same id function, so the rendered ids are exactly the stream's
+  # own and a row is never addressed by one identity here and another there.
+  defp empty_comparison_lists,
+    do: Map.new(@comparison_collections, &{&1, []})
+
+  # A page is a slice of the immutable result's own already-stable list. The
+  # true total is the whole collection's length, computed from the same result,
+  # so a counter never drifts from the rows it counts.
+  defp page(_collection, nil, _offset, _limit), do: {[], 0}
+
+  defp page(collection, view, offset, limit) do
+    rows = comparison_rows(collection, view)
+
+    {Enum.slice(rows, offset, limit), length(rows)}
+  end
+
+  defp comparison_rows(:comparison_differences, view),
+    do: Map.get(view, :effective_changes, [])
+
+  defp comparison_rows(:comparison_structural, view),
+    do: Map.get(view, :structural_changes, [])
+
+  defp comparison_rows(:comparison_unresolved, view), do: Map.get(view, :unresolved, [])
+  defp comparison_rows(:comparison_unknowns, view), do: Map.get(view, :unknowns, [])
+
+  # The row identity a stream uses is derived from the row's own deterministic
+  # content, so the same result always produces the same DOM ids and a re-render
+  # cannot repaint a row as a different one. A comparison row's own `:id` - a
+  # route or trip identifier that repeats across dates - is deliberately not the
+  # DOM id, because two rows on different dates would collide.
+  defp configure_comparison_streams(socket) do
+    Enum.reduce(@comparison_collections, socket, fn collection, acc ->
+      stream_configure(acc, collection, dom_id: &comparison_row_id(collection, &1))
+    end)
+  end
+
+  defp comparison_row_id(collection, row) do
+    "#{collection}-#{row_fingerprint(row)}"
+  end
+
+  defp row_fingerprint(row) do
+    row
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
+  end
+
+  defp inspected_row(nil, _collection, _row), do: nil
+
+  defp inspected_row(view, collection, row_id) do
+    case Enum.find(
+           comparison_rows(collection, view),
+           &(comparison_row_id(collection, &1) == row_id)
+         ) do
+      nil -> nil
+      row -> Map.put(row, :dom_id, row_id)
+    end
+  end
+
+  # The scope form speaks in route-pair keys and ISO dates. Both are validated
+  # against the result in view, so a forged or stale key narrows nothing.
+  defp scope_selection(draft, view) do
+    keys = draft |> Map.get("route_pair_keys", []) |> List.wrap() |> Enum.map(&to_string/1)
+    dates = draft |> Map.get("dates", []) |> List.wrap()
+
+    available = view |> Compare.route_pairs() |> Enum.map(fn pair -> pair.key end)
+
+    with [_ | _] <- keys,
+         [_ | _] <- dates,
+         {:ok, parsed} <- parse_scope_dates(dates),
+         true <- Enum.all?(keys, &(&1 in available)) do
+      {:ok, %{route_pair_keys: keys, dates: parsed}}
+    else
+      [] -> :empty
+      _ -> :invalid
+    end
+  end
+
+  defp parse_scope_dates(dates) do
+    Enum.reduce_while(dates, {:ok, []}, fn date, {:ok, acc} ->
+      case Date.from_iso8601(date) do
+        {:ok, parsed} -> {:cont, {:ok, acc ++ [parsed]}}
+        {:error, _reason} -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp apply_comparison_scope(socket, selection) do
+    result = socket.assigns.comparison_result
+
+    case Compare.narrow(result.comparison, selection) do
+      {:ok, view} ->
+        socket
+        |> assign(:comparison_view, view)
+        |> assign(:comparison_scope, selection)
+        |> assign(:comparison_scope_notice, nil)
+        |> assign(:comparison_inspected, nil)
+        |> stream_comparison(view)
+
+      {:error, :invalid_scope} ->
+        socket
+        |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
+        |> assign(:comparison_scope, nil)
+        |> stream_comparison(result.comparison)
+    end
+  end
+
+  defp comparison_scope_form(draft) do
+    to_form(
+      %{
+        "route_pair_keys" => draft |> Map.get("route_pair_keys", []) |> List.wrap(),
+        "dates" => draft |> Map.get("dates", []) |> List.wrap()
+      },
+      as: :comparison_scope
+    )
+  end
+
   defp reset_comparison(socket) do
     socket
     |> assign(:comparison_form, comparison_form(%{}))
@@ -709,6 +1033,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:comparison_request_ref, nil)
     |> assign(:comparison_fingerprint, nil)
     |> assign(:comparison_result, nil)
+    |> reset_comparison_view()
+  end
+
+  # A comparison that no longer exists shows no result: the full native result,
+  # the narrowed view, every stream and the page positions all go together, so
+  # a reopened comparison cannot inherit a previous one.
+  defp reset_comparison_view(socket) do
+    socket
+    |> assign(:comparison_view, nil)
+    |> assign(:comparison_scope, nil)
+    |> assign(:comparison_scope_form, comparison_scope_form(%{}))
+    |> assign(:comparison_scope_notice, nil)
+    |> assign(:comparison_inspected, nil)
+    |> assign(:comparison_page, comparison_page_defaults())
+    |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+    |> stream(:comparison_differences, [], reset: true)
+    |> stream(:comparison_structural, [], reset: true)
+    |> stream(:comparison_unresolved, [], reset: true)
+    |> stream(:comparison_unknowns, [], reset: true)
   end
 
   defp comparison_form(draft) do
@@ -963,6 +1306,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   status={@comparison_status}
                   notice={@comparison_notice}
                   result={@comparison_result}
+                />
+
+                <.comparison_results
+                  :if={@comparison_result}
+                  result={@comparison_result}
+                  view={@comparison_view}
+                  scope={@comparison_scope}
+                  scope_form={@comparison_scope_form}
+                  scope_notice={@comparison_scope_notice}
+                  inspected={@comparison_inspected}
+                  page={@comparison_page}
+                  true_totals={@comparison_true_totals}
+                  lists={@comparison_lists}
                 />
 
                 <.guide
