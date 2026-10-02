@@ -367,6 +367,29 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       refute Jason.encode!(result) =~ "request_apply"
     end
 
+    test "preparing only the selected ids recomputes the same input digest", ctx do
+      run = width_run(ctx)
+
+      observations = [
+        accepted_observation("OBS88", "PW_W14", "105", "cm"),
+        Map.merge(accepted_observation("OBS91", "PW_W12", "120", "cm"), %{"conflict" => true})
+      ]
+
+      scope = selection_scope(ctx, ctx.station, run, observations)
+
+      assert {:ok, requested, _evidence} =
+               StationAssistant.prepare_import_selection(scope, [
+                 "pathway:PW_W14",
+                 "pathway:PW_W12"
+               ])
+
+      assert {:ok, selected_only, _evidence} =
+               StationAssistant.prepare_import_selection(scope, ["pathway:PW_W14"])
+
+      assert requested["unresolved"] != []
+      assert selected_only["input_digest"] == requested["input_digest"]
+    end
+
     test "a disputed or unaccepted observation is never selected", ctx do
       run = width_run(ctx)
 

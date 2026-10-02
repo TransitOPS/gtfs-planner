@@ -366,7 +366,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
   separately under `existing_approved` and are never implicitly selected.
 
   `input_digest` binds the frozen source snapshot, the fresh import digest, the
-  observations and every requested decision's outcome, so a later confirmation
+  observations and the ids of the decisions it selects, so a later confirmation
   can recompute it and refuse a stale selection. The returned `command` carries
   no approval operation of any kind: preparing a selection and approving it stay
   separate native steps (INV-2).

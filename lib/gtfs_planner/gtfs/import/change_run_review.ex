@@ -148,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   values it names, so a native confirmation can be asked to approve a specific
   set of decisions as they stood, and `input_digest` binds the frozen source
   snapshot, the run's base source files, the fresh import digest, the
-  observations and every requested decision's outcome.
+  observations and the ids of the decisions it selects.
   """
   @spec prepare_import_selection(selection(), [String.t()]) ::
           {:ok, map(), map()} | {:error, error()}
@@ -1343,7 +1343,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
       |> Enum.filter(&approved_status?/1)
       |> Enum.map(&%{"decision_id" => &1["decision_id"], "status" => &1["status"]})
 
-    input_digest = input_digest(selection, run, run_digest, observations, ids)
+    # Bound to the decisions that would be approved, so preparing again from
+    # the stored selection recomputes the same digest even when other requested
+    # decisions were left unresolved.
+    selected_ids = Enum.map(selected, & &1["decision_id"])
+    input_digest = input_digest(selection, run, run_digest, observations, selected_ids)
 
     result = %{
       "station_stop_id" => selection.station_stop_id,
@@ -1532,7 +1536,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
       "base_source_files" => base_source_files(run.source_manifest),
       "import_digest" => run_digest,
       "observations" => observations["observations"],
-      "requested" => ids
+      "selected" => ids
     })
   end
 
