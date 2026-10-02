@@ -293,11 +293,14 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["urgency"] == "planned"
       assert draft["scope"]["route_ids"] == [sibling_route.id]
 
-      # The same alert read through this version's scope is refused, not read.
-      foreign_scope = %{sibling_scope | gtfs_version_id: context.version.id}
+      # The alert is the subject and the organization owns it, so a scope naming
+      # another of the organization's versions reads the same draft: the version
+      # supplies lookup context, never the identity of the subject (step 9). The
+      # editor still refuses another organization, which its own cases prove.
+      other_version_scope = %{sibling_scope | gtfs_version_id: context.version.id}
 
-      assert Dispatch.call(AlertsPack, foreign_scope, "get_draft", "{}") ==
-               {:error, :unavailable}
+      assert {:ok, same_draft} = Dispatch.call(AlertsPack, other_version_scope, "get_draft", "{}")
+      assert same_draft["scope"]["route_ids"] == [sibling_route.id]
     end
   end
 

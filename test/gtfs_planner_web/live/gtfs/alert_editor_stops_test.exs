@@ -22,11 +22,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
 
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Repo
 
   setup do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     other_version = gtfs_version_fixture(organization.id, %{name: "Spring 2026 service"})
+
+    # The editor is organization-owned, so the version its reads resolve against
+    # is the organization's latest published one, not one named in the URL. The
+    # second fixture is backdated so the first stays that version, which is the
+    # same idiom `test/support/browser_seed.exs` uses for the same reason.
+    Repo.update!(
+      Ecto.Changeset.change(other_version, published_at: ~U[2020-01-01 00:00:00.000000Z])
+    )
+
     actor = editor_fixture(organization)
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
     agency_fixture(organization.id, other_version.id, %{agency_timezone: "America/Los_Angeles"})

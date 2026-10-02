@@ -144,6 +144,12 @@ defmodule GtfsPlanner.Validations.Runner do
     {:stop, :normal, state}
   end
 
+  # A refused terminal write is the lost lease this module's own note describes:
+  # the report and the claim stay exactly as they are for the run's owner to
+  # decide, so nothing is released here, and the runner stops with that reason
+  # instead of raising on a result it cannot write.
+  defp conclude({:error, reason}, state), do: {:stop, {:shutdown, reason}, state}
+
   defp validate(validator, organization_id, %ValidationRun{} = run) do
     if ValidationRun.artifact_run?(run) do
       validator.validate_artifact(organization_id, run.id, validation_run_id: run.id)

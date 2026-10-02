@@ -34,6 +34,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     other_version = gtfs_version_fixture(organization.id, %{name: "Winter 2027 service"})
+    # The editor is organization-owned, so the version its reads resolve against
+    # is the organization's latest published one, not one named in the URL. The
+    # second fixture is backdated so the first stays that version, the same idiom
+    # `test/support/browser_seed.exs` uses for the same reason.
+    Repo.update!(
+      Ecto.Changeset.change(other_version, published_at: ~U[2020-01-01 00:00:00.000000Z])
+    )
+
     actor = editor_fixture(organization)
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
     agency_fixture(organization.id, other_version.id, %{agency_timezone: "America/Los_Angeles"})
@@ -173,17 +181,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
   describe "the version an alert belongs to" do
     setup :editor_conn
 
-    test "an alert of another version redirects and names that version", context do
-      alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
+    test "an alert of another version opens, because the alert belongs to the organization",
+         context do
+      # Written against the organization's other version: the version is where an
+      # alert's selectors came from, not who owns it, so the editor opens it
+      # (step 7, AC-9). The editor still refuses another organization's alert,
+      # which its own case beside this one proves.
+      agency_fixture(context.organization.id, context.other_version.id)
 
-      assert {:error, {:live_redirect, %{to: to, flash: flash}}} =
-               live(context.conn, edit_path(alert))
+      alert =
+        alert_fixture(
+          %{context.audit | gtfs_version_id: context.other_version.id},
+          %{"urgency" => "now", "situation" => "delay"}
+        )
 
-      assert to == alerts_path()
-      assert Phoenix.Flash.get(flash, :info) =~ "Fall 2026 service"
+      assert {:ok, view, _html} = live(context.conn, edit_path(alert))
+      assert has_element?(view, "#alert-editor")
 
-      # The alert's answers were never read through the other version: they are
-      # still exactly what the editor stored against its own version.
+      # The alert's answers are still exactly what the editor stored.
       assert {:ok, found} = Alerts.get_alert(context.audit, alert.id)
       assert found.urgency == :now
       assert found.situation == :delay
