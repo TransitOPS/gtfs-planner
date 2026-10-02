@@ -279,11 +279,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       refute has_element?(view, "#alert-settings-scripts")
     end
 
-    test "an editor with the editor role is still refused without an organization", context do
+    test "an editor with the editor role is refused at login without an organization", context do
       actor = editor_fixture(context.organization)
 
-      assert {:error, {:redirect, %{to: "/admin/organizations"}}} =
-               live(log_in_user(build_conn(), actor), "/alerts")
+      # `:organization_required` is `:default` plus the explicit unavailable state
+      # for a system administrator without an organization. A member of neither
+      # kind hits the shared required clause, so the refusal is the login page and
+      # its reason - not the administrator surface that member cannot use.
+      assert {:error,
+              {:redirect,
+               %{
+                 to: "/users/log_in",
+                 flash: %{
+                   "error" =>
+                     "Your account has no organization assigned. Contact an administrator."
+                 }
+               }}} = live(log_in_user(build_conn(), actor), "/alerts")
     end
   end
 
