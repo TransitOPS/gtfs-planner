@@ -88,9 +88,13 @@ defmodule GtfsPlanner.Gtfs.Fares.Workspace do
         }
 
   @type fare_rule :: %{
+          id: Ecto.UUID.t(),
+          fare_product_id: String.t(),
+          product_ids: [String.t()],
           network_id: String.t() | nil,
           from_area_id: String.t() | nil,
-          to_area_id: String.t() | nil
+          to_area_id: String.t() | nil,
+          from_timeframe_group_id: String.t() | nil
         }
 
   @type fare :: %{

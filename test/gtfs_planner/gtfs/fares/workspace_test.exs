@@ -217,18 +217,22 @@ defmodule GtfsPlanner.Gtfs.Fares.WorkspaceTest do
       assert ride.kind == "single"
       # The three same-area charging rules `fare_leg_rules.txt` holds for the
       # ride: the same network in, the same area out.
-      assert ride.rules == [
-               %{network_id: "N_LOCAL", from_area_id: "CST", to_area_id: "CST"},
-               %{network_id: "N_LOCAL", from_area_id: "NPT", to_area_id: "NPT"},
-               %{network_id: "N_LOCAL", from_area_id: "TOL", to_area_id: "TOL"}
+      assert Enum.map(ride.rules, &{&1.network_id, &1.from_area_id, &1.to_area_id}) == [
+               {"N_LOCAL", "CST", "CST"},
+               {"N_LOCAL", "NPT", "NPT"},
+               {"N_LOCAL", "TOL", "TOL"}
              ]
+
+      assert Enum.all?(ride.rules, &(is_binary(&1.id) and &1.product_ids != []))
+      assert Enum.all?(ride.rules, &is_nil(&1.from_timeframe_group_id))
 
       # A pass names a network but no fare area at all: its leg rules stand in
       # for other fares rather than charge a ride, which is why the older format
       # has no row for it. The rule is still reported, because it is the reason.
       pass = Enum.find(workspace.fares, &(&1.name == "Day pass"))
       assert pass.kind == "pass"
-      assert pass.rules == [%{network_id: "N_LOCAL", from_area_id: nil, to_area_id: nil}]
+      assert [%{network_id: "N_LOCAL", from_area_id: nil, to_area_id: nil}] = pass.rules
+      assert hd(pass.rules).product_ids != []
     end
   end
 

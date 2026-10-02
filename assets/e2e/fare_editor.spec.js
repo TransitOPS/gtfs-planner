@@ -1329,3 +1329,65 @@ test("where", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=cell", "ref-where-cell");
   await captureReference(page, testInfo, "?state=group-edit", "ref-where-group-edit");
 });
+
+// The Where tab's time periods and complete fare-rule list. The interaction
+// reaches the production writer; captures keep the transient drawers in view.
+test("rules", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const versionId = await versionIdByName(page, VERSIONS.managed);
+  const openWhere = async () => {
+    await page.goto(`/gtfs/${versionId}/settings/fares/where`);
+    await waitForLiveView(page);
+    await expect(page.locator("#time-periods-card")).toBeAttached();
+  };
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await openWhere();
+
+    await page.locator("#create-time-period").click();
+    await expect(page.locator("#time-period-drawer")).toBeAttached();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `rules-time-create-${viewport.label}`);
+
+    await page.locator("#time-period-name").fill("Weekday peak");
+    await page.locator("#time-period-day-1").check();
+    await page.locator("#time-period-day-2").check();
+    await page.locator("#time-period-day-3").check();
+    await page.locator("#time-period-day-4").check();
+    await page.locator("#time-period-day-5").check();
+    await page.locator("#time-period-range-0-start").fill("07:00");
+    await page.locator("#time-period-range-0-end").fill("09:00");
+    await page.locator("#save-time-period").click();
+    await expect(page.locator("#time-periods-list")).toContainText("Weekday peak");
+
+    await page.locator("#add-fare-rule").click();
+    await expect(page.locator("#rule-drawer")).toBeAttached();
+    await expect(page.locator("#rule-time-period")).toBeEnabled();
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `rules-create-${viewport.label}`);
+
+    await page.locator("#rule-network").selectOption("N_INTERCITY");
+    await page.locator("#rule-from-area").selectOption("TOL");
+    await page.locator("#rule-to-area").selectOption("CST");
+    await page.locator("#rule-fare-coast_ride_adult_cash").check();
+    await expect(page.locator("#rule-overlap")).toContainText("Valley–coast ride");
+    await expect(page.locator("#save-rule")).toContainText("Replace Valley–coast ride");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await captureDrawer(page, testInfo, `rules-overlap-${viewport.label}`);
+    await page.locator("#cancel-rule").click();
+
+    await page.locator("#rule-list summary").click();
+    await page.locator("#show-rule-feed-ids").check();
+    await expect(page.locator("#fare-rules code").first()).toContainText("network_id");
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `rules-list-${viewport.label}`);
+  }
+
+  await captureReference(page, testInfo, "?state=time-create", "ref-rules-time-create");
+  await captureReference(page, testInfo, "?state=rule-create", "ref-rules-create");
+  await captureReference(page, testInfo, "?state=rule-overlap", "ref-rules-overlap");
+  await captureReference(page, testInfo, "?state=rule-list", "ref-rules-list");
+});

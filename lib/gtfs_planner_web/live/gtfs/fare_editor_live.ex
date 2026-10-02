@@ -73,6 +73,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       rider_delete_dialog: 1,
       rider_drawer: 1,
       route_groups_card: 1,
+      rule_drawer: 1,
+      rule_list_card: 1,
+      time_period_drawer: 1,
+      time_periods_card: 1,
       unmanaged_fares: 1,
       zone_matrix: 1
     ]
@@ -132,6 +136,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:cell, nil)
      |> assign(:cell_form, to_form(%{}, as: :cell))
      |> assign(:cell_focus, nil)
+     |> assign(:time_period_draft, nil)
+     |> assign(:time_period_focus, nil)
+     |> assign(:rule_draft, nil)
+     |> assign(:rule_form, to_form(%{}, as: :rule))
+     |> assign(:rule_focus, nil)
+     |> assign(:show_rule_ids?, false)
      |> assign(:drawer_pending?, false)}
   end
 
@@ -932,6 +942,529 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   end
 
   def handle_event("set_pass_acceptance", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("toggle_rule_feed_ids", _params, socket) do
+    {:noreply, assign(socket, :show_rule_ids?, not socket.assigns.show_rule_ids?)}
+  end
+
+  @impl true
+  def handle_event("open_time_period_drawer", _params, socket) do
+    {:noreply, put_time_period(socket, new_time_period_draft(), "create-time-period")}
+  end
+
+  @impl true
+  def handle_event("close_time_period_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:time_period_draft, nil)
+     |> assign(:time_period_focus, nil)
+     |> assign(:drawer_pending?, false)}
+  end
+
+  @impl true
+  def handle_event("change_time_period", %{"time_period" => params}, socket)
+      when is_map(params) do
+    case socket.assigns.time_period_draft do
+      nil -> {:noreply, socket}
+      draft -> {:noreply, put_time_period(socket, update_time_period_draft(draft, params))}
+    end
+  end
+
+  def handle_event("change_time_period", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("add_time_period_range", _params, socket) do
+    case socket.assigns.time_period_draft do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        range = %{start_time: "", end_time: ""}
+
+        {:noreply,
+         put_time_period(socket, %{draft | ranges: draft.ranges ++ [range], failures: []})}
+    end
+  end
+
+  @impl true
+  def handle_event("remove_time_period_range", %{"index" => index}, socket) do
+    with %{ranges: ranges} = draft when length(ranges) > 1 <- socket.assigns.time_period_draft,
+         {index, ""} <- Integer.parse(index),
+         true <- index >= 0 and index < length(ranges) do
+      next = List.delete_at(ranges, index)
+      {:noreply, put_time_period(socket, %{draft | ranges: next, failures: []})}
+    else
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("remove_time_period_range", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_time_period", %{"time_period" => params}, socket) when is_map(params) do
+    case socket.assigns.time_period_draft do
+      nil -> {:noreply, socket}
+      draft -> save_time_period(socket, update_time_period_draft(draft, params))
+    end
+  end
+
+  def handle_event("save_time_period", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("open_rule_drawer", %{"rule_id" => rule_id}, socket) do
+    case find_editor_rule(socket.assigns.workspace, rule_id) do
+      nil ->
+        {:noreply, socket}
+
+      rule ->
+        {:noreply, put_rule(socket, rule_draft_from_rule(rule), "edit-fare-rule-#{rule_id}")}
+    end
+  end
+
+  def handle_event("open_rule_drawer", _params, socket) do
+    {:noreply, put_rule(socket, new_rule_draft(socket.assigns.workspace), "add-fare-rule")}
+  end
+
+  @impl true
+  def handle_event("close_rule_drawer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:rule_draft, nil)
+     |> assign(:rule_focus, nil)
+     |> assign(:drawer_pending?, false)}
+  end
+
+  @impl true
+  def handle_event("change_rule", %{"rule" => params}, socket) when is_map(params) do
+    case socket.assigns.rule_draft do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        {:noreply, put_rule(socket, update_rule_draft(draft, params), socket.assigns.rule_focus)}
+    end
+  end
+
+  def handle_event("change_rule", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("save_rule", %{"rule" => params}, socket) when is_map(params) do
+    case socket.assigns.rule_draft do
+      nil -> {:noreply, socket}
+      draft -> save_rule(socket, update_rule_draft(draft, params))
+    end
+  end
+
+  def handle_event("save_rule", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("delete_rule", %{"rule_id" => rule_id}, socket) do
+    case find_editor_rule(socket.assigns.workspace, rule_id) do
+      nil -> {:noreply, socket}
+      rule -> delete_fare_rule(socket, rule)
+    end
+  end
+
+  def handle_event("delete_rule", _params, socket), do: {:noreply, socket}
+
+  defp put_time_period(socket, draft, focus_id \\ nil) do
+    socket
+    |> assign(:time_period_draft, draft)
+    |> assign(:time_period_focus, focus_id || socket.assigns.time_period_focus)
+    |> assign(:time_period_form, to_form(%{name: draft.name}, as: :time_period))
+  end
+
+  defp new_time_period_draft do
+    %{
+      name: "",
+      days: [],
+      weekdays: nil,
+      ranges: [%{start_time: "", end_time: ""}],
+      until_end_of_day?: false,
+      failures: []
+    }
+  end
+
+  defp update_time_period_draft(draft, params) do
+    days =
+      params
+      |> Map.get("weekdays", [])
+      |> List.wrap()
+      |> Enum.map(&parse_weekday/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    ranges =
+      case params["ranges"] do
+        values when is_map(values) ->
+          values
+          |> Enum.sort_by(fn {index, _range} ->
+            case Integer.parse(index) do
+              {n, ""} -> n
+              _ -> 0
+            end
+          end)
+          |> Enum.map(fn {_index, range} ->
+            %{start_time: range["start_time"] || "", end_time: range["end_time"] || ""}
+          end)
+
+        _ ->
+          draft.ranges
+      end
+
+    %{
+      draft
+      | name: Map.get(params, "name", draft.name),
+        days: days,
+        ranges: ranges,
+        until_end_of_day?: params["until_end_of_day"] == "true",
+        failures: []
+    }
+  end
+
+  defp parse_weekday(day) when day in 0..6, do: day
+
+  defp parse_weekday(day) when is_binary(day) do
+    case Integer.parse(day) do
+      {n, ""} when n in 0..6 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_weekday(_day), do: nil
+
+  defp time_period_writer_params(draft) do
+    weekdays =
+      Enum.reduce(draft.days, 0, fn day, mask ->
+        Bitwise.bor(mask, weekday_bit(day))
+      end)
+
+    ranges =
+      Enum.map(draft.ranges, fn range ->
+        %{
+          start_seconds: time_input_seconds(range.start_time),
+          end_seconds:
+            if(draft.until_end_of_day? and range == List.last(draft.ranges),
+              do: 86_400,
+              else: time_input_seconds(range.end_time)
+            )
+        }
+      end)
+
+    %{
+      name: draft.name,
+      weekdays: if(weekdays == 0, do: nil, else: weekdays),
+      ranges: ranges,
+      until_end_of_day?: draft.until_end_of_day?
+    }
+  end
+
+  defp time_input_seconds(""), do: nil
+
+  defp time_input_seconds(value) when is_binary(value) do
+    case Time.from_iso8601(value <> if(String.length(value) == 5, do: ":00", else: "")) do
+      {:ok, time} -> time.hour * 3600 + time.minute * 60 + time.second
+      _ -> nil
+    end
+  end
+
+  defp time_input_seconds(_value), do: nil
+
+  defp weekday_bit(0), do: 64
+  defp weekday_bit(day) when day in 1..6, do: :erlang.bsl(1, day - 1)
+
+  defp save_time_period(socket, draft) do
+    socket = assign(socket, :drawer_pending?, true)
+
+    case Fares.save_time_period(fare_scope(socket), time_period_writer_params(draft)) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:time_period_draft, nil)
+         |> assign(:time_period_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "Time period saved to #{socket.assigns.current_gtfs_version.name} service.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:drawer_pending?, false)
+         |> put_time_period(%{draft | failures: [time_period_failure(reason)]})}
+    end
+  end
+
+  defp time_period_failure(%Ecto.Changeset{} = changeset) do
+    message =
+      changeset.errors
+      |> Enum.map(fn {_field, {message, _opts}} -> message end)
+      |> Enum.uniq()
+      |> Enum.join(" ")
+
+    %{
+      href: "#time-period-name",
+      msg:
+        "Time period: #{if(message == "", do: "Check the name and time ranges.", else: message)}"
+    }
+  end
+
+  defp time_period_failure(:duplicate_time_period),
+    do: %{
+      href: "#time-period-name",
+      msg: "Name: This version already has a time period with that name."
+    }
+
+  defp time_period_failure(:not_found),
+    do: %{
+      href: "#time-period-name",
+      msg: "Time period: This version no longer holds that period."
+    }
+
+  defp time_period_failure(:unmanaged),
+    do: %{
+      href: "#time-period-name",
+      msg: "Time period: Convert this version's fares before editing them."
+    }
+
+  defp time_period_failure(_reason),
+    do: %{href: "#time-period-name", msg: "Time period: It could not be saved. Nothing changed."}
+
+  defp put_rule(socket, draft, focus_id \\ nil) do
+    socket
+    |> assign(:rule_draft, draft)
+    |> assign(:rule_focus, focus_id || socket.assigns.rule_focus)
+    |> assign(:rule_form, to_form(%{}, as: :rule))
+  end
+
+  defp new_rule_draft(workspace) do
+    fare = Enum.find(workspace.fares, &(&1.kind == "single"))
+
+    %{
+      rule_id: nil,
+      network_id: nil,
+      from_area_id: nil,
+      to_area_id: nil,
+      from_timeframe_group_id: nil,
+      fare_product_id: fare && List.first(fare.product_ids),
+      both?: false,
+      overlap: nil,
+      failures: []
+    }
+  end
+
+  defp rule_draft_from_rule(rule) do
+    %{
+      rule_id: rule.id,
+      network_id: rule.network_id,
+      from_area_id: rule.from_area_id,
+      to_area_id: rule.to_area_id,
+      from_timeframe_group_id: rule.from_timeframe_group_id,
+      fare_product_id: rule.fare_product_id,
+      both?: false,
+      overlap: nil,
+      failures: []
+    }
+  end
+
+  defp update_rule_draft(draft, params) do
+    overlap =
+      case params["overlap"] do
+        "replace" -> :replace
+        "keep_both" -> :keep_both
+        _ -> draft.overlap
+      end
+
+    %{
+      draft
+      | network_id: blank_to_nil(params["network_id"]),
+        from_area_id: blank_to_nil(params["from_area_id"]),
+        to_area_id: blank_to_nil(params["to_area_id"]),
+        from_timeframe_group_id: blank_to_nil(params["from_timeframe_group_id"]),
+        fare_product_id: blank_to_nil(params["fare_product_id"]),
+        both?: params["both"] == "true" and is_nil(draft.rule_id),
+        overlap: overlap,
+        failures: []
+    }
+  end
+
+  defp editor_rules(workspace) do
+    workspace.fares
+    |> Enum.flat_map(fn fare ->
+      Enum.map(fare.rules, &Map.put(&1, :editable?, fare.kind == "single"))
+    end)
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(&{&1.network_id || "", &1.from_area_id || "", &1.to_area_id || "", &1.id})
+  end
+
+  defp editable_rules(workspace), do: Enum.filter(editor_rules(workspace), & &1.editable?)
+
+  defp rule_overlaps(workspace, draft) do
+    conditions =
+      [{draft.from_area_id, draft.to_area_id}] ++
+        if(draft.both? and draft.from_area_id != draft.to_area_id,
+          do: [{draft.to_area_id, draft.from_area_id}],
+          else: []
+        )
+
+    editable_rules(workspace)
+    |> Enum.filter(fn rule ->
+      rule.network_id == draft.network_id and
+        {rule.from_area_id, rule.to_area_id} in conditions and
+        rule.from_timeframe_group_id == draft.from_timeframe_group_id and
+        rule.fare_product_id not in fare_product_ids_for(workspace, draft.fare_product_id) and
+        rule.id != draft.rule_id
+    end)
+    |> Enum.uniq_by(& &1.fare_product_id)
+  end
+
+  defp fare_product_ids_for(_workspace, nil), do: []
+
+  defp fare_product_ids_for(workspace, product_id) do
+    case Enum.find(workspace.fares, &(product_id in &1.product_ids)) do
+      nil -> [product_id]
+      fare -> fare.product_ids
+    end
+  end
+
+  defp rule_reviewed(workspace, draft) do
+    editable_rules(workspace)
+    |> Enum.filter(fn rule ->
+      rule.network_id == draft.network_id and rule.from_area_id == draft.from_area_id and
+        rule.to_area_id == draft.to_area_id and
+        rule.from_timeframe_group_id == draft.from_timeframe_group_id and
+        rule.id != draft.rule_id
+    end)
+    |> Enum.flat_map(&Map.get(&1, :product_ids, [&1.fare_product_id]))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp save_rule(socket, draft) do
+    overlaps = rule_overlaps(socket.assigns.workspace, draft)
+
+    failures =
+      cond do
+        is_nil(draft.fare_product_id) ->
+          [%{href: "#rule-fares", msg: "Fare: Choose a single-ride fare."}]
+
+        overlaps != [] and is_nil(draft.overlap) ->
+          [
+            %{
+              href: "#rule-overlap",
+              msg: "Overlap: Choose whether to replace the existing fare or keep both."
+            }
+          ]
+
+        true ->
+          []
+      end
+
+    if failures != [] do
+      {:noreply, put_rule(socket, %{draft | failures: failures}, socket.assigns.rule_focus)}
+    else
+      socket = assign(socket, :drawer_pending?, true)
+
+      write_params = %{
+        rule_id: draft.rule_id,
+        network_id: draft.network_id,
+        from_area_id: draft.from_area_id,
+        to_area_id: draft.to_area_id,
+        from_timeframe_group_id: draft.from_timeframe_group_id,
+        fare_product_id: draft.fare_product_id,
+        both?: draft.both?,
+        reviewed: rule_reviewed(socket.assigns.workspace, draft)
+      }
+
+      case Fares.save_rule(
+             fare_scope(socket),
+             write_params,
+             if(overlaps == [], do: nil, else: draft.overlap)
+           ) do
+        {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+          {:noreply,
+           socket
+           |> load_workspace()
+           |> assign(:rule_draft, nil)
+           |> assign(:rule_focus, nil)
+           |> assign(:drawer_pending?, false)
+           |> assign(:price_note, %{
+             text: "Fare rule saved to #{socket.assigns.current_gtfs_version.name} service.",
+             undo: [{operation_id, inverse}]
+           })}
+
+        {:error, {:overlap, _rule}} ->
+          {:noreply,
+           put_rule(
+             assign(socket, :drawer_pending?, false),
+             %{
+               draft
+               | failures: [
+                   %{
+                     href: "#rule-overlap",
+                     msg:
+                       "Overlap: These rides now have another fare. Review the choice and save again."
+                   }
+                 ]
+             },
+             socket.assigns.rule_focus
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           put_rule(
+             assign(socket, :drawer_pending?, false),
+             %{
+               draft
+               | failures: [%{href: "#rule-fares", msg: "Fare rule: #{rule_error(reason)}"}]
+             },
+             socket.assigns.rule_focus
+           )}
+      end
+    end
+  end
+
+  defp rule_error(:not_found),
+    do: "A selected route group, zone, time period, or fare is no longer in this version."
+
+  defp rule_error(:pass_fare), do: "Passes are managed in the Passes table."
+  defp rule_error(:unmanaged), do: "Convert this version's fares before editing them."
+
+  defp rule_error({:stale, _details}),
+    do: "These rules changed since you opened the editor. Review them again and save."
+
+  defp rule_error(_reason), do: "It could not be saved. Nothing changed."
+
+  defp find_editor_rule(workspace, rule_id),
+    do: Enum.find(editable_rules(workspace), &(to_string(&1.id) == rule_id))
+
+  defp delete_fare_rule(socket, rule) do
+    socket = assign(socket, :drawer_pending?, true)
+
+    case Fares.delete_rule(fare_scope(socket), rule.id, %{fare_product_id: rule.fare_product_id}) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(:rule_draft, nil)
+         |> assign(:rule_focus, nil)
+         |> assign(:drawer_pending?, false)
+         |> assign(:price_note, %{
+           text: "Fare rule deleted. Journeys using it are now unpriced.",
+           undo: [{operation_id, inverse}]
+         })}
+
+      {:error, reason} ->
+        {:noreply,
+         put_rule(assign(socket, :drawer_pending?, false), %{
+           socket.assigns.rule_draft
+           | failures: [%{href: "#rule-fares", msg: "Fare rule: #{rule_error(reason)}"}]
+         })}
+    end
+  end
 
   # The dialog's own state, opened with the prototype's defaults: single rides,
   # every rider type the version charges, $0.25, the nearest nickel, and the
@@ -2468,6 +3001,12 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
                 version_name={@current_gtfs_version.name}
                 published?={published?(@current_gtfs_version)}
               />
+              <.time_periods_card workspace={@workspace} />
+              <.rule_list_card
+                rules={editor_rules(@workspace)}
+                workspace={@workspace}
+                show_ids?={@show_rule_ids?}
+              />
             </div>
 
             <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
@@ -2622,6 +3161,27 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           version_name={@current_gtfs_version.name}
           published?={published?(@current_gtfs_version)}
           return_focus_id={@cell_focus}
+          pending?={@drawer_pending?}
+        />
+        <.time_period_drawer
+          :if={@time_period_draft}
+          draft={@time_period_draft}
+          form={to_form(%{"name" => @time_period_draft.name}, as: :time_period)}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@time_period_focus}
+          pending?={@drawer_pending?}
+        />
+        <.rule_drawer
+          :if={@rule_draft}
+          draft={@rule_draft}
+          form={@rule_form}
+          workspace={@workspace}
+          rules={editor_rules(@workspace)}
+          overlaps={rule_overlaps(@workspace, @rule_draft)}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@rule_focus}
           pending?={@drawer_pending?}
         />
       </div>

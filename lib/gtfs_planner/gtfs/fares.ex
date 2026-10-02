@@ -771,11 +771,27 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
     leg_rules
     |> Enum.filter(&MapSet.member?(product_ids, &1.fare_product_id))
-    |> Enum.map(fn rule ->
-      %{network_id: rule.network_id, from_area_id: rule.from_area_id, to_area_id: rule.to_area_id}
+    |> Enum.group_by(fn rule ->
+      {rule.network_id, rule.from_area_id, rule.to_area_id, rule.from_timeframe_group_id}
     end)
-    |> Enum.uniq()
-    |> Enum.sort_by(&{&1.network_id || "", &1.from_area_id || "", &1.to_area_id || ""})
+    |> Enum.map(fn {{network_id, from_area_id, to_area_id, from_timeframe_group_id}, rules} ->
+      rules = Enum.sort_by(rules, &{&1.fare_product_id, &1.id})
+      fare_product_ids = Enum.map(rules, & &1.fare_product_id) |> Enum.uniq() |> Enum.sort()
+
+      %{
+        id: hd(rules).id,
+        fare_product_id: hd(fare_product_ids),
+        product_ids: fare_product_ids,
+        network_id: network_id,
+        from_area_id: from_area_id,
+        to_area_id: to_area_id,
+        from_timeframe_group_id: from_timeframe_group_id
+      }
+    end)
+    |> Enum.sort_by(
+      &{&1.network_id || "", &1.from_area_id || "", &1.to_area_id || "",
+       &1.from_timeframe_group_id || "", &1.id}
+    )
   end
 
   defp sold_media(products) do

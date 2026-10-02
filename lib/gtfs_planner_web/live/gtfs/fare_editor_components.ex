@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
        "open_fare_drawer"}
 
   defp header_action(:where, true, _transfers?, _dirty?, _prices_ready?),
-    do: {:button, "add-fare-rule", "Add fare rule", "primary", nil}
+    do: {:button, "add-fare-rule", "Add fare rule", "primary", "open_rule_drawer"}
 
   defp header_action(:transfers, true, true, _dirty?, _prices_ready?),
     do: {:button, "add-transfer-rule", "Add transfer rule", "primary", nil}
@@ -3444,6 +3444,601 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   end
 
   @doc false
+  attr :workspace, :map, required: true
+
+  def time_periods_card(assigns) do
+    ~H"""
+    <section id="time-periods-card" class="overflow-clip rounded-card border border-subtle bg-white">
+      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-subtle px-4 py-3 sm:px-5">
+        <div>
+          <h2
+            id="time-periods-title"
+            class="font-sans text-base font-bold tracking-normal text-strong"
+          >
+            Time periods
+          </h2>
+          <p :if={@workspace.time_periods == []} class="mt-0.5 text-[13px] text-muted">
+            Only needed when a fare costs more or less at some times, such as peak hours.
+          </p>
+        </div>
+        <.button
+          id="create-time-period"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="open_time_period_drawer"
+        >
+          <.icon name="hero-plus" class="size-4" /> Create time period
+        </.button>
+      </div>
+      <p :if={@workspace.time_periods == []} class="px-4 py-4 text-sm text-default sm:px-5">
+        Prices are the same at all times of day.
+        <span class="text-muted">
+          Time periods appear only in the newer GTFS fare format; apps that read the older format always show the all-day price.
+        </span>
+      </p>
+      <ul :if={@workspace.time_periods != []} id="time-periods-list">
+        <li
+          :for={period <- @workspace.time_periods}
+          id={"time-period-#{period.timeframe_group_id}"}
+          class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-subtle px-4 py-2 last:border-b-0 sm:px-5"
+        >
+          <span class="text-sm font-bold text-strong">
+            {period.name || period.timeframe_group_id}
+          </span>
+          <span class="text-[13px] text-muted">
+            {period_days(period.weekdays)} · {Enum.map_join(
+              period.ranges,
+              ", ",
+              &period_range_text(&1, period)
+            )}
+          </span>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  attr :rules, :list, required: true
+  attr :workspace, :map, required: true
+  attr :show_ids?, :boolean, default: false
+
+  def rule_list_card(assigns) do
+    ~H"""
+    <details id="rule-list" class="overflow-clip rounded-card border border-subtle bg-white">
+      <summary class="flex min-h-12 cursor-pointer items-center gap-2 px-4 py-3 sm:px-5">
+        <.icon name="hero-chevron-right" class="size-4" />
+        <span class="text-sm font-bold text-strong">All fare rules as a list</span>
+        <span class="text-sm text-muted">· {length(@rules)}</span>
+      </summary>
+      <div class="border-t border-subtle">
+        <div class="flex flex-wrap items-center gap-3 border-b border-subtle px-4 py-2 sm:px-5">
+          <p class="flex-1 text-[13px] text-muted">
+            The same rules as the tables above, one sentence each. The most specific rule wins: a route group beats any route, a zone beats any zone.
+          </p>
+          <label
+            for="show-rule-feed-ids"
+            class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-sm"
+          >
+            <input
+              id="show-rule-feed-ids"
+              type="checkbox"
+              class="size-5 accent-action"
+              phx-click="toggle_rule_feed_ids"
+              checked={@show_ids?}
+              aria-controls="fare-rules"
+            /> Show feed IDs
+          </label>
+        </div>
+        <div class="overflow-x-auto">
+          <table id="fare-rules" class="w-full border-collapse">
+            <caption class="sr-only">Fare rules and their adult prices.</caption>
+            <thead>
+              <tr class="text-left">
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-4 py-2 text-[13px] font-semibold text-strong"
+                >
+                  Rule
+                </th>
+                <th
+                  scope="col"
+                  class="border-b border-subtle bg-canvas px-4 py-2 text-right text-[13px] font-semibold text-strong"
+                >
+                  Adult
+                </th>
+                <th scope="col" class="border-b border-subtle bg-canvas px-2 py-2">
+                  <span class="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={rule <- @rules} id={"fare-rule-#{rule.id}"} class="hover:bg-canvas/60">
+                <td class="border-b border-subtle px-4 py-2.5 text-sm text-default">
+                  {fare_rule_sentence(rule, @workspace)}
+                  <code :if={@show_ids?} class="mt-1 block break-all font-mono text-[12px] text-muted">
+                    {rule_ids_text(rule)}
+                  </code>
+                </td>
+                <td class="border-b border-subtle px-4 text-right text-sm font-semibold tabular-nums text-strong">
+                  {fare_rule_price(rule, @workspace)}
+                </td>
+                <td class="border-b border-subtle px-2 text-right">
+                  <.button
+                    :if={rule.editable?}
+                    id={"edit-fare-rule-#{rule.id}"}
+                    type="button"
+                    variant="quiet"
+                    class="min-h-11"
+                    phx-click="open_rule_drawer"
+                    phx-value-rule_id={rule.id}
+                    aria-label={"Edit rule: #{fare_rule_sentence(rule, @workspace)}"}
+                  >
+                    Edit rule
+                  </.button>
+                  <span :if={!rule.editable?} class="px-2 text-[12px] text-muted">
+                    Managed by Passes table
+                  </span>
+                </td>
+              </tr>
+              <tr :if={@rules == []} id="fare-rules-empty">
+                <td colspan="3" class="px-4 py-4 text-sm text-muted">
+                  No fare rules in this version.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+    """
+  end
+
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def time_period_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="time-period-drawer"
+      chrome="planner"
+      open
+      pending={@pending?}
+      on_close="close_time_period_drawer"
+      title="Create time period"
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[780px]"
+    >
+      <:lede>{version_phrase(@version_name, @published?)}</:lede>
+      <.form
+        for={@form}
+        id="time-period-form"
+        as={:time_period}
+        novalidate
+        phx-change="change_time_period"
+        phx-submit="save_time_period"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <.form_error_summary
+            id="time-period-error-summary"
+            title="Fix these problems to save"
+            failures={@draft.failures}
+          />
+          <.input
+            id="time-period-name"
+            field={@form[:name]}
+            type="text"
+            label="Name"
+            value={@draft.name}
+            placeholder="Weekday peak"
+            autocomplete="off"
+            class="min-h-11"
+            help="For your team; riders see the fare, not this name."
+          />
+          <fieldset id="time-period-weekdays" class="grid gap-2">
+            <legend class="text-sm font-semibold text-strong">Days</legend>
+            <div class="flex flex-wrap gap-1.5">
+              <label
+                :for={{day, label} <- weekday_choices()}
+                for={"time-period-day-#{day}"}
+                class="flex min-h-11 min-w-12 cursor-pointer items-center justify-center rounded-control border border-control px-3 text-sm font-semibold text-strong has-[:checked]:border-action has-[:checked]:bg-selection has-[:checked]:text-action has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-focus"
+              >
+                <input
+                  type="checkbox"
+                  id={"time-period-day-#{day}"}
+                  name="time_period[weekdays][]"
+                  value={day}
+                  checked={day in @draft.days}
+                  class="sr-only"
+                />{label}
+              </label>
+            </div>
+            <p class="text-[13px] text-muted">
+              Leave all days clear for every day. Holidays count as the day they fall on. The export adds a calendar used only by fares, so changing trip calendars never changes a fare.
+            </p>
+          </fieldset>
+          <fieldset id="time-period-ranges" class="grid gap-2">
+            <legend class="text-sm font-semibold text-strong">Times</legend>
+            <p class="text-[13px] text-muted">
+              A ride is in this period when it starts between these times.
+            </p>
+            <div
+              :for={{range, index} <- Enum.with_index(@draft.ranges)}
+              id={"time-period-range-#{index}"}
+              class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2 sm:flex sm:flex-wrap sm:items-end"
+            >
+              <.input
+                id={"time-period-range-#{index}-start"}
+                field={@form[:name]}
+                name={"time_period[ranges][#{index}][start_time]"}
+                type="time"
+                label={"Range #{index + 1} starts"}
+                value={range.start_time}
+                class="min-h-11"
+              />
+              <span class="pb-3 text-sm text-muted">to</span>
+              <.input
+                id={"time-period-range-#{index}-end"}
+                field={@form[:name]}
+                name={"time_period[ranges][#{index}][end_time]"}
+                type="time"
+                label={"Range #{index + 1} ends"}
+                value={range.end_time}
+                class="min-h-11"
+              />
+              <label
+                :if={index == length(@draft.ranges) - 1}
+                for="time-period-until-end"
+                class="col-span-3 flex min-h-11 cursor-pointer items-center gap-2 text-sm sm:ml-2"
+              >
+                <input type="hidden" name="time_period[until_end_of_day]" value="false" />
+                <input
+                  id="time-period-until-end"
+                  type="checkbox"
+                  name="time_period[until_end_of_day]"
+                  value="true"
+                  checked={@draft.until_end_of_day?}
+                  class="size-5 accent-action"
+                />Until end of service day
+              </label>
+              <.button
+                :if={length(@draft.ranges) > 1}
+                id={"remove-time-period-range-#{index}"}
+                type="button"
+                variant="quiet"
+                class="col-span-3 min-h-11 text-error-fg sm:ml-2"
+                phx-click="remove_time_period_range"
+                phx-value-index={index}
+              >
+                Remove time range
+              </.button>
+            </div>
+            <.button
+              id="add-time-period-range"
+              type="button"
+              variant="quiet"
+              class="min-h-11 justify-self-start"
+              phx-click="add_time_period_range"
+            >
+              <.icon name="hero-plus" class="size-4" /> Add time range
+            </.button>
+          </fieldset>
+          <div
+            id="time-period-result"
+            aria-live="polite"
+            class="grid gap-1 rounded-card border border-subtle bg-canvas px-4 py-3"
+          >
+            <p class="text-[13px] text-muted">What this period covers</p>
+            <p class="text-xl font-bold text-strong">{period_days(@draft.weekdays)}</p>
+            <p class="text-sm text-default">Rides that start {draft_ranges_text(@draft)}.</p>
+            <p class="text-sm font-semibold text-strong">
+              Next, add a fare rule that uses it, for example a higher Intercity fare in the weekday peak.
+            </p>
+          </div>
+          <.message kind="neutral" title="Apps that read only the older format show the all-day price">
+            Time periods exist only in the newer GTFS fare format.
+          </.message>
+        </.drawer_scroll>
+        <.drawer_footer>
+          <p class="basis-full text-[13px] text-muted">
+            Changes apply to {version_phrase(@version_name, @published?)} as soon as you save.
+          </p>
+          <.button
+            id="cancel-time-period"
+            type="button"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="close_time_period_drawer"
+          >
+            Cancel
+          </.button>
+          <.button id="save-time-period" type="submit" class="min-h-11" phx-disable-with="Saving…">
+            Create time period
+          </.button>
+        </.drawer_footer>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  attr :draft, :map, required: true
+  attr :form, :any, required: true
+  attr :workspace, :map, required: true
+  attr :rules, :list, required: true
+  attr :overlaps, :list, required: true
+  attr :version_name, :string, required: true
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def rule_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="rule-drawer"
+      chrome="planner"
+      open
+      pending={@pending?}
+      on_close="close_rule_drawer"
+      title={if @draft.rule_id, do: "Edit fare rule", else: "Add fare rule"}
+      initial_focus={:first_field}
+      return_focus_id={@return_focus_id}
+      class="max-w-[780px]"
+    >
+      <:lede>{version_phrase(@version_name, @published?)}</:lede>
+      <.form
+        for={@form}
+        id="rule-form"
+        as={:rule}
+        novalidate
+        phx-change="change_rule"
+        phx-submit="save_rule"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <.form_error_summary
+            id="rule-error-summary"
+            title="Fix these problems to save"
+            failures={@draft.failures}
+          />
+          <input :if={@draft.rule_id} type="hidden" name="rule[rule_id]" value={@draft.rule_id} />
+          <section class="grid gap-3">
+            <.step_head id="rule-step-1" number={1} title="Which rides?">
+              Leave a choice on “Any” when it doesn’t change the fare.
+            </.step_head>
+            <div class="grid gap-3 pl-0 sm:pl-10">
+              <label for="rule-network" class="grid gap-1 text-sm font-semibold text-strong">
+                Route group
+                <select id="rule-network" name="rule[network_id]" class="select min-h-11 w-full">
+                  <option value="">Any route group</option>
+                  <option
+                    :for={group <- @workspace.groups}
+                    value={group.network_id}
+                    selected={@draft.network_id == group.network_id}
+                  >
+                    {group.name || group.network_id}
+                  </option>
+                </select>
+              </label>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label for="rule-from-area" class="grid gap-1 text-sm font-semibold text-strong">
+                  Starts in
+                  <select id="rule-from-area" name="rule[from_area_id]" class="select min-h-11 w-full">
+                    <option value="">Any zone</option>
+                    <option
+                      :for={zone <- rule_zones(@workspace)}
+                      value={zone.area_id}
+                      selected={@draft.from_area_id == zone.area_id}
+                    >
+                      {zone.name}
+                    </option>
+                  </select>
+                </label>
+                <label for="rule-to-area" class="grid gap-1 text-sm font-semibold text-strong">
+                  Ends in
+                  <select id="rule-to-area" name="rule[to_area_id]" class="select min-h-11 w-full">
+                    <option value="">Any zone</option>
+                    <option
+                      :for={zone <- rule_zones(@workspace)}
+                      value={zone.area_id}
+                      selected={@draft.to_area_id == zone.area_id}
+                    >
+                      {zone.name}
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <label for="rule-time-period" class="grid gap-1 text-sm font-semibold text-strong">
+                When
+                <select
+                  id="rule-time-period"
+                  name="rule[from_timeframe_group_id]"
+                  class="select min-h-11 w-full disabled:bg-canvas disabled:text-muted"
+                  disabled={@workspace.time_periods == []}
+                >
+                  <option value="">Any time</option>
+                  <option
+                    :for={period <- @workspace.time_periods}
+                    value={period.timeframe_group_id}
+                    selected={@draft.from_timeframe_group_id == period.timeframe_group_id}
+                  >
+                    {period.name || period.timeframe_group_id}
+                  </option>
+                </select>
+                <span
+                  :if={@workspace.time_periods == []}
+                  id="rule-time-disabled-reason"
+                  class="text-[13px] font-normal text-muted"
+                >
+                  No time periods yet. Create one on the Where fares apply tab if a fare costs more at some times.
+                </span>
+              </label>
+              <label
+                :if={
+                  @draft.from_area_id && @draft.to_area_id && @draft.from_area_id != @draft.to_area_id &&
+                    is_nil(@draft.rule_id)
+                }
+                for="rule-both-directions"
+                class="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-strong"
+              >
+                <input type="hidden" name="rule[both]" value="false" /><input
+                  id="rule-both-directions"
+                  type="checkbox"
+                  name="rule[both]"
+                  value="true"
+                  checked={@draft.both?}
+                  class="size-5 accent-action"
+                />
+                Also for rides from {zone_name(@workspace, @draft.to_area_id)} to {zone_name(
+                  @workspace,
+                  @draft.from_area_id
+                )}
+              </label>
+            </div>
+          </section>
+          <section class="grid gap-3">
+            <.step_head id="rule-step-2" number={2} title="Which fare do they pay?" />
+            <fieldset id="rule-fares" class="grid gap-1 pl-0 sm:pl-10">
+              <legend class="sr-only">Choose the single-ride fare</legend>
+              <label
+                :for={fare <- single_fares(@workspace)}
+                class="flex min-h-11 cursor-pointer items-center gap-3 rounded-control px-2 has-[:checked]:bg-selection"
+              >
+                <input
+                  type="radio"
+                  name="rule[fare_product_id]"
+                  id={"rule-fare-#{fare.key}"}
+                  value={fare.key}
+                  checked={@draft.fare_product_id == fare.key}
+                  class="size-4 accent-action"
+                /><span class="flex-1 text-sm font-semibold text-strong">{fare.name}</span><span class="text-sm tabular-nums text-default">{fare.price}</span>
+              </label>
+              <p
+                :if={Enum.any?(@draft.failures, &(&1.href == "#rule-fares"))}
+                id="rule-fare-error"
+                class="text-sm font-semibold text-error-fg"
+              >
+                Choose the fare these rides pay.
+              </p>
+              <p class="mt-1 text-[13px] text-muted">
+                Passes aren’t listed: choose where a pass is accepted in the Passes table.
+              </p>
+            </fieldset>
+          </section>
+          <section
+            :if={@overlaps != []}
+            id="rule-overlap"
+            role="alert"
+            class="grid gap-2 rounded-card bg-warning-bg px-4 py-3 text-warning-fg"
+          >
+            <div class="flex items-start gap-2">
+              <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+              <div>
+                <p class="text-sm font-bold">
+                  These rides already pay {Enum.map_join(
+                    @overlaps,
+                    ", ",
+                    &rule_fare_name(&1, @workspace)
+                  )}
+                </p>
+                <p class="mt-0.5 text-sm">
+                  A rider can’t be charged two single-ride fares for the same ride.
+                </p>
+              </div>
+            </div>
+            <div class="grid gap-1 text-default">
+              <label class="flex min-h-11 cursor-pointer items-start gap-3 rounded-control bg-white px-3 py-2">
+                <input
+                  id="rule-overlap-replace"
+                  type="radio"
+                  name="rule[overlap]"
+                  value="replace"
+                  checked={@draft.overlap == :replace}
+                  class="mt-1 size-4 accent-action"
+                />
+                <span>
+                  <span class="block text-sm font-semibold text-strong">
+                    Replace {Enum.map_join(@overlaps, ", ", &rule_fare_name(&1, @workspace))} with {rule_fare_name(
+                      @draft.fare_product_id,
+                      @workspace
+                    )}
+                  </span>
+                  <span class="block text-[13px] text-muted">
+                    The existing rule changes. Recommended.
+                  </span>
+                </span>
+              </label>
+              <label class="flex min-h-11 cursor-pointer items-start gap-3 rounded-control bg-white px-3 py-2">
+                <input
+                  id="rule-overlap-keep"
+                  type="radio"
+                  name="rule[overlap]"
+                  value="keep_both"
+                  checked={@draft.overlap == :keep_both}
+                  class="mt-1 size-4 accent-action"
+                />
+                <span>
+                  <span class="block text-sm font-semibold text-strong">Keep both fares</span><span class="block text-[13px] text-muted">Trip planners show both prices and riders may be unsure which applies.</span>
+                </span>
+              </label>
+            </div>
+            <p
+              :if={Enum.any?(@draft.failures, &(&1.href == "#rule-overlap"))}
+              id="rule-overlap-error"
+              class="text-sm font-semibold"
+            >
+              Choose whether to replace the existing fare or keep both.
+            </p>
+          </section>
+          <div
+            id="rule-result"
+            aria-live="polite"
+            class="rounded-card border border-subtle bg-canvas px-4 py-3"
+          >
+            <p class="text-[13px] text-muted">What this rule does</p>
+            <p class="mt-1 text-sm text-strong">{rule_draft_sentence(@draft, @workspace)}</p>
+          </div>
+        </.drawer_scroll>
+        <.drawer_footer>
+          <.button
+            :if={@draft.rule_id}
+            id="delete-fare-rule"
+            type="button"
+            variant="quiet"
+            class="mr-auto min-h-11 text-error-fg"
+            phx-click="delete_rule"
+            phx-value-rule_id={@draft.rule_id}
+            phx-disable-with="Removing…"
+          >
+            <.icon name="hero-trash" class="size-4" /> Delete rule
+          </.button>
+          <p class="basis-full text-[13px] text-muted">
+            Changes apply to {version_phrase(@version_name, @published?)} as soon as you save.
+          </p>
+          <.button
+            id="cancel-rule"
+            type="button"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="close_rule_drawer"
+          >
+            Cancel
+          </.button>
+          <.button id="save-rule" type="submit" class="min-h-11" phx-disable-with="Saving…">
+            {rule_save_label(@draft, @overlaps, @workspace)}
+          </.button>
+        </.drawer_footer>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  @doc false
   # One route badge in the groups table. The badge is the same component the
   # Routes page draws, so a route's colour cannot differ between the two.
   attr :route, :map, required: true
@@ -3587,6 +4182,100 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       }
     end
   end
+
+  defp rule_zones(workspace) do
+    workspace.matrices
+    |> Enum.flat_map(& &1.zones)
+    |> Enum.uniq_by(& &1.area_id)
+    |> Enum.sort_by(&{&1.name || "", &1.area_id})
+  end
+
+  defp weekday_choices do
+    [{0, "Sun"}, {1, "Mon"}, {2, "Tue"}, {3, "Wed"}, {4, "Thu"}, {5, "Fri"}, {6, "Sat"}]
+  end
+
+  defp period_days(nil), do: "Every day"
+  defp period_days(127), do: "Every day"
+  defp period_days(31), do: "Weekdays"
+
+  defp period_days(mask) do
+    weekday_choices()
+    |> Enum.filter(fn {day, _label} -> Bitwise.band(mask, weekday_bit(day)) != 0 end)
+    |> Enum.map_join(", ", &elem(&1, 1))
+    |> case do
+      "" -> "Every day"
+      days -> days
+    end
+  end
+
+  defp weekday_bit(0), do: 64
+  defp weekday_bit(day), do: :erlang.bsl(1, day - 1)
+
+  defp period_range_text(%{start_time: start_time, end_time: end_time}, period) do
+    ending =
+      if period.until_end_of_day and end_time == "24:00:00",
+        do: "end of service day",
+        else: format_period_time(end_time)
+
+    "#{format_period_time(start_time)}–#{ending}"
+  end
+
+  defp draft_ranges_text(draft) do
+    Enum.map_join(draft.ranges, " or ", fn range ->
+      ending =
+        if draft.until_end_of_day? and range == List.last(draft.ranges),
+          do: "end of service day",
+          else: format_period_time(range.end_time)
+
+      "#{format_period_time(range.start_time)}–#{ending}"
+    end)
+  end
+
+  defp format_period_time(nil), do: "choose a time"
+
+  defp format_period_time("24:00:00"), do: "end of service day"
+
+  defp format_period_time(value) when is_binary(value) do
+    normalized = if String.length(value) == 5, do: value <> ":00", else: value
+
+    with {:ok, time} <- Time.from_iso8601(normalized) do
+      Calendar.strftime(time, "%-I:%M %p")
+    else
+      _ -> value
+    end
+  end
+
+  defp rule_ids_text(rule) do
+    "network_id #{rule.network_id || "(any)"} · from_area_id #{rule.from_area_id || "(any)"} · to_area_id #{rule.to_area_id || "(any)"} · fare_product_id #{rule.fare_product_id} · from_timeframe_group_id #{rule.from_timeframe_group_id || "(any)"}"
+  end
+
+  defp fare_rule_price(rule, workspace) do
+    fare = Enum.find(workspace.fares, &(rule.fare_product_id in &1.product_ids))
+    if fare, do: adult_amount_text(fare, workspace) || "—", else: "—"
+  end
+
+  defp rule_fare_name(%{fare_product_id: product_id}, workspace),
+    do: rule_fare_name(product_id, workspace)
+
+  defp rule_fare_name(product_id, workspace) do
+    case Enum.find(workspace.fares, &(product_id in &1.product_ids)) do
+      nil -> "the selected fare"
+      fare -> fare.name
+    end
+  end
+
+  defp rule_draft_sentence(%{fare_product_id: nil}, _workspace),
+    do: "Choose a fare to see what this rule does."
+
+  defp rule_draft_sentence(draft, workspace) do
+    fare_rule_sentence(draft, workspace)
+  end
+
+  defp rule_save_label(%{overlap: :replace}, [clash | _rest], workspace),
+    do: "Replace #{rule_fare_name(clash, workspace)}"
+
+  defp rule_save_label(%{rule_id: nil}, _overlaps, _workspace), do: "Add fare rule"
+  defp rule_save_label(_draft, _overlaps, _workspace), do: "Save rule"
 
   defp group_drawer_title(%{key: nil}), do: "Create route group"
   defp group_drawer_title(%{name: name}), do: "Edit route group · #{name}"
@@ -4388,14 +5077,28 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
   defp fare_id_text(%{key: id}), do: id
 
   defp fare_rule_sentence(rule, workspace) do
-    "#{group_name(workspace, rule.network_id)} · #{fare_rule_condition(rule, workspace)}"
+    group =
+      if is_nil(rule.network_id), do: "any route", else: group_name(workspace, rule.network_id)
+
+    condition = fare_rule_condition(rule, workspace)
+
+    time =
+      case Enum.find(
+             workspace.time_periods,
+             &(&1.timeframe_group_id == rule.from_timeframe_group_id)
+           ) do
+        nil -> "at any time"
+        period -> "during #{period.name || period.timeframe_group_id}"
+      end
+
+    "Rides on #{group} #{condition} #{time} pay #{rule_fare_name(rule, workspace)}."
   end
 
   defp fare_rule_condition(%{from_area_id: from, to_area_id: to}, workspace) do
     cond do
-      blank_area?(from) and blank_area?(to) -> "any stops"
+      blank_area?(from) and blank_area?(to) -> "between any stops"
       from == to -> "within #{zone_name(workspace, from)}"
-      true -> "#{zone_name(workspace, from)} ↔ #{zone_name(workspace, to)}"
+      true -> "from #{zone_name(workspace, from)} to #{zone_name(workspace, to)}"
     end
   end
 
