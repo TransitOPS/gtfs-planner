@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // The Alerts list, as spec 30's step 13 renders it: the four tabs with their
 // counts, the table, and the first-use panel an organization with no alerts
@@ -22,13 +23,17 @@ const EMPTY_EDITOR = {
 
 const ALERTS_VERSION = "Browser Alerts Version";
 
-// The canonical feature package (with its reference and evidence folder) lives
-// in the primary repository checkout; the `.specs/` workspace is gitignored, so
-// a checkout without it falls back to Playwright's own output folder instead of
-// writing outside the project.
+// The feature package (with its reference and evidence folder) is resolved
+// relative to this file, or from ALERTS_FEATURE_DIR when the checkout is a
+// worktree. The `.specs/` workspace is gitignored, so a checkout without it
+// falls back to Playwright's own output folder instead of writing outside the
+// project.
 const FEATURE_DIR =
   process.env.ALERTS_FEATURE_DIR ||
-  "/Users/ryanmahoney/Documents/gtfs-planner/.specs/30-service-alerts";
+  path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../.specs/30-service-alerts",
+  );
 const EVIDENCE_DIR = path.join(FEATURE_DIR, "evidence/captures/production");
 const REFERENCE_PATH = path.join(FEATURE_DIR, "references/alerts-prototype.html");
 
