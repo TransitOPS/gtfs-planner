@@ -346,9 +346,10 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
                  unboxed(fn -> DatedChangePlan.load(harbor.scope, accepted) end)
                end)
 
-      # The same load without the lock still reads completely. The 300 ms
-      # deadline above bounds how long a blocked read waits, not how long an
-      # ordinary read of this version may take, so it is lifted for this half.
+      # The same load once the lock is confirmed released still reads
+      # completely. The 300 ms deadline above bounds how long a blocked read
+      # waits, not how long an ordinary read of this version may take, so it is
+      # lifted for this half.
       use_read_timeout(60_000)
 
       assert {:ok, _snapshot} = unboxed(fn -> DatedChangePlan.load(harbor.scope, accepted) end)
@@ -847,24 +848,16 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
     on_exit(fn -> :telemetry.detach(@pause_handler) end)
   end
 
-  # A real held lock, released in `after`, is what makes the deadline
-  # deterministic: the read blocks and PostgreSQL cancels it, with no sleep.
+  # A real held lock on a connection of its own, released and confirmed before
+  # the caller continues, is what makes the deadline deterministic: the read
+  # blocks and PostgreSQL cancels it, with no sleep. The holder must be unboxed:
+  # a holder sharing the sandbox's connection would take the lock inside the
+  # transaction ExUnit rolls back when the test ends, so the lock would outlive
+  # the release and every later read on this version would still be blocked.
   defp with_held_table_lock(table, fun) do
     parent = self()
 
-    {holder, _ref} =
-      spawn_monitor(fn ->
-        Repo.transaction(fn ->
-          Repo.query!("LOCK TABLE #{table} IN ACCESS EXCLUSIVE MODE")
-          send(parent, {:locked, self()})
-
-          receive do
-            :release -> :ok
-          after
-            @pause_timeout -> :ok
-          end
-        end)
-      end)
+    {holder, ref} = spawn_monitor(fn -> hold_table_lock(parent, table) end)
 
     receive do
       {:locked, ^holder} -> :ok
@@ -875,7 +868,47 @@ defmodule GtfsPlanner.Gtfs.DatedChangeSnapshotTest do
     try do
       fun.()
     after
-      send(holder, :release)
+      await_table_lock_release(holder, ref)
+    end
+  end
+
+  # The release is confirmed before the caller continues: a read that starts
+  defp await_release do
+    receive do
+      :release -> :ok
+    after
+      @pause_timeout -> :ok
+    end
+  end
+
+  defp hold_table_lock(parent, table) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.query!("LOCK TABLE #{table} IN ACCESS EXCLUSIVE MODE")
+        send(parent, {:locked, self()})
+        await_release()
+      end)
+    end)
+
+    send(parent, {:released, self()})
+  end
+
+  # The release is confirmed before the caller continues: a read that starts
+  # while the lock is still held is the blocked read of the case above, not the
+  # ordinary one.
+  defp await_table_lock_release(holder, ref) do
+    send(holder, :release)
+
+    receive do
+      {:released, ^holder} -> :ok
+    after
+      @collect_timeout -> flunk("the table lock was never released")
+    end
+
+    receive do
+      {:DOWN, ^ref, :process, ^holder, _reason} -> :ok
+    after
+      @collect_timeout -> flunk("the lock holder never finished")
     end
   end
 end

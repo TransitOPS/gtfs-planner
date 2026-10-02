@@ -87,8 +87,8 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
     :input_digest,
     :partitions,
     :projected_clocks,
-    :scope,
     :schema_version,
+    :scope,
     :timing,
     :totals,
     :unaffected_users,
@@ -316,8 +316,14 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
         resource_context: Scope.context({:version, harbor.version.id})
       }
 
+      # A scope that names no route is not the version this selection was
+      # accepted against.
       assert {:error, :not_found} = DatedChangePlan.prepare(version_scope, accepted)
-      assert {:error, :not_found} = DatedChangePlan.prepare(%{}, accepted)
+
+      # A payload that is not a scope at all is refused before any lookup: the
+      # caller's authority never resolved, which is a different refusal from a
+      # version that simply holds no plan.
+      assert {:error, :forbidden} = DatedChangePlan.prepare(%{}, accepted)
 
       # A forged accepted source is refused as a source, whole.
       forged = Map.put(accepted, :input_digest, String.duplicate("0", 64))
@@ -371,7 +377,9 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
 
       lineage = stage(report, :block_transfer_lineage)
       assert lineage.affected_ids == ["B1"]
-      assert Enum.any?(lineage.reasons, &String.contains?(&1, "no connection is feasible"))
+      # The lineage stage says what the listed transfer rules are worth: review
+      # candidates, never a certificate that a connection is feasible.
+      assert Enum.any?(lineage.reasons, &String.contains?(&1, "not a certificate"))
 
       reconciliation = stage(report, :partial_save_reconciliation)
       assert Enum.any?(reconciliation.reasons, &String.contains?(&1, "publication"))
@@ -384,9 +392,12 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
       harbor = harbor_scope(supervisor)
       state = review_state(harbor)
 
+      # `skip_existing` is off here so the allocation path is the one under
+      # test: the next case is the same command with it on, which skips this
+      # very copy.
       assert {:ok, change_set} =
                TripChanges.plan(
-                 {:copy, [harbor.selected.id], "SPECIAL", 300, true},
+                 {:copy, [harbor.selected.id], "SPECIAL", 300, false},
                  state
                )
 
@@ -420,8 +431,11 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
                TripChanges.plan({:copy, [harbor.selected.id], "SPECIAL", 300, true}, state)
 
       assert change_set.inserts == []
-      assert [{:note, {:skipped_existing, id, "06:05:00"}}] = change_set.consequences
-      assert id == harbor.selected.id
+
+      # The skip is one consequence among the command's, not the only one: the
+      # shared-dates warning below is the same plan's other consequence, and
+      # `consequences/3` emits warnings ahead of the skipped note.
+      assert {:note, {:skipped_existing, harbor.selected.id, "06:05:00"}} in change_set.consequences
 
       # Nothing in the duplicate key is a date. The only thing Copy says about
       # dates is a warning that two calendars share some - it is not a
@@ -439,20 +453,26 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
       assert {:ok, change_set} =
                TripChanges.plan({:shift, [harbor.selected.id, harbor.peer.id], 300, nil}, state)
 
-      assert [%{trip_id: first}, %{trip_id: second}] = change_set.updates
-      assert first.trip_id == harbor.selected.id
-      assert second.trip_id == harbor.peer.id
+      # Each update is a map naming the trip it moves, the fields it changes
+      # and the rows it moves; the ids it names are this route's own two trips.
+      assert [
+               %{trip_id: selected_id, fields: selected_fields, stop_times: selected_rows},
+               %{trip_id: peer_id, fields: peer_fields, stop_times: peer_rows}
+             ] = change_set.updates
+
+      assert selected_id == harbor.selected.id
+      assert peer_id == harbor.peer.id
 
       # No update carries `block_id`, so the block these trips already have is
       # kept, and the change set inserts and deletes nothing.
-      assert Enum.all?(change_set.updates, &(not Map.has_key?(&1.fields, :block_id)))
+      assert Enum.all?([selected_fields, peer_fields], &(not Map.has_key?(&1, :block_id)))
       assert change_set.inserts == []
       assert change_set.deletes == []
 
       # The clocks moved; the service id did not, and no calendar row is part
       # of a change set at all.
-      assert Enum.map(first.stop_times, & &1.departure_time) == ["06:05:00", "06:20:00"]
-      assert Enum.map(second.stop_times, & &1.departure_time) == ["06:10:00", "06:25:00"]
+      assert Enum.map(selected_rows, & &1.departure_time) == ["06:05:00", "06:20:00"]
+      assert Enum.map(peer_rows, & &1.departure_time) == ["06:10:00", "06:25:00"]
       assert Map.keys(change_set) |> Enum.sort() == [:consequences, :deletes, :inserts, :updates]
     end
 
