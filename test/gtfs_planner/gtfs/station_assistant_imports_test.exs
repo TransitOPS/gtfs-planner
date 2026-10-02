@@ -31,7 +31,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
 
   setup do
     organization = organization_fixture()
-    editor = editor_fixture(organization)
+    editor = user_fixture()
 
     membership =
       GtfsPlanner.AccountsFixtures.organization_membership_fixture(editor, organization)

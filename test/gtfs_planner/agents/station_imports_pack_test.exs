@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
     track_sessions()
 
     organization = organization_fixture()
-    editor = editor_fixture(organization)
+    editor = user_fixture()
     membership = organization_membership_fixture(editor, organization)
     version = gtfs_version_fixture(organization.id)
 

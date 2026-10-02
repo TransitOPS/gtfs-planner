@@ -35,6 +35,8 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.InSeat
   alias GtfsPlanner.Agents.Packs.Runs
   alias GtfsPlanner.Agents.Packs.ServiceQueries
+  alias GtfsPlanner.Agents.Packs.StationImports
+  alias GtfsPlanner.Agents.Packs.StationResults
   alias GtfsPlanner.Agents.Packs.Timetables
   alias GtfsPlanner.Agents.Packs.Transfers
   alias GtfsPlanner.Agents.Scope
@@ -66,6 +68,8 @@ defmodule GtfsPlanner.AgentsTest do
                "in_seat" => InSeat,
                "runs" => Runs,
                "service_queries" => ServiceQueries,
+               "station_imports" => StationImports,
+               "station_results" => StationResults,
                "timetables" => Timetables,
                "transfers" => Transfers
              }

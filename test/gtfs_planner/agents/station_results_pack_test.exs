@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
 
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
-    user = editor_fixture(organization)
+    user = user_fixture()
     membership = organization_membership_fixture(user, organization)
 
     _level = level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
