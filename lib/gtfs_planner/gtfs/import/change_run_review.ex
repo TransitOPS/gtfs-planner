@@ -1036,8 +1036,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   # because they say the same thing twice and are not a disagreement.
   defp dedupe_observations(observations) do
     observations
-    |> Enum.group_by(&{&1["target"]["pathway_id"], &1["field"], &1["normalized_value"]})
-    |> Enum.map(fn {_key, rows} -> hd(rows) end)
+    |> Enum.uniq_by(&{&1["target"]["pathway_id"], &1["field"], &1["normalized_value"]})
     |> Enum.reject(&conflicting?(&1, observations))
   end
 
