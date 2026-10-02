@@ -1442,3 +1442,51 @@ test("transfers", async ({ page }, testInfo) => {
   await captureReference(page, testInfo, "?state=transfer-edit", "ref-transfer-edit");
   await captureReference(page, testInfo, "?state=transfers-empty", "ref-transfers-empty");
 });
+
+// Checks, journey pricing and exported format counts share the authenticated
+// version's current fare rows. The reduced-rider example is independently
+// priced from North Coast's $1.50 cash fare; saved journey acceptance is
+// exercised separately by the LiveView security regression.
+test("checks", async ({ page }, testInfo) => {
+  await routeBlankTiles(page);
+  await logIn(page);
+
+  const managedId = await versionIdByName(page, VERSIONS.managed);
+  const gapsId = await versionIdByName(page, VERSIONS.gaps);
+
+  await page.goto(`/gtfs/${gapsId}/settings/fares/checks`);
+  await waitForLiveView(page);
+  await expect(page.locator("#fare-problems")).toBeAttached();
+  await expect(page.locator("#fare-problems")).toContainText("Set the missing fare");
+  await expect(page.locator("#fare-problems a[href$='/settings/fares/where']").first()).toBeAttached();
+  await expect(page.locator("#journey-check")).toBeAttached();
+  await expect(page.locator("#journey-result")).toHaveAttribute("aria-live", "polite");
+  await expect(page.locator("#saved-journeys")).toBeAttached();
+  await expect(page.locator("#formats")).toBeAttached();
+
+  for (const viewport of [DESKTOP, PHONE]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await expect(bodyFitsViewport(page)).resolves.toBe(true);
+    await capture(page, testInfo, `checks-issues-${viewport.label}`);
+    await captureReference(page, testInfo, "?state=checks-issues", `ref-checks-issues-${viewport.label}`);
+  }
+
+  await page.goto(`/gtfs/${managedId}/settings/fares/checks`);
+  await waitForLiveView(page);
+  await page.locator("#journey-route-0").selectOption("1");
+  await page.locator("#journey-from-0").selectOption("NTC");
+  await page.locator("#journey-to-0").selectOption("NYE");
+  await page.locator("#journey-rider").selectOption("adult");
+  await page.locator("#journey-media").selectOption("cash");
+  await expect(page.locator("#journey-result")).toContainText("$1.50");
+  await page.locator("#journey-rider").selectOption("reduced");
+  await expect(page.locator("#journey-result")).toContainText("$0.75");
+  await page.setViewportSize({ width: DESKTOP.width, height: DESKTOP.height });
+  await capture(page, testInfo, "checks-pricing-1440");
+  await captureReference(page, testInfo, "?state=checks-local", "ref-checks-local-1440");
+
+  await page.setViewportSize({ width: PHONE.width, height: PHONE.height });
+  await expect(bodyFitsViewport(page)).resolves.toBe(true);
+  await capture(page, testInfo, "checks-pricing-390");
+  await captureReference(page, testInfo, "?state=checks-late", "ref-checks-late-390");
+});

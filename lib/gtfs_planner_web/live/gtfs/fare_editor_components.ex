@@ -3621,6 +3621,333 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
     """
   end
 
+  attr :checks, :map, required: true
+  attr :version_id, :string, required: true
+
+  def fares_checks_tab(assigns) do
+    ~H"""
+    <section id="fare-problems" class="overflow-clip rounded-card border border-subtle bg-white">
+      <header class="border-b border-subtle px-4 py-3 sm:px-5">
+        <h2 class="text-base font-bold text-strong">Fare checks</h2>
+        <p class="mt-1 text-[13px] text-muted">Problems and notes found in this version’s fares.</p>
+      </header>
+      <ul
+        :if={@checks.repair == [] and @checks.review == [] and @checks.notes == []}
+        id="fare-checks-clear"
+        class="px-4 py-4 text-sm text-default sm:px-5"
+      >
+        <li>All fare checks passed.</li>
+      </ul>
+      <ul
+        :if={@checks.repair != [] or @checks.review != [] or @checks.notes != []}
+        class="divide-y divide-subtle"
+      >
+        <li
+          :for={
+            {finding, tone} <-
+              Enum.map(@checks.repair, &{&1, :error}) ++
+                Enum.map(@checks.review, &{&1, :warning}) ++ Enum.map(@checks.notes, &{&1, :note})
+          }
+          class="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-5"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-strong">{finding.title}</p>
+            <p class="mt-1 text-[13px] text-muted">{finding.body}</p>
+          </div>
+          <.link
+            :if={finding.action && finding.tab}
+            navigate={checks_action_path(@version_id, finding.tab)}
+            class={[
+              "min-h-10 shrink-0 rounded-control border px-3 py-2 text-sm font-semibold",
+              check_tone_class(tone)
+            ]}
+          >
+            {finding.action}
+          </.link>
+        </li>
+      </ul>
+      <details
+        :if={@checks.passed != []}
+        class="border-t border-subtle px-4 py-3 text-sm text-default sm:px-5"
+      >
+        <summary class="cursor-pointer font-semibold text-strong">
+          {length(@checks.passed)} checks passed
+        </summary>
+        <ul class="mt-2 grid gap-1 text-[13px] text-muted">
+          <li :for={message <- @checks.passed}>{message}</li>
+        </ul>
+      </details>
+    </section>
+    """
+  end
+
+  attr :workspace, :map, required: true
+  attr :form, :any, required: true
+  attr :routes, :list, required: true
+  attr :stops, :list, required: true
+  attr :result, :any, default: nil
+  attr :note, :string, default: nil
+
+  def journey_check(assigns) do
+    ~H"""
+    <section
+      id="journey-check"
+      class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.72fr)]"
+    >
+      <div class="rounded-card border border-subtle bg-white p-4 sm:p-5">
+        <h2 class="text-base font-bold text-strong">Check a journey</h2>
+        <p class="mt-1 text-[13px] text-muted">
+          Choose a rider, then add the rides and boarding times in order.
+        </p>
+        <.form for={@form} id="journey-check-form" phx-change="price_journey" class="mt-4 grid gap-3">
+          <label class="grid gap-1 text-sm font-medium text-strong" for="journey-rider">
+            Rider type
+            <select
+              id="journey-rider"
+              name="journey[rider_category_id]"
+              class="min-h-11 rounded-control border border-subtle bg-white px-3 text-sm text-strong"
+            >
+              <option
+                :for={rider <- @workspace.riders}
+                value={rider.rider_category_id}
+                selected={@form[:rider_category_id].value == rider.rider_category_id}
+              >
+                {rider.name}
+              </option>
+            </select>
+          </label>
+          <label
+            :if={@workspace.media != []}
+            class="grid gap-1 text-sm font-medium text-strong"
+            for="journey-media"
+          >
+            Fare medium
+            <select
+              id="journey-media"
+              name="journey[fare_media_id]"
+              class="min-h-11 rounded-control border border-subtle bg-white px-3 text-sm text-strong"
+            >
+              <option value="">Any medium</option>
+              <option
+                :for={medium <- @workspace.media}
+                value={medium.fare_media_id}
+                selected={@form[:fare_media_id].value == medium.fare_media_id}
+              >
+                {medium.name}
+              </option>
+            </select>
+          </label>
+          <label class="grid gap-1 text-sm font-medium text-strong" for="journey-service-date">
+            Service date
+            <input
+              id="journey-service-date"
+              type="date"
+              name="journey[service_date]"
+              value={@form[:service_date].value}
+              class="min-h-11 rounded-control border border-subtle bg-white px-3 text-sm text-strong"
+            />
+          </label>
+          <div id="journey-legs" class="grid gap-3">
+            <fieldset
+              :for={{leg, index} <- Enum.with_index(@form[:legs].value || [])}
+              class="grid gap-2 rounded-control border border-subtle p-3 sm:grid-cols-2"
+            >
+              <legend class="px-1 text-[13px] font-semibold text-strong">Ride {index + 1}</legend>
+              <label class="grid gap-1 text-[13px] text-muted">
+                Route
+                <select
+                  id={"journey-route-#{index}"}
+                  name={"journey[legs][#{index}][route_id]"}
+                  class="min-h-10 rounded-control border border-subtle bg-white px-2 text-sm text-strong"
+                >
+                  <option
+                    :for={route <- @routes}
+                    value={route.route_id}
+                    selected={leg["route_id"] == route.route_id}
+                  >
+                    {route_label(route)}
+                  </option>
+                </select>
+              </label>
+              <label class="grid gap-1 text-[13px] text-muted">
+                Boards at
+                <input
+                  type="time"
+                  name={"journey[legs][#{index}][departs]"}
+                  value={leg["departs"]}
+                  class="min-h-10 rounded-control border border-subtle bg-white px-2 text-sm text-strong"
+                />
+              </label>
+              <label class="grid gap-1 text-[13px] text-muted">
+                From
+                <select
+                  id={"journey-from-#{index}"}
+                  name={"journey[legs][#{index}][from_stop_id]"}
+                  class="min-h-10 rounded-control border border-subtle bg-white px-2 text-sm text-strong"
+                >
+                  <option
+                    :for={stop <- @stops}
+                    value={stop.stop_id}
+                    selected={leg["from_stop_id"] == stop.stop_id}
+                  >
+                    {stop.stop_name || stop.stop_id}
+                  </option>
+                </select>
+              </label>
+              <label class="grid gap-1 text-[13px] text-muted">
+                To
+                <select
+                  id={"journey-to-#{index}"}
+                  name={"journey[legs][#{index}][to_stop_id]"}
+                  class="min-h-10 rounded-control border border-subtle bg-white px-2 text-sm text-strong"
+                >
+                  <option
+                    :for={stop <- @stops}
+                    value={stop.stop_id}
+                    selected={leg["to_stop_id"] == stop.stop_id}
+                  >
+                    {stop.stop_name || stop.stop_id}
+                  </option>
+                </select>
+              </label>
+              <button
+                :if={index > 0}
+                type="button"
+                class="min-h-10 justify-self-start text-sm font-semibold text-link"
+                phx-click="remove_journey_leg"
+                phx-value-index={index}
+              >
+                Remove ride
+              </button>
+            </fieldset>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              :if={length(@form[:legs].value || []) < 3}
+              id="journey-add-leg"
+              type="button"
+              class="min-h-11 rounded-control border border-subtle px-3 text-sm font-semibold text-strong hover:bg-canvas"
+              phx-click="add_journey_leg"
+            >
+              Add another ride
+            </button>
+            <button
+              id="journey-save-test"
+              type="button"
+              class="min-h-11 rounded-control bg-primary px-4 text-sm font-semibold text-white hover:brightness-95"
+              phx-click="save_test_journey"
+              disabled={is_nil(@result) or is_nil(@result.total)}
+            >
+              Save as test journey
+            </button>
+          </div>
+        </.form>
+        <p :if={@note} id="journey-note" role="status" class="mt-3 text-sm text-default">{@note}</p>
+      </div>
+      <div
+        id="journey-result"
+        aria-live="polite"
+        class="rounded-card border border-subtle bg-canvas p-4 sm:p-5 lg:sticky lg:top-4 lg:self-start"
+      >
+        <h3 class="text-[13px] font-semibold uppercase tracking-wide text-muted">Expected fare</h3>
+        <p :if={@result && @result.total} class="mt-2 text-3xl font-bold text-strong">
+          {money_text(@result.total, @workspace.currency)}
+        </p>
+        <p :if={is_nil(@result) or is_nil(@result.total)} class="mt-2 text-xl font-bold text-strong">
+          Price unknown
+        </p>
+        <ul :if={@result} class="mt-3 grid gap-2 text-sm text-default">
+          <li :for={leg <- @result.legs} class="flex justify-between gap-3">
+            <span>Ride {leg.index}: {leg.product_name || leg.reason || "Fare not found"}</span><span>{money_text(leg.charged, @workspace.currency)}</span>
+          </li>
+        </ul>
+        <p :if={@result && @result.problems != []} class="mt-3 text-[13px] text-muted">
+          {Enum.join(@result.problems, " · ")}
+        </p>
+        <p class="mt-3 text-[12px] text-muted">
+          Approximation: each ride arrives when it boards, so transfer limits use the spacing between boarding times.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  attr :journeys, :list, required: true
+  attr :currency, :string, required: true
+
+  def saved_journeys(assigns) do
+    ~H"""
+    <section id="saved-journeys" class="overflow-clip rounded-card border border-subtle bg-white">
+      <header class="border-b border-subtle px-4 py-3 sm:px-5">
+        <h2 class="text-base font-bold text-strong">Saved test journeys</h2>
+      </header>
+      <p :if={@journeys == []} class="px-4 py-4 text-sm text-muted sm:px-5">
+        Save a journey to see when fare changes affect its expected price.
+      </p>
+      <ul :if={@journeys != []} class="divide-y divide-subtle">
+        <li
+          :for={journey <- @journeys}
+          class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5"
+        >
+          <div>
+            <p class="text-sm font-semibold text-strong">{journey.name}</p>
+            <p class="text-[13px] text-muted">
+              Expected {money_text(journey.expected_amount, @currency)} · current {if journey.current_amount,
+                do: money_text(journey.current_amount, @currency),
+                else: "unknown"}
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span
+              :if={journey.changed?}
+              class="rounded-full bg-warning-subtle px-2.5 py-1 text-[12px] font-semibold text-warning"
+            >
+              Price changed
+            </span>
+            <button
+              type="button"
+              class="min-h-10 rounded-control border border-subtle px-3 text-sm font-semibold text-strong"
+              phx-click="open_saved_journey"
+              phx-value-journey_id={journey.id}
+            >
+              Check again
+            </button>
+            <button
+              :if={journey.changed? && journey.current_amount}
+              type="button"
+              class="min-h-10 rounded-control bg-primary px-3 text-sm font-semibold text-white"
+              phx-click="accept_journey_price"
+              phx-value-journey_id={journey.id}
+              phx-value-amount={journey.current_amount}
+            >
+              Accept new price
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  attr :counts, :map, required: true
+
+  def formats_section(assigns) do
+    ~H"""
+    <section id="formats" class="rounded-card border border-subtle bg-white p-4 sm:p-5">
+      <h2 class="text-base font-bold text-strong">What the exported feed includes</h2>
+      <p class="mt-1 text-[13px] text-muted">
+        Counts reflect the current version’s GTFS fare tables.
+      </p>
+      <dl class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <div :for={{label, count} <- @counts} class="rounded-control border border-subtle p-3">
+          <dt class="text-[12px] text-muted">{label}</dt>
+          <dd class="mt-1 text-xl font-bold text-strong">{count}</dd>
+        </div>
+      </dl>
+    </section>
+    """
+  end
+
   attr :draft, :map, required: true
   attr :workspace, :map, required: true
   attr :scope, :map, required: true
@@ -5536,6 +5863,27 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
     if amount, do: "#{fare.name} · #{amount}", else: fare.name
   end
+
+  defp checks_action_path(version_id, :where), do: "/gtfs/#{version_id}/settings/fares/where"
+
+  defp checks_action_path(version_id, :transfers),
+    do: "/gtfs/#{version_id}/settings/fares/transfers"
+
+  defp checks_action_path(version_id, :prices), do: "/gtfs/#{version_id}/settings/fares"
+  defp checks_action_path(version_id, _), do: "/gtfs/#{version_id}/settings/fares/checks"
+
+  defp check_tone_class(:error), do: "border-error text-error hover:bg-error-subtle"
+  defp check_tone_class(:warning), do: "border-warning text-warning hover:bg-warning-subtle"
+  defp check_tone_class(:note), do: "border-subtle text-strong hover:bg-canvas"
+
+  defp route_label(route) do
+    [route.route_short_name, route.route_long_name, route.route_id]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.uniq()
+    |> Enum.join(" · ")
+  end
+
+  defp money_text(amount, currency), do: Money.format(amount, currency) || "Unknown"
 
   defp counted(1, one, _many), do: "1 #{one}"
   defp counted(count, _one, many), do: "#{count} #{many}"

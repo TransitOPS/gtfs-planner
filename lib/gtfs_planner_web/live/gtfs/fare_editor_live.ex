@@ -61,6 +61,10 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       fare_table: 1,
       fares_conflict: 1,
       fares_mismatch_banner: 1,
+      fares_checks_tab: 1,
+      journey_check: 1,
+      saved_journeys: 1,
+      formats_section: 1,
       group_drawer: 1,
       header_primary: 1,
       load_error: 1,
@@ -111,6 +115,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:older_allowances, [])
      |> assign(:has_transfer_rules?, false)
      |> assign(:checks, nil)
+     |> assign(:journey_routes, [])
+     |> assign(:journey_stops, [])
+     |> assign(:journey_params, %{})
+     |> assign(:journey_form, to_form(%{}, as: :journey))
+     |> assign(:journey_result, nil)
+     |> assign(:journey_note, nil)
+     |> assign(:saved_journeys, [])
+     |> assign(:format_counts, %{})
      |> assign(:price_edits, %{})
      |> assign(:price_conflict, nil)
      |> assign(:price_note, nil)
@@ -171,6 +183,148 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
 
   @impl true
   def handle_event("reload", _params, socket), do: {:noreply, load_workspace(socket)}
+
+  def handle_event("price_journey", %{"journey" => params}, socket) when is_map(params) do
+    {:noreply, put_journey(socket, params)}
+  end
+
+  def handle_event("price_journey", _params, socket), do: {:noreply, socket}
+
+  def handle_event("add_journey_leg", _params, socket) do
+    legs = Map.get(socket.assigns.journey_params, "legs", [])
+
+    if length(legs) < 3 do
+      next =
+        default_journey_leg(socket.assigns.journey_routes, socket.assigns.journey_stops, legs)
+
+      {:noreply,
+       put_journey(socket, Map.put(socket.assigns.journey_params, "legs", legs ++ [next]))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("remove_journey_leg", %{"index" => index}, socket) do
+    legs = Map.get(socket.assigns.journey_params, "legs", [])
+
+    case Integer.parse(index) do
+      {index, ""} when index > 0 and index < length(legs) ->
+        {:noreply,
+         put_journey(
+           socket,
+           Map.put(socket.assigns.journey_params, "legs", List.delete_at(legs, index))
+         )}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("save_test_journey", _params, socket) do
+    with %{total: %Decimal{} = total} <- socket.assigns.journey_result,
+         journey when is_map(journey) <- socket.assigns[:priced_journey],
+         name when is_binary(name) <- journey_name(journey, socket.assigns.journey_stops),
+         {:ok, %{journey: _saved}} <-
+           Fares.save_journey(fare_scope(socket), Map.put(journey, :name, name)) do
+      {:noreply,
+       socket
+       |> load_workspace()
+       |> assign(
+         :journey_note,
+         "Journey saved with an expected price of #{Money.format(total, socket.assigns.workspace.currency)}."
+       )}
+    else
+      {:error, :unmanaged} ->
+        {:noreply, assign(socket, :journey_note, "Edit fares before saving a test journey.")}
+
+      {:error, :no_price} ->
+        {:noreply,
+         assign(socket, :journey_note, "This journey has no known price, so it was not saved.")}
+
+      _ ->
+        {:noreply,
+         assign(socket, :journey_note, "This journey could not be saved. Nothing changed.")}
+    end
+  end
+
+  def handle_event("accept_journey_price", %{"journey_id" => journey_id}, socket) do
+    organization_id = organization_id(socket)
+    gtfs_version_id = version_id(socket)
+    rows = Interpreter.load_rows(organization_id, gtfs_version_id)
+
+    result =
+      case Enum.find(
+             Fares.saved_journeys(organization_id, gtfs_version_id),
+             &(&1.id == journey_id)
+           ) do
+        nil ->
+          {:error, :not_found}
+
+        journey ->
+          case Pricing.price_journey(rows, journey).total do
+            %Decimal{} = amount ->
+              Fares.accept_journey_price(fare_scope(socket), journey.id, amount)
+
+            _ ->
+              {:error, :no_price}
+          end
+      end
+
+    case result do
+      {:ok, %{journey: journey}} ->
+        {:noreply,
+         socket
+         |> load_workspace()
+         |> assign(
+           :journey_note,
+           "#{journey.name} now expects #{Money.format(journey.expected_amount, socket.assigns.workspace.currency)}."
+         )}
+
+      {:error, :no_price} ->
+        {:noreply, assign(socket, :journey_note, "The current fare is unknown. Nothing changed.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         assign(
+           socket,
+           :journey_note,
+           "That saved journey is no longer available. Nothing changed."
+         )}
+
+      _ ->
+        {:noreply,
+         assign(
+           socket,
+           :journey_note,
+           "That saved journey is no longer available. Nothing changed."
+         )}
+    end
+  end
+
+  def handle_event("accept_journey_price", _params, socket), do: {:noreply, socket}
+
+  def handle_event("open_saved_journey", %{"journey_id" => journey_id}, socket) do
+    journey =
+      Enum.find(
+        Fares.saved_journeys(organization_id(socket), version_id(socket)),
+        &(&1.id == journey_id)
+      )
+
+    if journey do
+      params = %{
+        "rider_category_id" => journey.rider_category_id,
+        "fare_media_id" => journey.fare_media_id || "",
+        "service_date" => Date.to_iso8601(journey.service_date),
+        "legs" => Enum.map(journey.legs, &saved_leg_params/1)
+      }
+
+      {:noreply, put_journey(socket, params)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_saved_journey", _params, socket), do: {:noreply, socket}
 
   def handle_event("open_transfer_create", _params, socket) do
     case socket.assigns.workspace.groups do
@@ -3171,6 +3325,20 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
               />
             </div>
 
+            <div :if={@live_action == :checks} id="fare-checks-panel" class="grid min-w-0 gap-4">
+              <.fares_checks_tab checks={@checks} version_id={@current_gtfs_version.id} />
+              <.journey_check
+                workspace={@workspace}
+                form={@journey_form}
+                routes={@journey_routes}
+                stops={@journey_stops}
+                result={@journey_result}
+                note={@journey_note}
+              />
+              <.saved_journeys journeys={@saved_journeys} currency={@workspace.currency} />
+              <.formats_section counts={@format_counts} />
+            </div>
+
             <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
               <.fare_note note={@price_note} />
               <.fare_setup
@@ -3384,8 +3552,31 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       {:ok, workspace} ->
         socket = assign(socket, :workspace, workspace)
 
+        routes = Gtfs.list_routes(organization_id, gtfs_version_id, page: 1, per_page: 1_000)
+        stops = Gtfs.list_stops(organization_id, gtfs_version_id)
+        rows = Interpreter.load_rows(organization_id, gtfs_version_id)
+
+        journey_params =
+          initial_journey_params(socket.assigns.journey_params, workspace, routes, stops, rows)
+
+        saved_journeys =
+          saved_journey_rows(Fares.saved_journeys(organization_id, gtfs_version_id), rows)
+
+        format_counts = format_counts(organization_id, gtfs_version_id, rows)
+
         socket
         |> assign(:checks, Fares.Checks.run(organization_id, gtfs_version_id))
+        |> assign(:journey_routes, routes)
+        |> assign(:journey_stops, stops)
+        |> assign(:journey_params, journey_params)
+        |> assign(:journey_form, to_form(journey_params, as: :journey))
+        |> assign(:priced_journey, journey_data(journey_params, routes, stops, workspace))
+        |> assign(
+          :journey_result,
+          journey_result(journey_params, routes, stops, workspace, rows)
+        )
+        |> assign(:saved_journeys, saved_journeys)
+        |> assign(:format_counts, format_counts)
         |> assign(:prices_mode, prices_mode(workspace))
         |> assign(
           :older_mismatches,
@@ -3405,6 +3596,265 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     Projection.v1_rows(organization_id, version_id)
     |> Map.fetch!("fare_attributes.txt")
   end
+
+  # A journey is assembled only from the current authenticated version's route,
+  # stop and rider catalogs. The form carries GTFS ids, never organization or
+  # version identity; unavailable ids are rejected before pricing or writing.
+  defp initial_journey_params(current, workspace, routes, stops, rows) do
+    defaults = %{
+      "rider_category_id" =>
+        workspace.riders |> Enum.find(& &1.default?) |> then(&(&1 && &1.rider_category_id)) ||
+          (Enum.at(workspace.riders, 0) && Enum.at(workspace.riders, 0).rider_category_id) || "",
+      "fare_media_id" => preferred_media_id(workspace.media),
+      "service_date" => Date.to_iso8601(Date.utc_today()),
+      "legs" => [default_journey_leg(routes, stops, [])]
+    }
+
+    cond do
+      valid_journey_params?(current, workspace, routes, stops) -> current
+      priced = priced_default_journey(defaults, workspace, routes, stops, rows) -> priced
+      true -> defaults
+    end
+  end
+
+  defp priced_default_journey(defaults, workspace, routes, stops, rows) do
+    pairs =
+      for from <- stops,
+          to <- stops,
+          from.stop_id != to.stop_id,
+          areas = Map.get(rows.stop_areas, from.stop_id, []),
+          Enum.any?(areas, &(&1 in Map.get(rows.stop_areas, to.stop_id, []))),
+          do: {from, to}
+
+    Enum.find_value(routes, fn route ->
+      Enum.find_value(pairs, fn {from, to} ->
+        Enum.find_value(workspace.riders, fn rider ->
+          params =
+            Map.put(defaults, "rider_category_id", rider.rider_category_id)
+            |> Map.put("legs", [
+              %{
+                "route_id" => route.route_id,
+                "from_stop_id" => from.stop_id,
+                "to_stop_id" => to.stop_id,
+                "departs" => "07:40"
+              }
+            ])
+
+          case journey_result(params, routes, stops, workspace, rows) do
+            %{total: %Decimal{}} -> params
+            _ -> nil
+          end
+        end)
+      end)
+    end)
+  end
+
+  defp valid_journey_params?(params, workspace, routes, stops) when is_map(params) do
+    route_ids = MapSet.new(routes, & &1.route_id)
+    stop_ids = MapSet.new(stops, & &1.stop_id)
+    rider_ids = MapSet.new(workspace.riders, & &1.rider_category_id)
+
+    MapSet.member?(rider_ids, params["rider_category_id"]) and
+      is_list(params["legs"]) and params["legs"] != [] and
+      Enum.all?(params["legs"], fn leg ->
+        MapSet.member?(route_ids, leg["route_id"]) and
+          MapSet.member?(stop_ids, leg["from_stop_id"]) and
+          MapSet.member?(stop_ids, leg["to_stop_id"])
+      end)
+  end
+
+  defp valid_journey_params?(_, _, _, _), do: false
+
+  defp preferred_media_id(media) do
+    case Enum.find(media, &(String.downcase(&1.name) == "cash")) || List.first(media) do
+      nil -> ""
+      medium -> medium.fare_media_id
+    end
+  end
+
+  defp default_journey_leg(routes, stops, existing) do
+    %{
+      "route_id" =>
+        existing |> List.first() |> map_value("route_id") ||
+          routes |> List.first() |> then(&(&1 && &1.route_id)) || "",
+      "from_stop_id" =>
+        existing |> List.first() |> map_value("from_stop_id") ||
+          stops |> List.first() |> then(&(&1 && &1.stop_id)) || "",
+      "to_stop_id" =>
+        existing |> List.first() |> map_value("to_stop_id") ||
+          stops |> Enum.at(1) |> then(&(&1 && &1.stop_id)) ||
+          stops |> List.first() |> then(&(&1 && &1.stop_id)) || "",
+      "departs" => "07:40"
+    }
+  end
+
+  defp map_value(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, String.to_existing_atom(key))
+
+  defp map_value(_, _), do: nil
+
+  defp put_journey(socket, params) do
+    params = normalize_journey_params(params, socket.assigns.journey_params)
+    organization_id = organization_id(socket)
+    gtfs_version_id = version_id(socket)
+    routes = socket.assigns.journey_routes
+    stops = socket.assigns.journey_stops
+    journey = journey_data(params, routes, stops, socket.assigns.workspace)
+    rows = Interpreter.load_rows(organization_id, gtfs_version_id)
+    result = if journey, do: Pricing.price_journey(rows, journey), else: nil
+
+    socket
+    |> assign(:journey_params, params)
+    |> assign(:journey_form, to_form(params, as: :journey))
+    |> assign(:priced_journey, journey)
+    |> assign(:journey_result, result)
+    |> assign(:journey_note, nil)
+  end
+
+  defp normalize_journey_params(params, existing) do
+    params = Map.take(params, ["rider_category_id", "fare_media_id", "service_date", "legs"])
+    legs = normalize_legs(Map.get(params, "legs"), existing["legs"] || [])
+    Map.merge(existing, params) |> Map.put("legs", legs)
+  end
+
+  defp normalize_legs(legs, _existing) when is_list(legs), do: legs
+
+  defp normalize_legs(legs, _existing) when is_map(legs) do
+    legs
+    |> Enum.sort_by(fn {index, _leg} ->
+      case Integer.parse(to_string(index)) do
+        {n, ""} -> n
+        _ -> 0
+      end
+    end)
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  defp normalize_legs(_, existing), do: existing
+
+  defp journey_data(params, routes, stops, workspace) when is_map(params) do
+    route_ids = MapSet.new(routes, & &1.route_id)
+    stop_ids = MapSet.new(stops, & &1.stop_id)
+    {:ok, service_date} = Date.from_iso8601(params["service_date"] || "")
+    rider_ids = MapSet.new(workspace.riders, & &1.rider_category_id)
+    media_ids = MapSet.new(workspace.media, & &1.fare_media_id)
+
+    legs =
+      Enum.map(params["legs"] || [], fn leg ->
+        with true <- MapSet.member?(route_ids, leg["route_id"]),
+             true <- MapSet.member?(stop_ids, leg["from_stop_id"]),
+             true <- MapSet.member?(stop_ids, leg["to_stop_id"]),
+             {:ok, departs} <- parse_board_time(leg["departs"]) do
+          %{
+            route_id: leg["route_id"],
+            from_stop_id: leg["from_stop_id"],
+            to_stop_id: leg["to_stop_id"],
+            departs: departs,
+            arrives: departs
+          }
+        else
+          _ -> nil
+        end
+      end)
+
+    if length(legs) == length(params["legs"] || []) and legs != [] and
+         MapSet.member?(rider_ids, params["rider_category_id"]) and
+         (empty_to_nil(params["fare_media_id"]) == nil or
+            MapSet.member?(media_ids, params["fare_media_id"])) do
+      %{
+        rider_category_id: params["rider_category_id"],
+        fare_media_id: empty_to_nil(params["fare_media_id"]),
+        service_date: service_date,
+        legs: legs
+      }
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp journey_data(_, _, _, _), do: nil
+
+  defp journey_result(params, routes, stops, workspace, rows) do
+    case journey_data(params, routes, stops, workspace) do
+      nil -> nil
+      journey -> Pricing.price_journey(rows, journey)
+    end
+  end
+
+  defp parse_board_time(value) when is_binary(value) do
+    case Regex.run(~r/^(\d{2}):(\d{2})$/, value) do
+      [_, hours, minutes] ->
+        with {hour, ""} <- Integer.parse(hours),
+             {minute, ""} <- Integer.parse(minutes),
+             true <- hour < 24 and minute < 60 do
+          {:ok, hour * 3600 + minute * 60}
+        else
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp parse_board_time(_), do: :error
+
+  defp saved_leg_params(leg) do
+    %{
+      "route_id" => leg["route_id"] || leg[:route_id],
+      "from_stop_id" => leg["from_stop_id"] || leg[:from_stop_id],
+      "to_stop_id" => leg["to_stop_id"] || leg[:to_stop_id],
+      "departs" => seconds_to_time(leg["departs"] || leg[:departs])
+    }
+  end
+
+  defp seconds_to_time(seconds) when is_integer(seconds),
+    do: Calendar.strftime(Time.new!(div(seconds, 3600), div(rem(seconds, 3600), 60), 0), "%H:%M")
+
+  defp seconds_to_time(_), do: "07:40"
+
+  defp journey_name(%{legs: legs}, stops) do
+    first = Enum.find(stops, &(&1.stop_id == hd(legs).from_stop_id))
+    last_leg = List.last(legs)
+    last = Enum.find(stops, &(&1.stop_id == last_leg.to_stop_id))
+    from = first && (first.stop_name || first.stop_id)
+    to = last && (last.stop_name || last.stop_id)
+    if from && to, do: "#{from} to #{to}", else: nil
+  end
+
+  defp journey_name(_, _), do: nil
+
+  defp saved_journey_rows(journeys, rows) do
+    Enum.map(journeys, fn journey ->
+      current = Pricing.price_journey(rows, journey).total
+
+      Map.merge(Map.from_struct(journey), %{
+        current_amount: current,
+        changed?: is_nil(current) or not Decimal.equal?(current, journey.expected_amount)
+      })
+    end)
+  end
+
+  defp format_counts(organization_id, version_id, rows) do
+    projection = Projection.export_rows(organization_id, version_id)
+    older = Map.get(projection.replaced, "fare_attributes.txt", rows.fare_attributes)
+    zones = Map.get(projection.replaced, "areas.txt", [])
+
+    [
+      {"Older-format fares", length(older)},
+      {"Fare products", length(rows.fare_products)},
+      {"Leg rules", length(rows.fare_leg_rules)},
+      {"Transfer rules", length(rows.fare_transfer_rules)},
+      {"Zones",
+       if(zones == [],
+         do: MapSet.size(MapSet.new(Map.values(rows.stop_zones))),
+         else: length(zones)
+       )}
+    ]
+  end
+
+  defp empty_to_nil(""), do: nil
+  defp empty_to_nil(value), do: value
 
   # Which of the Prices tab's four bodies this version is in, decided from the
   # workspace rather than from a state the tab keeps beside it:
