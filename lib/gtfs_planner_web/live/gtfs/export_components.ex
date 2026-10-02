@@ -18,6 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   use GtfsPlannerWeb, :html
 
+  import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publish_action: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
@@ -461,6 +462,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :notice, :string, default: nil
   attr :defaults, :map, default: nil
 
+  # Publication is one more thing the operator may do with a ready file, so its
+  # opener sits in the same action row as Download. `publish?` is the server's
+  # answer, never the page's: an installation without publishing, or an
+  # operations file, passes false and the row is exactly what it was.
+  attr :publish?, :boolean, default: false
+
   def run_status(assigns) do
     view = status(assigns.run, assigns.export_type, assigns.version)
     warnings = if assigns.run, do: assigns.run.warnings || [], else: []
@@ -535,6 +542,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             run={@run}
             version={@version}
           />
+          <.publish_action :if={@publish?} />
         </div>
       </div>
 

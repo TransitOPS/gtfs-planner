@@ -4,6 +4,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+  alias GtfsPlanner.FeedPublishing
+  alias GtfsPlanner.FeedPublishing.Config, as: PublishingConfig
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
@@ -14,6 +16,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult
+
+  import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publication_section: 1]
 
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
@@ -64,7 +68,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_progress, nil)
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
-     |> assign(:recent_checks, [])}
+     |> assign(:recent_checks, [])
+     |> assign(:publication, default_publication())}
   end
 
   @impl Phoenix.LiveView
@@ -87,7 +92,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> refresh_export_run()
      |> refresh_file_inventory()
      |> assign_recent_checks()
-     |> load_missing_summary()}
+     |> load_missing_summary()
+     |> reset_publication()
+     |> assign_publication()}
   end
 
   @impl Phoenix.LiveView
@@ -239,9 +246,150 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  # -- Static publication --------------------------------------------------
+
+  # The event carries no run, slot, tenant or key: the page's own selected run and
+  # export type decide what is reviewed, and the command re-checks the membership
+  # and the organization before it answers. A forged event can therefore only ask
+  # for a review this page was already allowed to ask for.
+  @impl Phoenix.LiveView
+  def handle_event("preview_publication", _params, socket) do
+    publication = socket.assigns.publication
+
+    cond do
+      not publication.available? ->
+        {:noreply,
+         publication_notice(
+           socket,
+           :error,
+           "Publishing is not available here",
+           "This installation or file type cannot publish a public feed."
+         )}
+
+      is_nil(publication.run) ->
+        {:noreply,
+         publication_notice(
+           socket,
+           :error,
+           "There is no file to publish yet",
+           "Export the feed first, then review the finished file."
+         )}
+
+      true ->
+        {:noreply, start_publication_preview(socket)}
+    end
+  end
+
+  # The tick is the operator's own answer to the error count the server showed, so
+  # it is recorded as it changes and survives a refused publish.
+  @impl Phoenix.LiveView
+  def handle_event("consent_publication", params, socket) do
+    consent? = get_in(params, ["publication", "confirm_errors"]) == "true"
+    {:noreply, put_publication(socket, %{consent_form: consent_form(consent?)})}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("confirm_publication", params, socket) do
+    preview = socket.assigns.publication.preview
+
+    if preview do
+      # `confirm_errors?: true` only ever means the operator ticked the box against
+      # a review that actually has errors; everything else the command re-derives
+      # from its own signed consent token and the durable rows.
+      consent? = get_in(params, ["publication", "confirm_errors"]) == "true"
+      confirm_errors? = consent? and preview.errors_count > 0
+
+      case FeedPublishing.publish_static(
+             publication_scope(socket),
+             preview.token,
+             preview.destination_revision,
+             confirm_errors?: confirm_errors?
+           ) do
+        {:ok, publication_id} ->
+          # The status band is the durable answer and it changes to "Publishing"
+          # here, so a second confirmation beside it would only repeat it.
+          {:noreply,
+           socket
+           |> put_publication(%{
+             preview: nil,
+             pending_id: nil,
+             notice: nil,
+             consent_form: consent_form(false),
+             publication_id: publication_id
+           })
+           |> refresh_publication_status()}
+
+        {:error, reason} ->
+          {kind, title, detail} = publication_error(reason)
+
+          # A refused write changes nothing, so the review stays exactly as the
+          # operator left it, tick included, and the refusal is answered beside it.
+          socket =
+            socket
+            |> refresh_publication_status()
+            |> put_publication(%{consent_form: consent_form(consent?)})
+
+          {:noreply, publication_notice(socket, kind, title, detail)}
+      end
+    else
+      {:noreply,
+       publication_notice(
+         socket,
+         :error,
+         "There is no review to publish",
+         "Review the file first, then publish it."
+       )}
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("close_publication_review", _params, socket) do
+    {:noreply, close_publication_review(socket)}
+  end
+
   @impl Phoenix.LiveView
   def handle_info({:export_run_changed, _run_id}, socket) do
-    {:noreply, refresh_export_run(socket)}
+    # A newer export is a different file, so a review of the previous one belongs
+    # to a page the operator has left. The review is closed for the same reason a
+    # version switch closes it.
+    previous_run_id = socket.assigns.publication.run && socket.assigns.publication.run.id
+    socket = refresh_export_run(socket)
+    current_run_id = socket.assigns.export_run && socket.assigns.export_run.id
+
+    socket =
+      if previous_run_id == current_run_id,
+        do: socket,
+        else: close_publication_review(socket)
+
+    {:noreply, assign_publication(socket)}
+  end
+
+  # The check the open review is waiting for finished. Building the review again is
+  # the only way it opens, and both closing the review and leaving the page clear
+  # `pending_id`, so a result for a review the operator has left cannot match here.
+  @impl Phoenix.LiveView
+  def handle_info(
+        {:validation_completed, run_id},
+        %{assigns: %{publication: %{pending_id: run_id}}} = socket
+      ) do
+    {:noreply, socket |> put_publication(%{pending_id: nil}) |> start_publication_preview()}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info(
+        {:validation_failed, run_id},
+        %{assigns: %{publication: %{pending_id: run_id}}} = socket
+      ) do
+    # A failed report is never retried by itself: the operator decides whether the
+    # file is worth checking again.
+    {:noreply,
+     socket
+     |> put_publication(%{pending_id: nil})
+     |> publication_notice(
+       :error,
+       "The feed check failed",
+       "The file was not checked successfully, so it cannot be published. Start a check again from the panel on the right."
+     )}
   end
 
   @impl Phoenix.LiveView
@@ -354,7 +502,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 version={@current_gtfs_version}
                 notice={@export_notice}
                 defaults={@export_defaults}
+                publish?={@publication.opener?}
               />
+
+              <.publication_section publication={@publication} />
             </.result_section>
 
             <.guide
@@ -644,4 +795,281 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {:ok, %{missing_summary: MissingTimes.summary(organization_id, version_id)}}
     end)
   end
+
+  # -- Static publication --------------------------------------------------
+
+  # The export type names the public channel this page is about, and the reviewed
+  # artifact is the run's main one. Operations has no channel: the catalog owner
+  # refuses that profile outright, so the page never offers the action.
+  defp publication_channel(:full), do: :full
+  defp publication_channel(:pathways), do: :pathways
+  defp publication_channel(_export_type), do: nil
+
+  defp default_publication do
+    %{
+      available?: false,
+      opener?: false,
+      channel: nil,
+      slot: :main,
+      run: nil,
+      preview: nil,
+      pending_id: nil,
+      publication_id: nil,
+      consent_form: consent_form(false),
+      notice: nil,
+      status: not_published_status()
+    }
+  end
+
+  defp not_published_status do
+    %{
+      kind: "neutral",
+      title: "Not published yet",
+      detail:
+        "Publishing copies the reviewed file to this organization's public URL, where anyone with the link can download it."
+    }
+  end
+
+  defp consent_form(consent?), do: to_form(%{"confirm_errors" => consent?}, as: :publication)
+
+  defp publication_scope(socket) do
+    %{
+      organization_id: socket.assigns.current_organization.id,
+      actor_id: socket.assigns.current_user.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id
+    }
+  end
+
+  defp assign_publication(socket) do
+    channel = publication_channel(socket.assigns.export_type)
+
+    if is_nil(channel) or PublishingConfig.current() == :disabled do
+      assign(socket, :publication, default_publication())
+    else
+      run = if(match?(%{state: :ready}, socket.assigns.export_run), do: socket.assigns.export_run)
+
+      socket
+      |> put_publication(%{available?: true, channel: channel, slot: :main, run: run})
+      |> refresh_publication_status()
+    end
+  end
+
+  # A navigation names a different version, run or export type, so any open review
+  # is left behind here. Closing also clears `pending_id`, which is what rejects a
+  # check that finishes after the operator has moved on.
+  defp reset_publication(socket) do
+    socket
+    |> put_publication(%{
+      preview: nil,
+      pending_id: nil,
+      notice: nil,
+      consent_form: consent_form(false)
+    })
+  end
+
+  defp close_publication_review(socket) do
+    put_publication(socket, %{
+      preview: nil,
+      pending_id: nil,
+      notice: nil,
+      consent_form: consent_form(false)
+    })
+  end
+
+  defp put_publication(socket, changes) do
+    publication = Map.merge(socket.assigns.publication, changes)
+
+    opener? =
+      publication.available? and not is_nil(publication.run) and is_nil(publication.preview) and
+        is_nil(publication.pending_id)
+
+    assign(socket, :publication, %{publication | opener?: opener?})
+  end
+
+  defp publication_notice(socket, kind, title, detail) do
+    put_publication(socket, %{notice: %{kind: to_string(kind), title: title, detail: detail}})
+  end
+
+  defp start_publication_preview(socket) do
+    publication = socket.assigns.publication
+
+    case FeedPublishing.preview_static(
+           publication_scope(socket),
+           publication.run.id,
+           publication.slot
+         ) do
+      {:ok, preview} ->
+        put_publication(socket, %{
+          preview: preview,
+          pending_id: nil,
+          notice: nil,
+          consent_form: consent_form(false)
+        })
+
+      {:pending, validation_run_id} ->
+        # The report is the one the review will show, so its result is what reopens
+        # this review; nothing else on the page may answer for it.
+        Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Validations.topic(validation_run_id))
+
+        socket
+        |> put_publication(%{preview: nil, pending_id: validation_run_id})
+        |> publication_notice(
+          :info,
+          "Checking this file",
+          "The feed check is running. The review opens here as soon as it finishes, and you can leave this page while it runs."
+        )
+        |> refresh_publication_status()
+
+      {:error, reason} ->
+        {kind, title, detail} = publication_error(reason)
+
+        socket
+        |> put_publication(%{preview: nil, pending_id: nil})
+        |> publication_notice(kind, title, detail)
+    end
+  end
+
+  defp refresh_publication_status(%{assigns: %{publication: %{available?: false}}} = socket),
+    do: socket
+
+  defp refresh_publication_status(socket) do
+    publication = socket.assigns.publication
+
+    status =
+      case FeedPublishing.status(publication_scope(socket)) do
+        {:ok, channels} ->
+          channels
+          |> Enum.find(&(&1.channel == publication.channel))
+          |> channel_status()
+
+        {:error, _reason} ->
+          %{
+            kind: "neutral",
+            title: "Publication state is unavailable",
+            detail: "This organization's publication state could not be read for your account."
+          }
+      end
+
+    assign(socket, :publication, %{publication | status: status})
+  end
+
+  defp channel_status(nil), do: not_published_status()
+
+  defp channel_status(%{status: :current} = channel) do
+    %{
+      kind: "success",
+      title: "Published",
+      detail: "The public feed is served from the reviewed file." <> served_since(channel)
+    }
+  end
+
+  defp channel_status(%{status: status})
+       when status in [:pending, :staging, :switching, :reconciling] do
+    %{
+      kind: "info",
+      title: "Publishing",
+      detail:
+        "The file is queued and becomes public when the switch completes. You can leave this page."
+    }
+  end
+
+  defp channel_status(%{status: status} = channel) when status in [:failed, :blocked] do
+    %{
+      kind: "error",
+      title: "Publication failed",
+      detail:
+        channel.last_error || "The publisher could not serve this file. Try publishing again."
+    }
+  end
+
+  defp channel_status(_channel), do: not_published_status()
+
+  defp served_since(%{manifest_last_modified: %DateTime{} = at}),
+    do: " Last served #{Calendar.strftime(at, "%Y-%m-%d %H:%M UTC")}."
+
+  defp served_since(_channel), do: ""
+
+  # Every refusal the command can answer with becomes one plain sentence beside
+  # the review that raised it; the operator never has to read an error atom.
+  defp publication_error(:disabled),
+    do:
+      {:error, "Publishing is turned off",
+       "This installation has no public feed storage configured. Ask an administrator."}
+
+  defp publication_error(:forbidden),
+    do:
+      {:error, "You cannot publish this feed",
+       "Only an editor of this organization can publish its public feed."}
+
+  defp publication_error(:not_found),
+    do:
+      {:error, "That file is no longer available",
+       "Export the feed again, then review the new file."}
+
+  defp publication_error(:artifact_busy),
+    do:
+      {:error, "A check or upload is already running",
+       "Another review or upload is using this file. Try again when it finishes."}
+
+  defp publication_error(:artifact_unavailable),
+    do:
+      {:error, "The file has expired",
+       "A finished export is kept for a short time. Export the feed again, then review the new file."}
+
+  defp publication_error(:validation_failed),
+    do:
+      {:error, "The feed check did not pass",
+       "The file cannot be published from a failed check. Start a check again from the panel on the right."}
+
+  defp publication_error(:stale_review),
+    do:
+      {:error, "That review is out of date", "Review the file again and publish the new review."}
+
+  defp publication_error(:review_pending),
+    do:
+      {:error, "The feed check is still running",
+       "Wait for the check to finish, then review the file again."}
+
+  defp publication_error(:expired_preview),
+    do:
+      {:error, "This review expired",
+       "A review is good for fifteen minutes. Review the file again and publish the new review."}
+
+  defp publication_error(:stale_destination),
+    do:
+      {:error, "The public feed changed while you were reviewing",
+       "Someone else published this feed. Review the file again, then publish the new review."}
+
+  defp publication_error({:errors_require_confirmation, count}),
+    do:
+      {:error, "Confirm the check report first",
+       "This review has #{count} #{if count == 1, do: "error", else: "errors"}. Tick the box to confirm you have read #{if count == 1, do: "it", else: "them"}, then publish."}
+
+  defp publication_error(reason)
+       when reason in [
+              :invalid_preview,
+              :invalid_slot
+            ],
+       do:
+         {:error, "That review cannot be used",
+          "Review the file again and publish the new review."}
+
+  defp publication_error(reason)
+       when reason in [
+              :operations_profile_not_publishable,
+              :tods_content_not_publishable,
+              :unsafe_entry_name,
+              :archive_too_large,
+              :unreadable_archive,
+              :artifact_hash_mismatch,
+              :invalid_artifact
+            ],
+       do:
+         {:error, "This file cannot be published",
+          "The file is not a feed this installation can serve. Export a full or pathways feed and publish that."}
+
+  defp publication_error(_reason),
+    do:
+      {:error, "The feed was not published",
+       "Nothing changed. Try again, and tell an administrator if it keeps failing."}
 end
