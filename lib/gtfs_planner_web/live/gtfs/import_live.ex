@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FeedSettings
@@ -112,6 +113,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   @observation_units [{"Metres (m)", "m"}, {"Centimetres (cm)", "cm"}, {"Millimetres (mm)", "mm"}]
   @observation_meanings [{"Minimum clear width", @observation_meaning}]
   @observation_date_limit 50
+
+  # What a reviewer is told when the proposal they clicked no longer describes
+  # this page's station, run and frozen source - or no longer exists at all. It
+  # is one sentence and discloses nothing about another station or run.
+  @prepared_missing_notice "That suggestion is no longer part of this review. Ask the helper to prepare it again."
 
   # What each refusal the domain reports means for the person who typed the row.
   # An unrecognized reason still renders, rather than being dropped.
@@ -212,6 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:decision_dependents, %{})
      |> assign(:evolution_targets, %{})
      |> assign_observation_scope(change_run)
+     |> assign_station_suggestion(nil)
      |> stream_configure(:station_observation_rows, dom_id: &observation_row_dom_id/1)
      |> stream(:station_observation_rows, [])
      |> stream(:diff_decisions, [])
@@ -557,11 +564,37 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply, save_station_observation(socket, params)}
   end
 
-  # The panel renders a review button on a prepared entry from its first turn. The
-  # native review of that suggestion belongs to a later step of this package, so
-  # the event is accepted and refused here rather than crashing the page.
+  # The panel renders a review button on a prepared entry from its first turn.
+  # Reviewing is a read: the stored proposal is retrieved from the conversation
+  # that produced it, checked against this page's own frozen snapshot, and shown
+  # for a person to decide. Nothing is approved, applied or written here
+  # (INV-2); only `station-suggestion-confirm` reaches the native writer.
   @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, open_station_suggestion(socket, id)}
+  end
+
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Closing the review writes nothing and hands focus back to the card it came
+  # from, so a person who decided against it is exactly where they started.
+  @impl true
+  def handle_event("station-suggestion-cancel", _params, socket) do
+    {:noreply,
+     socket
+     |> cancel_station_suggestion()
+     |> focus_suggestion_return()}
+  end
+
+  # The one deliberate act this flow offers. The page's own frozen source and
+  # the reviewed selection go to the native confirmation, which revalidates
+  # membership, run, station, source, status and every decision value inside its
+  # transaction. Only a success refreshes the review; a refusal keeps the review
+  # and every draft exactly as they were.
+  @impl true
+  def handle_event("station-suggestion-confirm", _params, socket) do
+    {:noreply, confirm_station_suggestion(socket)}
+  end
 
   @impl true
   def handle_event("station-observation-save", _params, socket), do: {:noreply, socket}
@@ -1564,6 +1597,276 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       "Everything else on this page works without it."
   end
 
+  # -- Suggested decisions reviewed and confirmed --------------------------
+
+  # The suggestion a person is reading is page state, not conversation state: it
+  # names the exact entry it came from, the exact command that entry stored, and
+  # the rows this page resolved out of its own review. Nothing else survives a
+  # reload, and nothing here is derived from the conversation afterwards.
+  defp assign_station_suggestion(socket, suggestion) do
+    socket
+    |> assign(:station_suggestion, suggestion)
+    |> assign(:station_suggestion_error, nil)
+    |> assign(:station_suggestion_status, nil)
+    |> assign(
+      :station_suggestion_return_focus,
+      suggestion && Map.get(suggestion, :return_focus_id)
+    )
+  end
+
+  # A forged entry id never reaches the session: a value that is not an integer
+  # is ignored, exactly as a stale or unknown entry is.
+  defp open_station_suggestion(socket, id) do
+    case Integer.parse(to_string(id)) do
+      {entry_id, ""} when entry_id > 0 -> handoff_station_suggestion(socket, entry_id)
+      _other -> socket
+    end
+  end
+
+  defp handoff_station_suggestion(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: %{kind: :station_import_selection} = command}} ->
+        review_station_suggestion(socket, entry_id, command)
+
+      _stale_or_unknown ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # The review is regenerated from the page's own frozen snapshot and the exact
+  # prepared command, so what the reviewer reads is what Confirm will ask the
+  # domain to approve (the CalendarsLive precedent). A command for another run,
+  # another station or another frozen source is one refusal, and the stored
+  # proposal is released only by an exact confirmation.
+  defp review_station_suggestion(socket, entry_id, command) do
+    socket
+    |> reject_foreign_suggestion(command)
+    |> case do
+      {:error, socket} ->
+        socket
+
+      {:ok, socket} ->
+        open_suggestion_review(socket, entry_id, command)
+    end
+  end
+
+  # The prepared command must describe this page's current station and run, and
+  # must have been produced against the very snapshot this page still holds.
+  defp reject_foreign_suggestion(socket, command) do
+    snapshot = station_imports_source(socket)
+
+    matches? =
+      is_map(snapshot) and Map.get(snapshot, :kind) == "station_imports" and
+        Map.get(command, :source_digest) == Map.get(snapshot, :digest) and
+        Map.get(command, :run_id) == change_run_id(socket) and
+        Map.get(command, :station_id) == observation_station_id(socket)
+
+    if matches? do
+      {:ok, socket}
+    else
+      {:error, assign(socket, :agent_notice, @prepared_missing_notice)}
+    end
+  end
+
+  # Each row is regenerated from the page's own frozen snapshot through the same
+  # projection the helper used, and each row's `decision_digest` must still be the
+  # one the prepared command named. A decision the run no longer holds, or one
+  # whose values moved after the suggestion was prepared, recomputes to something
+  # else - so the whole review is refused rather than showing a row that is not
+  # what would be approved (INV-1).
+  defp open_suggestion_review(socket, entry_id, command) do
+    ids =
+      Enum.map(Map.get(command, :decisions) || [], &Map.get(&1, "decision_id"))
+
+    case StationAssistant.prepare_import_selection(AgentPanel.scope(socket), ids) do
+      {:ok, answer, _evidence} ->
+        if answer["input_digest"] == Map.get(command, :input_digest) and
+             answer["selected"] != [] and answer["unresolved"] == [] and answer["excluded"] == [] do
+          assign_station_suggestion(socket, %{
+            entry_id: entry_id,
+            command: command,
+            rows: Enum.map(answer["selected"], &suggestion_row/1),
+            station_stop_id: answer["station_stop_id"],
+            return_focus_id: "agent-prepared-#{entry_id}"
+          })
+          |> focus_suggestion("station-suggestion-confirm")
+        else
+          assign(socket, :agent_notice, @prepared_missing_notice)
+        end
+
+      {:error, _reason} ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # What the reviewer reads is the server's own row: the decision id, the old and
+  # new width, the captured measurement it was reviewed against, and every field
+  # that decision changes.
+  defp suggestion_row(row) do
+    %{
+      decision_id: row["decision_id"],
+      decision_digest: row["decision_digest"],
+      subject: "Pathway #{row["natural_key"]}",
+      current_width: to_string(row["current_value"]),
+      uploaded_width: to_string(row["uploaded_value"]),
+      captured_source: observation_source_label(row["observation"])
+    }
+  end
+
+  # What the reviewer needs of a captured source: what was measured, in what
+  # unit, when, and where it came from. A journal-backed reference is named by
+  # identity only - its body and photos stay on the station page.
+  defp observation_source_label(%{} = observation) do
+    "Measured #{observation["original_value"]} #{observation["unit"]} on " <>
+      "#{observation["captured_date"]} · source #{observation["source_ref"]}"
+  end
+
+  defp observation_source_label(_other), do: nil
+
+  defp observation_station_id(socket) do
+    case socket.assigns[:observation_station] do
+      %Stop{id: id} -> id
+      _other -> nil
+    end
+  end
+
+  defp change_run_id(socket) do
+    case socket.assigns[:change_run] do
+      %ChangeRun{id: id} -> id
+      _other -> nil
+    end
+  end
+
+  defp station_imports_source(socket) do
+    case Scope.source_snapshot(AgentPanel.scope(socket)) do
+      %{kind: "station_imports"} = snapshot -> snapshot
+      _other -> nil
+    end
+  end
+
+  # Confirming asks the domain to approve exactly the reviewed rows and to record
+  # the captured provenance beside them. The page never writes a status itself,
+  # never records a receipt for the helper (only statuses were confirmed, not an
+  # apply) and never relies on what the conversation said afterwards.
+  defp confirm_station_suggestion(%{assigns: %{station_suggestion: nil}} = socket), do: socket
+
+  defp confirm_station_suggestion(socket) do
+    suggestion = socket.assigns.station_suggestion
+
+    case station_imports_source(socket) do
+      %{kind: "station_imports"} = source ->
+        selection = suggestion_selection(suggestion, source)
+
+        case ChangeRuns.confirm_observation_selection(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id,
+               socket.assigns.current_user,
+               source,
+               selection
+             ) do
+          {:ok, %{decisions: decisions}} ->
+            socket
+            |> assign(:station_suggestion_status, %{
+              kind: :confirmed,
+              title: "Nothing has been applied yet.",
+              message:
+                "#{approved_label_for(decisions)} approved with the measurement each one was " <>
+                  "reviewed against. Review the whole approved list, then choose Apply decisions."
+            })
+            |> close_station_suggestion()
+            |> refresh_change_review()
+            |> focus_suggestion("station-approved-apply-scope")
+
+          {:error, reason} ->
+            # A refusal changes no status and keeps the review and every draft, so
+            # the person can decide again against the same rows.
+            socket
+            |> assign(:station_suggestion_error, suggestion_refusal_text(reason))
+            |> focus_suggestion("station-suggestion-confirm")
+        end
+
+      _other ->
+        socket
+        |> assign(:station_suggestion_error, @prepared_missing_notice)
+        |> focus_suggestion("station-suggestion-confirm")
+    end
+  end
+
+  defp suggestion_selection(suggestion, source) do
+    command = suggestion.command
+
+    %{
+      "run_id" => Map.get(command, :run_id),
+      "station_stop_id" => Map.get(source.payload, "station_stop_id"),
+      "input_digest" => Map.get(command, :input_digest),
+      "decisions" =>
+        Enum.map(suggestion.rows, fn row ->
+          %{"decision_id" => row.decision_id, "decision_digest" => row.decision_digest}
+        end)
+    }
+  end
+
+  defp approved_label_for([_decision]), do: "1 change is"
+  defp approved_label_for(decisions), do: "#{length(decisions)} changes are"
+
+  defp suggestion_refusal_text(:forbidden), do: @permission_error
+
+  defp suggestion_refusal_text(:evidence_limit),
+    do:
+      "This review has recorded as much captured evidence as it keeps. Nothing was approved and " <>
+        "your measurements are still here."
+
+  defp suggestion_refusal_text(:invalid_selection),
+    do:
+      "That suggestion cannot be confirmed as asked. Nothing was approved, and the review is " <>
+        "still here."
+
+  defp suggestion_refusal_text(_reason),
+    do:
+      "This review changed after the suggestion was prepared, so nothing was approved. The review " <>
+        "and your measurements are still here - ask the helper to prepare it again."
+
+  # Closing drops the page's own copy and hands focus back to the card the review
+  # came from. The entry's stored proposal stays exactly as it was: it is the
+  # conversation's, and only an exact confirmation releases it.
+  defp close_station_suggestion(socket) do
+    socket
+    |> assign(:station_suggestion, nil)
+    |> assign(:station_suggestion_error, nil)
+  end
+
+  # Focus goes back to the card the review was opened from, which is still in the
+  # transcript: cancelling released nothing, so the entry that offered the
+  # decision is exactly where the person should be. The helper's own open control
+  # is the fallback when no review was open.
+  defp cancel_station_suggestion(%{assigns: %{station_suggestion: nil}} = socket) do
+    assign(socket, :station_suggestion_return_focus, nil)
+  end
+
+  defp cancel_station_suggestion(socket) do
+    assign(
+      socket,
+      :station_suggestion_return_focus,
+      socket.assigns.station_suggestion.return_focus_id
+    )
+    |> close_station_suggestion()
+  end
+
+  defp focus_suggestion_return(%{assigns: %{station_suggestion_return_focus: id}} = socket)
+       when is_binary(id),
+       do: push_event(socket, "focus_station_target", %{id: id})
+
+  defp focus_suggestion_return(socket), do: focus_suggestion(socket, "station-helper-open")
+
+  defp focus_suggestion(socket, id) when is_binary(id) and id != "",
+    do: push_event(socket, "focus_station_target", %{id: id})
+
+  defp focus_suggestion(socket, _other), do: socket
+
   defp empty_observation_form do
     to_form(
       %{
@@ -1860,6 +2163,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               observation_notice={@observation_notice}
               observation_helper_notice={@observation_helper_notice}
               agent_open?={@agent_open?}
+              station_suggestion={@station_suggestion}
+              station_suggestion_error={@station_suggestion_error}
+              station_suggestion_status={@station_suggestion_status}
               version={@current_gtfs_version}
               evolution_targets={@evolution_targets}
             />
@@ -1952,12 +2258,18 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     <%!-- Move focus to the first invalid field when validation produces an error,
          using a colocated hook (no embedded script) so keyboard and screen-reader
-         users land on the fixable control. --%>
+         users land on the fixable control. The same hook carries focus back to the
+         helper card a prepared review was opened from, and to the review's own
+         controls when it opens, closes or is refused. --%>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".ImportErrorFocus">
       export default {
         mounted() {
           this.handleEvent("focus_first_error", ({selector}) => {
             const el = this.el.querySelector(selector)
+            if (el) el.focus()
+          })
+          this.handleEvent("focus_station_target", ({id}) => {
+            const el = this.el.querySelector(`#${CSS.escape(id)}`)
             if (el) el.focus()
           })
           this.handleEvent("focus_gtfs_import_files", () => {
@@ -2627,6 +2939,128 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     """
   end
 
+  # The prepared suggestion, shown for a person to decide. Reviewing it writes
+  # nothing: the two actions are an explicit Confirm, which reaches the native
+  # writer, and a Cancel, which does not. Nothing here claims a change was
+  # applied - confirming only approves, and Apply stays a separate step.
+  attr :suggestion, :any, required: true
+  attr :error, :string, default: nil
+  attr :status, :any, default: nil
+
+  defp station_suggestion_review(assigns) do
+    ~H"""
+    <div
+      :if={@status != nil}
+      id="station-suggestion-status"
+      role="status"
+      tabindex="-1"
+      class="border-t border-subtle px-5 py-4"
+    >
+      <p class="m-0 text-sm font-semibold text-strong">{@status.title}</p>
+      <p class="m-0 mt-1 text-[13px] text-default">{@status.message}</p>
+    </div>
+
+    <div
+      :if={@suggestion != nil}
+      id="station-suggestion-review"
+      class="border-t border-subtle bg-canvas px-5 py-4"
+    >
+      <h3 class="m-0 text-sm font-bold text-strong">Suggested decisions to review</h3>
+      <p class="m-0 mt-1 max-w-[70ch] text-[13px] text-muted">
+        The helper prepared these from the measurements you captured. Confirming approves them
+        with the measurement each one was reviewed against; nothing is applied until you choose
+        Apply changes.
+      </p>
+
+      <div
+        :if={@error}
+        id="station-suggestion-error"
+        role="alert"
+        tabindex="-1"
+        class="mt-3 rounded-control border border-error/40 bg-error/5 px-4 py-3 text-[13px] text-error-fg"
+      >
+        <p class="m-0 font-semibold">Nothing was approved</p>
+        <p class="m-0 mt-1">{@error}</p>
+      </div>
+
+      <ol
+        id="station-suggestion-rows"
+        class="m-0 mt-3 list-none divide-y divide-subtle border-y border-subtle p-0"
+      >
+        <li
+          :for={row <- @suggestion.rows}
+          id={"station-suggestion-row-#{row.decision_id |> String.replace(":", "-")}"}
+          data-suggestion-row
+          data-decision-id={row.decision_id}
+          class="grid gap-x-5 gap-y-1 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+        >
+          <div class="min-w-0">
+            <p class="m-0 text-sm font-semibold text-strong">{row.subject}</p>
+            <p class="m-0 mt-0.5 font-mono text-[13px] break-words text-default">
+              {row.decision_id}
+            </p>
+            <p class="m-0 mt-1 text-[13px] text-default">
+              <span class="text-muted">{row.current_width}</span>
+              <span aria-hidden="true">→</span>
+              <span class="font-semibold text-strong">{row.uploaded_width}</span>
+              <span class="text-muted"> m</span>
+            </p>
+          </div>
+          <div class="min-w-0">
+            <p class="m-0 text-[13px] text-muted">Captured source</p>
+            <p class="m-0 mt-1 text-[13px] text-default">{row.captured_source}</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <.button
+          id="station-suggestion-confirm"
+          type="button"
+          class="min-h-11"
+          phx-click="station-suggestion-confirm"
+        >
+          Confirm decisions
+        </.button>
+        <.button
+          id="station-suggestion-cancel"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="station-suggestion-cancel"
+        >
+          Cancel
+        </.button>
+        <p class="m-0 text-[13px] text-muted">
+          Confirming approves {length(@suggestion.rows)} {plural(
+            length(@suggestion.rows),
+            "change",
+            "changes"
+          )}. It applies nothing.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  defp approved_scope_note(0, _reviewed, _total),
+    do: "No change is approved, so Apply would do nothing."
+
+  defp approved_scope_note(count, reviewed, total) do
+    "Apply will make all #{count} approved #{plural(count, "change", "changes")} of #{total} in " <>
+      "this review, including #{MapSet.size(reviewed)} confirmed against a captured " <>
+      "measurement#{plural(MapSet.size(reviewed), "", "s")} and the rest approved natively."
+  end
+
+  # Which of this run's decisions carry captured provenance. Read from the
+  # persisted manifest rather than from the conversation, so a reload or a helper
+  # restart still tells an approved row apart from a measured one (INV-1).
+  defp reviewed_decision_ids(run), do: run |> ChangeRuns.reviewed_evidence() |> reviewed_id_set()
+
+  defp reviewed_id_set(entries) do
+    MapSet.new(entries, & &1["decision_id"])
+  end
+
   attr :step, :atom, required: true
   attr :run, :any, default: nil
   attr :summary, :map, required: true
@@ -2651,6 +3085,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   attr :agent_open?, :boolean, default: false
   attr :version, :any, required: true
   attr :evolution_targets, :map, default: %{}
+  attr :station_suggestion, :any, default: nil
+  attr :station_suggestion_error, :string, default: nil
+  attr :station_suggestion_status, :any, default: nil
 
   defp station_panel(%{step: :review} = assigns) do
     approved = approved_decisions(assigns.decisions)
@@ -2661,6 +3098,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:approved_count, length(approved))
       |> assign(:total, map_size(assigns.decisions))
       |> assign(:consequence, consequence(approved))
+      |> assign(:reviewed_ids, reviewed_decision_ids(assigns.run))
       |> assign(:bulk, bulk_actions(assigns.filter, assigns.summary, assigns.decisions))
 
     ~H"""
@@ -2809,6 +3247,48 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             decision={decision}
           />
         </ol>
+      </div>
+
+      <.station_suggestion_review
+        suggestion={@station_suggestion}
+        error={@station_suggestion_error}
+        status={@station_suggestion_status}
+      />
+
+      <div
+        id="station-approved-apply-scope"
+        tabindex="-1"
+        class="border-t border-subtle px-5 py-4 focus:outline-none"
+      >
+        <h3 class="m-0 text-sm font-bold text-strong">Approved changes Apply will make</h3>
+        <p class="m-0 mt-1 text-[13px] text-muted">
+          {approved_scope_note(@approved_count, @reviewed_ids, @total)}
+        </p>
+        <ol
+          :if={@approved != []}
+          id="station-approved-apply-scope-list"
+          class="m-0 mt-3 list-none divide-y divide-subtle p-0"
+        >
+          <li
+            :for={decision <- @approved}
+            id={"station-approved-row-#{decision.id}"}
+            data-apply-scope-row
+            data-reviewed={to_string(MapSet.member?(@reviewed_ids, decision.decision_id))}
+            class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
+          >
+            <span class="min-w-0 font-semibold text-default">
+              {decision.entity_type} <span class="font-mono">{decision.natural_key}</span>
+            </span>
+            <span class="text-muted">
+              {if MapSet.member?(@reviewed_ids, decision.decision_id),
+                do: "confirmed against a captured measurement",
+                else: "approved natively"}
+            </span>
+          </li>
+        </ol>
+        <p :if={@approved == []} class="m-0 mt-3 text-[13px] text-muted">
+          Nothing is approved, so Apply would do nothing.
+        </p>
       </div>
 
       <%!-- The apply bar stays in view while a long list scrolls, and names the two
@@ -2985,12 +3465,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     applied = run_count(assigns.run, "applied")
     failed = run_count(assigns.run, "failed")
     unapplied = run_count(assigns.run, "unapplied")
+    outcome = apply_outcome(assigns.decisions, assigns.run)
 
     assigns =
       assigns
       |> assign(:applied, applied)
       |> assign(:failed, failed)
       |> assign(:unapplied, unapplied)
+      |> assign(:outcome, outcome)
 
     ~H"""
     <section
@@ -3037,6 +3519,36 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             {"diff-count-unapplied", "Not tried", @unapplied}
           ]}
         />
+
+        <%!-- What the worker actually did, told apart from what was approved before
+             it ran. A row confirmed against a captured measurement is named as
+             such, an approval that predates it is named separately, and the
+             actual applied/failed/stale outcome of each row is its own fact
+             rather than a claim this page remembers (INV-1). --%>
+        <div
+          :if={@outcome != []}
+          id="station-apply-outcome"
+          class="max-w-2xl border-t border-subtle pt-4"
+        >
+          <h3 class="m-0 text-sm font-bold text-strong">What each approved change did</h3>
+          <ol class="m-0 mt-3 list-none divide-y divide-subtle p-0">
+            <li
+              :for={row <- @outcome}
+              id={"station-apply-outcome-row-#{row.decision.id}"}
+              data-apply-outcome-row
+              data-outcome={row.status}
+              data-reviewed={to_string(row.reviewed?)}
+              class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
+            >
+              <span class="min-w-0 font-semibold text-default">
+                {row.decision.entity_type} <span class="font-mono">{row.decision.natural_key}</span>
+              </span>
+              <span class="text-muted">
+                {outcome_sentence(row)}
+              </span>
+            </li>
+          </ol>
+        </div>
       </div>
       <div class="border-t border-subtle bg-canvas px-5 py-3">
         <.button
@@ -3052,6 +3564,37 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     </section>
     """
   end
+
+  # What the worker actually recorded for each decision that carried an approval,
+  # read from the persisted decisions and the persisted provenance rather than
+  # from anything this page kept in memory. An approved row that was never tried
+  # is left out: it has no outcome to report yet.
+  defp apply_outcome(decisions_by_id, run) do
+    reviewed = reviewed_decision_ids(run)
+
+    decisions_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.status in [:applied, :failed, :stale]))
+    |> Enum.sort_by(& &1.decision_id)
+    |> Enum.map(
+      &%{decision: &1, status: &1.status, reviewed?: MapSet.member?(reviewed, &1.decision_id)}
+    )
+  end
+
+  defp outcome_sentence(%{reviewed?: true, status: :applied}),
+    do: "confirmed against a captured measurement · applied"
+
+  defp outcome_sentence(%{reviewed?: true, status: :failed}),
+    do: "confirmed against a captured measurement · failed"
+
+  defp outcome_sentence(%{reviewed?: true, status: :stale}),
+    do: "confirmed against a captured measurement · stale, nothing written"
+
+  defp outcome_sentence(%{reviewed?: false, status: :applied}), do: "approved natively · applied"
+  defp outcome_sentence(%{reviewed?: false, status: :failed}), do: "approved natively · failed"
+
+  defp outcome_sentence(%{reviewed?: false, status: :stale}),
+    do: "approved natively · stale, nothing written"
 
   # Capturing a measurement is native input, not a helper action: the person names
   # the exact pathway, what was measured and where it came from, and the server
@@ -3268,9 +3811,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           </ol>
 
           <div
-            :if={Enum.any?(@captures, fn {stop_id, _capture} ->
-              stop_id != observation_station_stop(@station)
-            end)}
+            :if={
+              Enum.any?(@captures, fn {stop_id, _capture} ->
+                stop_id != observation_station_stop(@station)
+              end)
+            }
             id="station-observation-captures"
             class="mt-4 pr-5"
           >

@@ -661,6 +661,36 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     end
   end
 
+  @doc """
+  The captured confirmation history persisted in this run's source manifest.
+
+  A native host reads this to show which of a run's approved decisions carry
+  captured measurement provenance and which were approved by hand, so that
+  distinction survives a reload instead of living in one conversation's memory.
+  A manifest without the namespace, and either stored key convention, reads as
+  an empty history rather than as an error (INV-1).
+  """
+  @spec reviewed_evidence(ChangeRun.t() | map() | nil) :: [map()]
+  def reviewed_evidence(%ChangeRun{source_manifest: manifest}),
+    do: reviewed_entries(manifest)
+
+  def reviewed_evidence(%{source_manifest: manifest}), do: reviewed_entries(manifest)
+  def reviewed_evidence(_other), do: []
+
+  @doc """
+  Whether `decision_id` carries captured provenance in this run's history.
+
+  The latest entry for a decision is the one that binds its current approval.
+  """
+  @spec reviewed_evidence_decision?(ChangeRun.t() | map() | nil, String.t()) :: boolean()
+  def reviewed_evidence_decision?(run, decision_id) when is_binary(decision_id) do
+    run
+    |> reviewed_evidence()
+    |> Enum.any?(&(&1["decision_id"] == decision_id))
+  end
+
+  def reviewed_evidence_decision?(_run, _decision_id), do: false
+
   # The manifest tolerates a legacy map that never carried the namespace, and both
   # key conventions a stored manifest may use.
   defp reviewed_manifest(manifest) when is_map(manifest), do: manifest

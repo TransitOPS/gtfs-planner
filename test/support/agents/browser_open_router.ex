@@ -92,6 +92,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       returned;
     * the `prepare_block_suggestion` and `prepare_run_suggestion` tool results
       get the prepared-sentence the panel follows with a native drawer;
+    * a `"user"` message about station widths gets a
+      `prepare_station_import_decisions` call for the seeded `BROWSER_PW_ELEVATOR`
+      decision of the import review the import page computed, so the station
+      journey reviews a real prepared selection;
+    * the `prepare_station_import_decisions` tool result gets the
+      prepared-measurement sentence;
     * anything else gets the helper's generic sentence.
 
   The in-seat script is the Blocks page's own worked example, and it is the one the
@@ -178,6 +184,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
   @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
+  # The station journey's own sentence. It claims nothing was applied: the
+  # journey confirms the statuses and then applies them itself.
+  @prepared_measurement "I prepared the width decisions those measurements support. Review them before applying."
+  # The decision the import page's computed review holds for the seeded elevator
+  # pathway, which the journey captures a measurement for.
+  @station_width_decision "pathway:BROWSER_PW_ELEVATOR"
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -322,6 +334,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ @timetable_row ->
         tool_calls_reply("read_timetable_source", %{})
 
+      station_width_question?(content) ->
+        tool_calls_reply("prepare_station_import_decisions", station_width_arguments())
+
       BrowserFeedQuality.question?(content) ->
         {name, arguments} = BrowserFeedQuality.user_reply(content)
         tool_calls_reply(name, arguments)
@@ -452,6 +467,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp calendar_question?(content) do
     Enum.any?([~r/route/i, ~r/dates|week/i, ~r/school/i], &Regex.match?(&1, content))
   end
+
+  # Keyed on the word the station journey uses, so no other scripted journey
+  # reaches the station pack by accident.
+  defp station_width_question?(content), do: content =~ ~r/width|clear width/i
+
+  defp station_width_arguments, do: %{"decision_ids" => [@station_width_decision]}
 
   defp calendar_question_reply(content) do
     cond do
@@ -593,15 +614,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp calendar_tool_reply(_other, _messages), do: text_reply(@generic)
 
-  # Three tools are answered with one scripted sentence each: the two the
-  # Transfers page drafts with, and the connections read, whose whole answer
-  # comes from the approved source rather than from anything scripted here. Any
-  # other tool leaves `nil` and is answered by the Schedule pack's clauses.
+  # Four tools are answered with one scripted sentence each: the two the
+  # Transfers page drafts with, the connections read, whose whole answer comes
+  # from the approved source rather than from anything scripted here, and the
+  # station import review. Any other tool leaves `nil` and is answered by the
+  # Schedule pack's clauses.
   defp prose_sentence(name)
        when name in ["inspect_transfer_competition", "prepare_transfer_policy"],
        do: @prepared_transfer
 
   defp prose_sentence("compare_connection_margins"), do: @compared_connections
+
+  defp prose_sentence("prepare_station_import_decisions"), do: @prepared_measurement
 
   defp prose_sentence(_other), do: nil
 
