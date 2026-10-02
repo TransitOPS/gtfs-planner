@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
 
@@ -497,7 +498,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
         socket
         |> load_services()
         |> assign(copy_target: nil, copy_error: nil)
-        |> put_flash(:info, "#{FlexComponents.count_label(count)} copied from #{source.name}.")
+        |> put_flash(
+          :info,
+          "#{Wording.count_noun(count, "flex service")} copied from #{source.name}."
+        )
 
       {:error, :target_not_empty} ->
         # Another editor added a service between the load and the copy: R14

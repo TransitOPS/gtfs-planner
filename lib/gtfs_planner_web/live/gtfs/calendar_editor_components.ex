@@ -18,6 +18,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Wording
+
   @short_format "%b %-d"
   @weekday_date_format "%a, %b %-d, %Y"
 
@@ -77,11 +79,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def date_span(%Date{} = first, %Date{} = last),
     do: "#{format_date(first)} – #{format_date(last)}"
 
-  @doc "`1 trip`, `2 trips`; a plural that is not `noun <> s` is passed as `many`."
-  def plural(1, one, _many), do: "1 #{one}"
-  def plural(count, one, many), do: "#{count} #{many || one <> "s"}"
-  def plural(count, one), do: plural(count, one, nil)
-
   ## What the header says
 
   @doc """
@@ -99,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     cond do
       ended? -> {:neutral, "Ended"}
       ends_soon && ends_soon.days_remaining == 0 -> {:warning, "Ends today"}
-      ends_soon -> {:warning, "Ends in #{plural(ends_soon.days_remaining, "day")}"}
+      ends_soon -> {:warning, "Ends in #{Wording.count_noun(ends_soon.days_remaining, "day")}"}
       no_service? -> {:warning, "No service"}
       source.usage.trip_count == 0 -> {:neutral, "Not used by trips"}
       source.today in source.active_dates -> {:success, "Runs today"}
@@ -113,7 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       [
         "Runs #{days_phrase(calendar)}",
         date_span(calendar.start_date, calendar.end_date),
-        plural(length(dates), "service day")
+        Wording.count_noun(length(dates), "service day")
       ],
       " · "
     )
@@ -122,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def lede(%{active_dates: []}), do: "Runs only on chosen dates · none added yet"
 
   def lede(%{active_dates: dates}) do
-    "Runs only on chosen dates · #{plural(length(dates), "date")}, " <>
+    "Runs only on chosen dates · #{Wording.count_noun(length(dates), "date")}, " <>
       date_span(List.first(dates), List.last(dates))
   end
 
@@ -130,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   def usage_line(%{trip_count: 0}), do: "No trips use this calendar yet"
 
   def usage_line(%{trip_count: trips, routes: routes}) do
-    "#{plural(trips, "trip")} on #{plural(length(routes), "route")} " <>
+    "#{Wording.count_noun(trips, "trip")} on #{Wording.count_noun(length(routes), "route")} " <>
       "#{if trips == 1, do: "uses", else: "use"} this calendar"
   end
 
@@ -756,7 +753,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
   defp gap_sentence(breaks) do
     breaks
     |> Enum.map_join(". ", fn interval ->
-      "No service #{date_span(interval.first_date, interval.last_date)} (#{plural(interval.service_days, "service day")})"
+      "No service #{date_span(interval.first_date, interval.last_date)} (#{Wording.count_noun(interval.service_days, "service day")})"
     end)
     |> Kernel.<>(".")
   end
@@ -810,14 +807,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       "Service from #{format_date(first)} to #{format_date(last)}: " <>
         Enum.join(
           [
-            plural(length(periods.periods), "period"),
-            plural(length(periods.breaks), "break"),
-            plural(
+            Wording.count_noun(length(periods.periods), "period"),
+            Wording.count_noun(length(periods.breaks), "break"),
+            Wording.count_noun(
               length(periods.holidays) + length(other_days_off(periods)),
               "day off",
               "days off"
             ),
-            plural(length(extra), "extra service day")
+            Wording.count_noun(length(extra), "extra service day")
           ],
           ", "
         ) <> "."
@@ -851,7 +848,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
       axis: axis(first, last),
       today: today_style(geometry, assigns.today),
       label:
-        "Service on #{plural(length(dates), "chosen date")} from #{format_date(first)} to #{format_date(last)}."
+        "Service on #{Wording.count_noun(length(dates), "chosen date")} from #{format_date(first)} to #{format_date(last)}."
     }
   end
 
@@ -1029,7 +1026,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
           {date_span(@row.first_date, @row.last_date)}
         </span>
         <span class="block text-[13px] text-muted">
-          Break · {plural(@row.service_days, "service day")} without service
+          Break · {Wording.count_noun(@row.service_days, "service day")} without service
         </span>
         <span class="mt-1 block sm:hidden">
           <.change_badge tone={:warning}>No service</.change_badge>
@@ -1202,16 +1199,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
     Enum.join(
       [
-        plural(removed_outside, "day off", "days off"),
-        plural(length(periods.breaks), "break"),
-        plural(length(periods.extra_days), "extra service day")
+        Wording.count_noun(removed_outside, "day off", "days off"),
+        Wording.count_noun(length(periods.breaks), "break"),
+        Wording.count_noun(length(periods.extra_days), "extra service day")
       ],
       " · "
     )
   end
 
   defp change_summary(:dates_only, _periods, exceptions, _rows),
-    do: plural(length(exceptions), "service date")
+    do: Wording.count_noun(length(exceptions), "service date")
 
   # A stored change can be redundant or outside the range; the row says so where the
   # person is looking, and the page summary says how many there are.
@@ -1261,7 +1258,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
     lead =
       if days == 0,
         do: "Ends today, on #{format_date(date)}.",
-        else: "Ends in #{plural(days, "day")}, on #{format_date(date)}."
+        else: "Ends in #{Wording.count_noun(days, "day")}, on #{format_date(date)}."
 
     lead <>
       if(kind == :weekly,
@@ -1349,7 +1346,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
         <p class="mt-0.5 text-[13px] text-muted">
           {if @trips > 0,
             do:
-              "#{plural(@trips, "trip")} on #{plural(length(@usage.routes), "route")}. Editing this calendar changes service for all of them.",
+              "#{Wording.count_noun(@trips, "trip")} on #{Wording.count_noun(length(@usage.routes), "route")}. Editing this calendar changes service for all of them.",
             else: "Nothing runs on this calendar yet."}
         </p>
       </div>
@@ -1527,7 +1524,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
       <div id={"#{@id}-dates"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(@dates |> length(), "date", "dates")} newly in service
+          {Wording.count_noun(@dates |> length(), "date", "dates")} newly in service
         </h4>
         <p class="text-[13px] text-muted">
           The first is {weekday_date(hd(@dates))} and the last is {weekday_date(List.last(@dates))}.
@@ -1545,7 +1542,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
             id={"#{@id}-dates-hidden"}
             class="rounded-badge bg-white px-2 py-0.5 text-[13px] text-muted"
           >
-            and {plural(@hidden_dates, "more date", "more dates")}
+            and {Wording.count_noun(@hidden_dates, "more date", "more dates")}
           </li>
         </ul>
         <p :if={@dates == []} class="mt-1 text-sm text-muted">
@@ -1555,35 +1552,35 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
 
       <div id={"#{@id}-routes"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@routes), "route", "routes")} affected
+          {Wording.count_noun(length(@routes), "route", "routes")} affected
         </h4>
         <ul class="mt-1 grid gap-0.5 text-[13px]">
           <li :for={route <- @routes} class="text-default">
             <code class="font-mono font-[650] text-strong">{route.route_id}</code>
-            · {plural(route.trip_count, "trip", "trips")}
+            · {Wording.count_noun(route.trip_count, "trip", "trips")}
           </li>
         </ul>
         <p class="mt-1 text-[13px] text-muted">
-          {plural(length(@extension.trip_identities), "trip", "trips")} in total keep their
+          {Wording.count_noun(length(@extension.trip_identities), "trip", "trips")} in total keep their
           calendar and run on the new dates.
         </p>
       </div>
 
       <div :if={@closures != []} id={"#{@id}-closures"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@closures), "closure", "closures")} on this calendar
+          {Wording.count_noun(length(@closures), "closure", "closures")} on this calendar
         </h4>
         <ul class="mt-1 grid gap-0.5 text-[13px] text-default">
           <li :for={closure <- @closures}>
             <code class="font-mono font-[650] text-strong">{closure.pathway_id}</code>
-            · {plural(length(closure.station_stop_ids), "station", "stations")}
+            · {Wording.count_noun(length(closure.station_stop_ids), "station", "stations")}
           </li>
         </ul>
       </div>
 
       <div id={"#{@id}-retained"}>
         <h4 class="text-sm font-bold text-strong">
-          {plural(length(@retained), "existing date change", "existing date changes")} kept
+          {Wording.count_noun(length(@retained), "existing date change", "existing date changes")} kept
         </h4>
         <p class="text-[13px] text-muted">
           This extension changes the end date only, so every exception already stored stays as it

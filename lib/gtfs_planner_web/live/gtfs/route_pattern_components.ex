@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.RouteWorkspace
 
@@ -2309,7 +2310,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   end
 
   defp link_done_body(%{timings_created: timings}) do
-    "They’re Direction 0 now and kept their own times as #{timings} new #{plural(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
+    "They’re Direction 0 now and kept their own times as #{timings} new #{Wording.noun(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
   end
 
   # The prototype names the services the trips run on; the preview's rule 6
@@ -2334,9 +2335,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   # The offer names its own stops ("13 stops") for the same reason.
   defp stop_noun(1), do: "1 stop"
   defp stop_noun(count), do: "#{count} stops"
-
-  defp plural(1, one, _many), do: one
-  defp plural(_count, _one, many), do: many
 
   @doc """
   Renders the review that precedes a link, listing the trips it covers with the

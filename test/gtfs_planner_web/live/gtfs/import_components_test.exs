@@ -96,6 +96,20 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponentsTest do
       assert text(html, "li") =~ "Last file: stop_times.txt (row 48,213)"
     end
 
+    test "a partial import singularizes irregular counter keys" do
+      html =
+        render_run(
+          run(%{
+            state: "partial",
+            committed_counts: %{"agencies" => 1, "frequencies" => 1},
+            failed_file: "trips.txt",
+            failed_row: 12
+          })
+        )
+
+      assert text(html, "li") =~ "Saved before it stopped: 1 agency, 1 frequency."
+    end
+
     test "counts are shown only for a partial import" do
       html =
         render_run(
@@ -236,13 +250,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponentsTest do
       assert format_bytes(18_400_000) == "18.4 MB"
       assert format_bytes(38_000) == "38 KB"
       assert format_bytes(120) == "120 B"
-    end
-  end
-
-  describe "format_count/1" do
-    test "groups thousands" do
-      assert format_count(1_204_338) == "1,204,338"
-      assert format_count(812) == "812"
     end
   end
 end

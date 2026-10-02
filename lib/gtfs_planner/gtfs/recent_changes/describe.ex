@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @weekday_fields ~w(monday tuesday wednesday thursday friday saturday sunday)
   @position_fields ~w(stop_lat stop_lon)
@@ -266,7 +267,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     trips = trip_count(group)
 
     detail =
-      "#{trips} #{pluralize(trips, "trip")} changed on #{calendar_name(lookups, service_id)}"
+      "#{trips} #{Wording.noun(trips, "trip")} changed on #{calendar_name(lookups, service_id)}"
 
     base_item(:schedules, "Schedules", route_title(route, route_id), detail,
       exists?: not is_nil(route),
@@ -452,7 +453,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp combination_detail(ids) when length(ids) > 1 do
     count = length(ids) - 1
-    "combined with #{count} #{pluralize(count, "calendar")}"
+    "combined with #{count} #{Wording.noun(count, "calendar")}"
   end
 
   defp combination_detail(_ids), do: "calendar changed"
@@ -539,7 +540,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     cond do
       Enum.any?(keys, &(&1 in @position_fields)) -> "location moved"
       "stop_name" in keys -> "renamed"
-      true -> "#{length(keys)} #{pluralize(length(keys), "field")} changed"
+      true -> "#{length(keys)} #{Wording.noun(length(keys), "field")} changed"
     end
   end
 
@@ -565,7 +566,4 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp changed_fields(%ChangeLog{changed_fields: %{} = fields}), do: fields
   defp changed_fields(%ChangeLog{}), do: %{}
-
-  defp pluralize(1, word), do: word
-  defp pluralize(_count, word), do: word <> "s"
 end

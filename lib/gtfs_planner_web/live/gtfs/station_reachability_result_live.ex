@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   alias GtfsPlanner.Validations.Legacy
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.StationWorkspace
 
@@ -386,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             Results from the older check
           </h3>
           <p class="mt-0.5 text-[13px] text-muted tabular-nums">
-            {count_label(length(@results), "walk", "walks")} from stops to street addresses · {@reachable_count} reachable · {length(
+            {Wording.count_noun(length(@results), "walk", "walks")} from stops to street addresses · {@reachable_count} reachable · {length(
               @results
             ) - @reachable_count} unreachable
           </p>
@@ -1106,7 +1107,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         do: lede,
         else:
           lede <>
-            " The station data has #{count_label(length(diagnostics), "item", "items")} to review below."
+            " The station data has #{Wording.count_noun(length(diagnostics), "item", "items")} to review below."
 
     {"success", "Passed", "Every walk works, including step-free.", lede}
   end
@@ -1139,7 +1140,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   end
 
   defp verdict_copy(nil, summary, _diagnostics) do
-    {"neutral", "Result", "#{count_label(summary.total, "walk", "walks")} tested.", nil}
+    {"neutral", "Result", "#{Wording.count_noun(summary.total, "walk", "walks")} tested.", nil}
   end
 
   defp gap_phrase(1, label), do: "1 walk has #{label}"
@@ -1160,7 +1161,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
     [{problems, "problem", "problems"}, {suggestions, "suggestion", "suggestions"}]
     |> Enum.filter(fn {count, _one, _many} -> count > 0 end)
-    |> Enum.map_join(" · ", fn {count, one, many} -> count_label(count, one, many) end)
+    |> Enum.map_join(" · ", fn {count, one, many} -> Wording.count_noun(count, one, many) end)
   end
 
   defp verdict_footer(nil), do: nil
@@ -1182,7 +1183,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     end
   end
 
-  defp counted(count, one, many) when is_integer(count), do: count_label(count, one, many)
+  defp counted(count, one, many) when is_integer(count), do: Wording.count_noun(count, one, many)
   defp counted(_count, _one, _many), do: nil
 
   defp duration_label(ms) when is_integer(ms) and ms < 1000, do: "checked in #{ms} ms"

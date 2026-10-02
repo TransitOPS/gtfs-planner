@@ -3067,8 +3067,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp piece_geometry(piece, axis) do
     {start, span} = axis_geometry(axis)
 
-    "left: #{percent(piece.start_secs - start, span)}%; " <>
-      "width: #{percent(piece.end_secs - piece.start_secs, span)}%"
+    "left: #{css_percent(piece.start_secs - start, span)}%; " <>
+      "width: #{css_percent(piece.end_secs - piece.start_secs, span)}%"
   end
 
   # The route's own colour as a bottom rule on the bar. The fill stays the one
@@ -3472,8 +3472,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       segment: Atom.to_string(segment.kind),
       source: segment.source,
       style:
-        "left: #{percent(from - start, span)}%; " <>
-          "width: #{percent(length_secs, span)}%",
+        "left: #{css_percent(from - start, span)}%; " <>
+          "width: #{css_percent(length_secs, span)}%",
       label: mark_label(segment, kind),
       title: mark_title(segment, kind)
     }
@@ -3545,7 +3545,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp track_style(axis) do
     {_start, span} = axis_geometry(axis)
-    "--runs-grid: #{percent(@tick_secs, span)}%"
+    "--runs-grid: #{css_percent(@tick_secs, span)}%"
   end
 
   defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
@@ -3554,7 +3554,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp axis_geometry(_axis), do: {0, @min_track_span_secs}
 
-  defp percent(value, span), do: percent_value(value * 100 / span)
+  # CSS geometry keeps its own name: it returns a two-decimal percentage string,
+  # not the whole-number percent/2 the canonical helper returns.
+  defp css_percent(value, span), do: percent_value(value * 100 / span)
   defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
 
   defp join_style(styles) do

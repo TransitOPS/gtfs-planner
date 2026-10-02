@@ -94,10 +94,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityComponents do
     """
   end
 
-  @doc "A count with its noun, `1 walk` or `36 walks`."
-  def count_label(1, one, _many), do: "1 #{one}"
-  def count_label(count, _one, many), do: "#{count} #{many}"
-
   @doc "When a run happened, in the format both pages print."
   def format_time(%DateTime{} = time), do: Calendar.strftime(time, "%b %d, %Y at %H:%M")
   def format_time(%NaiveDateTime{} = time), do: Calendar.strftime(time, "%b %d, %Y at %H:%M")

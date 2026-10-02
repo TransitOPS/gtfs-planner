@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -978,13 +979,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   end
 
   defp stop_count_text(count, false),
-    do: "#{count} #{pluralize(count, "stop or station", "stops and stations")}"
+    do: Wording.count_noun(count, "stop or station", "stops and stations")
 
   defp stop_count_text(count, true),
-    do: "#{count} #{pluralize(count, "stop or station matches", "stops and stations match")}"
-
-  defp pluralize(1, singular, _plural), do: singular
-  defp pluralize(_count, _singular, plural), do: plural
+    do: Wording.count_noun(count, "stop or station matches", "stops and stations match")
 
   defp no_match_title(assigns) do
     if only_search_active?(assigns),

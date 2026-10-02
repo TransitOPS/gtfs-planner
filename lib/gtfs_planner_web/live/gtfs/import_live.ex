@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.ProductSurfaces
 
@@ -1627,7 +1628,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               Reading {@progress.file}
             </p>
             <p class="text-[13px] tabular-nums text-muted">
-              {format_count(@progress.processed)} of {format_count(@progress.total)} rows
+              {Wording.count(@progress.processed)} of {Wording.count(@progress.total)} rows
             </p>
           </div>
           <div
@@ -1636,11 +1637,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             aria-label={"Rows read from #{@progress.file}"}
             aria-valuemin="0"
             aria-valuemax="100"
-            aria-valuenow={percent(@progress.processed, @progress.total)}
+            aria-valuenow={progress_percent(@progress.processed, @progress.total)}
           >
             <div
               class="h-full bg-info-line"
-              style={"width: #{percent(@progress.processed, @progress.total)}%"}
+              style={"width: #{progress_percent(@progress.processed, @progress.total)}%"}
             >
             </div>
           </div>
@@ -1959,8 +1960,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp total_size(entries), do: entries |> Enum.map(& &1.client_size) |> Enum.sum()
 
-  defp percent(_processed, total) when not is_integer(total) or total <= 0, do: 0
-  defp percent(processed, total), do: min(100, round(processed * 100 / total))
+  # Progress bar value must stay in 0..100 when processed overshoots the total.
+  defp progress_percent(_processed, total) when not is_integer(total) or total <= 0, do: 0
+  defp progress_percent(processed, total), do: min(100, round(processed * 100 / total))
 
   # ── Station workflow ──────────────────────────────────────────────────────
 
@@ -2577,7 +2579,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp stopped_badge(:expired), do: {"This review expired", "warning", "hero-clock", "Expired"}
 
   defp stopped_body(:partial, applied, failed, unapplied, version) do
-    "#{applied} #{plural(applied, "change was", "changes were")} applied to #{version_display_name(version)}. #{failed} failed and #{unapplied} weren’t tried. Retry to apply the rest."
+    "#{applied} #{Wording.noun(applied, "change was", "changes were")} applied to #{version_display_name(version)}. #{failed} failed and #{unapplied} weren’t tried. Retry to apply the rest."
   end
 
   defp stopped_body(:failed, 0, _failed, _unapplied, _version),
@@ -2585,10 +2587,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp stopped_body(:failed, applied, _failed, _unapplied, _version),
     do:
-      "The review stopped after #{applied} #{plural(applied, "change was", "changes were")} applied."
+      "The review stopped after #{applied} #{Wording.noun(applied, "change was", "changes were")} applied."
 
   defp stopped_body(:interrupted, applied, _failed, _unapplied, _version) do
-    "The review stopped unexpectedly. #{if applied > 0, do: "#{applied} #{plural(applied, "change was", "changes were")} applied. "}Your files are saved, so you can retry."
+    "The review stopped unexpectedly. #{if applied > 0, do: "#{applied} #{Wording.noun(applied, "change was", "changes were")} applied. "}Your files are saved, so you can retry."
   end
 
   defp stopped_body(:cancelled, _applied, _failed, _unapplied, _version),
@@ -2600,7 +2602,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       "This review was built by an older version of the app and can’t be applied. Retry to compare your files again."
 
   defp retry_label(:partial, remaining) when remaining > 0,
-    do: "Retry #{remaining} #{plural(remaining, "change", "changes")}"
+    do: "Retry #{remaining} #{Wording.noun(remaining, "change", "changes")}"
 
   defp retry_label(_state, _remaining), do: "Retry review"
 
@@ -2608,9 +2610,6 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     do: "Choose corrected files"
 
   defp start_over_label(_state), do: "Start over"
-
-  defp plural(1, one, _many), do: one
-  defp plural(_count, _one, many), do: many
 
   defp run_count(%ChangeRun{summary: summary}, key) when is_map(summary),
     do: Map.get(summary, key, 0)

@@ -21,6 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.StationJournalComponents
 
   @pathways_shown 6
@@ -570,7 +571,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
         <div class="min-w-0 flex-1">
           <h3 id={"level-#{@floor.id}-title"} class="text-base font-bold">
             No level assigned
-            <span class="font-normal">· {plural(length(@floor.stops), "stop")}</span>
+            <span class="font-normal">· {Wording.count_noun(length(@floor.stops), "stop")}</span>
           </h3>
           <p class="text-[13px]">Pathways can't use a stop until it has a level.</p>
         </div>
@@ -1174,11 +1175,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
     count = fn types -> Enum.count(child_stops, &(&1.location_type in types)) end
 
     parts =
-      [plural(count.([0]), "platform"), plural(count.([2]), "entrance")] ++
+      [Wording.count_noun(count.([0]), "platform"), Wording.count_noun(count.([2]), "entrance")] ++
         Enum.reject(
           [
-            if(count.([3, 4]) > 0, do: plural(count.([3, 4]), "connection point")),
-            if(is_list(levels) and levels != [], do: plural(length(levels), "level"))
+            if(count.([3, 4]) > 0, do: Wording.count_noun(count.([3, 4]), "connection point")),
+            if(is_list(levels) and levels != [], do: Wording.count_noun(length(levels), "level"))
           ],
           &is_nil/1
         )
@@ -1267,7 +1268,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   defp level_order(index), do: 1_000 - index
 
   defp floor_caption(floor) do
-    [level_index_label(floor.index), floor.stops && plural(length(floor.stops), "stop")]
+    [
+      level_index_label(floor.index),
+      floor.stops && Wording.count_noun(length(floor.stops), "stop")
+    ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
   end
@@ -1292,11 +1296,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   defp floorplan_summary(levels) do
     with_plan = Enum.count(levels, &Values.present?(&1.diagram_filename))
 
-    "#{with_plan} of #{plural(length(levels), "level")} #{if with_plan == 1, do: "has", else: "have"} a floorplan"
+    "#{with_plan} of #{Wording.count_noun(length(levels), "level")} #{if with_plan == 1, do: "has", else: "have"} a floorplan"
   end
 
   defp transfers_label(0), do: "No transfer rules here"
-  defp transfers_label(count), do: "#{plural(count, "transfer rule")} here"
+  defp transfers_label(count), do: "#{Wording.count_noun(count, "transfer rule")} here"
 
   defp coordinates(%{stop_lat: %Decimal{} = lat, stop_lon: %Decimal{} = lon}) do
     "#{Decimal.to_string(lat, :normal)}, #{Decimal.to_string(lon, :normal)}"
@@ -1328,7 +1332,4 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   end
 
   defp fare_zone_label(%{zone_id: zone_id}), do: zone_id
-
-  defp plural(1, noun), do: "1 #{noun}"
-  defp plural(count, noun), do: "#{count} #{noun}s"
 end

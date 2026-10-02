@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -529,11 +530,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     """
   end
 
-  defp count_label(total, all, in_seat?) when total == all, do: count_noun(total, in_seat?)
-  defp count_label(total, all, in_seat?), do: "#{total} of #{count_noun(all, in_seat?)}"
+  defp count_label(total, all, in_seat?) when total == all, do: record_count_text(total, in_seat?)
+  defp count_label(total, all, in_seat?), do: "#{total} of #{record_count_text(all, in_seat?)}"
 
-  defp count_noun(count, true), do: "#{count} #{pluralize(count, "stay-on-board record")}"
-  defp count_noun(count, false), do: "#{count} #{pluralize(count, "transfer rule")}"
+  defp record_count_text(count, true),
+    do: "#{count} #{Wording.noun(count, "stay-on-board record")}"
+
+  defp record_count_text(count, false), do: "#{count} #{Wording.noun(count, "transfer rule")}"
 
   defp delete_button_label(1), do: "Delete 1 rule"
   defp delete_button_label(count), do: "Delete #{count} rules"
@@ -1031,7 +1034,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       "This rule needs a minimum time."
   """
   def attention_text({:competes, count}) do
-    "Conflicts with #{count} other #{pluralize(count, "rule")} for the same trips."
+    "Conflicts with #{count} other #{Wording.noun(count, "rule")} for the same trips."
   end
 
   def attention_text(:min_time_missing), do: "This rule needs a minimum time."
@@ -1064,9 +1067,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp side_word(:from), do: "arriving"
   defp side_word(:to), do: "departing"
-
-  defp pluralize(1, noun), do: noun
-  defp pluralize(_count, noun), do: noun <> "s"
 
   defp article(label) do
     lowered = String.downcase(label)
@@ -1228,7 +1228,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
         No transfers match
       </h2>
       <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
-        Try another stop, route or word, or clear the filters to see all {count_noun(
+        Try another stop, route or word, or clear the filters to see all {record_count_text(
           @all_count,
           @in_seat?
         )}.
@@ -1281,7 +1281,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp endpoint_context(_endpoint, true), do: "Not in this version"
 
   defp endpoint_context(%{child_count: count}, _missing?) when count > 0,
-    do: "Station · covers #{count} #{pluralize(count, "platform")}"
+    do: "Station · covers #{count} #{Wording.noun(count, "platform")}"
 
   defp endpoint_context(%{location_type: 1}, _missing?), do: "Station"
 
@@ -1660,12 +1660,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp coverage_sentence(endpoint) do
     count = endpoint.child_count
 
-    "#{endpoint_name(endpoint)} includes #{count} #{pluralize(count, "platform")}, " <>
+    "#{endpoint_name(endpoint)} includes #{count} #{Wording.noun(count, "platform")}, " <>
       "so this rule applies at every one. A rule for a specific route or trip overrides it."
   end
 
   defp overlap_sentence(count) do
-    "#{count} other #{pluralize(count, "rule")} of equal priority can apply to some of the " <>
+    "#{count} other #{Wording.noun(count, "rule")} of equal priority can apply to some of the " <>
       "same trips, so a trip planner can’t tell which one wins. " <>
       "Keep one, or narrow one to a route or trip."
   end
@@ -2959,7 +2959,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   def stop_hint(%{location_type: 1} = stop) do
     case Map.get(stop, :child_count, 0) do
       0 -> "Station"
-      count -> "Station · covers #{count} #{pluralize(count, "platform")}"
+      count -> "Station · covers #{count} #{Wording.noun(count, "platform")}"
     end
   end
 

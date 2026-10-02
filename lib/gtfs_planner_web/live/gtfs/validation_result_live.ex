@@ -25,6 +25,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -457,7 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           </span>
         </span>
         <span class="col-start-2 text-[13px] tabular-nums sm:col-start-auto sm:text-right">
-          <strong class="font-semibold text-strong">{format_count(@total)}</strong>
+          <strong class="font-semibold text-strong">{Wording.count(@total)}</strong>
           {if @total == 1, do: "occurrence", else: "occurrences"}
         </span>
       </summary>
@@ -1264,7 +1265,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         %{
           tone: "error",
           badge: "Problems found",
-          title: "#{pluralize(run.errors_count, "problem", "problems")} to fix.",
+          title: "#{Wording.count_noun(run.errors_count || 0, "problem", "problems")} to fix.",
           body: "Start with the problems. Suggestions and notes below matter less."
         }
 
@@ -1273,7 +1274,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           tone: "warning",
           badge: "Suggestions only",
           title:
-            "No problems. #{pluralize(run.warnings_count, "suggestion", "suggestions")} to review.",
+            "No problems. #{Wording.count_noun(run.warnings_count || 0, "suggestion", "suggestions")} to review.",
           body: "Suggestions are potential issues. Notes are for your information."
         }
 
@@ -1358,18 +1359,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        when type != "pathways_tests" do
     Enum.join(
       [
-        pluralize(run.errors_count, "problem", "problems"),
-        pluralize(run.warnings_count, "suggestion", "suggestions"),
-        pluralize(run.infos_count, "note", "notes")
+        Wording.count_noun(run.errors_count || 0, "problem", "problems"),
+        Wording.count_noun(run.warnings_count || 0, "suggestion", "suggestions"),
+        Wording.count_noun(run.infos_count || 0, "note", "notes")
       ],
       " · "
     )
   end
 
   defp history_counts(_run), do: nil
-
-  defp pluralize(1, one, _many), do: "1 #{one}"
-  defp pluralize(count, _one, many), do: "#{format_count(count || 0)} #{many}"
 
   # ── Findings ──
 
@@ -1519,19 +1517,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     end
   end
 
-  defp format_count(count) when is_integer(count) do
-    count
-    |> Integer.to_string()
-    |> String.graphemes()
-    |> Enum.reverse()
-    |> Enum.chunk_every(3)
-    |> Enum.join(",")
-    |> String.reverse()
-  end
-
-  defp format_count(count), do: to_string(count)
-
-  defp format_pathways_overview_count(count) when is_integer(count), do: format_count(count)
+  defp format_pathways_overview_count(count) when is_integer(count), do: Wording.count(count)
   defp format_pathways_overview_count(_count), do: "0"
 
   defp format_pathways_overview_percentage(value) when is_number(value) do

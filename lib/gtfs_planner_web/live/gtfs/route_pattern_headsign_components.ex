@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
+  alias GtfsPlanner.Wording
 
   @doc """
   Renders how trips use a scope's headsign: "Used by N trips · M show a
@@ -108,7 +109,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
       <.icon name="hero-truck" class="size-4 text-muted" />
       <span>
         Used by
-        <strong class="font-[650] tabular-nums text-strong">{plural(@usage.total, "trip")}</strong>
+        <strong class="font-[650] tabular-nums text-strong">
+          {Wording.count_noun(@usage.total, "trip")}
+        </strong>
         <span aria-hidden="true" class="text-muted">·</span>
         <%= if @usage.differ == 0 do %>
           {@all_match_copy}
@@ -118,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
         <% end %>
         <span :if={@usage.shielded != []}>
           <span aria-hidden="true" class="text-muted">·</span>
-          {plural(length(@usage.shielded), "timing")}
+          {Wording.count_noun(length(@usage.shielded), "timing")}
           {if(length(@usage.shielded) == 1, do: "sets its own", else: "set their own")}
         </span>
       </span>
@@ -138,7 +141,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
         phx-value-scope={@scope_value}
         class="inline-flex min-h-11 items-center gap-1 px-1 font-[650] text-action hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
-        Review {plural(@usage.differ, "trip")} <.icon name="hero-chevron-right" class="size-4" />
+        Review {Wording.count_noun(@usage.differ, "trip")}
+        <.icon name="hero-chevron-right" class="size-4" />
       </button>
     </div>
     """
@@ -205,16 +209,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
           <span class="font-[650] text-strong">
             <%= cond do %>
               <% is_nil(@to) -> %>
-                Also clear the headsign on {maybe_partial(@partial?, @selected_follow)}{plural(
+                Also clear the headsign on {maybe_partial(@partial?, @selected_follow)}{Wording.count_noun(
                   @followers,
                   "trip"
                 )} that {if(@followers == 1, do: "shows", else: "show")}
                 <.headsign_value value={@from} />
               <% is_nil(@from) -> %>
-                Also give {maybe_partial(@partial?, @selected_follow)}{plural(@followers, "trip")} with no headsign
+                Also give {maybe_partial(@partial?, @selected_follow)}{Wording.count_noun(
+                  @followers,
+                  "trip"
+                )} with no headsign
                 this headsign
               <% true -> %>
-                Also update {maybe_partial(@partial?, @selected_follow)}{plural(@followers, "trip")} that {if(
+                Also update {maybe_partial(@partial?, @selected_follow)}{Wording.count_noun(
+                  @followers,
+                  "trip"
+                )} that {if(
                   @followers == 1,
                   do: "shows",
                   else: "show"
@@ -230,15 +240,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
       <div class="-mt-1 flex flex-wrap items-center gap-x-1 pl-8 text-[13px] text-default">
         <span class="inline-flex flex-wrap items-center gap-x-1">
           <%= if @update? or not @label? do %>
-            <span :if={@extra > 0}>Plus {plural(@extra, "trip")} you added in the review.</span>
+            <span :if={@extra > 0}>
+              Plus {Wording.count_noun(@extra, "trip")} you added in the review.
+            </span>
             <span :if={@others > 0}>
-              {plural(@others, "trip")} with a different headsign {if(@others == 1,
+              {Wording.count_noun(@others, "trip")} with a different headsign {if(@others == 1,
                 do: "stays",
                 else: "stay"
               )} as {if(@others == 1, do: "it is", else: "they are")}.
             </span>
             <span :for={shield <- @shielded}>
-              {shield.name} sets its own headsign, <span class="font-[650] text-strong">{shield.headsign}</span>; its {plural(
+              {shield.name} sets its own headsign, <span class="font-[650] text-strong">{shield.headsign}</span>; its {Wording.count_noun(
                 shield.trip_count,
                 "trip"
               )}
@@ -250,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
           <% else %>
             <span>
               Only trips you add get
-              <.headsign_value value={@to} />. {plural(@followers, "trip")} keep
+              <.headsign_value value={@to} />. {Wording.count_noun(@followers, "trip")} keep
               <.headsign_value value={@from} /> and will count as different.
             </span>
           <% end %>
@@ -460,7 +472,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
           <%= if @groups == [] do %>
             <div class="rounded-card border border-subtle p-6 text-center">
               <p class="text-base font-bold text-strong">
-                All {plural(@usage.total, "trip")} show <.headsign_value value={@usage.default} />
+                All {Wording.count_noun(@usage.total, "trip")} show
+                <.headsign_value value={@usage.default} />
               </p>
               <p class="mt-1 text-sm text-muted">
                 Nothing to review. A trip gets a different headsign when someone edits it in
@@ -495,7 +508,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
                 class="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
               >
                 <.icon name="hero-check-circle" class="size-4" />
-                Select {plural(length(@typos), "likely typo")}
+                Select {Wording.count_noun(length(@typos), "likely typo")}
               </button>
             </div>
             <div class="mt-4 grid gap-4">
@@ -540,7 +553,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
             </button>
           <% @mode == :change -> %>
             <p id={"#{@id}-status"} class="min-w-0 flex-1 basis-[220px] text-[13px] text-muted">
-              {plural(@selected_count, "trip")} selected. Nothing changes until you save the
+              {Wording.count_noun(@selected_count, "trip")} selected. Nothing changes until you save the
               headsign.
             </p>
             <button
@@ -703,7 +716,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
               <% end %>
             </span>
             <span class="text-sm font-normal text-muted">
-              · {plural(@total, "trip")}{if(@mixed?, do: " · #{@selected_count} selected")}
+              · {Wording.count_noun(@total, "trip")}{if(@mixed?, do: " · #{@selected_count} selected")}
             </span>
             <span
               :if={@group.likely_typo}
@@ -875,9 +888,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
     |> Enum.map_join(" ", &String.capitalize/1)
   end
 
-  defp plural(1, word), do: "1 #{word}"
-  defp plural(count, word), do: "#{count} #{word}s"
-
   # The value the drawer's primary acts toward: change mode's draft, else the
   # scope's default. Nil reads as words in the footer, never an empty quote.
   defp drawer_target(%{mode: :change, change: %{} = change}),
@@ -947,14 +957,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
   defp row_aria_timing(%{timing_name: name}) when is_binary(name), do: name
   defp row_aria_timing(_trip), do: "timing"
 
-  defp exceptions_status(:applying, count), do: "Changing #{plural(count, "trip")}…"
+  defp exceptions_status(:applying, count), do: "Changing #{Wording.count_noun(count, "trip")}…"
   defp exceptions_status(:stale, _count), do: "Nothing was changed."
 
   defp exceptions_status(_state, 0),
     do: "Select the trips to change. Nothing changes until you apply."
 
   defp exceptions_status(_state, count),
-    do: "#{plural(count, "trip")} selected. Nothing changes until you apply."
+    do: "#{Wording.count_noun(count, "trip")} selected. Nothing changes until you apply."
 
   defp exceptions_primary_label(:stale, _count, _target), do: "Refresh list"
   defp exceptions_primary_label(:applying, _count, _target), do: "Changing…"
@@ -962,7 +972,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
 
   defp exceptions_primary_label(_state, count, target) do
     toward = if(is_binary(target), do: target, else: "no headsign")
-    "Change #{plural(count, "trip")} to #{toward}"
+    "Change #{Wording.count_noun(count, "trip")} to #{toward}"
   end
 
   defp exceptions_primary_title(_state, count) when count > 0, do: nil

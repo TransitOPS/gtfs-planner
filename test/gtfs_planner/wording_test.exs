@@ -12,6 +12,8 @@ defmodule GtfsPlanner.WordingTest do
       assert Wording.count(1000) == "1,000"
       assert Wording.count(999) == "999"
       assert Wording.count(0) == "0"
+      assert Wording.count(1_204_338) == "1,204,338"
+      assert Wording.count(812) == "812"
     end
 
     test "falls back to to_string/1 for non-integers" do
@@ -39,9 +41,14 @@ defmodule GtfsPlanner.WordingTest do
   describe "count_noun/3" do
     test "joins the grouped count and its noun" do
       assert Wording.count_noun(1, "trip") == "1 trip"
+      assert Wording.count_noun(2, "trip") == "2 trips"
       assert Wording.count_noun(0, "trip") == "0 trips"
       assert Wording.count_noun(1234, "trip") == "1,234 trips"
       assert Wording.count_noun(2, "agency", "agencies") == "2 agencies"
+    end
+
+    test "uses the given plural when the word does not take s" do
+      assert Wording.count_noun(3, "day off", "days off") == "3 days off"
     end
   end
 

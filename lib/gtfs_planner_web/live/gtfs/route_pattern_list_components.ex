@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
@@ -397,7 +398,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
             :if={@pending_trip_count > 0 and not @patterns_empty? and @editable?}
             id="patterns-partial"
             kind="info"
-            title={"#{plural(@pending_trip_count, "trip is", "trips are")} not in a pattern yet"}
+            title={"#{Wording.count_noun(@pending_trip_count, "trip is", "trips are")} not in a pattern yet"}
           >
             Build patterns from their stop order and direction. Their current times stay unchanged.
             <:action>
@@ -488,7 +489,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
             <% @pending_trip_count > 0 -> %>
               <.first_use id="patterns-unlinked" title="Group your trips into patterns">
                 <strong class="font-[650] tabular-nums text-strong">
-                  {plural(@pending_trip_count, "trip", "trips")}
+                  {Wording.count_noun(@pending_trip_count, "trip")}
                 </strong>
                 on this route {if(@pending_trip_count == 1, do: "is", else: "are")} not in a pattern yet.
                 Building patterns groups them by direction and stop order, and keeps their current
@@ -730,7 +731,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   defp grouped_title(%{trips_linked: linked}) do
-    "Grouped #{plural(linked, "trip", "trips")} into patterns"
+    "Grouped #{Wording.count_noun(linked, "trip")} into patterns"
   end
 
   defp grouped_body(%{patterns_created: created, timings_created: timings}) do
@@ -777,10 +778,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       >
         <p class="tabular-nums">
           <strong id="patterns-count" class="font-[650] text-strong">
-            {plural(@pattern_count, "pattern", "patterns")}
+            {Wording.count_noun(@pattern_count, "pattern")}
           </strong>
           <span id="pattern-trip-count" class="ml-1 text-muted">
-            {plural(@route_trip_count, "trip", "trips")} across all service days
+            {Wording.count_noun(@route_trip_count, "trip")} across all service days
           </span>
         </p>
         <button
@@ -981,8 +982,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       <.icon name="hero-map" class="size-5 shrink-0 text-muted" />
       <p class="min-w-0 flex-1 basis-[260px] text-sm text-default">
         <strong class="font-[650] text-strong">
-          {plural(length(@candidates), "pattern has", "patterns have")}
-          {plural(@sections, "section", "sections")} without a path.
+          {Wording.count_noun(length(@candidates), "pattern has", "patterns have")}
+          {Wording.count_noun(@sections, "section")} without a path.
         </strong>
         We can suggest street paths for them. You review each one before it is saved.
       </p>
@@ -1014,7 +1015,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           {RoutePattern.direction_label(@item.direction_id)}
         </span>
         <span class="ml-2 text-[13px] font-normal text-muted">
-          {plural(@item.count, "pattern", "patterns")}
+          {Wording.count_noun(@item.count, "pattern")}
         </span>
       </th>
     </tr>
@@ -1115,7 +1116,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           {@name}
         </button>
         <p class="mt-0.5 text-[13px] text-muted">
-          {service_description(@pattern)} · {plural(@summary.timing_count, "timing", "timings")}
+          {service_description(@pattern)} · {Wording.count_noun(@summary.timing_count, "timing")}
           <%= if @label do %>
             ·
             <span
@@ -1136,7 +1137,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         class="px-4 text-right align-middle tabular-nums max-md:p-0 max-md:text-left max-md:text-[13px] max-md:text-muted"
       >
         <span class="max-md:hidden">{@summary.stop_count}</span>
-        <span class="md:hidden">{plural(@summary.stop_count, "stop", "stops")}</span>
+        <span class="md:hidden">{Wording.count_noun(@summary.stop_count, "stop")}</span>
       </td>
       <td
         data-label="Trips"
@@ -1148,7 +1149,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         </span>
         <span :if={@summary.trip_count > 0}>
           <span class="max-md:hidden">{@summary.trip_count}</span>
-          <span class="md:hidden">· {plural(@summary.trip_count, "trip", "trips")}</span>
+          <span class="md:hidden">· {Wording.count_noun(@summary.trip_count, "trip")}</span>
         </span>
       </td>
       <td
@@ -1203,18 +1204,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       <p :if={@summary.trip_count > 0} class="mt-0.5 text-[13px]">
         <%= cond do %>
           <% @summary.headsign_differ_count == 0 -> %>
-            <span class="text-muted">All {plural(@summary.trip_count, "trip", "trips")}</span>
+            <span class="text-muted">All {Wording.count_noun(@summary.trip_count, "trip")}</span>
           <% @summary.headsign_typo_count > 0 -> %>
             <span class="inline-flex items-center gap-1 text-warning-fg">
-              <.icon name="hero-exclamation-triangle" class="size-3.5" />{plural(
+              <.icon name="hero-exclamation-triangle" class="size-3.5" />{Wording.count_noun(
                 @summary.headsign_differ_count,
                 "trip differs",
                 "trips differ"
-              )} · {plural(@summary.headsign_typo_count, "likely typo", "likely typos")}
+              )} · {Wording.count_noun(@summary.headsign_typo_count, "likely typo")}
             </span>
           <% true -> %>
             <span class="text-muted">
-              {plural(@summary.headsign_differ_count, "trip differs", "trips differ")}
+              {Wording.count_noun(@summary.headsign_differ_count, "trip differs", "trips differ")}
             </span>
         <% end %>
       </p>
@@ -1294,10 +1295,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           id={"pattern-bulk-failed-#{@natural_id}"}
           class={[chip_class(:error), "group-hover:ring-1 group-hover:ring-current"]}
         >
-          <.icon name="hero-exclamation-triangle" class="size-3.5" />Draw {plural(
+          <.icon name="hero-exclamation-triangle" class="size-3.5" />Draw {Wording.count_noun(
             @failed,
-            "section",
-            "sections"
+            "section"
           )}
         </span>
       </button>
@@ -1327,7 +1327,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     <.message
       id="patterns-bulk-notice"
       kind={if(@generated == @total, do: "success", else: "warning")}
-      title={"Suggested paths for #{@generated} of #{plural(@total, "section", "sections")}"}
+      title={"Suggested paths for #{@generated} of #{Wording.count_noun(@total, "section")}"}
     >
       <%= cond do %>
         <% @generated == @total -> %>
@@ -1395,7 +1395,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
                   {candidate.name}
                 </span>
                 <span class="shrink-0 text-[13px] tabular-nums text-muted">
-                  {plural(candidate.missing, "section", "sections")}
+                  {Wording.count_noun(candidate.missing, "section")}
                 </span>
               </label>
             </li>
@@ -1417,16 +1417,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
               <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
               <span>
                 <strong class="font-[650]">Choose fewer patterns.</strong>
-                These cover {plural(@dialog.total, "section", "sections")}, and one run covers at most {RoutePatternAlignmentEvents.bulk_section_limit()}.
+                These cover {Wording.count_noun(@dialog.total, "section")}, and one run covers at most {RoutePatternAlignmentEvents.bulk_section_limit()}.
               </span>
             <% @dialog.total == 0 -> %>
               <span class="text-muted">Choose at least one pattern.</span>
             <% true -> %>
               <span>
                 <strong class="font-[650] tabular-nums">
-                  {plural(@dialog.total, "section", "sections")}
+                  {Wording.count_noun(@dialog.total, "section")}
                 </strong>
-                in {plural(@dialog.pattern_count, "pattern", "patterns")} will get a suggested path.
+                in {Wording.count_noun(@dialog.pattern_count, "pattern")} will get a suggested path.
               </span>
           <% end %>
         </p>
@@ -1521,7 +1521,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       <:lede>Route pattern from the imported feed</:lede>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
         <p id="label-drawer-summary" class="text-sm text-default">
-          Exported as one route pattern for {plural(@label.count, "stop order", "stop orders")}.
+          Exported as one route pattern for {Wording.count_noun(@label.count, "stop order")}.
           Riders don’t see it; realtime feeds and trip-planning tools may match trips by its ID, so the
           ID stays as imported.
         </p>
@@ -1530,7 +1530,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           <h3 id="label-carrier" class="text-sm font-bold text-strong">Carried by</h3>
           <p id="label-owner-name" class="mt-1 text-sm font-[650] text-strong">{@owner_name}</p>
           <p class="text-[13px] text-muted">
-            {plural(@owner.stop_count, "stop", "stops")} · {plural(@owner.trip_count, "trip", "trips")} ·
+            {Wording.count_noun(@owner.stop_count, "stop")} · {Wording.count_noun(
+              @owner.trip_count,
+              "trip"
+            )} ·
             apps take the route pattern’s stops and map line from this pattern
           </p>
           <dl id="label-owner-details" class="mt-3 rounded-card border border-subtle px-4">
@@ -1569,12 +1572,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           >
             <p class="text-sm font-[650] leading-snug text-strong">{pattern_name(child.pattern)}</p>
             <p class="text-[13px] text-muted">
-              {plural(child.stop_count, "stop", "stops")} · {plural(child.trip_count, "trip", "trips")} ·
+              {Wording.count_noun(child.stop_count, "stop")} · {Wording.count_noun(
+                child.trip_count,
+                "trip"
+              )} ·
               its own name isn’t exported
             </p>
             <p class="mt-2 text-[13px] text-default">
               Removing the label makes it export as its own route pattern with a new ID. Anything
-              matching these {plural(child.trip_count, "trip", "trips")} by {@label.id} stops finding
+              matching these {Wording.count_noun(child.trip_count, "trip")} by {@label.id} stops finding
               them.
             </p>
             <.button
@@ -1627,7 +1633,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       <div :if={@remove}>
         <p>
           {@remove.name} will export as its own route pattern with a new ID, and anything matching
-          its {plural(@remove.trip_count, "trip", "trips")} by {@remove.label_id} will stop finding
+          its {Wording.count_noun(@remove.trip_count, "trip")} by {@remove.label_id} will stop finding
           them.
         </p>
         <p class="mt-3">
@@ -1643,8 +1649,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   defp remove_title(nil), do: "Remove label"
 
   # --- wording ----------------------------------------------------------------
-  defp plural(1, one, _many), do: "1 #{one}"
-  defp plural(count, _one, many), do: "#{count} #{many}"
 
   @doc "The name a pattern goes by in lists: its name, or its ID when it has none."
   def pattern_name(pattern) do
@@ -1668,27 +1672,27 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     do: "Under #{id}; its own name isn’t exported"
 
   defp build_failed_body(pending) when pending > 0 do
-    "#{plural(pending, "trip is", "trips are")} still not in a pattern. Their times are unchanged. " <>
+    "#{Wording.count_noun(pending, "trip is", "trips are")} still not in a pattern. Their times are unchanged. " <>
       "Try again, or create a pattern by hand."
   end
 
   defp build_failed_body(_pending), do: "Try again, or create a pattern by hand."
 
   defp build_summary_title(%{created: created}) when created > 0,
-    do: "Built #{plural(created, "pattern", "patterns")} from your trips"
+    do: "Built #{Wording.count_noun(created, "pattern")} from your trips"
 
   defp build_summary_title(%{linked: linked}),
-    do: "Added #{plural(linked, "trip", "trips")} to your patterns"
+    do: "Added #{Wording.count_noun(linked, "trip")} to your patterns"
 
   defp build_summary_body(%{created: created, linked: linked, custom: custom})
        when created > 0 do
     kept =
       if custom > 0,
         do:
-          ", and #{plural(custom, "trip keeps", "trips keep")} the stop times it was imported with",
+          ", and #{Wording.count_noun(custom, "trip keeps", "trips keep")} the stop times it was imported with",
         else: ""
 
-    "#{plural(linked, "trip is", "trips are")} now in a pattern#{kept}. " <>
+    "#{Wording.count_noun(linked, "trip is", "trips are")} now in a pattern#{kept}. " <>
       "Open each pattern to check its stops and how it is used."
   end
 
@@ -1712,7 +1716,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   defp map_status(nil), do: {:neutral, "hero-minus-circle", "Not saved yet"}
 
   defp map_status(%{missing: missing}) when missing > 0,
-    do: {:error, "hero-exclamation-triangle", "#{plural(missing, "section", "sections")} missing"}
+    do: {:error, "hero-exclamation-triangle", "#{Wording.count_noun(missing, "section")} missing"}
 
   defp map_status(%{blocked: blocked}) when blocked > 0,
     do: {:error, "hero-x-circle", "Blocked"}

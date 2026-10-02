@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -1579,7 +1580,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               </dd>
             </dl>
             <p id="plan-summary-relief-note" class="mt-2 text-[13px] text-muted">
-              Limit {duration(@max_piece_minutes)} · {count_label(@relief_stop_count, "stop", "stops")} marked.{too_long_note(
+              Limit {duration(@max_piece_minutes)} · {Wording.count_noun(@relief_stop_count, "stop")} marked.{too_long_note(
                 @longest_stretch,
                 @max_piece_minutes
               )}
@@ -2791,7 +2792,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="grid gap-4 text-default"
     >
       <p class="text-sm text-muted">
-        {count_label(@trip_count, "trip", "trips")} · applies on {@total_dates} days
+        {Wording.count_noun(@trip_count, "trip")} · applies on {@total_dates} days
       </p>
 
       <.input
@@ -3962,7 +3963,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
       <.drawer_scroll>
         <p id="block-day-summary" class="text-sm text-muted">
-          {count_label(@summary.trip_count, "trip", "trips")} · {time_out(
+          {Wording.count_noun(@summary.trip_count, "trip")} · {time_out(
             @summary.start_secs,
             @summary.end_secs
           )} · {hours(@summary.hours)} h out of the garage · {km(@movements.service_km)} km with
@@ -4199,7 +4200,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               label="Merge into another block"
               placeholder="Search block ID"
               autocomplete="off"
-              help={"All #{count_label(@summary.trip_count, "trip", "trips")} join the block you choose. A merge never creates an ID."}
+              help={"All #{Wording.count_noun(@summary.trip_count, "trip")} join the block you choose. A merge never creates an ID."}
             />
 
             <fieldset>
@@ -4258,7 +4259,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               Remove all trips
             </.button>
             <p class="mt-2 text-[13px] text-muted">
-              Puts {count_label(@summary.trip_count, "trip", "trips")} back in Unassigned trips.
+              Puts {Wording.count_noun(@summary.trip_count, "trip")} back in Unassigned trips.
               You'll review the effect first.
             </p>
             <p
@@ -5695,10 +5696,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               icon="hero-truck"
               title="No blocks on this service day yet"
             >
-              A block is the trips one vehicle works in order. This day has {count_label(
+              A block is the trips one vehicle works in order. This day has {Wording.count_noun(
                 @counts.unassigned,
-                "trip",
-                "trips"
+                "trip"
               )} with no vehicle. Select trips and place them on a new block.
               <:action>
                 <.button
@@ -5995,8 +5995,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp connections_summary(nil), do: ""
 
   defp connections_summary(connections) do
-    "#{connections.count} of #{count_label(connections.total, "connection", "connections")} " <>
-      "at #{count_label(length(connections.places), "place", "places")}"
+    "#{connections.count} of #{Wording.count_noun(connections.total, "connection")} " <>
+      "at #{Wording.count_noun(length(connections.places), "place")}"
   end
 
   # The page's groups as one section per place, in the order R12 already sorted
@@ -6317,7 +6317,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 {section.name}
               </h2>
               <span class="text-[13px] tabular-nums text-muted">
-                {count_label(section.count, "connection", "connections")}
+                {Wording.count_noun(section.count, "connection")}
               </span>
             </div>
 
@@ -6400,7 +6400,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           title={"#{place.name} isn't on the map."}
           class="shadow-card"
         >
-          Its stop has no coordinates; its {count_label(place.count, "connection", "connections")} are
+          Its stop has no coordinates; its {Wording.count_noun(place.count, "connection")} are
           still in the list.
         </.message>
       </div>
@@ -6656,7 +6656,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         id="connections-group-count"
         class="mt-5 text-sm font-semibold text-strong"
       >
-        {count_label(length(@group.connections), "connection", "connections")}
+        {Wording.count_noun(length(@group.connections), "connection")}
       </h3>
 
       <div class="mt-2 max-w-full overflow-x-auto">
@@ -6756,7 +6756,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-disabled-with="Reviewing…"
           disabled={is_nil(@bulk_choice)}
         >
-          Review {count_label(length(@group.connections), "connection", "connections")}
+          Review {Wording.count_noun(length(@group.connections), "connection")}
         </.button>
         <p
           :if={is_nil(@bulk_choice)}
@@ -6891,7 +6891,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         :save_label,
         if(assigns.pending,
           do: "Saving…",
-          else: "Save #{count_label(included, "connection", "connections")}"
+          else: "Save #{Wording.count_noun(included, "connection")}"
         )
       )
 
@@ -6910,7 +6910,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <.route_badge_for route_id={@group.from_route_id} routes={@routes} />
         <.icon name={connection_join_icon(@group)} class="size-4 shrink-0 text-muted" />
         <.route_badge_for route_id={@group.to_route_id} routes={@routes} />
-        at {@group.place.name} · {count_label(length(@review.rows), "connection", "connections")} ·
+        at {@group.place.name} · {Wording.count_noun(length(@review.rows), "connection")} ·
         Preview, not saved
       </:lede>
 
@@ -7158,7 +7158,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         data-role="bulk-result-unrestorable"
         class="mt-1 text-[13px]"
       >
-        {count_label(@unrestorable, "replaced record", "replaced records")} can’t be restored
+        {Wording.count_noun(@unrestorable, "replaced record")} can’t be restored
         because {if @unrestorable == 1, do: "it", else: "they"} didn’t match the block.
       </p>
 
@@ -7170,7 +7170,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-click="undo_bulk"
           class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-semibold underline underline-offset-4 hover:bg-canvas"
         >
-          Undo {count_label(@restorable, "change", "changes")}
+          Undo {Wording.count_noun(@restorable, "change")}
         </button>
         <button
           id="bulk-dismiss"
@@ -7201,9 +7201,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp bulk_result_title(result) do
     title =
       if Map.has_key?(result, :restored) do
-        "Restored #{count_label(result.restored, "connection", "connections")}."
+        "Restored #{Wording.count_noun(result.restored, "connection")}."
       else
-        "Saved #{count_label(length(result.saved), "connection", "connections")}: " <>
+        "Saved #{Wording.count_noun(length(result.saved), "connection")}: " <>
           "#{bulk_setting_label(result.setting)}."
       end
 
@@ -7296,7 +7296,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           phx-click="open_assign"
           phx-value-scope="selection"
         >
-          Assign {count_label(@count, "trip", "trips")}
+          Assign {Wording.count_noun(@count, "trip")}
         </.button>
       </div>
     </div>
@@ -7326,7 +7326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-card border border-action/30 bg-selection px-4 py-2"
     >
       <strong id="block-selection-count" class="text-sm text-strong">
-        {count_label(@count, "block selected", "blocks selected")}
+        {Wording.count_noun(@count, "block selected", "blocks selected")}
       </strong>
 
       <div class="flex flex-wrap items-center gap-2">
@@ -7451,7 +7451,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </button>
         </h3>
         <span class="text-[13px] text-muted">
-          {count_label(@summary.trip_count, "trip", "trips")}{block_span(@summary)}
+          {Wording.count_noun(@summary.trip_count, "trip")}{block_span(@summary)}
         </span>
         <span class="text-[13px] text-muted">
           <span data-role="list-km-riders" data-km={@movements.service_km}>
@@ -8758,9 +8758,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp peak_note(peak) do
     "Peak out is the most blocks in progress at once: #{peak.count} at #{GtfsTime.display(peak.at_secs)}. " <>
       "It leaves out " <>
-      count_label(peak.excluded_unassigned, "unassigned trip", "unassigned trips") <>
+      Wording.count_noun(peak.excluded_unassigned, "unassigned trip") <>
       " and " <>
-      count_label(peak.excluded_frequency, "repeating trip", "repeating trips") <> "."
+      Wording.count_noun(peak.excluded_frequency, "repeating trip") <> "."
   end
 
   # One sentence per short fleet row, in the day's own row order: the typed row
@@ -8772,9 +8772,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         "#{row.listed} listed."
     end)
   end
-
-  defp count_label(1, singular, _plural), do: "1 #{singular}"
-  defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
   # The chart's text equivalent and its caption. The bars are one garage · type's
   # vehicles out per 15-minute bin, so the label names that row and its listing
@@ -9174,7 +9171,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp track_style(axis) do
     {_start, span} = axis_geometry(axis)
-    "--blocks-grid: #{percent(@tick_secs, span)}%"
+    "--blocks-grid: #{css_percent(@tick_secs, span)}%"
   end
 
   defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
@@ -9195,7 +9192,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     wait_start = previous.last_arrival + (drive_secs || 0)
     center = wait_start - start + div(previous.last_arrival + gap.gap_secs - wait_start, 2)
 
-    "left: #{percent(center, span)}%; width: 18px; transform: translateX(-50%)"
+    "left: #{css_percent(center, span)}%; width: 18px; transform: translateX(-50%)"
   end
 
   defp gap_geometry(gap, previous, axis, drive_secs, false) do
@@ -9226,13 +9223,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp span_geometry(%{start_secs: start_secs, end_secs: end_secs}, axis) do
     {start, span} = axis_geometry(axis)
 
-    "left: #{percent(start_secs - start, span)}%; " <>
-      "width: #{percent(end_secs - start_secs, span)}%"
+    "left: #{css_percent(start_secs - start, span)}%; " <>
+      "width: #{css_percent(end_secs - start_secs, span)}%"
   end
 
+  # CSS geometry keeps its own name: it returns a two-decimal percentage string,
+  # not the whole-number percent the canonical helper returns.
   # Two decimals, so a test can read the geometry straight out of the style and
   # the bars line up with the axis ticks to the hundredth of a percent.
-  defp percent(value, span), do: percent_value(value * 100 / span)
+  defp css_percent(value, span), do: percent_value(value * 100 / span)
 
   defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
 
@@ -9467,7 +9466,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp ineligible_callout_id(_assign), do: "assign-ineligible"
 
   defp ineligible_title(%{scope: :selection}, ineligible),
-    do: "#{count_label(length(ineligible), "selected trip", "selected trips")} can't be assigned."
+    do: "#{Wording.count_noun(length(ineligible), "selected trip")} can't be assigned."
 
   defp ineligible_title(_assign, ineligible) do
     case ineligible |> Enum.map(&eligibility_text/1) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
@@ -9492,10 +9491,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp confirm_label(%{command: {:merge, _source, _target}}), do: "Merge blocks"
 
   defp confirm_label(%{command: {:unassign, _ids}, changes: changes}),
-    do: "Remove " <> count_label(length(changes), "trip", "trips")
+    do: "Remove " <> Wording.count_noun(length(changes), "trip")
 
   defp confirm_label(%{changes: changes}),
-    do: "Assign " <> count_label(length(changes), "trip", "trips")
+    do: "Assign " <> Wording.count_noun(length(changes), "trip")
 
   defp confirm_label(_review), do: "Save changes"
 

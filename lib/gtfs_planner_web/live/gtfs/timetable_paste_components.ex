@@ -39,6 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
   # Small decision buttons follow the prototype's secondary small button:
@@ -967,7 +968,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
             <.status_badge status="warning" label="Not applied" />
           </div>
           <p class="text-[13px] text-muted">
-            {@calendar_name} · {@direction_name} · {plural(@pasted_rows, "pasted row")}
+            {@calendar_name} · {@direction_name} · {Wording.count_noun(@pasted_rows, "pasted row")}
           </p>
         </div>
       </div>
@@ -1147,7 +1148,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         title="Replace needs at least one pasted trip."
         class="mx-5 mt-4"
       >
-        Every row is skipped, so applying would remove all {plural(@trips_before, "trip")} and
+        Every row is skipped, so applying would remove all {Wording.count_noun(@trips_before, "trip")} and
         add none. Restore a row, or use Add trips.
         <:action>
           <button
@@ -2133,16 +2134,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     trips = if header_checked?(form), do: max(rows - 1, 0), else: rows
 
     summary =
-      "#{plural(trips, "trip row")} · #{plural(columns, "column")} · #{orientation_label(Map.get(review, :orientation))}"
+      "#{Wording.count_noun(trips, "trip row")} · #{Wording.count_noun(columns, "column")} · #{orientation_label(Map.get(review, :orientation))}"
 
     if header_checked?(form), do: summary, else: "#{summary} · no header row"
   end
 
   defp orientation_label(:stops_in_rows), do: "stops down the side"
   defp orientation_label(_orientation), do: "trips in rows"
-
-  defp plural(1, one), do: "1 #{one}"
-  defp plural(count, one), do: "#{count} #{one}s"
 
   # --- Columns step badges, reasons, strip and error summary ---
 
@@ -2406,7 +2404,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         "Every time in these rows, including the filled-in ones, matches it, so it’s reused."
 
     if note.users > 0 do
-      base <> " Used by #{plural(note.users, "row")} here."
+      base <> " Used by #{Wording.count_noun(note.users, "row")} here."
     else
       base
     end
@@ -2429,7 +2427,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
             "They are stored to the second, marked as estimates (timepoint 0), and shown here to the minute."
       end
 
-    base <> estimated <> " Applying creates it for #{plural(note.users, "trip")}."
+    base <> estimated <> " Applying creates it for #{Wording.count_noun(note.users, "trip")}."
   end
 
   @doc """
@@ -2460,7 +2458,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       |> assign(:refusal, refusal)
       |> assign(:needs_decision, counts.needs_decision)
       |> assign(:label, apply_label(mode, applied))
-      |> assign(:disable_with, "Applying #{plural(applied, "change")}…")
+      |> assign(:disable_with, "Applying #{Wording.count_noun(applied, "change")}…")
       |> assign(:status, apply_status(mode, assigns.review, assigns.notice))
       |> assign(
         :disabled?,
@@ -2629,7 +2627,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         title="The connection dropped while applying. It isn’t known whether the changes were saved."
         class="outline-none"
       >
-        Check Schedules before applying again. If the {plural(@unknown_count, "change")} {unknown_verb(
+        Check Schedules before applying again. If the {Wording.count_noun(@unknown_count, "change")} {unknown_verb(
           @unknown_count
         )} saved, reviewing again shows {unknown_them(@unknown_count)} as trips that already exist.
         <:action>
@@ -2745,11 +2743,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     >
       <div>
         <p>
-          This removes {plural(@counts.remove, "trip")} ({replace_removal_list(@removals)}),
+          This removes {Wording.count_noun(@counts.remove, "trip")} ({replace_removal_list(@removals)}),
           changes {@counts.change} and adds {@counts.add} on {@patterns}.
         </p>
         <p :if={@transfers > 0} class="mt-2">
-          <strong class="text-strong">{plural(@transfers, "transfer")}</strong>
+          <strong class="text-strong">{Wording.count_noun(@transfers, "transfer")}</strong>
           that {transfer_verb(@transfers)} the removed {plural_noun(@counts.remove, "trip")} {transfer_are(
             @transfers
           )} removed too.
@@ -2925,8 +2923,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   # --- Apply bar, notices and confirmations (step 28) ---
 
-  defp apply_label(:replace, applied), do: "Replace trips · #{plural(applied, "change")}"
-  defp apply_label(_mode, applied), do: "Apply #{plural(applied, "change")}"
+  defp apply_label(:replace, applied),
+    do: "Replace trips · #{Wording.count_noun(applied, "change")}"
+
+  defp apply_label(_mode, applied), do: "Apply #{Wording.count_noun(applied, "change")}"
 
   defp apply_status(_mode, _review, :permission),
     do: "Editing isn’t available with your current role."
@@ -2946,7 +2946,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         "Nothing to apply."
 
       counts.needs_decision > 0 ->
-        "#{plural(counts.needs_decision, "row")} need a decision before applying."
+        "#{Wording.count_noun(counts.needs_decision, "row")} need a decision before applying."
 
       true ->
         "Ready. Nothing has been saved yet."

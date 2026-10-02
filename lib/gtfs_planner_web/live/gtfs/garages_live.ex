@@ -56,6 +56,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias LiveSelect.Component, as: LiveSelectComponent
 
   @garage_id_field "garage_id"
@@ -633,7 +634,10 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     >
       <div class="flex min-h-[52px] items-center border-b border-subtle px-4 py-1 md:px-5">
         <p id="garages-status" class="text-[13px] font-[650] tabular-nums text-strong">
-          {count_label(@garage_count, "garage")} · {count_label(@vehicle_count, "vehicle")} assigned
+          {Wording.count_noun(@garage_count, "garage")} · {Wording.count_noun(
+            @vehicle_count,
+            "vehicle"
+          )} assigned
         </p>
       </div>
 
@@ -688,7 +692,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
                 navigate={~p"/gtfs/#{@version.id}/settings/fleet?garage=#{garage.id}"}
                 class="inline-flex min-h-11 items-center text-sm font-[650] tabular-nums text-action underline-offset-4 hover:text-action-hover hover:underline"
               >
-                {count_label(garage.vehicle_count, "vehicle")}
+                {Wording.count_noun(garage.vehicle_count, "vehicle")}
               </.link>
               <p :if={garage.vehicle_count == 0} class="py-3 text-muted">None yet</p>
             </td>
@@ -1211,9 +1215,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
-  defp count_label(1, noun), do: "1 #{noun}"
-  defp count_label(count, noun), do: "#{count} #{noun}s"
 
   defp conflict_title(1), do: "Operations export is blocked: 1 garage ID matches a stop"
   defp conflict_title(count), do: "Operations export is blocked: #{count} garage IDs match stops"

@@ -40,6 +40,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Wording
 
   # The two words a range period's lost line is built from. Both are the
   # vocabulary the moment preview's table already uses.
@@ -1212,8 +1213,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp no_active_dates_line(_option), do: nil
 
   defp usage_clause(%{trip_count: trips, closure_count: closures}) do
-    "used by #{count_label(trips, "trip", "trips")} and " <>
-      count_label(closures, "closure", "closures")
+    "used by #{Wording.count_noun(trips, "trip")} and " <>
+      Wording.count_noun(closures, "closure")
   end
 
   defp usage_clause(_option), do: nil
@@ -1335,9 +1336,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           "does not apply until the calendar has dates."
     }
   end
-
-  defp count_label(1, singular, _plural), do: "1 #{singular}"
-  defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
   # -- access preview --------------------------------------------------------
 

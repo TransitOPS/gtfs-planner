@@ -38,6 +38,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlannerWeb.Home.ChangeLinks
 
@@ -1042,11 +1043,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
       seconds < 3600 ->
         minutes = div(seconds, 60)
-        "#{minutes} #{pluralize(minutes, "minute")} ago"
+        "#{minutes} #{Wording.noun(minutes, "minute")} ago"
 
       NaiveDateTime.to_date(local) == NaiveDateTime.to_date(now) ->
         hours = div(seconds, 3600)
-        "#{hours} #{pluralize(hours, "hour")} ago"
+        "#{hours} #{Wording.noun(hours, "hour")} ago"
 
       true ->
         days = Date.diff(NaiveDateTime.to_date(now), NaiveDateTime.to_date(local))
@@ -1058,9 +1059,6 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         end
     end
   end
-
-  defp pluralize(1, word), do: word
-  defp pluralize(_n, word), do: word <> "s"
 
   defp apply_field_filter(diff_rows, _entity_type, "all"), do: diff_rows
 

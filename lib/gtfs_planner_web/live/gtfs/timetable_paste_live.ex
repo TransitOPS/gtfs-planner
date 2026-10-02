@@ -108,6 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
@@ -1724,7 +1725,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         {"removed", summary.removed, "trip"}
       ]
       |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
-      |> Enum.map(fn {label, count, one} -> "#{label} #{count} #{pluralize(count, one)}" end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{count} #{Wording.noun(count, one)}" end)
 
     headline =
       case counts do
@@ -1755,9 +1756,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp vehicle_flash(%{vehicles_before: count_before, vehicles_after: count_after}) do
     "Vehicles needed: #{count_before} → #{count_after}."
   end
-
-  defp pluralize(1, one), do: one
-  defp pluralize(_count, one), do: "#{one}s"
 
   defp capitalize_first(""), do: ""
   defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest

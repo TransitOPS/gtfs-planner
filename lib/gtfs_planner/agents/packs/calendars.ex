@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.ServiceQueries
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @list_limit 50
   @range_limit_days 62
@@ -760,12 +761,12 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
             " → " <> end_label(extension.requested_end_date),
         lines: [
           "Approved by the editor · #{approval_label(approved.approval_text)}",
-          "Newly active dates · #{count_label(extension.newly_active_date_count, "date", "dates")}",
-          "Routes affected · #{count_label(length(extension.routes), "route", "routes")}",
-          "Trips affected · #{count_label(length(extension.trip_identities), "trip", "trips")}",
-          "Closures affected · #{count_label(length(extension.closure_consequences), "closure", "closures")}",
-          "Retained exceptions · #{count_label(length(extension.retained_exceptions), "exception", "exceptions")}",
-          "Unresolved dates · #{count_label(length(extension.unresolved_dates), "date", "dates")}"
+          "Newly active dates · #{Wording.count_noun(extension.newly_active_date_count, "date")}",
+          "Routes affected · #{Wording.count_noun(length(extension.routes), "route")}",
+          "Trips affected · #{Wording.count_noun(length(extension.trip_identities), "trip")}",
+          "Closures affected · #{Wording.count_noun(length(extension.closure_consequences), "closure")}",
+          "Retained exceptions · #{Wording.count_noun(length(extension.retained_exceptions), "exception")}",
+          "Unresolved dates · #{Wording.count_noun(length(extension.unresolved_dates), "date")}"
         ]
       },
       command: command
@@ -855,9 +856,6 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   defp command_service_id({:save, service_id, _attrs}), do: service_id
 
   defp end_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
-
-  defp count_label(1, one, _many), do: "1 #{one}"
-  defp count_label(count, _one, many), do: "#{count} #{many}"
 
   defp approval_label(text) do
     if String.length(text) > @approval_preview_length do

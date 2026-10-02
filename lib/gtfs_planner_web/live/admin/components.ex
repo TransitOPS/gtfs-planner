@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
 
   alias GtfsPlanner.Accounts.InviteForm
   alias GtfsPlanner.Authorization.Roles
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.CoreComponents
 
   # What each organization role lets a person do, in the words an administrator
@@ -173,7 +174,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
         class="flex min-h-[52px] flex-wrap items-center gap-x-4 gap-y-0.5 border-b border-subtle px-4 py-2 md:px-5"
       >
         <p id={"#{@id}-count"} role="status" class="text-base font-bold tabular-nums text-strong">
-          {count_label(@counts.total, @noun)}
+          {Wording.count_noun(@counts.total, @noun)}
         </p>
         <p
           :if={@counts.active != @counts.total}
@@ -367,23 +368,17 @@ defmodule GtfsPlannerWeb.Admin.Components do
     """
   end
 
-  defp count_label(1, noun), do: "1 #{noun}"
-  defp count_label(count, noun), do: "#{count} #{noun}s"
-
   # "3 active · 2 invitations pending · 1 deactivated", leaving out empty parts.
   defp breakdown(counts) do
     [
       counts.active > 0 && "#{counts.active} active",
       counts.invitation_pending > 0 &&
-        "#{counts.invitation_pending} #{pluralize(counts.invitation_pending, "invitation")} pending",
+        "#{counts.invitation_pending} #{Wording.noun(counts.invitation_pending, "invitation")} pending",
       counts.deactivated > 0 && "#{counts.deactivated} deactivated"
     ]
     |> Enum.filter(& &1)
     |> Enum.join(" · ")
   end
-
-  defp pluralize(1, word), do: word
-  defp pluralize(_count, word), do: word <> "s"
 
   @doc """
   Resolves one membership status with a fixed precedence.

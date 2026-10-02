@@ -54,6 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Wording
 
   @doc """
   Builds the matrix view model for a review, scope and paste input.
@@ -748,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     [note("Not in your paste. Trip ID #{trip_id}.")]
     |> maybe_note(
       transfer_count > 0,
-      "#{plural(transfer_count, "transfer")} that name this trip are removed with it."
+      "#{Wording.count_noun(transfer_count, "transfer")} that name this trip are removed with it."
     )
   end
 
@@ -799,9 +800,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       _shift -> false
     end
   end
-
-  defp plural(1, one), do: "1 #{one}"
-  defp plural(count, one), do: "#{count} #{one}s"
 
   # --- Row decisions (step 27) ---
 

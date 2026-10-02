@@ -66,6 +66,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
@@ -2960,11 +2961,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: "No assignment changed. The trip already has this block."
 
   defp success_message({:assign, _ids, _target}, result) do
-    "Assigned #{count_label(length(result.changed_trip_ids))} to block #{result.block_id}."
+    "Assigned #{Wording.count_noun(length(result.changed_trip_ids), "trip")} to block #{result.block_id}."
   end
 
   defp success_message({:unassign, _ids}, result) do
-    "Removed #{count_label(length(result.changed_trip_ids))} from #{source_label(result.review)}."
+    "Removed #{Wording.count_noun(length(result.changed_trip_ids), "trip")} from #{source_label(result.review)}."
   end
 
   defp success_message(_command, _result), do: "Saved the block change."
@@ -3318,14 +3319,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     %{block_id: block.summary.block_id, detail: destination_detail(block.summary)}
   end
 
-  defp destination_detail(%{trip_count: count, start_secs: nil}), do: count_label(count)
+  defp destination_detail(%{trip_count: count, start_secs: nil}),
+    do: Wording.count_noun(count, "trip")
 
   defp destination_detail(%{trip_count: count, start_secs: start, end_secs: finish}) do
-    "#{count_label(count)} · #{GtfsTime.display(start)}–#{GtfsTime.display(finish)}"
+    "#{Wording.count_noun(count, "trip")} · #{GtfsTime.display(start)}–#{GtfsTime.display(finish)}"
   end
-
-  defp count_label(1), do: "1 trip"
-  defp count_label(count), do: "#{count} trips"
 
   # --- the block drawer's actions ----------------------------------
 
@@ -4099,7 +4098,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:applied, %{
         moves: moves,
         message:
-          "#{moves} #{plural(moves, "trip")} changed block across #{days}. " <>
+          "#{moves} #{Wording.noun(moves, "trip")} changed block across #{days}. " <>
             "Each trip's change history lists its previous block."
       })
       # A successful apply clears the block selection: those blocks were
@@ -4177,7 +4176,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         value: :unassigned_only,
         title: "Unassigned trips only",
         description:
-          "Keep current blocks. Add the #{unassigned} unassigned #{plural(unassigned, "trip")} to existing or new blocks.",
+          "Keep current blocks. Add the #{unassigned} unassigned #{Wording.noun(unassigned, "trip")} to existing or new blocks.",
         disabled?: unassigned == 0
       },
       %{
@@ -4203,9 +4202,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp selected_title([]), do: ""
   defp selected_title(selected), do: " (#{Enum.join(selected, ", ")})"
-
-  defp plural(1, word), do: word
-  defp plural(_count, word), do: word <> "s"
 
   # The rules the suggestion would use, read from the loaded day's own settings
   # and relief marks. They are the same answers the Block rules and Operator
@@ -4604,7 +4600,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          |> resolve_drawers()
          |> load_unmatched_in_seat()
          |> assign_page_rows_if_loaded()
-         |> put_flash(:info, "Removed #{removed} in-seat #{plural(removed, "record")}.")}
+         |> put_flash(:info, "Removed #{removed} in-seat #{Wording.noun(removed, "record")}.")}
 
       {:error, :stale} ->
         {:noreply,

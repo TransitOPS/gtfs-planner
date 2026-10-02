@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
@@ -2686,7 +2687,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          }} ->
           kept_status =
             if kept_count > 0,
-              do: ", #{kept_count} entered #{pluralize(kept_count, "length")} kept",
+              do: ", #{kept_count} entered #{Wording.noun(kept_count, "length")} kept",
               else: ""
 
           {:noreply,
@@ -2697,7 +2698,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> reset_ruler_state()
            |> assign(
              :scale_status,
-             "Scale updated - #{recalculated_count} pathway #{pluralize(recalculated_count, "length")} recalculated" <>
+             "Scale updated - #{recalculated_count} pathway #{Wording.noun(recalculated_count, "length")} recalculated" <>
                kept_status
            )}
 
@@ -7892,7 +7893,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          stop.id,
          origin_id,
          "Remove point from the plan?",
-         "This clears its position and deletes #{count} connected #{pluralize(count, "pathway")}. The point stays in this station.",
+         "This clears its position and deletes #{count} connected #{Wording.noun(count, "pathway")}. The point stays in this station.",
          "Remove from plan"
        )}
     end
@@ -7909,7 +7910,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          stop.id,
          origin_id,
          "Delete point?",
-         "This permanently deletes #{stop.stop_name || stop.stop_id} and #{count} connected #{pluralize(count, "pathway")}.",
+         "This permanently deletes #{stop.stop_name || stop.stop_id} and #{count} connected #{Wording.noun(count, "pathway")}.",
          "Delete point"
        )}
     end
@@ -7939,7 +7940,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          level.id,
          origin_id,
          "Remove level from station?",
-         "This unassigns #{child_stop_count} #{pluralize(child_stop_count, "point")} and removes this level's floorplan. The level record stays available.",
+         "This unassigns #{child_stop_count} #{Wording.noun(child_stop_count, "point")} and removes this level's floorplan. The level record stays available.",
          "Remove level"
        )
        |> Map.put(:lock_version, stop_level.lock_version)}
@@ -8032,9 +8033,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp safe_focus_origin(_origin_id), do: nil
-
-  defp pluralize(1, singular), do: singular
-  defp pluralize(_count, singular), do: "#{singular}s"
 
   defp load_naming_preview(socket, style) do
     case Stations.preview_station_naming(socket.assigns.audit_ctx, style) do

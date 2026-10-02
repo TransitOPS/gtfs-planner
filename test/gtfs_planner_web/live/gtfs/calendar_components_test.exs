@@ -51,4 +51,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponentsTest do
       assert CalendarComponents.runs_line(weekly([])) == "Has no weekly days"
     end
   end
+
+  describe "coverage_caption/1" do
+    test "omits a zero days-off part" do
+      row = %{
+        kind: :weekly,
+        first_active_date: ~D[2026-09-01],
+        last_active_date: ~D[2026-09-30],
+        periods: %{breaks: [%{}], holidays: [], extra_days: []}
+      }
+
+      caption = CalendarComponents.coverage_caption(row)
+
+      assert caption == "Sep 1, 2026 – Sep 30, 2026 · 1 break"
+      refute caption =~ "days off"
+    end
+  end
 end

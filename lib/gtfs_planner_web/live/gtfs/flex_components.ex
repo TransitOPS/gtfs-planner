@@ -56,6 +56,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   # The two kinds a first-time editor chooses between (AC-4). Wording is the
   # prototype's. Both the first-use question and the create drawer render them,
@@ -149,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
             role="status"
             class="text-[13px] font-[650] tabular-nums text-strong"
           >
-            {count_label(@count)}
+            {Wording.count_noun(@count, "flex service")}
           </p>
         </div>
 
@@ -868,14 +869,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     </svg>
     """
   end
-
-  @doc """
-  The version's service count as riders read it, shared by the table's caption
-  and the copy action's confirmation.
-  """
-  @spec count_label(non_neg_integer()) :: String.t()
-  def count_label(1), do: "1 flex service"
-  def count_label(count), do: "#{count} flex services"
 
   # The sentence a full export writes for these services (R15, AC-24).
   defp export_sentence(false) do
