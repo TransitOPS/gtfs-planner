@@ -515,6 +515,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :notice, :string, default: nil
   attr :helper_refusal, :string, default: nil
 
+  attr :can_analyze?, :boolean,
+    default: false,
+    doc: "true once an accepted source exists, which is what the server plan reads"
+
+  attr :analyzing?, :boolean, default: false
+
   def dated_change_form(assigns) do
     ~H"""
     <section
@@ -630,7 +636,17 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           <.button id="dated-change-accept" type="submit" class="min-h-11">
             Review inputs
           </.button>
-          <p class="text-[13px] text-muted">
+          <.button
+            id="dated-change-analyze"
+            type="button"
+            phx-click="dated_change_analyze"
+            disabled={!@can_analyze? or @analyzing?}
+            aria-describedby="dated-change-analyze-hint"
+            class="min-h-11"
+          >
+            {if @analyzing?, do: "Analyzing…", else: "Analyze the plan"}
+          </.button>
+          <p id="dated-change-analyze-hint" class="text-[13px] text-muted">
             Records what you confirmed for the helper. It saves no service and changes no trip.
           </p>
         </div>
@@ -655,6 +671,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   # Field errors render in the order the form lists its fields, with the
   # selection and any base refusal last, so the summary reads in the same order
   # the editor filled the form in.
+
   @dated_change_error_order [
     :first_date,
     :last_date,
@@ -672,6 +689,330 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     end)
     |> Enum.map(fn {field, messages} -> {field, List.wrap(messages)} end)
   end
+
+  @doc """
+  Renders the host's own helper switch, `schedule-helper-mode`.
+
+  Which helpers this page offers is host configuration named once at mount, so
+  the options are the ids the host declared rather than whatever the application
+  happens to ship, and a forged id can only name a helper the panel already
+  holds. Switching detaches this panel's conversation and nothing else: the
+  timetable, its selection, the dated draft and any running native work stay
+  exactly as they were (INV-3).
+  """
+  attr :options, :list, required: true, doc: "`{label, id}` tuples in host order"
+  attr :selected, :string, required: true
+
+  def helper_mode(assigns) do
+    ~H"""
+    <.segmented_control
+      id="schedule-helper-mode"
+      name="pack"
+      legend="Helper"
+      legend_class="text-[13px] font-[650] text-default"
+      options={@options}
+      value={@selected}
+      event="helper_pack"
+      appearance={:joined}
+      emphasis={:selection}
+      size={:sm}
+    />
+    """
+  end
+
+  @doc """
+  Renders the dated change plan: its state, its exact totals and its dates.
+
+  `state` is the host's own lifecycle — `:empty`, `:analyzing`, `:complete`,
+  `:incomplete`, `:stale` or `:failed` — and it is announced from one polite
+  live region so a screen reader hears a refusal or a finished analysis without
+  hunting for it. The region is always rendered, so an empty or loading plan is
+  a state rather than a missing element.
+
+  `verified?` is the honest freshness claim. A retained plan that has just been
+  compared against a full dependency read says so; one that has not been
+  compared since it was prepared says that instead, because an unobserved edit
+  anywhere in the version is undetectable from here (AC-15).
+
+  The plan is a report, not a command: it carries no apply control, no token and
+  no prepared operation, and the stage list says which native foundations are
+  missing rather than offering to run them (AC-10, INV-1).
+  """
+  attr :state, :atom,
+    required: true,
+    values: [:empty, :analyzing, :complete, :incomplete, :stale, :failed]
+
+  attr :message, :string, default: nil
+  attr :plan, :map, default: nil, doc: "the retained report, when one exists"
+  attr :verified?, :boolean, default: false
+  attr :busy, :boolean, default: false
+  attr :can_analyze?, :boolean, default: false
+
+  attr :page_view, :map,
+    default: nil,
+    doc: "the `page/4` result: service, kind, exact total, page, pages and rows"
+
+  attr :dates, :any, required: true, doc: "the `dates` LiveView stream of the current page"
+  attr :services, :list, default: [], doc: "`{service_id, label, total}` per loaded calendar"
+  attr :partition_kind, :atom, default: :temporary, values: [:original, :temporary, :normal]
+
+  def dated_change_plan(assigns) do
+    ~H"""
+    <section
+      id="dated-change-plan"
+      aria-labelledby="dated-change-plan-title"
+      class="mt-4 rounded-control border border-subtle bg-canvas p-4 sm:p-5"
+    >
+      <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 id="dated-change-plan-title" class="text-sm font-bold text-strong">Plan</h3>
+        <p id="dated-change-plan-scope" class="text-[13px] text-muted">
+          Planning only — no changes saved. This page cannot apply what it reports.
+        </p>
+      </div>
+
+      <div
+        id="dated-change-state"
+        role="status"
+        aria-live="polite"
+        class={[
+          "mt-3 rounded-control border px-4 py-3 text-sm",
+          state_frame(@state)
+        ]}
+      >
+        <p id="dated-change-state-headline" class="font-bold text-strong">
+          {state_headline(@state)}
+        </p>
+        <p :if={@message} id="dated-change-state-message" class="mt-1 text-default">
+          {@message}
+        </p>
+        <p id="dated-change-state-freshness" class="mt-1 text-[13px] text-muted">
+          {freshness_text(@state, @verified?)}
+        </p>
+      </div>
+
+      <div :if={@can_analyze?} class="mt-3 flex flex-wrap items-center gap-3">
+        <.button
+          id="dated-change-refresh"
+          type="button"
+          phx-click="dated_change_refresh"
+          disabled={@busy}
+          class="min-h-11"
+        >
+          {if @busy, do: "Re-checking…", else: "Re-check this plan"}
+        </.button>
+        <p class="text-[13px] text-muted">
+          Reloads every dependency and compares the full content digest. It writes nothing.
+        </p>
+      </div>
+
+      <div :if={@plan} id="dated-change-report" class="mt-4 grid gap-4">
+        <dl id="dated-change-totals" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <.plan_stat
+            :for={{label, value} <- plan_totals(@plan)}
+            id={"dated-change-total-#{label_id(label)}"}
+            label={label}
+            value={value}
+          />
+        </dl>
+
+        <p
+          :if={@plan.timing != :complete}
+          id="dated-change-timing-warning"
+          class="rounded-control bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
+        >
+          {length(@plan.unresolved)} clock {if length(@plan.unresolved) == 1, do: "", else: "s"} could not be projected, so the
+          timings below are not a complete exact-time plan. The date totals above are unaffected.
+        </p>
+
+        <div id="dated-change-partitions" class="grid gap-3">
+          <.segmented_control
+            :if={length(@services) > 1}
+            id="dated-change-service"
+            name="service_id"
+            legend="Calendar"
+            legend_class="text-[13px] font-[650] text-default"
+            options={Enum.map(@services, &{&1.label, &1.service_id})}
+            value={@page_view && @page_view.service_id}
+            event="dated_change_service"
+            appearance={:joined}
+            emphasis={:selection}
+            size={:sm}
+          />
+
+          <p
+            :if={length(@services) == 1}
+            id="dated-change-service-single"
+            class="text-[13px] font-[650] text-default"
+          >
+            Calendar {hd(@services).label}
+          </p>
+
+          <.segmented_control
+            id="dated-change-kind"
+            name="partition_kind"
+            legend="Dates"
+            legend_class="text-[13px] font-[650] text-default"
+            options={[
+              {"Original", "original"},
+              {"In the window", "temporary"},
+              {"Kept as they are", "normal"}
+            ]}
+            value={Atom.to_string(@partition_kind)}
+            event="dated_change_kind"
+            appearance={:joined}
+            emphasis={:selection}
+            size={:sm}
+          />
+
+          <p :if={@page_view} id="dated-change-page-summary" class="text-[13px] text-muted">
+            Showing {length(@page_view.rows)} of {@page_view.total} dates on page {@page_view.page} of {@page_view.pages}. These are the calendar's own service dates; a removed date is
+            not in any list.
+          </p>
+
+          <div
+            :if={@page_view}
+            id="dated-change-dates"
+            phx-update="stream"
+            class="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-4"
+          >
+            <div
+              :for={{dom_id, date} <- @dates}
+              id={dom_id}
+              class="rounded-control bg-white px-3 py-1.5 text-center text-sm tabular-nums text-default"
+            >
+              {Date.to_iso8601(date)}
+            </div>
+            <div id="dated-change-dates-empty" class="hidden text-[13px] text-muted only:block">
+              No dates in this set. An empty window is a complete no-op analysis.
+            </div>
+          </div>
+
+          <div :if={@page_view && @page_view.pages > 1} class="flex flex-wrap items-center gap-2">
+            <.button
+              id="dated-change-page-previous"
+              type="button"
+              phx-click="dated_change_page"
+              phx-value-page={@page_view.page - 1}
+              disabled={@page_view.page <= 1}
+              variant="quiet"
+              size="sm"
+              class="min-h-11"
+            >
+              Previous dates
+            </.button>
+            <.button
+              id="dated-change-page-next"
+              type="button"
+              phx-click="dated_change_page"
+              phx-value-page={@page_view.page + 1}
+              disabled={@page_view.page >= @page_view.pages}
+              variant="quiet"
+              size="sm"
+              class="min-h-11"
+            >
+              Next dates
+            </.button>
+          </div>
+        </div>
+
+        <div id="dated-change-stages" class="grid gap-2">
+          <p class="text-[13px] font-bold text-strong">
+            What a later execution would still need
+          </p>
+          <p :for={stage <- @plan.execution_stages} class="text-[13px] text-default">
+            <span class="font-semibold text-strong">{stage_label(stage.kind)}</span>
+            — {stage_status_text(stage.status)}
+          </p>
+        </div>
+
+        <p id="dated-change-digest" class="text-[12px] text-muted">
+          Dependencies checked: {String.slice(@plan.dependency_digest || "", 0, 16)}…
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+
+  defp plan_stat(assigns) do
+    ~H"""
+    <div class="rounded-control bg-white px-3 py-2">
+      <dt class="text-[12px] font-semibold text-muted">{@label}</dt>
+      <dd class="text-lg font-bold tabular-nums text-strong">{@value}</dd>
+    </div>
+    """
+  end
+
+  # The exact totals a reader compares against the timetable, each one labelled
+  # so a number is never shown without what it counts.
+  defp plan_totals(plan) do
+    totals = Map.get(plan, :totals, %{})
+
+    [
+      {"Selected trips", Map.get(totals, :selected_trips, 0)},
+      {"Changed trip-dates", Map.get(totals, :affected_trip_dates, 0)},
+      {"Unchanged trip-dates", Map.get(totals, :unchanged_trip_dates, 0)},
+      {"Other trips on these calendars", Map.get(totals, :unaffected_calendar_users, 0)}
+    ]
+  end
+
+  defp label_id(label), do: label |> String.downcase() |> String.replace(" ", "-")
+
+  defp state_frame(:complete), do: "border-success/40 bg-success-bg text-default"
+  defp state_frame(_other), do: "border-subtle bg-white text-default"
+
+  defp state_headline(:empty), do: "No plan yet."
+
+  defp state_headline(:analyzing), do: "Analyzing the accepted window…"
+
+  defp state_headline(:complete), do: "Plan complete."
+
+  defp state_headline(:incomplete),
+    do: "The plan is incomplete, so nothing below is a complete answer."
+
+  defp state_headline(:stale), do: "This plan is no longer current."
+
+  defp state_headline(:failed), do: "The plan could not be prepared."
+
+  # Freshness is stated, never assumed. A plan that has not been compared with a
+  # fresh dependency read is labelled unchecked, because an edit made elsewhere
+  # in the version is invisible until it is read again.
+  defp freshness_text(_state, true),
+    do: "Checked against a full dependency read just now."
+
+  defp freshness_text(:empty, false),
+    do: "Review the inputs above, then analyze. Nothing is read until you do."
+
+  # Nothing was computed, so there is nothing a later read could have found
+  # current: saying the plan "was prepared" here would be a claim about a
+  # report that does not exist.
+  defp freshness_text(state, false) when state in [:incomplete, :failed],
+    do: "Nothing was computed, so there is no plan here to be current or out of date."
+
+  defp freshness_text(_state, false),
+    do: "Not re-checked since this was prepared, so edits made elsewhere are not detected yet."
+
+  defp stage_label(kind) do
+    kind
+    |> to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  # The stage status is a native capability, not a progress report: nothing here
+  # tracks a manual edit as completed work, so every status reads as what would
+  # still have to be built.
+  defp stage_status_text(:analysis_complete),
+    do: "the analysis for this stage is already complete."
+
+  defp stage_status_text(:native_review_needed),
+    do: "a native review is needed before it could be trusted."
+
+  defp stage_status_text(:foundation_missing),
+    do: "no implementation exists today, so this could not be executed."
 
   @doc """
   Renders the block notice a Schedules save can leave behind.
