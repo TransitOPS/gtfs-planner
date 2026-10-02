@@ -12467,6 +12467,7 @@ case Accounts.register_first_admin(%{
         })
 
       run = Keyword.fetch!(opts, :run)
+      source = Keyword.fetch!(opts, :source)
 
       attempt =
         Repo.insert!(%GtfsPlanner.FeedPublishing.Attempt{
@@ -12475,7 +12476,7 @@ case Accounts.register_first_admin(%{
           sequence: 1,
           generation: Ecto.UUID.generate(),
           desired_revision: 1,
-          state: "current",
+          state: Keyword.get(opts, :attempt_state, "current"),
           actor_id: editor.id,
           provenance: "export-run:#{run.id}",
           manifest_body: ~s({"schema":1,"channel":"#{channel}"}),
@@ -12483,14 +12484,7 @@ case Accounts.register_first_admin(%{
           object_receipts: %{
             "zip" => %{"sha256" => run.artifact_sha256, "bytes" => run.artifact_size_bytes}
           },
-          private_snapshot: %{
-            "source" => %{
-              "run_id" => run.id,
-              "slot" => "main",
-              "filename" => run.artifact_filename,
-              "export_type" => Atom.to_string(run.export_type)
-            }
-          }
+          private_snapshot: %{"source" => source}
         })
 
       publication
@@ -12510,11 +12504,38 @@ case Accounts.register_first_admin(%{
       |> Repo.update!()
     end
 
-    pub_channel.(:full, :current, run: pub_full_run)
+    # A frozen receipt names the export the served bytes came from.
+    pub_source = fn run ->
+      %{
+        "run_id" => run.id,
+        "slot" => "main",
+        "filename" => run.artifact_filename,
+        "export_type" => Atom.to_string(run.export_type)
+      }
+    end
 
+    pub_channel.(:full, :current, run: pub_full_run, source: pub_source.(pub_full_run))
+
+    # A channel whose attempt the publisher blocked is settled as far as it is
+    # concerned, so the failure state this journey asserts stays put.
     pub_channel.(:pathways, :failed,
       run: pub_pathways_run,
+      attempt_state: "blocked",
+      source: pub_source.(pub_pathways_run),
       last_error: "the public manifest belongs to another owner"
+    )
+
+    # The realtime channel is settled too: while it has nothing left to
+    # reconcile, the periodic refresh leaves the accepted alert publications -
+    # and the served date the editor reports from one - exactly as seeded.
+    pub_channel.(:alerts, :current,
+      run: pub_full_run,
+      source: %{
+        "run_id" => Ecto.UUID.generate(),
+        "slot" => "main",
+        "filename" => "browser-alerts.pb",
+        "export_type" => "full"
+      }
     )
 
     # The alert editor's publication card, written through the command the editor
