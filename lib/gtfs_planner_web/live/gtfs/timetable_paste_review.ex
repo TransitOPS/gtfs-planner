@@ -52,6 +52,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
           warned?: boolean()
         }
 
+  alias GtfsPlanner.Gtfs.TimetablePaste
+
   @doc """
   Builds the matrix view model for a review, scope and paste input.
 
@@ -694,7 +696,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     )
     |> maybe_note(shifted?(row), "Read as #{format_clock(fetch(row, :start_secs))}.")
     |> maybe_note(
-      truthy?(fetch(row, :rolled?)),
+      TimetablePaste.truthy?(fetch(row, :rolled?)),
       "Runs past midnight; later times count from the same service day."
     )
   end
@@ -1030,7 +1032,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
     if is_map(raw) do
       raw
-      |> Enum.map(fn {row, decision} -> {to_decision_row(row), decision} end)
+      |> Enum.map(fn {row, decision} -> {TimetablePaste.row_number(row), decision} end)
       |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
       |> Map.new()
     else
@@ -1039,17 +1041,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   end
 
   defp input_decisions(_input), do: %{}
-
-  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_decision_row(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _parse -> nil
-    end
-  end
-
-  defp to_decision_row(_row), do: nil
 
   defp decision_text(decision, keys) when is_map(decision) and is_list(keys) do
     Enum.find_value(keys, fn key ->
@@ -1220,7 +1211,4 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     do: Map.get(map, key, default)
 
   defp fetch(_map, _key, default), do: default
-
-  defp truthy?(true), do: true
-  defp truthy?(_value), do: false
 end

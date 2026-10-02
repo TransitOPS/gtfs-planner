@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
   use ExUnit.Case, async: true
 
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.TimetablePaste.Plan
 
   # Literal fixtures. One pattern ("pattern-main", natural id "PAT-1") with
@@ -912,6 +913,30 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
              ]
     end
 
+    test "a forged keep string is not applied and records no discard" do
+      existing = scope([], [rich_trip("trip-7", 7 * 3600)])
+
+      rows = [
+        ready_row(1, 6 * 3600, base_rows()),
+        ready_row(2, 7 * 3600, base_rows())
+      ]
+
+      plan =
+        Plan.build(
+          rows,
+          existing,
+          :add,
+          %{1 => %{keep: "true"}, 2 => %{keep: "true"}},
+          @stamp,
+          []
+        )
+
+      # Row 2 repeats trip-7; the forged string must not promote it, and
+      # row 1's key must not be reported as a discarded keep either.
+      assert Enum.map(plan.changes, & &1.op) == [:add, :duplicate]
+      assert plan.discarded_decisions == []
+    end
+
     test "a pair decision in Add mode is not applicable; neither stays silent" do
       row = ready_row(1, 6 * 3600, base_rows())
 
@@ -1182,6 +1207,18 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
 
       assert first == "Pasted Sep 28 · A"
       assert second == "Pasted Sep 28 · B"
+    end
+  end
+
+  describe "row_number/1" do
+    test "trims numeric string row keys and rejects everything else" do
+      assert TimetablePaste.row_number(" 3") == 3
+      assert TimetablePaste.row_number("3 ") == 3
+      assert TimetablePaste.row_number(3) == 3
+      assert TimetablePaste.row_number("x") == nil
+      assert TimetablePaste.row_number("0") == nil
+      assert TimetablePaste.row_number(0) == nil
+      assert TimetablePaste.row_number(nil) == nil
     end
   end
 end

@@ -1090,7 +1090,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp overlay_pattern_choices(decisions, _submitted), do: decisions
 
   defp overlay_pattern_choice({row, raw}, acc) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil -> acc
       row_num -> put_row_choice(acc, row_num, "pattern_id", raw)
     end
@@ -1113,7 +1113,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp overlay_pair_choices(decisions, _submitted), do: decisions
 
   defp overlay_pair_choice({row, raw}, acc) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil -> acc
       row_num -> put_row_choice(acc, row_num, "pair", raw)
     end
@@ -1132,7 +1132,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp overlay_row_cells(acc, row, cols, review, input) do
-    with row_num when not is_nil(row_num) <- to_decision_row(row),
+    with row_num when not is_nil(row_num) <- TimetablePaste.row_number(row),
          cols when is_map(cols) <- cols do
       Map.update(acc, row_num, overlay_cells(%{}, cols, review, input, row_num), fn current ->
         overlay_cells(current, cols, review, input, row_num)
@@ -1198,7 +1198,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # away so untouched controls compare equal to no decision at all.
   defp canonical_decisions(decisions) when is_map(decisions) do
     decisions
-    |> Enum.map(fn {row, decision} -> {to_decision_row(row), canonical_decision(decision)} end)
+    |> Enum.map(fn {row, decision} ->
+      {TimetablePaste.row_number(row), canonical_decision(decision)}
+    end)
     |> Enum.reject(fn {row, decision} -> is_nil(row) or decision == %{} end)
     |> Map.new()
   end
@@ -1239,17 +1241,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp prune_decisions(_decisions), do: %{}
-
-  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_decision_row(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _parse -> nil
-    end
-  end
-
-  defp to_decision_row(_row), do: nil
 
   defp to_decision_col(col) when is_integer(col) and col >= 0, do: col
 
@@ -1446,7 +1437,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # leave the input alone, and an emptied row drops out of the map so it
   # compares equal to no decision at all.
   defp update_row_decision(socket, row, fun) when is_function(fun, 1) do
-    case to_decision_row(row) do
+    case TimetablePaste.row_number(row) do
       nil ->
         socket
 

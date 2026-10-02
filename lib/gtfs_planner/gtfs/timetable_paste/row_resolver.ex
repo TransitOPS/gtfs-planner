@@ -122,6 +122,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   question, so one row carries exactly one issue.
   """
 
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcher
   alias GtfsPlanner.Gtfs.TimetablePaste.TimeToken
 
@@ -340,33 +341,23 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   @spec normalize_decisions(term()) :: %{pos_integer() => decision()}
   defp normalize_decisions(decisions) when is_map(decisions) do
     decisions
-    |> Enum.map(fn {row, decision} -> {to_row_num(row), normalize_decision(decision)} end)
+    |> Enum.map(fn {row, decision} ->
+      {TimetablePaste.row_number(row), normalize_decision(decision)}
+    end)
     |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
     |> Map.new()
   end
 
   defp normalize_decisions(_decisions), do: %{}
 
-  @spec to_row_num(term()) :: pos_integer() | nil
-  defp to_row_num(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_row_num(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _ -> nil
-    end
-  end
-
-  defp to_row_num(_row), do: nil
-
   @spec normalize_decision(term()) :: map()
   defp normalize_decision(decision) when is_map(decision) do
     %{
-      skip: truthy?(fetch(decision, :skip, "skip", false)),
+      skip: TimetablePaste.truthy?(fetch(decision, :skip, "skip", false)),
       pattern_id: fetch_id(fetch(decision, :pattern_id, "pattern_id", nil)),
       cells: normalize_cells(fetch(decision, :cells, "cells", %{})),
       shift: normalize_shift(fetch(decision, :shift, "shift", 0)),
-      keep_early: truthy?(fetch(decision, :keep_early, "keep_early", false))
+      keep_early: TimetablePaste.truthy?(fetch(decision, :keep_early, "keep_early", false))
     }
   end
 
@@ -384,10 +375,6 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   @spec fetch_id(term()) :: term()
   defp fetch_id(id) when is_binary(id), do: id
   defp fetch_id(_id), do: nil
-
-  @spec truthy?(term()) :: boolean()
-  defp truthy?(value) when value in [false, nil, 0, "", "false", "0"], do: false
-  defp truthy?(_value), do: true
 
   @spec normalize_cells(term()) :: %{non_neg_integer() => String.t()}
   defp normalize_cells(cells) when is_map(cells) do

@@ -136,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Values
 
   @type change_op ::
@@ -455,7 +456,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @spec keep?(map(), term()) :: boolean()
   defp keep?(decisions, row_num) do
     case Map.get(decisions, row_num) do
-      %{keep: keep} -> truthy?(keep)
+      %{keep: keep} -> TimetablePaste.truthy?(keep)
       _decision -> false
     end
   end
@@ -585,7 +586,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   @spec replace_row_key(map(), non_neg_integer()) :: pos_integer() | {:pos, non_neg_integer()}
   defp replace_row_key(row, i) do
-    to_row_num(get(row, :row, "row")) || {:pos, i}
+    TimetablePaste.row_number(get(row, :row, "row")) || {:pos, i}
   end
 
   # Scope pattern ids in scope order (not row order), so the review names
@@ -670,7 +671,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   @spec stops_differ_trip?(term()) :: boolean()
   defp stops_differ_trip?(trip) when is_map(trip) do
-    truthy?(
+    TimetablePaste.truthy?(
       first_present([
         get(trip, :stops_differ?, "stops_differ?"),
         get(trip, :stops_differ, "stops_differ")
@@ -1328,7 +1329,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
         get(trip, :in_seat_transfers, "in_seat_transfers")
       ])
 
-    truthy?(flag) or (is_list(ids) and ids != [])
+    TimetablePaste.truthy?(flag) or (is_list(ids) and ids != [])
   end
 
   defp in_seat_trip?(_trip), do: false
@@ -1537,7 +1538,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     row_by_num =
       rows
       |> Enum.filter(&is_map/1)
-      |> Map.new(fn row -> {to_row_num(get(row, :row, "row")), row} end)
+      |> Map.new(fn row -> {TimetablePaste.row_number(get(row, :row, "row")), row} end)
       |> Map.delete(nil)
 
     {misfit, discards} =
@@ -1644,7 +1645,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp keep_replace_discard(acc, num, decision, known) do
-    if truthy?(Map.get(decision, :keep)) do
+    if TimetablePaste.truthy?(Map.get(decision, :keep)) do
       keep_replace_reason(acc, num, decision, known)
     else
       acc
@@ -1657,7 +1658,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp keep_add_discard(acc, num, decision, known, duplicates) do
-    if truthy?(Map.get(decision, :keep)) do
+    if TimetablePaste.truthy?(Map.get(decision, :keep)) do
       classify_keep_discard(acc, num, decision, known, duplicates)
     else
       acc
@@ -1689,7 +1690,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   defp known_rows(rows) do
     rows
     |> Enum.filter(&is_map/1)
-    |> Enum.map(&to_row_num(get(&1, :row, "row")))
+    |> Enum.map(&TimetablePaste.row_number(get(&1, :row, "row")))
     |> Enum.reject(&is_nil/1)
     |> MapSet.new()
   end
@@ -1723,7 +1724,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     if not is_nil(find_trip(by_pattern, trips, pattern_id, start_secs)) or
          MapSet.member?(accepted, identity) do
-      num = to_row_num(get(row_map, :row, "row"))
+      num = TimetablePaste.row_number(get(row_map, :row, "row"))
       {if(is_nil(num), do: duplicates, else: MapSet.put(duplicates, num)), accepted}
     else
       {duplicates, MapSet.put(accepted, identity)}
@@ -2343,24 +2344,14 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @spec normalize_decisions(term()) :: %{pos_integer() => map()}
   defp normalize_decisions(decisions) when is_map(decisions) do
     decisions
-    |> Enum.map(fn {row, decision} -> {to_row_num(row), normalize_decision(decision)} end)
+    |> Enum.map(fn {row, decision} ->
+      {TimetablePaste.row_number(row), normalize_decision(decision)}
+    end)
     |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
     |> Map.new()
   end
 
   defp normalize_decisions(_decisions), do: %{}
-
-  @spec to_row_num(term()) :: pos_integer() | nil
-  defp to_row_num(row) when is_integer(row) and row >= 1, do: row
-
-  defp to_row_num(row) when is_binary(row) do
-    case Integer.parse(String.trim(row)) do
-      {num, ""} when num >= 1 -> num
-      _ -> nil
-    end
-  end
-
-  defp to_row_num(_row), do: nil
 
   @spec normalize_decision(term()) :: map()
   defp normalize_decision(decision) when is_map(decision) do
@@ -2406,10 +2397,6 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   @spec first_present([term()]) :: term()
   defp first_present(values), do: Enum.find(values, &(not is_nil(&1)))
-
-  @spec truthy?(term()) :: boolean()
-  defp truthy?(value) when value in [false, nil, 0, "", "false", "0"], do: false
-  defp truthy?(_value), do: true
 
   @spec get(map(), atom(), String.t()) :: term()
   defp get(map, atom_key, string_key) do
