@@ -77,4 +77,23 @@ defmodule GtfsPlanner.FeedPublishing.Attempt do
 
     timestamps(type: :utc_datetime_usec)
   end
+
+  @doc """
+  Returns the immutable object keys this attempt's frozen manifest names.
+
+  The keys come from `object_receipts`, the same descriptors `Manifest.encode/1`
+  wrote into the manifest body, so a collection pass never re-encodes or
+  re-reads the manifest to learn what an attempt owns.
+  """
+  @spec object_keys(t()) :: [String.t()]
+  def object_keys(%__MODULE__{object_receipts: receipts}) when is_map(receipts) do
+    receipts
+    |> Map.values()
+    |> Enum.flat_map(fn
+      %{"key" => key} when is_binary(key) -> [key]
+      _other -> []
+    end)
+  end
+
+  def object_keys(%__MODULE__{}), do: []
 end

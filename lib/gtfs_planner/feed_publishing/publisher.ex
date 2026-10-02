@@ -71,6 +71,9 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
   @static_capacity 1
   @realtime_capacity 2
   @static_tasks GtfsPlanner.FeedPublishing.Publisher.StaticTasks
+  @retirement_grace_seconds 24 * 60 * 60
+  @collect_limit 100
+  @collection_list_limit 100
 
   @type advance_result :: {:ok, :current | :pending | :superseded} | {:error, atom()}
 
@@ -178,6 +181,29 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
     end
   end
 
+  @doc """
+  Collects safely retired payload objects for every channel.
+
+  A disabled capability collects nothing and makes no request. Otherwise it
+  confirms each channel's current manifest with a strong read, protects the
+  current manifest's object keys and every unresolved (`pending`/`switching`)
+  attempt's keys, deletes the objects of retired attempts whose 24-hour grace
+  has passed, advances the channel's contiguous `retired_through_sequence`
+  watermark before pruning those attempt rows, and finally does one bounded
+  owned-prefix listing to remove late-upload orphans whose matching identity
+  metadata and observation instant prove they are retired. At most `limit`
+  objects are removed per call; unavailable storage deletes nothing and keeps
+  every record.
+  """
+  @spec collect_retired(DateTime.t(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, atom()}
+  def collect_retired(now \\ DateTime.utc_now(), limit \\ @collect_limit) do
+    case Config.current() do
+      :disabled -> {:ok, 0}
+      {:enabled, config} -> {:ok, collect_publications(config, now, min(limit, @collect_limit))}
+    end
+  end
+
   defp schedule_next(state) do
     Process.send_after(self(), :tick, state.interval_ms)
     state
@@ -223,7 +249,11 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
       |> Enum.take(static_capacity())
       |> Enum.flat_map(&dispatch_static(config, &1))
 
-    %{realtime: realtime, static: static}
+    %{
+      realtime: realtime,
+      static: static,
+      retired: collect_publications(config, now, @collect_limit)
+    }
   end
 
   defp candidate_organizations do
@@ -535,6 +565,267 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
   defp realtime_capacity do
     Application.get_env(:gtfs_planner, :feed_publishing_realtime_capacity, @realtime_capacity)
   end
+
+  # -- Retired payload collection -------------------------------------------
+
+  defp collect_publications(config, now, limit) do
+    publications = Repo.all(from p in Publication, preload: [:namespace])
+
+    Enum.reduce(publications, 0, fn publication, collected ->
+      if collected >= limit do
+        collected
+      else
+        collected + collect_publication(config, publication, now, limit - collected)
+      end
+    end)
+  end
+
+  # Only a confirmed current manifest permits collection: without a strong read
+  # of what is served, an object that a consumer may still be reading could be
+  # removed. An unavailable provider leaves every byte and record in place.
+  defp collect_publication(config, publication, now, budget) do
+    namespace = publication.namespace
+
+    case Storage.read_manifest(config, Manifest.key(namespace.prefix, publication.channel)) do
+      {:ok, body, _etag, _last_modified} ->
+        protected = protected_keys(publication, body)
+
+        {deleted, remaining} =
+          collect_retired_attempts(config, publication, protected, now, budget)
+
+        publication = advance_watermark(publication)
+
+        deleted +
+          collect_orphans(config, publication, namespace, protected, now, remaining)
+
+      _unconfirmed ->
+        0
+    end
+  end
+
+  defp protected_keys(publication, manifest_body) do
+    MapSet.union(manifest_object_keys(manifest_body), unresolved_keys(publication))
+  end
+
+  defp manifest_object_keys(body) do
+    case Jason.decode(body) do
+      {:ok, %{"objects" => objects}} when is_map(objects) ->
+        objects
+        |> Map.values()
+        |> Enum.flat_map(fn
+          %{"key" => key} when is_binary(key) -> [key]
+          _other -> []
+        end)
+        |> MapSet.new()
+
+      _other ->
+        MapSet.new()
+    end
+  end
+
+  defp unresolved_keys(publication) do
+    from(a in Attempt,
+      where: a.publication_id == ^publication.id and a.state in ["pending", "switching"]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(&Attempt.object_keys/1)
+    |> MapSet.new()
+  end
+
+  defp collect_retired_attempts(config, publication, protected, now, budget) do
+    attempts =
+      from(a in Attempt,
+        where: a.publication_id == ^publication.id and a.state == "superseded",
+        where: not is_nil(a.retired_at),
+        order_by: [asc: a.sequence],
+        limit: ^budget
+      )
+      |> Repo.all()
+      |> Enum.filter(&grace_passed_retirement?(&1, now))
+
+    Enum.reduce_while(attempts, {0, budget}, fn attempt, acc ->
+      collect_retired_attempt(config, attempt, protected, acc)
+    end)
+  end
+
+  defp collect_retired_attempt(config, attempt, protected, {deleted, remaining}) do
+    keys = Attempt.object_keys(attempt)
+
+    cond do
+      remaining <= 0 ->
+        {:halt, {deleted, remaining}}
+
+      Enum.any?(keys, &MapSet.member?(protected, &1)) ->
+        {:cont, {deleted, remaining}}
+
+      true ->
+        delete_retired_attempt(config, attempt, keys, deleted, remaining)
+    end
+  end
+
+  defp delete_retired_attempt(config, attempt, keys, deleted, remaining) do
+    case delete_keys(config, keys) do
+      :ok ->
+        prune_attempt(attempt)
+        {:cont, {deleted + length(keys), remaining - length(keys)}}
+
+      {:error, _reason} ->
+        {:halt, {deleted, remaining}}
+    end
+  end
+
+  defp delete_keys(config, keys) do
+    Enum.reduce_while(keys, :ok, fn key, :ok ->
+      case Storage.delete_payload(config, key) do
+        {:ok, :deleted} -> {:cont, :ok}
+        {:error, :refused} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp prune_attempt(attempt) do
+    Repo.delete_all(from a in Attempt, where: a.id == ^attempt.id and a.state == "superseded")
+
+    :ok
+  end
+
+  defp grace_passed_retirement?(%Attempt{retired_at: %DateTime{} = retired_at}, now) do
+    DateTime.diff(now, retired_at, :second) >= @retirement_grace_seconds
+  end
+
+  defp grace_passed_retirement?(_attempt, _now), do: false
+
+  # The watermark may advance only across a contiguous run of individually
+  # fenced attempts: the next sequence still has a row (current, unresolved or
+  # not yet retired), so its proof is not compacted away. Every allocated
+  # sequence below `next_sequence` is bounded, so the scan terminates.
+  defp advance_watermark(publication) do
+    max_sequence = publication.next_sequence - 1
+
+    if publication.retired_through_sequence >= max_sequence do
+      publication
+    else
+      watermark =
+        contiguous_watermark(
+          publication.id,
+          publication.retired_through_sequence + 1,
+          max_sequence
+        )
+
+      if watermark > publication.retired_through_sequence do
+        publication
+        |> Ecto.Changeset.change(retired_through_sequence: watermark)
+        |> Repo.update!()
+      else
+        publication
+      end
+    end
+  end
+
+  defp contiguous_watermark(_publication_id, sequence, max_sequence)
+       when sequence > max_sequence,
+       do: max_sequence
+
+  defp contiguous_watermark(publication_id, sequence, max_sequence) do
+    if Repo.exists?(
+         from a in Attempt,
+           where: a.publication_id == ^publication_id and a.sequence == ^sequence
+       ) do
+      sequence - 1
+    else
+      contiguous_watermark(publication_id, sequence + 1, max_sequence)
+    end
+  end
+
+  # One bounded listing of the owned payload prefix per call. An orphan is only
+  # collected when its key is under this namespace/channel's objects folder, its
+  # server-owned identity metadata matches, its sequence is covered by the
+  # compact watermark, and its remote observation instant is past the grace.
+  # Missing or conflicting metadata is left alone; a different prefix is never
+  # listed, so another namespace and website assets are untouched.
+  defp collect_orphans(config, publication, namespace, protected, now, budget) do
+    if budget <= 0 do
+      0
+    else
+      prefix = objects_prefix(namespace.prefix, publication.channel)
+
+      case Storage.list_payloads(
+             config,
+             prefix,
+             publication.cleanup_cursor,
+             min(budget, @collection_list_limit)
+           ) do
+        {:ok, entries, cursor} ->
+          publication =
+            publication
+            |> Ecto.Changeset.change(cleanup_cursor: cursor)
+            |> Repo.update!()
+
+          sweep_orphans(config, publication, namespace, protected, now, entries, budget)
+
+        {:error, _reason} ->
+          0
+      end
+    end
+  end
+
+  defp sweep_orphans(config, publication, namespace, protected, now, entries, budget) do
+    {deleted, _remaining} =
+      Enum.reduce_while(entries, {0, budget}, fn entry, acc ->
+        sweep_orphan(config, publication, namespace, protected, entry, now, acc)
+      end)
+
+    deleted
+  end
+
+  defp sweep_orphan(config, publication, namespace, protected, entry, now, {deleted, remaining}) do
+    cond do
+      remaining <= 0 ->
+        {:halt, {deleted, remaining}}
+
+      MapSet.member?(protected, entry.key) ->
+        {:cont, {deleted, remaining}}
+
+      orphan_eligible?(config, publication, namespace, entry, now) ->
+        delete_orphan(config, entry, deleted, remaining)
+
+      true ->
+        {:cont, {deleted, remaining}}
+    end
+  end
+
+  defp delete_orphan(config, entry, deleted, remaining) do
+    case Storage.delete_payload(config, entry.key) do
+      {:ok, :deleted} -> {:cont, {deleted + 1, remaining - 1}}
+      {:error, :refused} -> {:cont, {deleted, remaining}}
+      {:error, _reason} -> {:halt, {deleted, remaining}}
+    end
+  end
+
+  defp orphan_eligible?(config, publication, namespace, entry, now) do
+    with true <-
+           String.starts_with?(entry.key, objects_prefix(namespace.prefix, publication.channel)),
+         {:ok, head} <- Storage.head_payload(config, entry.key),
+         %{claim: claim, channel: channel, sequence: sequence} <- head.identity,
+         true <- claim == namespace.public_claim,
+         true <- channel == Atom.to_string(publication.channel),
+         true <- is_integer(sequence) and sequence <= publication.retired_through_sequence,
+         true <- grace_passed_object?(head.last_modified, now) do
+      true
+    else
+      _other -> false
+    end
+  end
+
+  defp grace_passed_object?(%DateTime{} = observed_at, now) do
+    DateTime.diff(now, observed_at, :second) >= @retirement_grace_seconds
+  end
+
+  defp grace_passed_object?(_observed_at, _now), do: false
+
+  defp objects_prefix(prefix, :alerts), do: "#{prefix}/realtime/objects/"
+  defp objects_prefix(prefix, _channel), do: "#{prefix}/static/objects/"
 
   # -- Claiming -------------------------------------------------------------
 

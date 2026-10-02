@@ -272,6 +272,28 @@ defmodule GtfsPlanner.FeedPublishing do
   end
 
   @doc """
+  Reclaims safely retired payload objects for every channel, at most `limit` per call.
+
+  This is the system delivery entry point for retention: it drives the concrete
+  `Storage` list/head/delete boundary and never performs a generic bucket sweep.
+  It confirms the current manifest before deleting anything, protects the
+  current manifest's keys and every unresolved attempt's keys, observes the
+  24-hour retirement grace, advances the channel's contiguous retirement
+  watermark before pruning attempt rows, and leaves every byte and record in
+  place when storage is unavailable or publishing is disabled.
+
+  ## Examples
+
+      iex> collect_retired(~U[2026-10-03 12:00:00Z])
+      {:ok, 0}
+  """
+  @spec collect_retired(DateTime.t(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, atom()}
+  def collect_retired(now \\ DateTime.utc_now(), limit \\ 100) do
+    Publisher.collect_retired(now, limit)
+  end
+
+  @doc """
   Reviews one selected export artifact and returns a server-signed consent token.
 
   Nothing the client sends is trusted beyond the run id and the trusted slot:

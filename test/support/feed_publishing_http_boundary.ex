@@ -93,11 +93,90 @@ defmodule GtfsPlanner.FeedPublishing.HTTPBoundary do
 
     case req.method do
       :put -> serve_put(req, key)
-      :get -> serve_get(key, false)
+      :get -> if list_request?(req), do: serve_list(req), else: serve_get(key, false)
       :head -> serve_get(key, true)
+      :delete -> serve_delete(key)
       _other -> respond(405, [], "")
     end
   end
+
+  defp serve_delete(key) do
+    Process.put(@objects, Map.delete(objects(), key))
+    respond(204, [], "")
+  end
+
+  # A bounded listing, so `Storage.list_payloads/4` can be exercised at the real
+  # boundary. The continuation token is the last key of the page, which is
+  # opaque to the caller exactly as a provider token would be.
+  defp list_request?(%Req.Request{url: %URI{query: query}}),
+    do: is_binary(query) and String.contains?(query, "list-type=2")
+
+  defp serve_list(%Req.Request{url: %URI{query: query}}) do
+    params = URI.decode_query(query || "")
+    prefix = params["prefix"] || ""
+    token = params["continuation-token"]
+    max = max_keys(params["max-keys"])
+
+    keys =
+      objects()
+      |> Map.keys()
+      |> Enum.filter(&String.starts_with?(&1, prefix))
+      |> Enum.sort()
+      |> drop_through(token)
+
+    {page, rest} = Enum.split(keys, max)
+    truncated = rest != []
+    next = if truncated, do: List.last(page), else: nil
+
+    respond(
+      200,
+      [{"content-type", "application/xml"}],
+      list_body(prefix, page, max, truncated, next)
+    )
+  end
+
+  defp drop_through(keys, nil), do: keys
+  defp drop_through(keys, token), do: Enum.drop_while(keys, &(&1 <= token))
+
+  defp max_keys(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {max, ""} when max > 0 -> max
+      _other -> 1000
+    end
+  end
+
+  defp max_keys(_value), do: 1000
+
+  defp list_body(prefix, keys, max, truncated, next) do
+    contents =
+      Enum.map_join(keys, fn key ->
+        object = Map.fetch!(objects(), key)
+
+        "<Contents><Key>#{escape_xml(key)}</Key>" <>
+          "<LastModified>#{object.last_modified}</LastModified>" <>
+          "<ETag>#{escape_xml(object.etag)}</ETag>" <>
+          "<Size>#{byte_size(object.body)}</Size></Contents>"
+      end)
+
+    next_token =
+      if truncated,
+        do: "<NextContinuationToken>#{escape_xml(next)}</NextContinuationToken>",
+        else: ""
+
+    ~s(<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>gtfs-planner-loopback</Name>) <>
+      "<Prefix>#{escape_xml(prefix)}</Prefix>" <>
+      "<KeyCount>#{length(keys)}</KeyCount><MaxKeys>#{max}</MaxKeys>" <>
+      "<IsTruncated>#{truncated}</IsTruncated>#{next_token}#{contents}</ListBucketResult>"
+  end
+
+  defp escape_xml(value) when is_binary(value) do
+    value
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+  end
+
+  defp escape_xml(value), do: value
 
   defp serve_put(req, key) do
     existing = Map.get(objects(), key)
