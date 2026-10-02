@@ -25,13 +25,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   import GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
   import GtfsPlannerWeb.Gtfs.StationReport2Components
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.StationWorkspace, only: [station_header: 1]
 
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Reachability
 
   alias GtfsPlanner.Gtfs.StationReport2.{
     Connectivity,
@@ -43,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.StationReport2Components
   alias GtfsPlannerWeb.Gtfs.StationReportDrawerComponents
 
@@ -69,7 +73,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:url_dimensions, [])
      |> clear_model()
      |> reset_expansion()
-     |> clear_drawer()}
+     |> clear_drawer()
+     |> assign(:station_result_runs, [])
+     |> assign(:selected_result_run, nil)
+     |> assign(:station_helper_notice, nil)
+     |> assign(:station_run_form, to_form(%{"run_id" => nil}))
+     |> AgentPanel.mount("station_results")}
   end
 
   @impl true
@@ -89,6 +98,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
        |> clear_model()
        |> reset_expansion()
        |> clear_drawer()
+       |> assign(:station_result_runs, [])
+       |> assign(:selected_result_run, nil)
+       |> bind_station_helper()
        |> start_report_load(:initial_loading, nil)}
     end
   end
@@ -200,10 +212,96 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     |> assign(:view_state, :ready)
     |> assign(:refresh_reason, nil)
     |> assign(:report_error, nil)
+    # The helper's conversation belongs to the station and the recorded check
+    # this page resolved. `apply_model/2` runs only for the scope `handle_async`
+    # still holds, so a superseded load can never rebind it.
+    |> bind_station_helper()
     |> then(fn socket ->
       if first_model?, do: seed_expansion(socket, model), else: put_expansion(socket, [])
     end)
   end
+
+  # -- Station result helper ---------------------------------------------------
+
+  # The conversation is bound to the station this report resolved and to the
+  # recorded check the editor selected, never to a guessed latest: the selector
+  # starts empty, so a helper read starts with the current report facts and only
+  # gains a recorded result when a person asks for that one.
+  defp bind_station_helper(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    context = Scope.context({:version, version_id})
+
+    case socket.assigns[:station] do
+      %Stop{location_type: 1} = station ->
+        runs = recent_result_runs(organization_id, version_id, station.stop_id)
+        selected = select_listed_run(runs, socket.assigns[:selected_result_run])
+
+        socket =
+          assign(socket,
+            station_result_runs: runs,
+            selected_result_run: selected,
+            station_run_form: to_form(%{"run_id" => selected && selected.id})
+          )
+
+        snapshot = %{
+          kind: "station_results",
+          payload: %{
+            "station_id" => station.id,
+            "station_stop_id" => station.stop_id,
+            "run_id" => selected && selected.id
+          }
+        }
+
+        case Scope.with_source_snapshot(context, snapshot) do
+          {:ok, source_context} ->
+            socket
+            |> assign(:station_helper_notice, nil)
+            |> AgentPanel.set_context(source_context)
+
+          {:error, reason} ->
+            # An over-large or malformed source is refused visibly and the panel
+            # keeps the plain version context, which the pack also refuses.
+            socket
+            |> assign(:station_helper_notice, helper_notice(reason))
+            |> AgentPanel.set_context(context)
+        end
+
+      _other ->
+        socket
+        |> assign(:station_result_runs, [])
+        |> assign(:selected_result_run, nil)
+        |> assign(:station_helper_notice, nil)
+        |> AgentPanel.set_context(context)
+    end
+  end
+
+  # Only the recent finished checks of this station are offered, and only
+  # completed ones carry a recorded result worth explaining.
+  defp recent_result_runs(organization_id, version_id, stop_id) do
+    Reachability.list_recent_runs(organization_id, version_id, stop_id, 5)
+    |> Enum.filter(&(&1.status == "completed"))
+  end
+
+  # A selection that is no longer one of the offered runs - because it was
+  # replaced or the station moved on - is dropped rather than kept as a name the
+  # page no longer shows.
+  defp select_listed_run(_runs, nil), do: nil
+  defp select_listed_run(runs, %{id: id}), do: Enum.find(runs, &(&1.id == id))
+  defp select_listed_run(_runs, _other), do: nil
+
+  # A run id the server never offered is ignored rather than honoured: the
+  # selector's own list is the only way to choose a recorded check.
+  defp listed_run(runs, run_id) when is_binary(run_id), do: Enum.find(runs, &(&1.id == run_id))
+  defp listed_run(_runs, _other), do: nil
+
+  defp helper_notice(:too_large),
+    do:
+      "This station's helper context is too large to send, so the helper is unavailable here. The report below is complete and unchanged."
+
+  defp helper_notice(_reason),
+    do:
+      "This station's helper context could not be built, so the helper is unavailable here. The report below is complete and unchanged."
 
   defp assign_report_error(socket) do
     kind =
@@ -261,6 +359,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   # -- Server-owned disclosure ----------------------------------------------
+
+  @impl true
+  def handle_event("select_result_run", %{"run_id" => run_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_result_run, listed_run(socket.assigns.station_result_runs, run_id))
+     |> bind_station_helper()}
+  end
+
+  def handle_event("select_result_run", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("toggle_check_detail", %{"key" => key}, socket) do
@@ -612,51 +720,98 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       </:sub_header>
 
       <div class="ds-page">
-        <div id="station-report-2" class="space-y-6">
-          <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
+        <%!--
+        The helper wrapper survives the panel, so the close and open focus events still reach a
+        listener after the panel itself is gone. It holds the report and the panel side by side,
+        and the helper bar sits above the report: explaining a recorded check is a question about
+        this station, so it is offered where the report begins. The bar is print-hidden; it
+        explains the recorded check beside the report rather than becoming part of the printed
+        evidence. --%>
+        <div
+          id="station-helper"
+          phx-hook=".StationHelperFocus"
+          class={[@agent_open? && "lg:grid lg:gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+        >
+          <div class={["min-w-0 space-y-6", @agent_open? && "hidden lg:block"]}>
+            <.station_helper_bar
+              :if={@model}
+              runs={@station_result_runs}
+              selected={@selected_result_run}
+              form={@station_run_form}
+              notice={@station_helper_notice}
+              open?={@agent_open?}
+            />
 
-          <%= if @model do %>
-            <.report_summary station_name={@station.stop_name || @station.stop_id} model={@model}>
-              <.button
-                id="report-expand-all"
-                variant="secondary"
-                data-report-control
-                phx-click="toggle_expand_all"
-                aria-expanded={to_string(@all_expanded)}
-                aria-controls="station-report-2"
-                class="print:hidden min-h-11"
-              >
-                <.icon
-                  name={
-                    if @all_expanded,
-                      do: "hero-arrows-pointing-in",
-                      else: "hero-arrows-pointing-out"
-                  }
-                  class="size-4"
+            <div id="station-report-2" class="space-y-6">
+              <.report_status state={@view_state} reason={@refresh_reason} error={@report_error} />
+
+              <%= if @model do %>
+                <.report_summary station_name={@station.stop_name || @station.stop_id} model={@model}>
+                  <.button
+                    id="report-expand-all"
+                    variant="secondary"
+                    data-report-control
+                    phx-click="toggle_expand_all"
+                    aria-expanded={to_string(@all_expanded)}
+                    aria-controls="station-report-2"
+                    class="print:hidden min-h-11"
+                  >
+                    <.icon
+                      name={
+                        if @all_expanded,
+                          do: "hero-arrows-pointing-in",
+                          else: "hero-arrows-pointing-out"
+                      }
+                      class="size-4"
+                    />
+                    {if @all_expanded, do: "Collapse all", else: "Expand all"}
+                  </.button>
+                </.report_summary>
+                <.data_quality_section
+                  items={@model.data_quality_items}
+                  section="data-quality"
+                  expanded={@expanded_checks}
                 />
-                {if @all_expanded, do: "Collapse all", else: "Expand all"}
-              </.button>
-            </.report_summary>
-            <.data_quality_section
-              items={@model.data_quality_items}
-              section="data-quality"
-              expanded={@expanded_checks}
+                <.reachability_connectivity_section
+                  connectivity_summaries={@model.connectivity_summaries}
+                  connectivity_route_details={@model.connectivity_route_details}
+                  connectivity_routes={@model.connectivity_routes}
+                  expanded_sources={@expanded_sources}
+                  expanded_route_keys={@expanded_route_keys}
+                />
+                <.gps_checks_section
+                  items={@model.gps_items}
+                  section="gps"
+                  expanded={@expanded_checks}
+                />
+                <.pathway_field_completeness_section groups={@model.pathway_field_completeness_groups} />
+                <.naming_conventions_section
+                  checks={@model.naming_convention_checks}
+                  expanded={@expanded_checks}
+                />
+                <.station_inventory_section report={@model.snapshot} />
+              <% end %>
+            </div>
+          </div>
+
+          <div
+            :if={@agent_open? and @model}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Station report · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              composer_hint="This helper only reads recorded results and current report facts. It can't run a check or change data."
             />
-            <.reachability_connectivity_section
-              connectivity_summaries={@model.connectivity_summaries}
-              connectivity_route_details={@model.connectivity_route_details}
-              connectivity_routes={@model.connectivity_routes}
-              expanded_sources={@expanded_sources}
-              expanded_route_keys={@expanded_route_keys}
-            />
-            <.gps_checks_section items={@model.gps_items} section="gps" expanded={@expanded_checks} />
-            <.pathway_field_completeness_section groups={@model.pathway_field_completeness_groups} />
-            <.naming_conventions_section
-              checks={@model.naming_convention_checks}
-              expanded={@expanded_checks}
-            />
-            <.station_inventory_section report={@model.snapshot} />
-          <% end %>
+          </div>
         </div>
 
         <.entity_drawer
@@ -670,8 +825,134 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         />
       </div>
     </Layouts.app>
+
+    <%!--
+    The panel's focus events belong to the wrapper above, which survives the
+    panel's own removal. This hook only moves focus; it never decides focus for
+    the server. --%>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".StationHelperFocus">
+      export default {
+        mounted() {
+          this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+        }
+      }
+    </script>
     """
   end
+
+  ## -- Station result helper bar -----------------------------------------------
+
+  attr :runs, :list, required: true
+  attr :selected, :map, default: nil
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :notice, :string, default: nil
+  attr :open?, :boolean, required: true
+
+  defp station_helper_bar(assigns) do
+    ~H"""
+    <section
+      id="station-helper-bar"
+      aria-labelledby="station-helper-bar-title"
+      class="overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-subtle bg-canvas px-5 py-4">
+        <div class="max-w-[60ch]">
+          <h2
+            id="station-helper-bar-title"
+            class="text-[13px] font-bold uppercase tracking-wide text-muted"
+          >
+            Explain this station
+          </h2>
+          <p class="mt-1 text-sm text-default">
+            Ask about a recorded reachability check or the station's current report facts. The helper
+            reads; it never runs a check or changes data.
+          </p>
+        </div>
+        <.button
+          id="station-helper-open"
+          type="button"
+          phx-click="agent_open"
+          variant="secondary"
+          aria-expanded={to_string(@open?)}
+          aria-controls="agent-panel"
+          class="min-h-11"
+        >
+          <.icon name="hero-sparkles" class="size-4" /> Open helper
+        </.button>
+      </div>
+
+      <div class="grid gap-4 px-5 py-4 sm:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] sm:items-end">
+        <.form
+          for={@form}
+          id="station-result-run-select"
+          phx-change="select_result_run"
+          class="min-w-0"
+        >
+          <.input
+            field={@form[:run_id]}
+            type="select"
+            label="Recorded check"
+            id="station-result-run-select-input"
+            prompt="No recorded check selected"
+            options={Enum.map(@runs, &{run_label(&1), &1.id})}
+          />
+        </.form>
+
+        <p id="station-helper-freshness" class="text-[13px] text-muted tabular-nums">
+          {freshness_text(@selected)}
+        </p>
+      </div>
+
+      <p
+        :if={@notice}
+        id="station-helper-notice"
+        role="status"
+        class="border-t border-subtle px-5 py-3 text-[13px] text-default"
+      >
+        {@notice}
+      </p>
+    </section>
+    """
+  end
+
+  # The freshness line states what the stored run itself records and nothing
+  # more: whether today's station input still equals that recorded input is the
+  # projection's equality verdict, reported in the helper's server evidence
+  # rather than asserted here.
+  defp freshness_text(nil) do
+    "No recorded check is selected. The helper can still explain this station's current report facts."
+  end
+
+  defp freshness_text(%{result_json: %{"input_provenance" => %{"digest" => digest}}})
+       when is_binary(digest) do
+    "This check recorded its input (digest #{short_digest(digest)}). Whether today's station still matches it is reported in the helper's server evidence."
+  end
+
+  defp freshness_text(%{}) do
+    "This check recorded no input digest, so how current its input is, is unknown."
+  end
+
+  defp short_digest(digest), do: binary_part(digest, 0, 12)
+
+  # Two checks of the same station can finish in the same minute, so the label
+  # names what this one can explain: when it ran, what it recorded, and whether
+  # it recorded the input it routed on. The station and the version are the page
+  # this selector is on, so repeating them would only widen the control.
+  defp run_label(run) do
+    checked = Calendar.strftime(run.completed_at || run.inserted_at, "%b %-d %Y %H:%M")
+    "#{checked} · #{recorded_outcome(run)} · #{input_state(run)}"
+  end
+
+  defp recorded_outcome(%{result_json: %{"outcome" => outcome}}) when is_binary(outcome),
+    do: outcome
+
+  defp recorded_outcome(%{status: status}), do: status
+
+  defp input_state(%{result_json: %{"input_provenance" => %{"digest" => digest}}})
+       when is_binary(digest),
+       do: "input recorded"
+
+  defp input_state(%{}), do: "no recorded input"
 
   # The station's name once its record is known, its stop id before that.
   defp station_title(nil, stop_id), do: stop_id

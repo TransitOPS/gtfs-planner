@@ -22,6 +22,13 @@ defmodule GtfsPlannerWeb.AgentComponents do
   the transcript, status, notice and composer are the same markup in both, so a
   conversation cannot behave differently because of where it is shown.
 
+  ## Example buttons
+
+  daisyUI's `.btn` fixes its height, so an example longer than one line would
+  render its text outside its own box. `h-auto` with vertical padding keeps the
+  44 px target for a short example and lets a long one grow instead of
+  overlapping the example below it.
+
   ## Stream contract
 
   `agent_panel/1` consumes `entries` the way a LiveView stream is consumed: a
@@ -136,7 +143,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
                 phx-click="agent_example"
                 phx-value-text={example}
                 variant="secondary"
-                class="min-h-11 w-full justify-start text-left font-normal"
+                class="h-auto min-h-11 w-full justify-start whitespace-normal py-2 text-left font-normal leading-snug"
               >
                 {example}
               </.button>

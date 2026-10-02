@@ -112,6 +112,14 @@ defmodule GtfsPlannerWeb.AgentPanel do
   transcript is a stream it does not enumerate, so a turn that failed at the
   provider is reported here instead. It is true once a turn settles as `:failed`
   or `:incomplete` and false again when a new or replaced conversation opens.
+
+  A station reference resolves to that station's own report page, and a recorded
+  reachability run to its own result page. Neither path is built from the
+  reference alone: the station is re-read through this panel's own organization
+  and version, and the run must still be the one this panel's source snapshot
+  selected and must still resolve through the scoped station read. A reference
+  whose station or run is gone, foreign or no longer selected renders as plain
+  text rather than as a path into somebody else's dataset.
   """
 
   import Phoenix.Component, only: [assign: 3, to_form: 2]
@@ -130,6 +138,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Reachability
 
   use GtfsPlannerWeb, :verified_routes
 
@@ -144,6 +153,11 @@ defmodule GtfsPlannerWeb.AgentPanel do
   @busy_notice "The helper is still working on your last request."
   @capacity_notice "The helper is busy. Try again shortly."
   @too_long_error "Keep messages under 2,000 characters."
+
+  # The station an answer may be about is the one this panel's own server-built
+  # source snapshot froze. An answer read about any other station belongs to a
+  # different conversation and is dropped rather than relabelled.
+  @station_source_kinds ["station_results", "station_imports"]
 
   @doc """
   Adds the panel's assigns, its entries stream and its two hooks to `socket`.
@@ -623,13 +637,28 @@ defmodule GtfsPlannerWeb.AgentPanel do
        ) do
     organization_id == socket.assigns.current_organization.id and
       version_id == panel_version_id(socket) and
-      identity == identity_label(socket.assigns.agent_context)
+      (identity == identity_label(socket.assigns.agent_context) or
+         identity == snapshot_station_label(socket.assigns.agent_context))
   end
 
   defp scoped_here?(_scope, _socket), do: false
 
   defp identity_label(%{identity: {kind, id}}), do: "#{kind}:#{id}"
   defp identity_label(_context), do: nil
+
+  # A station answer reports the station it was about as the identity beside its
+  # evidence rather than the whole-version page it was read from, so this panel
+  # accepts that identity only while its own snapshot still names that station.
+  defp snapshot_station_label(context) do
+    case Map.get(context, :source_snapshot) do
+      %{kind: kind, payload: %{"station_stop_id" => stop_id}}
+      when is_binary(stop_id) and stop_id != "" ->
+        if kind in @station_source_kinds, do: "station:#{stop_id}"
+
+      _other ->
+        nil
+    end
+  end
 
   defp resolve_resource(resource, socket),
     do: Map.put(resource, :link, resolve_resource_link(socket, resource))
@@ -673,6 +702,13 @@ defmodule GtfsPlannerWeb.AgentPanel do
     if owned_stop?(id, socket), do: stop_show_path(socket, id)
   end
 
+  defp evidence_link("station", id, socket) do
+    if owned_stop?(id, socket), do: stop_show_path(socket, id) <> "/report"
+  end
+
+  defp evidence_link("station_reachability_run", id, socket),
+    do: station_reachability_result_path(socket, id)
+
   defp evidence_link(_kind, _id, _socket), do: nil
 
   # A calendar identity is taken by a weekly row, a metadata anchor or an
@@ -712,6 +748,40 @@ defmodule GtfsPlannerWeb.AgentPanel do
         stop_id
       )
     )
+  end
+
+  # A recorded run resolves only while this panel still holds the very snapshot
+  # that selected it, and only while the scoped station read still finds it: the
+  # run id on its own would be a run this page never explained.
+  defp station_reachability_result_path(socket, run_id) do
+    case station_snapshot(socket) do
+      %{"station_stop_id" => stop_id, "run_id" => ^run_id} when is_binary(stop_id) ->
+        organization_id = socket.assigns.current_organization.id
+        version_id = socket.assigns.current_gtfs_version.id
+
+        case Reachability.get_station_run(organization_id, version_id, stop_id, run_id) do
+          {:ok, _run} ->
+            "/gtfs/" <> version_id <> "/station-reachability/" <> URI.encode_www_form(run_id)
+
+          {:error, _reason} ->
+            nil
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp station_snapshot(socket) do
+    context = socket.assigns[:agent_context] || %{}
+
+    case Map.get(context, :source_snapshot) do
+      %{kind: kind, payload: payload} when is_map(payload) ->
+        if kind in @station_source_kinds, do: payload
+
+      _other ->
+        nil
+    end
   end
 
   # The paths are built the way the calendar components build them: the version
