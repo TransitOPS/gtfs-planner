@@ -34,7 +34,12 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   Nothing here establishes the loader's caps, the concurrent snapshot boundary,
   the date partition or the clock projection on their own: those are EV-2 to
   EV-5's subjects, and this file consumes what `prepare/2` composes from them.
-  No automated gate has run yet; branch review executes this file.
+  The Harbor Transit rows are a fixture of each case's own rolled-back
+  transaction, so the pack reads them the way any other case reads its own
+  fixture and nothing here establishes what a read sees across two database
+  states. The production `REPEATABLE READ READ ONLY` boundary belongs to the
+  loader's own evidence, which is where it is exercised against an independent
+  committing writer.
   """
   use GtfsPlanner.DataCase, async: false
 
@@ -45,13 +50,11 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Dispatch
   alias GtfsPlanner.Agents.Packs.DatedChanges
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.SessionSupervisor
-  alias GtfsPlanner.ConcurrencyHelpers
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendar
@@ -83,7 +86,6 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   @central "CENTRAL"
   @harbor "HARBOR"
   @depot "DEPOT"
-  @task_timeout 30_000
   @witnesses 20
 
   @nine ~w(2026-11-02 2026-11-03 2026-11-04 2026-11-05 2026-11-06 2026-11-09 2026-11-10
@@ -115,17 +117,15 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     # The turn task is not in this process's callers, so the Req.Test plug and
     # the SQL sandbox are both shared (`async: false`).
     Req.Test.set_req_test_to_shared()
-    supervisor = start_supervised!({Task.Supervisor, []})
     ensure_turn_supervisor()
     track_sessions()
 
-    harbor = harbor_scope(supervisor)
+    harbor = build_harbor_scope()
 
     %{
       harbor: harbor,
       scope: snapshot_context(harbor, "dated_changes"),
-      accepted: accepted_source(harbor, nil),
-      supervisor: supervisor
+      accepted: accepted_source(harbor, nil)
     }
   end
 
@@ -493,12 +493,8 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     end
 
     test "a deleted route refuses the pack's own precondition", context do
-      # The delete must not outlive this case holding its row lock. ExUnit runs
-      # this file's committed cleanup before it rolls the sandbox back, and an
-      # unboxed `DELETE FROM routes` cannot proceed past a row an open
-      # transaction deleted, so the lock is taken and released inside a named
-      # savepoint instead of living to the end of the test.
-      Repo.query!("SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
+      # The delete is a write in this case's own transaction, which the sandbox
+      # rolls back with the rest of the dataset.
       route_id = context.harbor.route.id
 
       Repo.delete!(context.harbor.route)
@@ -506,12 +502,7 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
       assert {:error, :unavailable} =
                Dispatch.call(DatedChanges, context.scope, "prepare_dated_change_plan", "{}")
 
-      Repo.query!("ROLLBACK TO SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
-      Repo.query!("RELEASE SAVEPOINT deleted_route", [], sandbox_subtransaction: false)
-
-      # The rollback restored the row and released the lock the delete took, so
-      # this transaction holds nothing the committed cleanup would wait on.
-      assert Repo.get(Route, route_id)
+      assert Repo.get(Route, route_id) == nil
     end
   end
 
@@ -709,15 +700,16 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
   # `H8-1` is a selected trip on `WEEKDAY`, `H8-2` its unselected same-block
   # peer on the same calendar, `H8-3` a second selected trip on `SPECIAL`,
   # `H12-1` another route's trip on that calendar, and `H8-4` a trip of a third
-  # calendar the plan reads and does not touch. Fixtures commit on their own
-  # connections, so the loader takes the production snapshot boundary; each case
-  # removes exactly its organization.
-  defp harbor_scope(supervisor) do
-    harbor = in_task(supervisor, fn -> build_harbor_scope() end)
-    commit_cleanup(harbor.organization_ids)
-    harbor
-  end
-
+  # calendar the plan reads and does not touch.
+  #
+  # The whole dataset is a fixture of the case's own transaction, and the file
+  # is `async: false`, so the shared sandbox hands the session, the turn and the
+  # loader one connection and all of them read the fixture as an ordinary case
+  # does. Nothing commits, so nothing needs removing off-transaction afterwards:
+  # the rollback takes the organization, its rows and the usage counters the turn
+  # charged. A committed fixture would instead leave a cleanup's `DELETE FROM
+  # organizations` waiting behind this transaction's still-open usage counters,
+  # because ExUnit runs `on_exit` before it rolls the sandbox back.
   defp build_harbor_scope do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -881,33 +873,31 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
       untouched: untouched,
       user: user,
       membership: membership,
-      accepted: accepted,
-      organization_ids: [organization.id]
+      accepted: accepted
     }
   end
 
   # A second, wider fixture in the same organization: its dependency rows carry
   # long stored selectors, so a bounded 20-row sample per category still exceeds
   # the shared 32 KiB tool envelope and the pack must refuse rather than cut the
-  # encoded truth. The rows commit on their own connection, like every other
-  # fixture here, so the loader reads them through its ordinary boundary.
+  # encoded truth. These rows join the rest of the dataset in the case's own
+  # transaction, so the loader reads them through its ordinary boundary and the
+  # rollback removes them with it.
   defp wide_scope(context) do
     harbor = context.harbor
     long = String.duplicate("X", 240)
 
-    in_task(context.supervisor, fn ->
-      for index <- 1..40 do
-        transfer_fixture(harbor.organization.id, harbor.version.id, %{
-          from_stop_id: "#{long}-#{index}",
-          to_stop_id: "#{long}-TO-#{index}",
-          from_route_id: "#{long}-FROM-ROUTE-#{index}",
-          to_route_id: "#{long}-TO-ROUTE-#{index}",
-          from_trip_id: "#{long}-TRIP-#{index}",
-          to_trip_id: "#{long}-TO-TRIP-#{index}",
-          transfer_type: 0
-        })
-      end
-    end)
+    for index <- 1..40 do
+      transfer_fixture(harbor.organization.id, harbor.version.id, %{
+        from_stop_id: "#{long}-#{index}",
+        to_stop_id: "#{long}-TO-#{index}",
+        from_route_id: "#{long}-FROM-ROUTE-#{index}",
+        to_route_id: "#{long}-TO-ROUTE-#{index}",
+        from_trip_id: "#{long}-TRIP-#{index}",
+        to_trip_id: "#{long}-TO-TRIP-#{index}",
+        transfer_type: 0
+      })
+    end
 
     snapshot_context(harbor, "dated_changes", [harbor.selected.id, harbor.second.id])
   end
@@ -1019,24 +1009,6 @@ defmodule GtfsPlanner.Agents.Packs.DatedChangesTest do
     |> Repo.all()
     |> Enum.map(&inspect/1)
     |> Enum.sort()
-  end
-
-  defp in_task(supervisor, fun) do
-    supervisor
-    |> Task.Supervisor.async_nolink(fn -> Sandbox.unboxed_run(Repo, fun) end)
-    |> Task.await(@task_timeout)
-  end
-
-  # `on_exit` runs after the test process has exited, so the `start_supervised!/1`
-  # supervisor is already dead here; the cleanup owns its own unboxed
-  # connection, as the four `dated_change_*` domain files do.
-  defp commit_cleanup(organization_ids) do
-    on_exit(fn ->
-      ConcurrencyHelpers.unboxed(fn ->
-        ConcurrencyHelpers.delete_committed_members!(organization_ids)
-        ConcurrencyHelpers.delete_committed_scope!(organization_ids)
-      end)
-    end)
   end
 
   ## Scripted OpenRouter replies
