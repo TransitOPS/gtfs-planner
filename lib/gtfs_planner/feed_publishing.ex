@@ -195,6 +195,9 @@ defmodule GtfsPlanner.FeedPublishing do
     # violation. When nothing is claimed yet, the insert alone decides the winner.
     # `ON CONFLICT DO NOTHING` covers every unique index at once, so a loser
     # neither aborts the transaction nor waits to be told which index it lost.
+    # `Repo.insert/2` always answers `{:ok, struct}`, and on a conflict that struct
+    # is the skipped insert with a generated id that was never written, so the
+    # winner is read back by its owning organization rather than trusted here.
     case Repo.get_by(Namespace, organization_id: organization_id) do
       %Namespace{} = claimed ->
         claimed
@@ -204,14 +207,11 @@ defmodule GtfsPlanner.FeedPublishing do
                Namespace.claim_changeset(organization_id, prefix, random_claim()),
                on_conflict: :nothing
              ) do
-          {:ok, _namespace, false} ->
+          {:ok, %Namespace{}} ->
             claimed_namespace(organization_id) || Repo.rollback(:prefix_taken)
 
-          {:ok, %Namespace{} = namespace, true} ->
-            namespace
-
-          {:ok, %Namespace{} = namespace} ->
-            namespace
+          {:error, changeset} ->
+            Repo.rollback(changeset)
         end
     end
   end

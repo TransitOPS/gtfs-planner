@@ -423,7 +423,9 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   Drops a pin the caller still owns, allowing cleanup to proceed.
 
   Release requires the same owner and token that created the claim, so a stale
-  completion cannot remove a claim another worker has since renewed.
+  completion cannot remove a claim another worker has since renewed. A claim the
+  live pin no longer matches is refused with `{:error, :lease_lost}` and changes
+  nothing.
   """
   @spec release_publication_pin(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           :ok | {:error, :lease_lost}
@@ -440,20 +442,13 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           {:ok, [export_run_id]}
 
         nil ->
+          Logger.warning("Could not release export publication pin: :lease_lost")
           {{:error, :lease_lost}, []}
       end
     end)
-    |> case do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Could not release export publication pin: #{inspect(reason)}")
-        :ok
-    end
   end
 
-  def release_publication_pin(_, _, _), do: :ok
+  def release_publication_pin(_, _, _), do: {:error, :lease_lost}
 
   @doc """
   Removes the pins whose lease has passed, so their runs can be cleaned up.

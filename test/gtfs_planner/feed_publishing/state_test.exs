@@ -100,10 +100,16 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
       assert namespace_count(other) == 1
       assert Repo.aggregate(from(n in Namespace, where: n.prefix == "rivercity"), :count) == 1
 
-      assert_raise Postgrex.Error, ~r/feed_publication_namespaces_prefix_index/, fn ->
-        Repo.transaction(fn ->
-          Repo.insert!(Namespace.claim_changeset(other.id, "rivercity", "another-claim"))
-        end)
+      # A third organization that has claimed nothing is the only one whose own
+      # insert can reach the permanent prefix's unique index; `other` already
+      # holds a namespace, so its organization index would fire first.
+      unclaimed = organization_fixture(%{alias: "eastbank"})
+
+      assert_raise Ecto.ConstraintError, ~r/feed_publication_namespaces_prefix_index/, fn ->
+        Repo.insert!(
+          Namespace.claim_changeset(unclaimed.id, "rivercity", "another-claim"),
+          mode: :savepoint
+        )
       end
 
       assert Repo.get!(Namespace, namespace.id).organization_id == organization.id
@@ -206,7 +212,8 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
   describe "delete_organization/1" do
     test "is refused while a channel is current, staged or unknown" do
       for status <- [:current, :pending, :staging, :switching, :reconciling, :blocked, :failed] do
-        organization = organization_fixture(%{alias: "rivercity"})
+        alias_name = "rivercity-#{status}"
+        organization = organization_fixture(%{alias: alias_name})
         scope = editor_scope(organization)
         assert {:ok, namespace} = FeedPublishing.claim_namespace(scope)
 
@@ -220,7 +227,7 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
         assert {:error, {:publications_retained, [:alerts]}} =
                  Organizations.delete_organization(organization)
 
-        assert Repo.get!(Organization, organization.id).alias == "rivercity"
+        assert Repo.get!(Organization, organization.id).alias == alias_name
         assert namespace_count(organization) == 1
       end
     end
@@ -300,14 +307,15 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
       other: other,
       namespace: namespace
     } do
-      assert_raise Postgrex.Error, ~r/feed_publications_namespace_owner_fkey/, fn ->
-        Repo.transaction(fn ->
-          Repo.insert!(%Publication{
+      assert_raise Ecto.ConstraintError, ~r/feed_publications_namespace_owner_fkey/, fn ->
+        Repo.insert!(
+          %Publication{
             organization_id: other.id,
             namespace_id: namespace.id,
             channel: :alerts
-          })
-        end)
+          },
+          mode: :savepoint
+        )
       end
     end
 
@@ -323,11 +331,12 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
           channel: :alerts
         })
 
-      assert_raise Postgrex.Error, ~r/feed_publication_attempts_publication_owner_fkey/, fn ->
-        Repo.transaction(fn ->
-          attempt_record(organization, other_publication) |> Repo.insert!()
-        end)
-      end
+      assert_raise Ecto.ConstraintError,
+                   ~r/feed_publication_attempts_publication_owner_fkey/,
+                   fn ->
+                     attempt_record(organization, other_publication)
+                     |> Repo.insert!(mode: :savepoint)
+                   end
     end
 
     test "a channel may not point at another organization's attempt", %{
@@ -352,10 +361,10 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
 
       foreign_attempt = Repo.insert!(attempt_record(other, other_publication))
 
-      assert_raise Postgrex.Error, ~r/feed_publications_active_attempt_owner_fkey/, fn ->
-        Repo.transaction(fn ->
-          Repo.update!(Ecto.Changeset.change(publication, active_attempt_id: foreign_attempt.id))
-        end)
+      assert_raise Ecto.ConstraintError, ~r/feed_publications_active_attempt_owner_fkey/, fn ->
+        publication
+        |> Ecto.Changeset.change(active_attempt_id: foreign_attempt.id)
+        |> Repo.update!(mode: :savepoint)
       end
 
       attempt = Repo.insert!(attempt_record(organization, publication))
@@ -370,25 +379,36 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
       organization: organization,
       namespace: namespace
     } do
+      # Ecto's `Ecto.Enum` field refuses an unknown channel or status before the
+      # statement is built, so the database check constraints are only reachable
+      # through raw SQL. The savepoint keeps the sandbox transaction usable for the
+      # second assertion.
       assert_raise Postgrex.Error, ~r/feed_publications_channel_known/, fn ->
-        Repo.transaction(fn ->
-          Repo.insert!(%Publication{
-            organization_id: organization.id,
-            namespace_id: namespace.id,
-            channel: "tods"
-          })
-        end)
+        Repo.query!(
+          """
+          INSERT INTO feed_publications
+            (id, organization_id, namespace_id, channel, status, inserted_at, updated_at)
+          VALUES
+            (gen_random_uuid(), $1::text::uuid, $2::text::uuid, 'tods', 'never_published',
+             now(), now())
+          """,
+          [organization.id, namespace.id],
+          mode: :savepoint
+        )
       end
 
       assert_raise Postgrex.Error, ~r/feed_publications_status_known/, fn ->
-        Repo.transaction(fn ->
-          Repo.insert!(%Publication{
-            organization_id: organization.id,
-            namespace_id: namespace.id,
-            channel: :alerts,
-            status: "disabled"
-          })
-        end)
+        Repo.query!(
+          """
+          INSERT INTO feed_publications
+            (id, organization_id, namespace_id, channel, status, inserted_at, updated_at)
+          VALUES
+            (gen_random_uuid(), $1::text::uuid, $2::text::uuid, 'alerts', 'disabled',
+             now(), now())
+          """,
+          [organization.id, namespace.id],
+          mode: :savepoint
+        )
       end
     end
 
@@ -402,15 +422,18 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
         channel: :alerts
       })
 
-      assert_raise Postgrex.Error, ~r/feed_publications_organization_id_channel_index/, fn ->
-        Repo.transaction(fn ->
-          Repo.insert!(%Publication{
-            organization_id: organization.id,
-            namespace_id: namespace.id,
-            channel: :alerts
-          })
-        end)
-      end
+      assert_raise Ecto.ConstraintError,
+                   ~r/feed_publications_organization_id_channel_index/,
+                   fn ->
+                     Repo.insert!(
+                       %Publication{
+                         organization_id: organization.id,
+                         namespace_id: namespace.id,
+                         channel: :alerts
+                       },
+                       mode: :savepoint
+                     )
+                   end
     end
   end
 

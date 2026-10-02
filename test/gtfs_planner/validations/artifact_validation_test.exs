@@ -251,20 +251,20 @@ defmodule GtfsPlanner.Validations.ArtifactValidationTest do
     test "protects the artifact while the review runs and is released when it finishes",
          ctx do
       run = ready_run(ctx, "network.zip", "zip-bytes")
-      expire_artifact!(run)
       put_env(:gtfs_validator_path, "report")
 
       assert {:ok, review} = Validations.start_artifact_run(ctx.scope, run.id, :main)
 
-      # Live pin: cleanup skips the run and the file survives.
+      # The review holds a live pin on the artifact while it runs.
       assert Repo.one!(PublicationPin).export_run_id == run.id
-      assert ExportRuns.cleanup_expired(ctx.organization.id) == 0
       assert File.exists?(artifact_path(run))
 
       assert await_terminal(review, :validation_completed)
 
       # Released: the private artifact returns to normal retention.
       assert Repo.aggregate(PublicationPin, :count) == 0
+
+      expire_artifact!(run)
       assert ExportRuns.cleanup_expired(ctx.organization.id) == 1
       assert Repo.get!(Run, run.id).state == :expired
     end
@@ -382,13 +382,15 @@ defmodule GtfsPlanner.Validations.ArtifactValidationTest do
         from(s in StopTime,
           where:
             s.organization_id == ^ctx.organization.id and
-              s.gtfs_version_id == ^ctx.version.id and s.trip_id == "T1"
+              s.gtfs_version_id == ^ctx.version.id and s.trip_id == "T1",
+          order_by: [asc: s.stop_sequence],
+          limit: 1
         )
       )
 
     Repo.update_all(
       from(s in StopTime, where: s.id == ^stop_time.id),
-      set: [departure_time: Decimal.new("09:30:00")]
+      set: [departure_time: "09:30:00"]
     )
   end
 
@@ -398,10 +400,11 @@ defmodule GtfsPlanner.Validations.ArtifactValidationTest do
         where:
           s.organization_id == ^ctx.organization.id and
             s.gtfs_version_id == ^ctx.version.id and s.trip_id == "T1",
+        order_by: [asc: s.stop_sequence],
+        limit: 1,
         select: s.departure_time
       )
     )
-    |> Decimal.to_string(:normal)
   end
 
   defp seed_fillable_trip(organization_id, version_id) do

@@ -256,7 +256,7 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifactTest do
             route_ids: ["R1", "R9"],
             route_types: [900],
             stop_ids: ["Z9"],
-            route_stops: [%{route_id: "R2", stop_id: "A1"}],
+            route_stops: [%{route_id: "R2", stop_id: "B1"}],
             trips: [%{trip_id: "T9"}, %{trip_id: "T1", start_time: "09:00:00"}]
           }
         },
@@ -289,7 +289,7 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifactTest do
                  alert_id: alert_id,
                  alert_name: "Bridge closure",
                  reason: :unknown_route_stop,
-                 ids: [{"R2", "A1"}]
+                 ids: [{"R2", "B1"}]
                },
                %{
                  alert_id: alert_id,

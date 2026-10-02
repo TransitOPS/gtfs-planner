@@ -10,7 +10,6 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.TaskArtifactMaintenance
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -64,10 +63,13 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     run = ready_run(organization, version)
-    expire_artifact!(run)
 
     assert {:ok, first} =
              ExportRuns.pin_publication(organization.id, version.id, run.id, :main, @owner)
+
+    # A pin may only be taken while the artifact is current; once the pin is live,
+    # an artifact whose own TTL elapsed is protected until the pin is released.
+    expire_artifact!(run)
 
     assert {:ok, renewed} =
              ExportRuns.renew_publication_pin(organization.id, run.id, claim(first, @owner))
@@ -78,8 +80,11 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     assert DateTime.diff(renewed.expires_at, DateTime.utc_now()) > lease - 30
     assert ExportRuns.cleanup_expired(organization.id) == 0
 
-    # A late release holding the pre-renewal token cannot clear the renewed claim.
-    assert :ok = ExportRuns.release_publication_pin(organization.id, run.id, claim(first, @owner))
+    # A late release holding the pre-renewal token is fenced, so it cannot clear
+    # the renewed claim.
+    assert {:error, :lease_lost} =
+             ExportRuns.release_publication_pin(organization.id, run.id, claim(first, @owner))
+
     assert pin_row(run).pin_token == renewed.pin_token
     assert ExportRuns.cleanup_expired(organization.id) == 0
 
@@ -269,8 +274,11 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
 
     # A real database statement, not a mocked cleanup: the run's own
     # ON DELETE CASCADE from the version is stopped by the pin's RESTRICT key.
-    assert_raise Postgrex.Error, ~r/feed_publication_pins_run_owner_fkey/, fn ->
-      Repo.delete!(GtfsVersion, version.id)
+    # A RESTRICT violation (SQLSTATE 23001) is not one of the constraint classes
+    # Ecto converts, so it surfaces as `Postgrex.Error`; either pin run key can
+    # be the one PostgreSQL checks first.
+    assert_raise Postgrex.Error, ~r/feed_publication_pins_(run_owner|export_run_id)_fkey/, fn ->
+      Repo.delete!(version, mode: :savepoint)
     end
 
     assert Repo.get(Run, run.id)
@@ -279,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     # Once the claim is gone the cascade is free again, and only then may the
     # artifact be cleaned.
     assert :ok = ExportRuns.release_publication_pin(organization.id, run.id, claim(pin, @owner))
-    Repo.delete!(GtfsVersion, version.id)
+    Repo.delete!(version)
     refute Repo.get(Run, run.id)
   end
 
@@ -327,7 +335,7 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     {owner,
      Task.async(fn ->
        Sandbox.allow(Repo, parent, self())
-       {owner, ExportRuns.pin_publication(organization.id, version.id, run.id, :main, owner)}
+       ExportRuns.pin_publication(organization.id, version.id, run.id, :main, owner)
      end)}
   end
 
