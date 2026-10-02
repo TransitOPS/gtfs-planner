@@ -14,6 +14,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   require Logger
 
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+  alias GtfsPlanner.Gtfs.Export.PublicationPin
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Repo
@@ -28,6 +29,11 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
                             :export_download_claim_seconds,
                             60
                           )
+  @pin_lease_seconds Application.compile_env(
+                       :gtfs_planner,
+                       :export_publication_pin_seconds,
+                       180
+                     )
   @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
 
   @spec create_pending(Ecto.UUID.t(), Ecto.UUID.t(), actor(), :full | :pathways | :operations) ::
@@ -332,6 +338,143 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     end
   end
 
+  @doc """
+  Leases the private bytes of one ready run's artifact for a public generation.
+
+  This is the same verified ready-artifact owner as `claim_download/4`, minus the
+  download bookkeeping: no `download_count` increment, no download claim, and a
+  renewable lease instead of a single request. A live pin also makes
+  `cleanup_expired/1` skip the run, so the reviewed bytes survive the private
+  artifact TTL while a public generation is still being validated and uploaded.
+
+  `slot` is a trusted server value naming the `main` or `flex` artifact of the
+  run; no client may choose a file key. One run carries one pin: a second owner
+  receives `{:error, :artifact_busy}` rather than replacing the live claim, and
+  the run's `ON DELETE CASCADE` from its GTFS version cannot remove a pinned run.
+  """
+  @spec pin_publication(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), :main | :flex, String.t()) ::
+          {:ok,
+           %{
+             path: String.t(),
+             filename: String.t(),
+             size: non_neg_integer(),
+             sha256: String.t(),
+             pin_token: Ecto.UUID.t()
+           }}
+          | {:error, :not_found | :artifact_busy}
+  def pin_publication(organization_id, version_id, run_id, slot, owner_id)
+      when slot in [:main, :flex] and is_binary(owner_id) and byte_size(owner_id) > 0 do
+    transaction_with_broadcast(fn ->
+      case lock_scoped_run(organization_id, version_id, run_id) do
+        %Run{state: :ready} = run -> pin_ready_artifact(run, slot, owner_id)
+        _ -> {{:error, :not_found}, []}
+      end
+    end)
+  end
+
+  def pin_publication(_, _, _, _, _), do: {:error, :not_found}
+
+  @doc """
+  Extends a live pin and rotates its token.
+
+  The rotation is the fence: a worker that still holds the previous token can no
+  longer renew or release the renewed claim, so a delayed completion cannot clear
+  a claim it no longer owns.
+  """
+  @spec renew_publication_pin(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, %{pin_token: Ecto.UUID.t(), expires_at: DateTime.t()}}
+          | {:error, :lease_lost | :not_found}
+  def renew_publication_pin(
+        organization_id,
+        run_id,
+        %{owner_id: owner_id, pin_token: token} = claim
+      )
+      when is_binary(owner_id) and is_binary(token) do
+    transaction_with_broadcast(fn ->
+      case lock_scoped_pin(organization_id, run_id, claim) do
+        %PublicationPin{export_run_id: export_run_id, pin_token: current} = pin ->
+          token = Ecto.UUID.generate()
+          expires_at = DateTime.add(database_now(), @pin_lease_seconds)
+
+          {1, _} =
+            from(p in PublicationPin,
+              where: p.id == ^pin.id and p.pin_token == ^current,
+              update: [
+                set: [
+                  pin_token: ^token,
+                  expires_at: ^expires_at,
+                  updated_at: fragment("CURRENT_TIMESTAMP")
+                ]
+              ]
+            )
+            |> Repo.update_all([])
+
+          {{:ok, %{pin_token: token, expires_at: expires_at}}, [export_run_id]}
+
+        nil ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+  end
+
+  def renew_publication_pin(_, _, _), do: {:error, :not_found}
+
+  @doc """
+  Drops a pin the caller still owns, allowing cleanup to proceed.
+
+  Release requires the same owner and token that created the claim, so a stale
+  completion cannot remove a claim another worker has since renewed.
+  """
+  @spec release_publication_pin(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          :ok | {:error, :lease_lost}
+  def release_publication_pin(
+        organization_id,
+        run_id,
+        %{owner_id: owner_id, pin_token: token} = claim
+      )
+      when is_binary(owner_id) and is_binary(token) do
+    transaction_with_broadcast(fn ->
+      case lock_scoped_pin(organization_id, run_id, claim) do
+        %PublicationPin{id: pin_id, export_run_id: export_run_id} ->
+          {1, _} = Repo.delete_all(from(p in PublicationPin, where: p.id == ^pin_id))
+          {:ok, [export_run_id]}
+
+        nil ->
+          {{:error, :lease_lost}, []}
+      end
+    end)
+    |> case do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Could not release export publication pin: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  def release_publication_pin(_, _, _), do: :ok
+
+  @doc """
+  Removes the pins whose lease has passed, so their runs can be cleaned up.
+
+  This runs from the existing lifecycle maintenance before
+  `cleanup_expired/1`; an expired pin is no protection, and the run's own
+  `artifact_expires_at` decides when its bytes are removed.
+  """
+  @spec purge_expired_publication_pins(Ecto.UUID.t()) :: non_neg_integer()
+  def purge_expired_publication_pins(organization_id) do
+    {count, _} =
+      Repo.delete_all(
+        from(p in PublicationPin,
+          where: p.organization_id == ^organization_id,
+          where: p.expires_at < fragment("CURRENT_TIMESTAMP")
+        )
+      )
+
+    count
+  end
+
   @spec cleanup_expired(Ecto.UUID.t()) :: non_neg_integer()
   def cleanup_expired(organization_id) do
     transaction_with_broadcast(fn ->
@@ -342,6 +485,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           where:
             is_nil(r.download_claimed_until) or
               r.download_claimed_until < fragment("CURRENT_TIMESTAMP"),
+          where: r.id not in subquery(pinned_run()),
           lock: "FOR UPDATE"
         )
         |> Repo.all()
@@ -656,6 +800,132 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     else
       {{:error, :not_found}, []}
     end
+  end
+
+  # A live pin reuses the ready-artifact verification `claim_ready_download/2`
+  # already owns, and only then writes a lease row. The run row stays locked for
+  # the whole transaction, so a pin, a renewal and a release cannot interleave.
+  defp pin_ready_artifact(run, slot, owner_id) do
+    artifact = artifact_from_run(run, slot)
+
+    if is_binary(artifact.key) and artifact_current?(run) do
+      verify_then_pin(run, slot, owner_id, artifact)
+    else
+      {{:error, :not_found}, []}
+    end
+  end
+
+  defp verify_then_pin(run, slot, owner_id, artifact) do
+    case ArtifactStorage.verify(artifact) do
+      {:ok, path} ->
+        case claim_pin(run, slot, owner_id) do
+          {:ok, token} -> {{:ok, pinned_artifact(artifact, path, token)}, [run.id]}
+          {:error, reason} -> {{:error, reason}, [run.id]}
+        end
+
+      {:error, :missing_or_corrupt_artifact} ->
+        _ = close_corrupt_artifact(run)
+        {{:error, :not_found}, [run.id]}
+    end
+  end
+
+  defp pinned_artifact(artifact, path, token) do
+    %{
+      path: path,
+      filename: artifact.filename,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      pin_token: token
+    }
+  end
+
+  # Replacing the expired row of the same owner is a renewal of that owner's
+  # claim; a different owner never inherits it. The unique index on
+  # `export_run_id` decides the winner, so two racers cannot both hold the run.
+  defp claim_pin(run, slot, owner_id) do
+    _ = delete_expired_pin(run.id)
+
+    case lock_run_pin(run.id) do
+      nil ->
+        insert_pin(run, slot, owner_id)
+
+      %PublicationPin{owner_id: ^owner_id} = pin ->
+        replace_pin(pin, slot, owner_id)
+
+      %PublicationPin{} ->
+        {:error, :artifact_busy}
+    end
+  end
+
+  defp insert_pin(run, slot, owner_id) do
+    attrs = %{
+      export_run_id: run.id,
+      organization_id: run.organization_id,
+      slot: slot,
+      owner_id: owner_id,
+      pin_token: Ecto.UUID.generate(),
+      expires_at: DateTime.add(database_now(), @pin_lease_seconds)
+    }
+
+    case Repo.insert(PublicationPin.system_changeset(%PublicationPin{}, attrs)) do
+      {:ok, pin} -> {:ok, pin.pin_token}
+      {:error, _changeset} -> {:error, :artifact_busy}
+    end
+  end
+
+  defp replace_pin(pin, slot, owner_id) do
+    token = Ecto.UUID.generate()
+    expires_at = DateTime.add(database_now(), @pin_lease_seconds)
+
+    {1, _} =
+      from(p in PublicationPin,
+        where: p.id == ^pin.id and p.owner_id == ^owner_id,
+        update: [
+          set: [
+            slot: ^slot,
+            pin_token: ^token,
+            expires_at: ^expires_at,
+            updated_at: fragment("CURRENT_TIMESTAMP")
+          ]
+        ]
+      )
+      |> Repo.update_all([])
+
+    {:ok, token}
+  end
+
+  defp lock_scoped_pin(organization_id, run_id, %{owner_id: owner_id, pin_token: token}) do
+    from(p in PublicationPin,
+      where:
+        p.export_run_id == ^run_id and p.organization_id == ^organization_id and
+          p.owner_id == ^owner_id and p.pin_token == ^token and
+          p.expires_at >= fragment("CURRENT_TIMESTAMP"),
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp lock_run_pin(run_id) do
+    from(p in PublicationPin, where: p.export_run_id == ^run_id, lock: "FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp delete_expired_pin(run_id) do
+    Repo.delete_all(
+      from(p in PublicationPin,
+        where: p.export_run_id == ^run_id,
+        where: p.expires_at < fragment("CURRENT_TIMESTAMP")
+      )
+    )
+  end
+
+  # A pin protects the artifact only while its own lease is live; `purge_/1`
+  # removes the row afterwards, so this predicate is the whole exclusion.
+  defp pinned_run do
+    from(p in PublicationPin,
+      select: p.export_run_id,
+      where: p.expires_at >= fragment("CURRENT_TIMESTAMP")
+    )
   end
 
   defp expire_artifact(run) do

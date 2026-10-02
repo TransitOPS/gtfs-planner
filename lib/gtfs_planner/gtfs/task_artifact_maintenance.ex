@@ -4,6 +4,8 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
 
   Every organization with a change, export, import or validation run has its expired
   leases closed here, so recovery does not depend on someone opening a page.
+  Expired publication pins are dropped immediately before artifact cleanup, since
+  an elapsed pin is no longer protection for the bytes it named.
 
   Database rows remain the authority: active/retained run IDs are read inside the
   artifact root lock, then storage reconciliation removes only directories that no
@@ -72,6 +74,7 @@ defmodule GtfsPlanner.Gtfs.TaskArtifactMaintenance do
       safely(fn -> ImportRuns.reconcile_expired(organization_id) end)
       safely(fn -> Validations.reconcile_expired(organization_id) end)
       safely(fn -> ExportRuns.reconcile_expired(organization_id) end)
+      safely(fn -> ExportRuns.purge_expired_publication_pins(organization_id) end)
       safely(fn -> ExportRuns.cleanup_expired(organization_id) end)
     end)
 
