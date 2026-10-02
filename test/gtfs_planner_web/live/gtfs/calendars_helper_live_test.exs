@@ -307,7 +307,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
 
       assert query_count(fragment, "a") == 1
 
-      assert [anchor] = LazyHTML.query(fragment, "a")
+      assert [anchor] = LazyHTML.query(fragment, "a") |> Enum.to_list()
 
       assert LazyHTML.attribute(anchor, "href") |> Enum.at(0) ==
                "/gtfs/#{context.version.id}/stops/depot%2F..%2Fadmin%201"

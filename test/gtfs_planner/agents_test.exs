@@ -62,6 +62,7 @@ defmodule GtfsPlanner.AgentsTest do
                "calendars" => Calendars,
                "connections" => Connections,
                "dated_changes" => DatedChanges,
+               "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
                "in_seat" => InSeat,
                "runs" => Runs,
                "service_queries" => ServiceQueries,

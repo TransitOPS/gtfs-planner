@@ -279,7 +279,12 @@ defmodule GtfsPlanner.Validations.ExportReadinessTest do
 
       assert readiness.selected_artifact.artifact_kind == :flex
       assert readiness.selected_artifact.sha256 == @third_digest
-      assert readiness.selected_artifact.profile == @flex_profile
+
+      assert readiness.selected_artifact.profile ==
+               Map.new(@flex_profile, fn {key, value} ->
+                 {String.to_existing_atom(key), value}
+               end)
+
       assert readiness.relationship == "different_profile"
 
       completed_check(organization, version,

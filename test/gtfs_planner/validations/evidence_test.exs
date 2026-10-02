@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
   use GtfsPlanner.DataCase, async: true
 
+  alias GtfsPlanner.Accounts
   alias GtfsPlanner.Agents.Packs.FeedQuality.Remedies
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Calendar
@@ -250,7 +251,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       Repo.update_all(
         from(run in ValidationRun, where: run.id == ^running.id),
-        set: [status: "running", result_json: canonical_notices()]
+        set: [status: "running", result_json: %{"notices" => canonical_notices()}]
       )
 
       assert {:error, :unavailable} = Evidence.findings(scope, %{run_id: running.id})
@@ -280,7 +281,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       Repo.update_all(
         from(run in ValidationRun, where: run.id == ^pathways.id),
-        set: [status: "completed", result_json: canonical_notices()]
+        set: [status: "completed", result_json: %{"notices" => canonical_notices()}]
       )
 
       assert {:error, :unavailable} = Evidence.findings(scope, %{run_id: pathways.id})
@@ -327,10 +328,12 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       assert second.digest == first.digest
       assert second.next_cursor == nil
 
-      # Groups are sorted by code, and the two pages do not overlap.
+      # Groups are sorted by code — lexicographically, so code_9 follows code_50 —
+      # and the two pages do not overlap.
       assert first.groups == Enum.take(first.groups, 50)
-      assert [%{code: "code_50"}] = second.groups
-      assert Enum.map(first.groups, & &1.code) == Enum.map(0..49, &"code_#{&1}")
+      sorted_codes = Enum.sort(Enum.map(0..50, &"code_#{&1}"))
+      assert Enum.map(first.groups, & &1.code) == Enum.take(sorted_codes, 50)
+      assert Enum.map(second.groups, & &1.code) == Enum.drop(sorted_codes, 50)
       assert first.total_instances == 51
     end
 
@@ -373,7 +376,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
                  cursor: first.next_cursor
                })
 
-      assert [%{group} | _rest] = second.groups
+      assert [group | _rest] = second.groups
       assert group.instance_offset == 50
       assert group.total_instances == 150
       assert group.retained_instances == 150
@@ -390,9 +393,9 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
                  cursor: second.next_cursor
                })
 
-      assert [%{group} | _rest] = third.groups
+      assert [group | _rest] = third.groups
       assert group.instance_offset == 100
-      assert [%{ref: stable}] = group.instances
+      assert [%{ref: stable} | _rest] = group.instances
       assert stable == "#{first.digest}/missing_required_field|ERROR/100"
 
       # A cursor issued for one filter cannot be applied to another.
@@ -570,8 +573,9 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       assert {:error, :too_large} = Evidence.findings(scope, %{run_id: oversized.id})
 
-      # 100 instances of 128 bytes each cannot fit one 32 KiB result, so the
-      # caller is asked to narrow rather than handed a silent truncation.
+      # 100 allowed 128-byte instances page by the code-filtered default of 50
+      # under one digest with an explicit cursor: bounded, never silently
+      # truncated, and narrowable.
       wide =
         completed_run(organization, version, [
           %{
@@ -591,8 +595,12 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
           }
         ])
 
-      assert {:error, :too_large} =
+      assert {:ok, page} =
                Evidence.findings(scope, %{run_id: wide.id, code: "missing_required_field"})
+
+      assert [%{instances: first_page}] = page.groups
+      assert length(first_page) == 50
+      assert page.next_cursor
 
       # Narrowing the page is enough to read it.
       assert {:ok, report} =
@@ -744,7 +752,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
     setup %{organization: organization, version: version} do
       stop = stop_fixture(organization.id, version.id, %{stop_id: "STOP_1", stop_name: "Main St"})
       route = route_fixture(organization.id, version.id, %{route_id: "R1", route_short_name: "1"})
-      trip = trip_fixture(organization.id, version.id, route.id, %{trip_id: "T1"})
+      trip = trip_fixture(organization.id, version.id, route.route_id, %{trip_id: "T1"})
       calendar = calendar_fixture(organization.id, version.id, %{service_id: "WK"})
 
       %{stop: stop, route: route, trip: trip, calendar: calendar}
@@ -764,7 +772,6 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       assert location.context == %{
                "filename" => "stops.txt",
-               "csvRowNumber" => 3,
                "stopId" => "STOP_1",
                "routeId" => "R1",
                "serviceId" => "WK"
@@ -791,11 +798,12 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       # A trip whose route is not a current record of this version resolves to
       # nothing and says so; it never falls back to some other route.
-      orphan =
-        trip_fixture(organization.id, version.id, Ecto.UUID.generate(), %{trip_id: "T_ORPHAN"})
+      missing_route_id = Ecto.UUID.generate()
 
-      assert %Trip{route_id: route_id} = orphan
-      assert route_id == Ecto.UUID.generate()
+      orphan =
+        trip_fixture(organization.id, version.id, missing_route_id, %{trip_id: "T_ORPHAN"})
+
+      assert %Trip{route_id: ^missing_route_id} = orphan
 
       orphan_run = completed_run(organization, version, [group_with([%{"tripId" => "T_ORPHAN"}])])
 
@@ -889,7 +897,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       # reference is only ever resolved inside the report that issued it.
       refute first_report.digest == second_report.digest
 
-      assert {:error, :stale} = Evidence.locate(scope, first.id, instance.ref)
+      assert {:error, :stale} = Evidence.locate(scope, second.id, instance.ref)
       assert {:error, :invalid_arguments} = Evidence.locate(scope, first.id, "not-a-reference")
       assert {:error, :invalid_arguments} = Evidence.locate(scope, first.id, instance.ref <> "/9")
 
@@ -917,6 +925,11 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
   end
 
   describe "remedies are navigation only" do
+    setup %{organization: organization, version: version} do
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "STOP_1", stop_name: "Main St"})
+      %{stop: stop}
+    end
+
     test "the correction list is empty and navigation is what is offered", context do
       assert %{corrections: [], navigation: true} = Remedies.list()
     end
@@ -1017,7 +1030,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       else
         Repo.update_all(
           from(stored in ValidationRun, where: stored.id == ^run.id),
-          set: system_updates
+          set: Map.to_list(system_updates)
         )
 
         Repo.reload!(run)

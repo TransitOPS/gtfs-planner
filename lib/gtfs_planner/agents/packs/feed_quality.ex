@@ -356,34 +356,39 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   # defaults are read here and carried as facts and as a digest the host may
   # pin, so the native form still makes every real choice and nothing is saved.
   defp prepare_export_options(args, %Scope{} = scope) do
-    with {:ok, export_type} <- take_export_type(args) do
-      case Evidence.readiness(scope, export_type, nil, :primary) do
-        {:ok, readiness} ->
-          defaults = ExportDefaults.get(scope.organization_id)
-          result = export_options_result(readiness, defaults)
-          evidence = export_options_evidence(readiness, defaults, scope)
+    with {:ok, export_type} <- take_export_type(args),
+         {:ok, readiness} <- readiness_for(scope, export_type) do
+      defaults = ExportDefaults.get(scope.organization_id)
+      prepared_export_options(readiness, defaults, scope)
+    end
+  end
 
-          command =
-            {:feed_quality_export_options,
-             %{
-               export_type: readiness.export_type,
-               defaults_digest: defaults_digest(defaults),
-               context_digest: Scope.context_digest(scope)
-             }}
+  defp readiness_for(scope, export_type) do
+    case Evidence.readiness(scope, export_type, nil, :primary) do
+      {:ok, readiness} -> {:ok, readiness}
+      {:error, reason} -> {:error, error_message(reason, :export)}
+    end
+  end
 
-          case bounded_reply(result, evidence) do
-            {:ok, _result, _evidence} ->
-              {:prepared,
-               %{summary: export_options_summary(readiness, defaults), command: command}, result,
-               evidence}
+  defp prepared_export_options(readiness, defaults, %Scope{} = scope) do
+    result = export_options_result(readiness, defaults)
+    evidence = export_options_evidence(readiness, defaults, scope)
 
-            {:error, _message} = error ->
-              error
-          end
+    command =
+      {:feed_quality_export_options,
+       %{
+         export_type: readiness.export_type,
+         defaults_digest: defaults_digest(defaults),
+         context_digest: Scope.context_digest(scope)
+       }}
 
-        {:error, reason} ->
-          {:error, error_message(reason, :export)}
-      end
+    case bounded_reply(result, evidence) do
+      {:ok, _result, _evidence} ->
+        {:prepared, %{summary: export_options_summary(readiness, defaults), command: command},
+         result, evidence}
+
+      {:error, _message} = error ->
+        error
     end
   end
 
@@ -429,29 +434,10 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
          {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
       requested? = snapshot_payload(scope)["requested_instance_ref"] == instance_ref
 
-      read =
-        if requested?,
-          do: Remedies.prepare(scope, run_ref, instance_ref, true),
-          else: Remedies.inspect(scope, run_ref, instance_ref)
-
-      case read do
+      case remedy_navigation(scope, run_ref, instance_ref, requested?) do
         {:ok, navigation} ->
-          result =
-            if requested? do
-              Map.merge(remedy_result(navigation), %{
-                "requested" => true,
-                "handoff" => remedy_result(navigation)
-              })
-            else
-              Map.merge(remedy_result(navigation), %{
-                "requested" => false,
-                "handoff" => nil,
-                "navigation" => remedy_result(navigation)
-              })
-            end
-
           bounded_reply(
-            result,
+            remedy_handoff_result(navigation, requested?),
             remedy_evidence(
               navigation.targets,
               "current records",
@@ -465,6 +451,25 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
           {:error, error_message(reason, :validation)}
       end
     end
+  end
+
+  defp remedy_navigation(scope, run_ref, instance_ref, true),
+    do: remedy_result_of(Remedies.prepare(scope, run_ref, instance_ref, true))
+
+  defp remedy_navigation(scope, run_ref, instance_ref, false),
+    do: remedy_result_of(Remedies.inspect(scope, run_ref, instance_ref))
+
+  defp remedy_result_of({:ok, navigation}), do: {:ok, navigation}
+  defp remedy_result_of({:error, reason}), do: {:error, reason}
+
+  defp remedy_handoff_result(navigation, true) do
+    nav = remedy_result(navigation)
+    Map.merge(nav, %{"requested" => true, "handoff" => nav})
+  end
+
+  defp remedy_handoff_result(navigation, false) do
+    nav = remedy_result(navigation)
+    Map.merge(nav, %{"requested" => false, "handoff" => nil, "navigation" => nav})
   end
 
   # Every read goes through the already-authorized scope, so the pack only
@@ -508,9 +513,9 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       %{
         label: "Reported severities",
         value:
-          report.totals_by_severity
-          |> Enum.map(fn {severity, count} -> "#{severity}: #{count}" end)
-          |> Enum.join(", ")
+          Enum.map_join(report.totals_by_severity, ", ", fn {severity, count} ->
+            "#{severity}: #{count}"
+          end)
       }
     ]
 

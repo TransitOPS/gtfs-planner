@@ -352,8 +352,10 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
       write_report!(dir, %{"summary" => %{"validatorVersion" => "  "}, "notices" => []})
       assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
 
+      # A bounded, nonblank value is retained as the report wrote it: the
+      # contract bounds the version, it does not impose a version grammar.
       write_report!(dir, %{"summary" => %{"validatorVersion" => "v8"}, "notices" => []})
-      assert {:ok, %Result{validator_version: nil}} = Validator.parse_report(dir, now_ms())
+      assert {:ok, %Result{validator_version: "v8"}} = Validator.parse_report(dir, now_ms())
 
       write_report!(dir, %{
         "summary" => %{"validatorVersion" => String.duplicate("8", 129)},

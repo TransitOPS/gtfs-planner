@@ -52,14 +52,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddValidationSourceEvidenceTest do
            ]
 
     assert [
-             ["completed"],
-             [errors],
-             [warnings],
-             [infos],
-             [result_json],
-             [digest],
-             [profile],
-             [version]
+             ["completed", errors, warnings, infos, result_json, digest, profile, version]
            ] =
              select_legacy_run(prefix, id)
 

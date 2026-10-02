@@ -4,6 +4,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Packs.FeedQuality
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.FeedPublishing
   alias GtfsPlanner.FeedPublishing.Config, as: PublishingConfig
   alias GtfsPlanner.Gtfs
@@ -13,11 +16,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
-  alias GtfsPlanner.Versions
-  alias GtfsPlanner.Agents
-  alias GtfsPlanner.Agents.Packs.FeedQuality
-  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Validations.Evidence
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult

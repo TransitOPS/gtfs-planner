@@ -310,11 +310,14 @@ defmodule GtfsPlanner.Validations.ProvenanceTest do
     end
 
     test "rejects a profile that is not a map" do
-      for export_profile <- ["full", ["full"], nil] do
+      # nil is the absent-provenance value and stays valid; a string or a list is not.
+      for export_profile <- ["full", ["full"]] do
         changeset = provenance_changeset(checked_export_profile: export_profile)
 
         refute changeset.valid?, "expected #{inspect(export_profile)} to be rejected"
       end
+
+      assert provenance_changeset(checked_export_profile: nil).valid?
     end
   end
 

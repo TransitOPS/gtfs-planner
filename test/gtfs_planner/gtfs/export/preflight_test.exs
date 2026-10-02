@@ -397,7 +397,7 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
 
       assert Enum.map(issues, & &1.code) == Enum.map(summaries, & &1.code)
       assert Enum.map(issues, & &1.message) == Enum.map(summaries, & &1.message)
-      assert Map.keys(issues) |> Enum.all?(&(&1 in [:code, :message]))
+      assert Enum.all?(issues, &(Map.keys(&1) |> Enum.sort() == [:code, :message]))
     end
 
     test "names the entity each count is about and never calls transfers complete", %{
