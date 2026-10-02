@@ -563,8 +563,8 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     case Map.fetch(args, key) do
       {:ok, value} when is_binary(value) and byte_size(value) <= max_length -> {:ok, value}
       {:ok, _value} -> {:error, invalid_request()}
-      {:error, :not_found} when required -> {:error, invalid_request()}
-      {:error, :not_found} -> {:ok, nil}
+      :error when required -> {:error, invalid_request()}
+      :error -> {:ok, nil}
     end
   end
 
@@ -574,7 +574,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     case Map.fetch(args, "limit") do
       {:ok, value} when is_integer(value) and value >= 1 and value <= 100 -> {:ok, value}
       {:ok, _value} -> {:error, invalid_request()}
-      {:error, :not_found} -> {:ok, nil}
+      :error -> {:ok, nil}
     end
   end
 
@@ -582,7 +582,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     case Map.fetch(args, "export_type") do
       {:ok, value} when is_binary(value) -> {:ok, value}
       {:ok, _value} -> {:error, invalid_request()}
-      {:error, :not_found} -> {:error, invalid_request()}
+      :error -> {:error, invalid_request()}
     end
   end
 
