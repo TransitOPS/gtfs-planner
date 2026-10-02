@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Ecto.Query, only: [from: 2]
+  import ExUnit.CaptureLog, only: [capture_log: 1]
   import Mox, only: [set_mox_global: 1]
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
@@ -29,6 +30,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.GeocodingMock
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
@@ -304,6 +307,141 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
       assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
       refute has_element?(view, "#stops-map-move-panel")
     end
+
+    test "a move review read before the panel was closed does not fill the reopened panel",
+         ctx do
+      hold_routing(200)
+      view = open_map(ctx)
+
+      render_hook(view, "pin_moved", %{"lat" => moved_lat(@review_m), "lon" => @stop_lon})
+      view |> form("#stops-map-edit-form") |> render_submit()
+      assert_receive {:routing_held, routing}, 5_000
+      assert has_element?(view, "#stops-map-move-panel")
+
+      # Close the panel, throwing the pending move away, and open the same stop
+      # again from the list. The reopened panel is a new opening of the stop the
+      # review was read for.
+      render_hook(view, "cancel_edit", %{})
+      render_hook(view, "discard_changes", %{})
+      refute has_element?(view, "#stops-map-edit-panel")
+
+      view |> element("#stops-map-row-1434") |> render_click()
+      assert has_element?(view, "#stops-map-edit-panel", "Main St")
+      refute has_element?(view, "#stops-map-move-panel")
+
+      send(routing, :release)
+      settle(view)
+
+      assert has_element?(view, "#stops-map-edit-panel", "Main St")
+      assert has_element?(view, "#stops-map-edit-status", "No changes yet")
+      refute has_element?(view, "#stops-map-move-panel")
+    end
+
+    test "a save that fails after the panel left the stop shows no failure", ctx do
+      hold_next_write(:exit)
+      view = open_map(ctx)
+
+      view
+      |> form("#stops-map-edit-form", %{"stop" => %{"stop_name" => "Main Street"}})
+      |> render_submit()
+
+      assert_receive {:write_held, write}, 5_000
+      ref = Process.monitor(write)
+
+      render_hook(view, "select_stop", %{"stop_id" => "1330"})
+      render_hook(view, "discard_changes", %{})
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+
+      capture_log(fn ->
+        send(write, :release)
+        assert_receive {:DOWN, ^ref, :process, ^write, :write_lost}, 5_000
+        settle(view)
+      end)
+
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+      assert has_element?(view, "#stops-map-edit-status", "No changes yet")
+      refute has_element?(view, "#stops-map-edit-failed")
+      assert stop(ctx).stop_name == "Main St"
+    end
+
+    test "a save that lands after the panel left the stop reloads the map only", ctx do
+      hold_next_write(:commit)
+      view = open_map(ctx)
+
+      view
+      |> form("#stops-map-edit-form", %{"stop" => %{"stop_name" => "Main Street"}})
+      |> render_submit()
+
+      assert_receive {:write_held, write}, 5_000
+
+      render_hook(view, "select_stop", %{"stop_id" => "1330"})
+      render_hook(view, "discard_changes", %{})
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+
+      send(write, :release)
+      settle(view)
+
+      # The write committed, and the panel on screen is still Cedar St's, with
+      # nothing of Main St's save in it.
+      assert stop(ctx).stop_name == "Main Street"
+      assert has_element?(view, "#stops-map-edit-panel", "Cedar St")
+      assert has_element?(view, "#stops-map-edit-name[value='Cedar St']")
+      assert has_element?(view, "#stops-map-edit-status", "No changes yet")
+      refute has_element?(view, "#stops-map-edit-failed")
+      refute has_element?(view, "#stops-map-edit-conflict")
+
+      # The list is drawn from the model, which only a reload replaces.
+      view |> element("#stops-map-edit-cancel") |> render_click()
+      assert has_element?(view, "#stops-map-row-1434", "Main Street")
+    end
+  end
+
+  describe "a result for the stop the panel shows" do
+    test "a move review that cannot be read says so and keeps the draft", ctx do
+      Req.Test.stub(@routing_owner, fn _conn -> exit(:routing_lost) end)
+      view = open_map(ctx)
+
+      render_hook(view, "pin_moved", %{"lat" => moved_lat(@review_m), "lon" => @stop_lon})
+
+      capture_log(fn ->
+        view |> form("#stops-map-edit-form") |> render_submit()
+        settle(view)
+      end)
+
+      assert has_element?(view, "#stops-map-move-review-failed-message")
+      refute has_element?(view, "#stops-map-move-save:not([disabled])")
+
+      view |> element("#stops-map-move-back") |> render_click()
+
+      assert has_element?(view, "#stops-map-edit-panel")
+      assert saved_lat(ctx) == numeric(@stop_lat)
+    end
+
+    test "a save that fails says so on the panel and keeps the typed name", ctx do
+      hold_next_write(:exit)
+      view = open_map(ctx)
+
+      view
+      |> form("#stops-map-edit-form", %{"stop" => %{"stop_name" => "Main Street"}})
+      |> render_change()
+
+      view |> form("#stops-map-edit-form") |> render_submit()
+
+      assert_receive {:write_held, write}, 5_000
+      ref = Process.monitor(write)
+      assert has_element?(view, "#stops-map-edit-status", "Saving…")
+
+      capture_log(fn ->
+        send(write, :release)
+        assert_receive {:DOWN, ^ref, :process, ^write, :write_lost}, 5_000
+        settle(view)
+      end)
+
+      assert has_element?(view, "#stops-map-edit-failed-message")
+      assert has_element?(view, "#stops-map-edit-name[value='Main Street']")
+      refute has_element?(view, "#stops-map-edit-status", "Saving…")
+      assert stop(ctx).stop_name == "Main St"
+    end
   end
 
   describe "a pin the editor cannot see" do
@@ -496,6 +634,35 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
       routing_response(conn, status)
     end)
   end
+
+  # The next write command waits for `:release` before it opens its transaction,
+  # so a save stays in flight without holding the shared sandbox connection the
+  # LiveView reads through. On release the command either runs the configured
+  # test transaction or, with `:exit`, its process ends.
+  defp hold_next_write(after_release) do
+    test = self()
+    previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
+
+    Application.put_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransactionMock)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, :reviewed_apply_transaction, value)
+        :error -> Application.delete_env(:gtfs_planner, :reviewed_apply_transaction)
+      end
+    end)
+
+    Mox.expect(ReviewedApplyTransactionMock, :run, fn transaction ->
+      send(test, {:write_held, self()})
+
+      receive do
+        :release -> finish_write(after_release, transaction)
+      end
+    end)
+  end
+
+  defp finish_write(:commit, transaction), do: ReviewedApplyTransaction.Sandbox.run(transaction)
+  defp finish_write(:exit, _transaction), do: exit(:write_lost)
 
   defp routing_response(conn, status) do
     Plug.Conn.send_resp(

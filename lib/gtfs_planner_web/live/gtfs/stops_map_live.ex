@@ -109,12 +109,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   @replace_candidate_metres 260.0
   @replace_candidate_limit 4
 
-  # The tasks the edit panel starts for the stop it is showing. Each is named for
-  # that stop's UUID, so a result can be checked against the stop the panel shows
-  # when the result arrives. The writes are the ones whose success changes the
-  # feed, so a stale success still reloads the map.
+  # The tasks the edit panel starts for the opening it belongs to. Each is named
+  # for that opening's `edit_token`, so a result can be checked against the
+  # panel on screen when it arrives, including a panel reopened on the same stop.
+  # The writes are the ones whose success changes the feed, so a stale success
+  # still reloads the map.
   @panel_reads [:move_review, :delete_review, :replace_review]
-  @panel_writes [:edit_save, :move_apply, :delete_stop, :replace_apply]
+  @panel_writes [:edit_save, :move_apply, :delete_stop, :replace_apply, :station_create]
 
   # The form name the search field's params arrive under.
   @search_as :search
@@ -186,6 +187,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # same empty state rather than from whatever the last stop left behind.
   defp assign_edit_state(socket) do
     socket
+    |> assign(:edit_token, make_ref())
     |> assign(:edit_stop, nil)
     |> assign(:edit_baseline, nil)
     |> assign(:edit_errors, %{})
@@ -525,13 +527,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      )}
   end
 
-  # A result belongs to the stop the panel showed when its task started. When the
-  # panel has moved to another stop the result is dropped, so one stop's review
-  # or save outcome is never rendered into another stop's panel. A write that
-  # landed still changed the feed, so the map is read again.
-  def handle_async({task, uuid}, result, socket)
+  # A result belongs to the panel opening that started its task. Closing the
+  # panel or opening a stop replaces the token, so a result that arrives after
+  # either is dropped, even when the panel was reopened on the same stop. A write
+  # that landed still changed the feed, so the map is read again.
+  def handle_async({task, token}, result, socket)
       when task in @panel_reads or task in @panel_writes do
-    if match?(%{edit_stop: %{uuid: ^uuid}}, socket.assigns) do
+    if socket.assigns.edit_token == token do
       handle_async(task, result, socket)
     else
       {:noreply, drop_stale_panel_result(task, result, socket)}
@@ -881,7 +883,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
         socket = socket |> assign(:delete_loading?, true)
 
-        start_async(socket, {:delete_review, uuid}, fn ->
+        start_async(socket, {:delete_review, socket.assigns.edit_token}, fn ->
           StopEditing.delete_review(uuid, audit)
         end)
     end
@@ -909,7 +911,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:delete_saving?, true) |> assign(:delete_outcome, :none)
 
-      start_async(socket, {:delete_stop, uuid}, fn ->
+      start_async(socket, {:delete_stop, socket.assigns.edit_token}, fn ->
         StopEditing.delete_stop(uuid, review.fingerprint, audit)
       end)
     else
@@ -1041,7 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:station_saving?, true)
           |> assign(:station_refusal, nil)
 
-        start_async(socket, :station_create, fn ->
+        start_async(socket, {:station_create, socket.assigns.edit_token}, fn ->
           StopEditing.make_station(stop.uuid, draft, audit)
         end)
     end
@@ -1116,7 +1118,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         |> assign(:replace_loading?, true)
         |> assign(:replace_outcome, :none)
 
-      start_async(socket, {:replace_review, old_uuid}, fn ->
+      start_async(socket, {:replace_review, socket.assigns.edit_token}, fn ->
         StopEditing.replace_review(old_uuid, new_uuid, audit)
       end)
     else
@@ -1157,7 +1159,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:replace_saving?, true)
 
-      start_async(socket, {:replace_apply, old_uuid}, fn ->
+      start_async(socket, {:replace_apply, socket.assigns.edit_token}, fn ->
         StopEditing.replace_stop(old_uuid, new_uuid, options, audit)
       end)
     else
@@ -1353,7 +1355,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:edit_saving, true)
           |> assign_dirty()
 
-        start_async(socket, {:edit_save, stop.uuid}, fn ->
+        start_async(socket, {:edit_save, socket.assigns.edit_token}, fn ->
           StopEditing.update_stop(stop.uuid, attrs, loaded, audit)
         end)
     end
@@ -1464,7 +1466,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:move_review, nil)
           |> assign(:move_answer, nil)
 
-        start_async(socket, {:move_review, uuid}, fn ->
+        start_async(socket, {:move_review, socket.assigns.edit_token}, fn ->
           StopEditing.move_review(uuid, point, audit)
         end)
 
@@ -1494,7 +1496,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
       socket = socket |> assign(:move_saving?, true) |> assign(:move_errors, [])
 
-      start_async(socket, {:move_apply, uuid}, fn ->
+      start_async(socket, {:move_apply, socket.assigns.edit_token}, fn ->
         StopEditing.apply_move(uuid, attrs, options, audit)
       end)
     else
@@ -3268,7 +3270,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                   outcome={@replace_outcome}
                 />
               <% else %>
-                <%= if @delete_review != nil or @delete_loading? do %>
+                <%= if @delete_review != nil or @delete_loading? or @delete_outcome == :failed do %>
                   <.delete_panel
                     id="stops-map-delete-panel"
                     stop={@edit_stop}
@@ -3279,7 +3281,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                     outcome={@delete_outcome}
                   />
                 <% else %>
-                  <%= if @move_review != nil or @move_loading? do %>
+                  <%= if @move_review != nil or @move_loading? or @move_outcome == :review_failed do %>
                     <.move_review_panel
                       id="stops-map-move-panel"
                       stop={@edit_stop}

@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapDeleteTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.GeocodingMock
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.ReliefPoint
@@ -133,6 +134,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapDeleteTest do
 
       # The confirmation named a row that went with it.
       refute translation_exists?(ctx, "1531")
+    end
+
+    test "a review that cannot be read says so and offers no delete", ctx do
+      view = open_stop(ctx, "1531")
+
+      # The editor loses the role after the panel opened, so the review the
+      # delete button asks for is refused rather than answered.
+      Repo.update_all(
+        from(m in UserOrgMembership, where: m.user_id == ^ctx.editor.id),
+        set: [roles: []]
+      )
+
+      view |> element("#stops-map-edit-more") |> render_click()
+      view |> element("#stops-map-edit-delete") |> render_click()
+
+      assert settle(view) |> has_element?("#stops-map-delete-failed-message")
+      assert has_element?(view, "#stops-map-delete-heading", "Delete")
+      refute has_element?(view, "#stops-map-delete-go")
+
+      view |> element("#stops-map-delete-keep") |> render_click()
+
+      assert has_element?(view, "#stops-map-edit-panel")
+      assert stop_exists?(ctx, "1531")
     end
 
     test "keeping the stop writes nothing and returns to the form", ctx do

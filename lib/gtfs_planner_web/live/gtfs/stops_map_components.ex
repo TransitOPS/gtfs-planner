@@ -1987,7 +1987,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               title="We couldn’t review this move"
               id="stops-map-move-review-failed-message"
             >
-              Nothing was saved and your edits are still here. Try Save again in a moment.
+              Nothing was saved and your edits are still here. Go back to editing and save
+              again in a moment.
             </.message>
           </div>
 
@@ -2487,7 +2488,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
             autofocus
             class="font-display text-[22px] font-semibold text-strong"
           >
-            {if @mode == :blocked,
+            {if @mode == :blocked and @review,
               do: "Can’t delete #{@stop.name} yet",
               else: "Delete #{@stop.name}?"}
           </h2>
@@ -2517,7 +2518,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
           <div :if={@outcome == :failed} id="stops-map-delete-failed" class="mt-5">
             <.message
               kind="error"
-              title="We couldn’t delete this stop"
+              title={
+                if @review,
+                  do: "We couldn’t delete this stop",
+                  else: "We couldn’t check what uses this stop"
+              }
               id="stops-map-delete-failed-message"
             >
               Nothing was changed. Check your connection and try again.
