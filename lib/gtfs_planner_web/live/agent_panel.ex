@@ -376,12 +376,10 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   # A route reference is the route's own Schedules page in this version, built the
   # way the route components build it: the version comes from this panel's own
-  # assigns and the route ID is percent-encoded, so an imported ID cannot escape
-  # the path.
+  # assigns and the verified route percent-encodes the route ID as a path segment,
+  # so an imported ID cannot escape the path.
   defp route_schedules_path(socket, route_id) do
-    version_id = socket.assigns.current_gtfs_version.id
-
-    "/gtfs/" <> version_id <> "/routes/" <> URI.encode_www_form(route_id) <> "/schedules"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}/schedules"
   end
 
   ## Session bookkeeping

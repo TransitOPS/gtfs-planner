@@ -63,6 +63,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
     href
   end
 
+  defp view_nav_href(view, id) do
+    [href] =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("##{id}")
+      |> LazyHTML.attribute("href")
+
+    href
+  end
+
   describe "station tabs for a stop ID with reserved URL characters" do
     test "link every tab by its encoded path", %{conn: conn, base: base} do
       {:ok, view, _html} = live(conn, base)
@@ -193,6 +204,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
       render_hook(view, "gtfs_version_loaded", %{"version_id" => to_string(other_version.id)})
 
       assert_redirect(view, "#{other_base}/reachability")
+    end
+  end
+
+  describe "the Evolutions page's own links for a stop ID with reserved URL characters" do
+    test "build the encoded evolutions address and load it", %{conn: conn, base: base} do
+      {:ok, view, _html} = live(conn, "#{base}/evolutions")
+
+      # The view switch is the page's own path builder. With the stop ID's `/`
+      # left raw the link names a stop "QA" and no such route, so the address is
+      # asserted exactly rather than by a prefix.
+      href = view_nav_href(view, "evolutions-tab-closures")
+      assert href == "#{base}/evolutions"
+
+      assert has_element?(
+               view,
+               "#evolutions-tab-access[href='#{base}/evolutions/access']"
+             )
+
+      # Following the page's own link is what has to land on the Closures view.
+      {:ok, closures_view, _html} = live(conn, href)
+
+      assert has_element?(
+               closures_view,
+               "#evolutions-tab-closures[aria-current='page']",
+               "Schedule closures"
+             )
     end
   end
 

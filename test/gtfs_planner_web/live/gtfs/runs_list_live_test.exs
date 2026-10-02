@@ -394,7 +394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
 
       assert_patch(
         view,
-        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&sort=spread&dir=desc&view=list"
+        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&dir=desc&sort=spread&view=list"
       )
 
       assert run_ids(view) == ["1001", "1002"]

@@ -1759,14 +1759,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
 
   defp apply_schedules_path(socket, scope) do
-    query =
-      URI.encode_query([
-        {"service_id", scope.calendar && scope.calendar.service_id},
-        {"direction", to_string(scope.direction_id)},
-        {"pattern", to_string(scope.pattern_id)}
-      ])
+    query = [
+      service_id: scope.calendar && scope.calendar.service_id,
+      direction: to_string(scope.direction_id),
+      pattern: to_string(scope.pattern_id)
+    ]
 
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules?#{query}"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules?#{query}"
   end
 
   # Review again reloads the scope around the kept input: the review is
@@ -1893,7 +1892,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp leave_schedules_path(socket) do
     case socket.assigns[:scope] do
       nil ->
-        "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules"
+        ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules"
 
       scope ->
         apply_schedules_path(socket, scope)
@@ -1928,12 +1927,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp paste_path_for(version_id, route_id, query) do
-    path = "/gtfs/#{version_id}/routes/#{route_id}/schedules/paste"
-
-    case URI.encode_query(query) do
-      "" -> path
-      encoded -> path <> "?" <> encoded
-    end
+    ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules/paste?#{query}"
   end
 
   # The blank paste input step 23's timetable step fills in: no text, no

@@ -2079,13 +2079,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   """
   @spec access_moment_path(String.t(), String.t(), Date.t(), non_neg_integer()) :: String.t()
   def access_moment_path(version_id, stop_id, %Date{} = date, time) when is_integer(time) do
-    query =
-      URI.encode_query([
-        {"date", Date.to_iso8601(date)},
-        {"time", GtfsTime.format(time)}
-      ])
+    query = [date: Date.to_iso8601(date), time: GtfsTime.format(time)]
 
-    "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access?#{query}"
+    ~p"/gtfs/#{version_id}/stops/#{stop_id}/evolutions/access?#{query}"
   end
 
   @doc """

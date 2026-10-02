@@ -1842,10 +1842,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {"run", not_the_default(run, "")}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
+      |> Enum.map(fn {key, value} -> {key, to_string(value)} end)
 
-    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/runs"
-    if params == "", do: base, else: base <> "?" <> params
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/runs?#{params}"
   end
 
   # The value unless it is the default, so the default never appears in the URL.

@@ -2254,11 +2254,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     end
 
     defp apply_redirect_path(version, route, setup) do
+      # `~p` sorts query keys in the test environment, so the expectation is
+      # written in the order the page emits: direction, pattern, service_id.
       query =
         URI.encode_query([
-          {"service_id", setup.weekday},
           {"direction", "0"},
-          {"pattern", setup.main.pattern.id}
+          {"pattern", setup.main.pattern.id},
+          {"service_id", setup.weekday}
         ])
 
       "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"
@@ -2750,11 +2752,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     end
 
     defp guard_schedules(version, route, paste) do
+      # `~p` sorts query keys in the test environment, so the expectation is
+      # written in the order the page emits: direction, pattern, service_id.
       query =
         URI.encode_query([
-          {"service_id", paste.weekday},
           {"direction", "0"},
-          {"pattern", paste.main.pattern.id}
+          {"pattern", paste.main.pattern.id},
+          {"service_id", paste.weekday}
         ])
 
       "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"

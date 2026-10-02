@@ -4496,11 +4496,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # Adding a timing happens on the pattern that lacks one; with none to name, the
   # patterns list is the way in.
   defp timing_path(patterns, version_id, route_id) do
-    base = "/gtfs/#{version_id}/routes/#{route_id}/patterns"
-
     case Enum.find(patterns, &(&1.timings == [])) do
-      nil -> base
-      pattern -> base <> "/" <> URI.encode(pattern.route_pattern_id, &URI.char_unreserved?/1)
+      nil -> ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns"
+      pattern -> ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns/#{pattern.route_pattern_id}"
     end
   end
 

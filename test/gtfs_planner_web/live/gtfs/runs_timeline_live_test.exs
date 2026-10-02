@@ -397,7 +397,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
 
       assert_patch(
         view,
-        "/gtfs/#{world.version.id}/runs?day=#{world.day_type_key}&sort=paid&dir=desc"
+        "/gtfs/#{world.version.id}/runs?day=#{world.day_type_key}&dir=desc&sort=paid"
       )
     end
 

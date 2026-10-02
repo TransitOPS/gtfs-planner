@@ -735,7 +735,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp access_target(version_id, stop_id, _moment),
-    do: "/gtfs/#{version_id}/stops/#{URI.encode(stop_id)}/evolutions/access"
+    do: ~p"/gtfs/#{version_id}/stops/#{stop_id}/evolutions/access"
 
   # -- access preview: mounted state -----------------------------------------
 
@@ -2656,13 +2656,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   # and the two helpers below read the mounted assigns, which the render pass and
   # the socket both carry.
   defp access_path(assigns, date, start_time) do
-    query =
-      URI.encode_query([
-        {"date", Date.to_iso8601(date)},
-        {"time", GtfsTime.format(comparable_time(start_time))}
-      ])
+    query = [
+      date: Date.to_iso8601(date),
+      time: GtfsTime.format(comparable_time(start_time))
+    ]
 
-    "#{evolutions_view_path(assigns)}/access?#{query}"
+    ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{assigns.stop_id}/evolutions/access?#{query}"
   end
 
   # The address of the other Evolutions view, for the view switch and for a
@@ -2680,8 +2679,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp access_view_path(assigns), do: evolutions_view_path(assigns) <> "/access"
 
   defp evolutions_view_path(assigns) do
-    version_id = assigns.current_gtfs_version.id
-    "/gtfs/#{version_id}/stops/#{URI.encode(assigns.stop_id)}/evolutions"
+    ~p"/gtfs/#{assigns.current_gtfs_version.id}/stops/#{assigns.stop_id}/evolutions"
   end
 
   # The scoped focus hook only focuses an element the editor already owns.
