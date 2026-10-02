@@ -2645,7 +2645,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         day_types,
         DayTypes.service_dates(calendars),
         trips,
-        context
+        context,
+        if(day_type, do: day_type.service_ids, else: [])
       )
     )
   end
@@ -3354,23 +3355,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # for `{day key, block}`. Every derived day type is handed over: the rule itself keeps
   # only the day types where both of a record's trips run.
   defp projection_sequences(day_types, trips) do
-    block_ids =
-      trips
-      |> Enum.filter(&is_binary(&1.block_id))
-      |> Enum.map(& &1.block_id)
-      |> Enum.uniq()
-
-    for day_type <- day_types,
-        block_id <- block_ids,
-        into: %{} do
-      order =
-        trips
-        |> Enum.filter(&(&1.block_id == block_id and &1.service_id in day_type.service_ids))
-        |> Checks.sequence()
-        |> Enum.map(& &1.id)
-
-      {{day_type.key, block_id}, order}
-    end
+    trips
+    |> Enum.filter(&is_binary(&1.block_id))
+    |> then(&sequences(day_types, &1))
   end
 
   # The day's checks, per day type, plus the in-seat findings of every distinct record. A
@@ -3588,14 +3575,23 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # per-block assembly, the figures and the counts are computed from the trips
   # and the context alone, which is what lets `preview_day/2` re-run them over a
   # plan without touching the database.
-  defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, context) do
+  defp assemble(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         context,
+         loaded_service_ids
+       ) do
     in_seat =
       in_seat_context(
         organization_id,
         gtfs_version_id,
         day_types,
         service_dates,
-        trips
+        trips,
+        loaded_service_ids
       )
 
     Map.put(day_assemble(trips, context, in_seat), :in_seat_source, in_seat)
@@ -3925,7 +3921,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   #
   # The rows the orders were read over travel with the context, so `preview_day/2`
   # can rebuild those orders over a moved trip without reading them again.
-  defp in_seat_context(organization_id, gtfs_version_id, day_types, service_dates, trips) do
+  defp in_seat_context(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         loaded_service_ids \\ []
+       ) do
     rows =
       Queries.in_seat_rows(organization_id, gtfs_version_id, Enum.map(trips, & &1.trip_id))
 
@@ -3935,7 +3938,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       day_types,
       service_dates,
       trips,
-      rows
+      rows,
+      loaded_service_ids
     )
   end
 
@@ -3949,11 +3953,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
          day_types,
          service_dates,
          trips,
-         rows
+         rows,
+         loaded_service_ids \\ []
        ) do
     trips = named_trips(organization_id, gtfs_version_id, rows, trips)
     evaluated = both_service_day_types(day_types, rows, trips)
-    block_rows = block_rows(organization_id, gtfs_version_id, evaluated, rows, trips)
+
+    block_rows =
+      block_rows(organization_id, gtfs_version_id, evaluated, rows, trips, loaded_service_ids)
 
     %{
       rows: rows,
@@ -4029,8 +4036,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # types' services: the rows R6 orders. Both block IDs are read so every evaluated
   # `{day key, block}` pair has its order, including the block of a cross-block
   # pair's second trip. Filtering by the services rather than by the dates and
-  # collecting the IDs first keeps this one query.
-  defp block_rows(organization_id, gtfs_version_id, day_types, rows, trips) do
+  # collecting the IDs first keeps this one query. A day load already holds every
+  # trip of its selected services, so only other services need reading again.
+  # Commands and partial reads pass no complete services and retain the full read.
+  defp block_rows(organization_id, gtfs_version_id, day_types, rows, trips, loaded_service_ids) do
     block_ids =
       rows
       |> Enum.flat_map(fn row ->
@@ -4043,20 +4052,39 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     service_ids = day_types |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
 
-    Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, block_ids, service_ids})
+    block_ids_set = MapSet.new(block_ids)
+    loaded_services = MapSet.new(loaded_service_ids)
+    evaluated_services = MapSet.new(service_ids)
+
+    loaded =
+      trips
+      |> Map.values()
+      |> Enum.filter(fn trip ->
+        MapSet.member?(block_ids_set, trip.block_id) and
+          MapSet.member?(loaded_services, trip.service_id) and
+          MapSet.member?(evaluated_services, trip.service_id)
+      end)
+
+    loaded ++
+      Queries.trip_rows(
+        organization_id,
+        gtfs_version_id,
+        {:blocks, block_ids, service_ids -- loaded_service_ids}
+      )
   end
 
   # `Checks.sequence/1` is the same order the rule reads, keyed by day type and
-  # block ID for `{day key, block}`.
+  # block ID for `{day key, block}`. Group once so each day type examines each
+  # block's own trips rather than scanning every trip again for every block.
   defp sequences(day_types, block_rows) do
-    block_ids = block_rows |> Enum.map(& &1.block_id) |> Enum.uniq()
+    trips_by_block = Enum.group_by(block_rows, & &1.block_id)
 
     for day_type <- day_types,
-        block_id <- block_ids,
+        {block_id, block_trips} <- trips_by_block,
         into: %{} do
       order =
-        block_rows
-        |> Enum.filter(&(&1.block_id == block_id and &1.service_id in day_type.service_ids))
+        block_trips
+        |> Enum.filter(&(&1.service_id in day_type.service_ids))
         |> Checks.sequence()
         |> Enum.map(& &1.id)
 

@@ -426,6 +426,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
           last_stop: stop.stop_id
         })
 
+      {before_result, before_queries} =
+        count_queries(fn ->
+          Gtfs.load_blocking_day(organization.id, version.id, DayTypes.key(["W"]))
+        end)
+
+      assert {:ok, before_day} = before_result
+      assert before_day.in_seat == %{}
+
       # A type 4 record without stops is what the transfer-integrity work allows;
       # the rule must not call it "stops changed" (FH-4).
       record =
@@ -435,8 +443,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
           to_trip_id: "b"
         })
 
-      assert {:ok, day} =
-               Gtfs.load_blocking_day(organization.id, version.id, DayTypes.key(["W"]))
+      {after_result, after_queries} =
+        count_queries(fn ->
+          Gtfs.load_blocking_day(organization.id, version.id, DayTypes.key(["W"]))
+        end)
+
+      assert {:ok, day} = after_result
+      assert after_queries == before_queries
 
       assert day.in_seat == %{
                a.id => [%{row: in_seat_row(record), state: :matches}],

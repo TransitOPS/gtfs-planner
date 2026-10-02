@@ -81,7 +81,6 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
           rows: [Stop.t()],
           total_count: non_neg_integer(),
           page: pos_integer(),
-          available_routes: [Route.t()],
           routes_by_stop: %{optional(String.t()) => [Route.t()]}
         }
   @type stop_region(value) :: {:ok, value} | unavailable()
@@ -108,6 +107,8 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, stop_page()}
               | {:partial, stop_page(), :route_enrichment_unavailable}
               | unavailable()
+  @callback load_stop_route_options(Ecto.UUID.t(), Ecto.UUID.t()) ::
+              {:ok, [map()]} | unavailable()
   @callback fetch_route(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, Route.t()} | {:error, :not_found | :unavailable}
   @callback load_route_editor(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::

@@ -1063,7 +1063,6 @@ defmodule GtfsPlanner.GtfsTest do
         rows: [stop],
         total_count: 1,
         page: 1,
-        available_routes: [],
         routes_by_stop: %{}
       }
 
