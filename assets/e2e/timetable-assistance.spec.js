@@ -51,6 +51,47 @@ const FIRST_DATE = "2026-11-02";
 const LAST_DATE = "2026-11-30";
 const THANKSGIVING = "2026-11-26";
 
+// The seeded `BPS-SCHOOL` pattern ("Central Station → Hospital via Northside
+// School", Typical offsets 0/180/360/600/900/1140/1380) carries two listed
+// Weekday trips, `BPS_1301` at 06:10 and `BPS_1303` at 07:10, and one
+// frequency template, `BPS_1400` at 08:00. These two rows name each listed
+// trip exactly once, by the only departure the reader can resolve.
+const SCHOOL_PATTERN = "Central Station → Hospital via Northside School";
+const SCHOOL_PASTE = [
+  "Trip\tCentral Station\tMarket Street\tOak & 3rd\tMill Street\tNorthside School\tLibrary\tHospital",
+  "1301\t06:10\t06:13\t06:16\t06:20\t06:25\t06:29\t06:33",
+  "1303\t07:10\t07:13\t07:16\t07:20\t07:25\t07:29\t07:33",
+].join("\n");
+
+// 2026-12-21 through 2026-12-31 holds nine ISO weekdays, and the seeded
+// Christmas Eve exception removes Thursday 2026-12-24, so the feed runs eight
+// of them: 21, 22, 23, 25, 28, 29, 30 and 31.
+const WINTER_FIRST = "2026-12-21";
+const WINTER_LAST = "2026-12-31";
+// The four school dates the editor supplies: two the feed runs (22 and 23),
+// the date the feed removed (24) and the Saturday no weekday rule would have
+// produced (26). A school policy uses exactly these and nothing else.
+const WINTER_SCHOOL_DATES = "2026-12-22, 2026-12-23, 2026-12-24, 2026-12-26";
+
+// A column the reader cannot read. Its words are not a time, so the source is
+// accepted with the column disclosed rather than read as a departure, and the
+// comparison can never read clean while it stands.
+const UNREADABLE_PASTE = [
+  "Trip\tCentral Station\tMarket Street\tOak & 3rd\tMill Street\tLibrary\tHospital\tRiver Park\tRiverside Terminal\tDispatch",
+  "1201\t06:00\t06:03\t06:06\t06:10\t06:14\t06:18\t06:24\t06:28\twhenever the driver is back",
+  "1203\t07:00\t07:03\t07:06\t07:10\t07:14\t07:18\t07:24\t07:28\tas posted",
+].join("\n");
+
+// The same table with one dispatcher note long enough that the pasted text
+// alone passes the 65,536-byte helper ceiling while it stays inside the native
+// paste's own 204,800-byte, 500-row and 150-column bounds.
+const LONG_NOTE = "dispatcher note ".repeat(2500);
+const OVER_CAP_PASTE = [
+  "Trip\tCentral Station\tMarket Street\tOak & 3rd\tMill Street\tLibrary\tHospital\tRiver Park\tRiverside Terminal\tDispatcher note",
+  `1201\t06:00\t06:03\t06:06\t06:10\t06:14\t06:18\t06:24\t06:28\t${LONG_NOTE}`,
+  `1203\t07:00\t07:03\t07:06\t07:10\t07:14\t07:18\t07:24\t07:28\t${LONG_NOTE}`,
+].join("\n");
+
 async function capture(page, name) {
   mkdirSync(CAPTURE_DIR, { recursive: true });
   await page.screenshot({
@@ -94,10 +135,45 @@ function pastePath(versionId, routeId) {
 
 async function readPaste(page, versionId, text) {
   await page.goto(pastePath(versionId, PASTE_ROUTE));
+  await readText(page, text);
+}
+
+// Reads the pasted table with the page's own Read control, on whichever
+// schedule scope the page currently holds.
+async function readText(page, text) {
   await page.fill("#paste-source", text);
   await page.click("#paste-read");
   await expect(page.locator("#paste-review")).toBeVisible();
   await expect(page.locator("#timetable-source-form")).toBeVisible();
+}
+
+// The page's own Change schedule drawer, which is how an editor reaches a
+// pattern other than the one the paste page resolves for itself.
+async function usePattern(page, patternName) {
+  await page.click("#paste-scope-open");
+  await expect(page.locator("#paste-scope-drawer")).toBeVisible();
+  // The drawer labels each option with the pattern's own name and its trip
+  // count, so the option is found by its name and its own value is used.
+  const value = await page
+    .locator("#paste-scope-pattern-field option")
+    .filter({ hasText: patternName })
+    .first()
+    .getAttribute("value");
+  await page.selectOption("#paste-scope-pattern-field", value);
+  await page.click("#paste-scope-apply");
+  await expect(page.locator("#paste-scope-drawer")).toBeHidden();
+  await expect(page.locator("#paste-scope-pattern")).toContainText(patternName);
+}
+
+// Whether the element the server pushed focus to holds it: acceptance and
+// every refusal announce themselves in a live region, so a journey that
+// ignored focus would pass on a page a keyboard cannot use.
+async function focusIsInside(page, id) {
+  return page.evaluate((target) => {
+    const el = document.getElementById(target);
+    const active = document.activeElement;
+    return Boolean(el && (el === active || el.contains(active)));
+  }, id);
 }
 
 async function fillSource(page, values) {
@@ -298,6 +374,313 @@ test.describe("reviewed source", () => {
   });
 });
 
+// Step 9: the comparison is the page's own read-only task, so every journey
+// here drives it through `Compare timetable` on the Paste page and never asks
+// the helper for it. They run before `native batches` because that journey
+// saves real trips on this pattern, which a later comparison would read as
+// feed rows the source never named.
+test.describe("provider-independent comparison", () => {
+  test("compares the supplied school dates with the feed's own holiday exception while the helper is unavailable", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await readPaste(page, versionId, EXACT_PASTE);
+
+    // The editor supplies the exact school dates, so the source is those four
+    // dates and not the interval's weekdays: 2026-12-26 is a Saturday and
+    // 2026-12-24 is a date the feed removed.
+    await fillSource(page, {
+      label: "Winter school sheet",
+      revision: "rev 1",
+      notes: "Term sheet; Christmas Eve is not run.",
+      firstDate: WINTER_FIRST,
+      lastDate: WINTER_LAST,
+      policy: "school",
+      schoolDates: WINTER_SCHOOL_DATES,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "4 service dates",
+    );
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "in 2026-12-21 – 2026-12-31",
+    );
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+    // Nothing is outstanding about a source whose dates were supplied, and
+    // acceptance announces itself in the live region it focuses.
+    await expect(page.locator("#timetable-source-unresolved")).toHaveCount(0);
+    expect(await focusIsInside(page, "timetable-source-state")).toBe(true);
+
+    // The provider is not reachable in this run: the panel's own failure is
+    // the scripted 401, and the page's comparison is untouched by it.
+    await openHelper(page);
+    await page.fill("#agent-composer-input", "Is the provider key still valid?");
+    await page.click("#agent-send");
+    await expect(page.locator("#agent-entries")).toContainText(
+      "The helper is unavailable right now.",
+      { timeout: 30_000 },
+    );
+    await expect(page.locator("#agent-status")).toHaveCount(1);
+    await page.click("#agent-panel-close");
+    await expect(page.locator("#agent-helper-open")).toBeFocused();
+
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "This comparison found differences.",
+    );
+
+    // Two mapped rows on the two dates the feed runs and the sheet names (22
+    // and 23): four matched pairs. Each mapped row also carries six dates the
+    // feed runs and the sheet omits (21, 25, 28, 29, 30, 31) and two it names
+    // and the feed does not run (the removed Christmas Eve and the Saturday),
+    // so each contributes six missing, two extra and eight date differences;
+    // the five unmapped outbound trips add eight missing dates each.
+    await expect(page.locator("#timetable-comparison-total-matched")).toHaveText(
+      "Matched 4 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toHaveText(
+      "Missing from the feed 52 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-extra")).toHaveText(
+      "Not in the table 4 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-time_mismatch")).toHaveText(
+      "Different times 0 source cell, event and date comparisons",
+    );
+    await expect(page.locator("#timetable-comparison-total-date_mismatch")).toHaveText(
+      "Different dates 16 mapped trip and source row date differences",
+    );
+
+    // The calculation was complete and nothing was excluded, so this is a
+    // difference report rather than an unreadable one — and it is still not
+    // clean, because the categories above are not zero.
+    await expect(page.locator("#timetable-comparison-unresolved")).toHaveCount(0);
+    await expect(page.locator("#timetable-comparison-clean")).toHaveCount(0);
+
+    await dismissFlash(page);
+    await page
+      .locator("#timetable-comparison")
+      .evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await capture(page, "comparison-differences-1440");
+
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-differences-320");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("discloses a frequency template instead of reading it as a match or a difference", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    // The school pattern is not the one this page resolves for itself, so it
+    // is reached through the page's own Change schedule drawer.
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await usePattern(page, SCHOOL_PATTERN);
+    await readText(page, SCHOOL_PASTE);
+
+    await fillSource(page, {
+      label: "Northside school sheet",
+      firstDate: FIRST_DATE,
+      lastDate: LAST_DATE,
+      removedDates: THANKSGIVING,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "20 service dates",
+    );
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+
+    // The pattern carries two listed trips and one frequency template. Both
+    // listed trips are named, so forty pairs match over the twenty dates the
+    // source reviews, and the only feed pairs left over are the two named
+    // trips on Thanksgiving, which the feed runs and this source does not.
+    // The template is neither: it is disclosed once as an unresolved item and
+    // once as an exclusion, so the report can never read clean.
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "This comparison could not be read as a match.",
+    );
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "4 differences",
+    );
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "1 item(s) remain unresolved",
+    );
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "1 item(s) are excluded",
+    );
+    await expect(page.locator("#timetable-comparison-total-matched")).toHaveText(
+      "Matched 40 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toHaveText(
+      "Missing from the feed 2 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-extra")).toHaveText(
+      "Not in the table 0 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-date_mismatch")).toHaveText(
+      "Different dates 2 mapped trip and source row date differences",
+    );
+    await expect(page.locator("#timetable-comparison-unresolved")).toContainText(
+      "frequency_template",
+    );
+    await expect(page.locator("#timetable-comparison-unresolved")).toContainText(
+      "BPS_1400",
+    );
+    await expect(page.locator("#timetable-comparison-clean")).toHaveCount(0);
+
+    await dismissFlash(page);
+    await page
+      .locator("#timetable-comparison")
+      .evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await capture(page, "comparison-incomplete-1440");
+
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-incomplete-320");
+
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("keeps a column the grammar cannot read disclosed and the comparison honest", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await readPaste(page, versionId, UNREADABLE_PASTE);
+
+    await fillSource(page, {
+      label: "Riverside printed table",
+      firstDate: FIRST_DATE,
+      lastDate: LAST_DATE,
+      removedDates: THANKSGIVING,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+
+    // The two rows still map, so the source is accepted; the dispatch notes
+    // are not times, so both rows carry the column as an unresolved item and
+    // the accepted card says so instead of dropping the text.
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+    await expect(page.locator("#timetable-source-unresolved")).toContainText(
+      "Row 1, column J holds text the grammar does not read",
+    );
+    await expect(page.locator("#timetable-source-unresolved")).toContainText(
+      "Row 2, column J holds text the grammar does not read",
+    );
+
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-differences")).toContainText(
+      "2 item(s) remain unresolved",
+    );
+
+    // The numbers are the same November ones the clean table reads: forty
+    // pairs match over the twenty reviewed dates and the remaining 107 pairs
+    // the feed describes are disclosed, because the unreadable column changed
+    // nothing that could be compared.
+    await expect(page.locator("#timetable-comparison-total-matched")).toHaveText(
+      "Matched 40 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toHaveText(
+      "Missing from the feed 107 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-unresolved")).toContainText(
+      "unsupported_column",
+    );
+    await expect(page.locator("#timetable-comparison-clean")).toHaveCount(0);
+
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("refuses the helper attachment for an over-cap source and leaves the paste and the comparison alone", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await readPaste(page, versionId, OVER_CAP_PASTE);
+
+    // The pasted text is 85,000 bytes: past the helper's 65,536-byte ceiling
+    // and well inside the native paste's own 204,800-byte bound.
+    const bytes = Buffer.byteLength(OVER_CAP_PASTE, "utf8");
+    expect(bytes).toBeGreaterThan(65_536);
+    expect(bytes).toBeLessThan(204_800);
+
+    await fillSource(page, {
+      label: "Riverside printed table with the dispatch notes",
+      firstDate: FIRST_DATE,
+      lastDate: LAST_DATE,
+      removedDates: THANKSGIVING,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+
+    // The helper is refused, not the paste: the accepted source, the pasted
+    // text and the review are exactly as they were.
+    await expect(page.locator("#timetable-helper-too-large")).toBeVisible();
+    await expect(page.locator("#timetable-helper-too-large")).toContainText(
+      "It is larger than the helper accepts, so nothing was attached.",
+    );
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+    await expect(page.locator("#timetable-source-errors")).toHaveCount(0);
+    await expect(page.locator("#paste-form")).toBeVisible();
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-apply")).toBeVisible();
+
+    // The comparison reads the accepted source rather than the helper's copy
+    // of it, so it still answers exactly as the same table without the notes
+    // does.
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-total-matched")).toHaveText(
+      "Matched 40 trip-date pairs",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toHaveText(
+      "Missing from the feed 107 trip-date pairs",
+    );
+
+    expect(consoleErrors).toEqual([]);
+  });
+});
+
 // The seeded `BROWSER_PASTE` outbound trips run 06:00 through 09:00 on the
 // Weekday calendar with the pattern's Typical offsets, so these two rows
 // resolve to `BPS_1201` and `BPS_1205` and the review plans them as
@@ -363,12 +746,125 @@ async function prepareBatch(page, message) {
   };
 }
 
+
+
+// The totals live outside the streamed witness rows, so their absence is what
+// says the report was withdrawn.
+function refuteComparisonTotals(page) {
+  return page.locator("#timetable-comparison-totals").count().then((n) => n === 0);
+}
+
+test.describe("approved comparison", () => {
+  test("the comparison states the server's own totals, pages its witnesses and is withdrawn when the source is edited", async ({
+    page,
+  }) => {
+    // No write is performed by this journey: comparing reads the route's feed
+    // and the source edit below only changes the reviewed source, so the
+    // seeded route is the same one the next run compares.
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await readPaste(page, versionId, EXACT_PASTE);
+
+    await fillSource(page, {
+      label: "Riverside printed table",
+      revision: "rev 4",
+      notes: "Thanksgiving is not served.",
+      removedDates: THANKSGIVING,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+
+    // The comparison is the page's own task and reads only the accepted
+    // source, so the helper panel is never opened.
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+
+    // The comparison is scoped to the one pattern the accepted source maps, and
+    // that pattern carries the seven seeded outbound weekday trips. Each runs
+    // on the 21 feed weekdays the interval holds, so the feed describes 147
+    // trip-date pairs; the source names two trips on the 20 dates it reviews,
+    // which match, and the other 107 pairs are disclosed as missing rather
+    // than hidden behind an all-clear. The two named trips on Thanksgiving
+    // are part of those 107: the feed runs that date and the source does not.
+    await expect(page.locator("#timetable-comparison-total-matched")).toContainText(
+      "40",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toContainText(
+      "107",
+    );
+
+    // One page holds fifty witnesses and the page says which of the retained
+    // sample it is showing, so a bounded sample never reads as all of it.
+    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(50);
+    await expect(page.locator("#timetable-comparison-sample")).toContainText(
+      "50 shown on page 1",
+    );
+    await page.click("#timetable-comparison-next");
+    await expect(page.locator("#timetable-comparison-sample")).toContainText(
+      "50 shown on page 2",
+    );
+
+    // The retained sample is 107 witnesses, so a third page holds the last 7.
+    await page.click("#timetable-comparison-next");
+    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(7);
+    await expect(page.locator("#timetable-comparison-next")).toHaveCount(0);
+
+    // Freshness is the server's own re-read of the feed digest. Nothing wrote
+    // to this route, so the report stays ready and the page says when it was
+    // last checked rather than claiming to be current forever.
+    await page.click("#timetable-comparison-freshness");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-checked")).toContainText(
+      "checked just now",
+    );
+
+    // The card sits under the reviewed-source form, so it is scrolled into
+    // view before each capture: a shot of the source form alone would not show
+    // the totals or a single witness.
+    await dismissFlash(page);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-differences-incomplete-stale-1440");
+
+    // The narrow viewport keeps the totals, the disclosure and the witness
+    // table legible rather than pushing them off the page.
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-differences-incomplete-stale-320");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // Editing the reviewed source invalidates the report on that keystroke:
+    // the source is the other half of the comparison, so the numbers are
+    // withdrawn rather than left looking current. The stale notices a committed
+    // feed change produces are exercised in the ExUnit file, which can commit
+    // a trip; this journey writes nothing.
+    await page.fill(
+      "#timetable-source-notes",
+      "Thanksgiving is not served; Friday corrected.",
+    );
+    await expect(page.locator("#timetable-comparison")).toContainText(
+      "Accept the reviewed source above before comparing it with the feed.",
+    );
+    refuteComparisonTotals(page);
+
+    expect(consoleErrors).toEqual([]);
+  });
+});
+
 test.describe("native batches", () => {
   test("a prepared batch reviews, saves and leaves the rest of the source unsaved", async ({
     page,
   }) => {
-    // Two real saves and two full viewport captures on a shared seed.
-    test.setTimeout(120_000);
+    // Two real saves, two full viewport captures and a refused second calendar
+    // on a shared seed.
+    test.setTimeout(180_000);
     const consoleErrors = watchConsoleErrors(page);
 
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -387,6 +883,12 @@ test.describe("native batches", () => {
     await expect(page.locator("#timetable-source-accepted")).toContainText(
       "2 mapped rows",
     );
+
+    // The comparison runs first, on this same page, so the save below has a
+    // report to move on from: a native write is what makes a report stale.
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-stale")).toHaveCount(0);
 
     // The panel opens after the source is accepted, because the pack's own
     // precondition is an accepted source attached to this conversation.
@@ -497,6 +999,57 @@ test.describe("native batches", () => {
 
     await page.setViewportSize({ width: 1440, height: 1000 });
 
+    // The save above is what makes the comparison out of date: the feed it
+    // read has moved on, so the page keeps the numbers beside a notice that
+    // says exactly that rather than leaving them looking current.
+    await expect(page.locator("#timetable-comparison-stale")).toContainText(
+      "You saved a native change after this comparison ran",
+    );
+    await expect(page.locator("#timetable-comparison-totals")).toBeVisible();
+    await page
+      .locator("#timetable-comparison")
+      .evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await capture(page, "comparison-stale-1440");
+
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-stale-320");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // A second calendar is a second call and a second confirmation, so a
+    // message naming one this route does not run is refused by the pack
+    // itself. The refusal rides back to the model as that tool's own result
+    // rather than as a sentence the panel prints, so what the page shows is
+    // that nothing was prepared: the saved batch stays saved, the second row
+    // stays unsaved, and neither is replayed into a batch of its own.
+    const preparedBefore = await page
+      .locator('[id^="agent-review-prepared-"]')
+      .evaluateAll((els) => els.map((el) => el.id));
+    await page.fill(
+      "#agent-composer-input",
+      "Prepare outbound row 2 for calendar CAL_SCHOOL",
+    );
+    await page.click("#agent-send");
+    await expect(page.locator("#agent-entries")).toContainText(
+      "Prepare outbound row 2 for calendar CAL_SCHOOL",
+      { timeout: 30_000 },
+    );
+    const refusedTurn = page.locator("#agent-entries article").last();
+    await expect(refusedTurn).toContainText("Checked 3 steps", {
+      timeout: 30_000,
+    });
+    await expect(page.locator('[id^="agent-review-prepared-"]')).toHaveCount(
+      preparedBefore.length,
+    );
+    await expect(page.locator('[id^="timetable-batch-"]')).toHaveCount(1);
+    await expect(page.locator(`#timetable-batch-${firstId}`)).toContainText(
+      "Saved",
+    );
+    await expect(page.locator("#timetable-batches-unsaved")).toContainText(
+      "1 source row is still unsaved",
+    );
+
     // The second batch is prepared from the same accepted source, which the
     // panel still holds, and saves independently.
     const { review: second, entryId: secondId } = await prepareBatch(
@@ -532,117 +1085,6 @@ test.describe("native batches", () => {
     await expect(page.locator("#flash-info")).not.toContainText(
       "still unsaved",
     );
-
-    expect(consoleErrors).toEqual([]);
-  });
-});
-
-
-// The totals live outside the streamed witness rows, so their absence is what
-// says the report was withdrawn.
-function refuteComparisonTotals(page) {
-  return page.locator("#timetable-comparison-totals").count().then((n) => n === 0);
-}
-
-test.describe("approved comparison", () => {
-  test("the comparison states the server's own totals, pages its witnesses and is withdrawn when the source is edited", async ({
-    page,
-  }) => {
-    // No write is performed by this journey: comparing reads the route's feed
-    // and the source edit below only changes the reviewed source, so the
-    // seeded route is the same one the next run compares.
-    test.setTimeout(120_000);
-    const consoleErrors = watchConsoleErrors(page);
-
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await logIn(page);
-    const versionId = await versionIdFor(page, "Browser E2E Version");
-    await readPaste(page, versionId, EXACT_PASTE);
-
-    await fillSource(page, {
-      label: "Riverside printed table",
-      revision: "rev 4",
-      notes: "Thanksgiving is not served.",
-      removedDates: THANKSGIVING,
-      confirm: true,
-    });
-    await page.click("#timetable-source-accept");
-    await expect(page.locator("#timetable-source-accepted")).toContainText(
-      "2 mapped rows",
-    );
-
-    // The comparison is the page's own task and reads only the accepted
-    // source, so the helper panel is never opened.
-    await page.click("#timetable-compare");
-    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
-
-    // The comparison is scoped to the one pattern the accepted source maps, and
-    // that pattern carries the seven seeded outbound weekday trips. Each runs
-    // on the 21 feed weekdays the interval holds, so the feed describes 147
-    // trip-date pairs; the source names two trips on the 20 dates it reviews,
-    // which match, and the other 107 pairs are disclosed as missing rather
-    // than hidden behind an all-clear. The two named trips on Thanksgiving
-    // are part of those 107: the feed runs that date and the source does not.
-    await expect(page.locator("#timetable-comparison-total-matched")).toContainText(
-      "40",
-    );
-    await expect(page.locator("#timetable-comparison-total-missing")).toContainText(
-      "107",
-    );
-
-    // One page holds fifty witnesses and the page says which of the retained
-    // sample it is showing, so a bounded sample never reads as all of it.
-    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(50);
-    await expect(page.locator("#timetable-comparison-sample")).toContainText(
-      "50 shown on page 1",
-    );
-    await page.click("#timetable-comparison-next");
-    await expect(page.locator("#timetable-comparison-sample")).toContainText(
-      "50 shown on page 2",
-    );
-
-    // The retained sample is 107 witnesses, so a third page holds the last 7.
-    await page.click("#timetable-comparison-next");
-    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(7);
-    await expect(page.locator("#timetable-comparison-next")).toHaveCount(0);
-
-    // Freshness is the server's own re-read of the feed digest. Nothing wrote
-    // to this route, so the report stays ready and the page says when it was
-    // last checked rather than claiming to be current forever.
-    await page.click("#timetable-comparison-freshness");
-    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
-    await expect(page.locator("#timetable-comparison-checked")).toContainText(
-      "checked just now",
-    );
-
-    // The card sits under the reviewed-source form, so it is scrolled into
-    // view before each capture: a shot of the source form alone would not show
-    // the totals or a single witness.
-    await dismissFlash(page);
-    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
-    await capture(page, "comparison-differences-incomplete-stale-1440");
-
-    // The narrow viewport keeps the totals, the disclosure and the witness
-    // table legible rather than pushing them off the page.
-    await page.setViewportSize({ width: 320, height: 800 });
-    expect(await bodyFitsViewport(page)).toBe(true);
-    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
-    await capture(page, "comparison-differences-incomplete-stale-320");
-    await page.setViewportSize({ width: 1440, height: 1000 });
-
-    // Editing the reviewed source invalidates the report on that keystroke:
-    // the source is the other half of the comparison, so the numbers are
-    // withdrawn rather than left looking current. The stale notices a committed
-    // feed change produces are exercised in the ExUnit file, which can commit
-    // a trip; this journey writes nothing.
-    await page.fill(
-      "#timetable-source-notes",
-      "Thanksgiving is not served; Friday corrected.",
-    );
-    await expect(page.locator("#timetable-comparison")).toContainText(
-      "Accept the reviewed source above before comparing it with the feed.",
-    );
-    refuteComparisonTotals(page);
 
     expect(consoleErrors).toEqual([]);
   });

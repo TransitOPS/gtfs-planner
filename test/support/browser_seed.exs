@@ -5742,10 +5742,12 @@ case Accounts.register_first_admin(%{
     #
     # One isolated route on the shared Browser E2E Version carries the paste
     # journeys' schedule, mirroring the prototype's route 12 Downtown –
-    # Riverside: nine BPS stops, four patterns (main with Typical and Peak
-    # timings, short, school, inbound), seven Weekday trips per direction on
-    # blocks 101–103, and two timed transfers at Riverside Terminal naming
-    # trip 1209.
+    # Riverside: nine BPS stops, five patterns (main with Typical and Peak
+    # timings, short, school, loop, inbound), seven Weekday trips per direction
+    # on blocks 101–103, two school trips and one school frequency template on
+    # the school pattern, two loop trips that board Central Station twice, a
+    # Christmas Eve exception on the Weekday calendar, and two timed transfers
+    # at Riverside Terminal naming trip 1209.
     for {stop_id, stop_name} <- [
           {"BPS_CEN", "Central Station"},
           {"BPS_MKT", "Market Street"},
@@ -5848,25 +5850,26 @@ case Accounts.register_first_admin(%{
       ]
     })
 
-    GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
-      route_id: paste_route.route_id,
-      direction_id: 0,
-      route_pattern_id: "BPS-SCHOOL",
-      route_pattern_name: "Central Station → Hospital via Northside School",
-      route_pattern_sort_order: 2,
-      headsign: "Hospital",
-      timing_name: "School days",
-      timing_headsign: "Hospital",
-      stops: [
-        {"BPS_CEN", 0, 0, 1},
-        {"BPS_MKT", 180, 180, 0},
-        {"BPS_OAK", 360, 360, 0},
-        {"BPS_MILL", 600, 600, 1},
-        {"BPS_NSCH", 900, 900, 1},
-        {"BPS_LIB", 1140, 1140, 0},
-        {"BPS_HOSP", 1380, 1380, 1}
-      ]
-    })
+    paste_school =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: paste_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BPS-SCHOOL",
+        route_pattern_name: "Central Station → Hospital via Northside School",
+        route_pattern_sort_order: 2,
+        headsign: "Hospital",
+        timing_name: "School days",
+        timing_headsign: "Hospital",
+        stops: [
+          {"BPS_CEN", 0, 0, 1},
+          {"BPS_MKT", 180, 180, 0},
+          {"BPS_OAK", 360, 360, 0},
+          {"BPS_MILL", 600, 600, 1},
+          {"BPS_NSCH", 900, 900, 1},
+          {"BPS_LIB", 1140, 1140, 0},
+          {"BPS_HOSP", 1380, 1380, 1}
+        ]
+      })
 
     paste_inbound =
       GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
@@ -5919,6 +5922,99 @@ case Accounts.register_first_admin(%{
       end)
     end)
 
+    # The school pattern carries its own Weekday trips so a reviewed source
+    # can be compared against a pattern that is not the default one: two
+    # listed trips at 06:10 and 07:10, and one frequency template at 08:00
+    # that no comparison may expand into invented matches or differences.
+    ["06:10:00", "07:10:00"]
+    |> Enum.with_index()
+    |> Enum.each(fn {start_time, index} ->
+      short = Integer.to_string(1301 + index * 2)
+
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        paste_route.route_id,
+        paste_school,
+        %{
+          service_id: paste_calendar.service_id,
+          trip_id: "BPS_#{short}",
+          trip_short_name: short,
+          start_time: start_time,
+          trip_headsign: "Hospital",
+          block_id: "105"
+        }
+      )
+    end)
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      paste_route.route_id,
+      paste_school,
+      %{
+        service_id: paste_calendar.service_id,
+        trip_id: "BPS_1400",
+        trip_short_name: "1400",
+        start_time: "08:00:00",
+        trip_headsign: "Hospital",
+        block_id: "105",
+        frequencies: [
+          %{start_time: "08:00:00", end_time: "09:00:00", headway_secs: 1200, exact_times: 0}
+        ]
+      }
+    )
+
+    # A loop pattern boards Central Station twice, so a pasted table that names
+    # it twice has two occurrences to compare rather than one merged visit.
+    paste_loop =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: paste_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BPS-LOOP",
+        route_pattern_name: "Riverside Terminal loop via Central Station",
+        route_pattern_sort_order: 3,
+        headsign: "Riverside Terminal",
+        timing_name: "Typical",
+        timing_headsign: "Riverside Terminal",
+        stops: [
+          {"BPS_CEN", 0, 0, 1},
+          {"BPS_MKT", 300, 300, 0},
+          {"BPS_CEN", 600, 600, 1},
+          {"BPS_RIV", 900, 900, 1}
+        ]
+      })
+
+    ["06:20:00", "07:20:00"]
+    |> Enum.with_index()
+    |> Enum.each(fn {start_time, index} ->
+      short = Integer.to_string(1501 + index * 2)
+
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        paste_route.route_id,
+        paste_loop,
+        %{
+          service_id: paste_calendar.service_id,
+          trip_id: "BPS_#{short}",
+          trip_short_name: short,
+          start_time: start_time,
+          trip_headsign: "Riverside Terminal",
+          block_id: "107"
+        }
+      )
+    end)
+
+    # Christmas Eve is a Weekday Thursday the feed does not run, so a reviewed
+    # source that keeps it is compared against the calendar exception rather
+    # than against the weekly pattern it reads like.
+    GtfsPlanner.GtfsFixtures.calendar_date_fixture(org.id, diagram_version.id, %{
+      service_id: paste_calendar.service_id,
+      date: ~D[2026-12-24],
+      exception_type: 2
+    })
+
     # Trip 1209 (08:00 outbound) feeds timed transfers at Riverside Terminal:
     # it receives from 1207 and continues onto 1210.
     for {from_trip_id, to_trip_id} <- [{"BPS_1207", "BPS_1209"}, {"BPS_1209", "BPS_1210"}] do
@@ -5953,8 +6049,9 @@ case Accounts.register_first_admin(%{
       )
 
     IO.puts(
-      "Browser seed: paste route BROWSER_PASTE (4 patterns, Typical and Peak timings, " <>
-        "#{paste_trip_count} Weekday trips, #{paste_transfer_count} transfers naming trip 1209)"
+      "Browser seed: paste route BROWSER_PASTE (5 patterns, Typical and Peak timings, " <>
+        "#{paste_trip_count} Weekday trips including one school frequency template, " <>
+        "#{paste_transfer_count} transfers naming trip 1209)"
     )
 
     # ── Advanced trip editing journey routes (spec 18, step 41) ──
