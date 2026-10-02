@@ -46,4 +46,60 @@ defmodule GtfsPlanner.Gtfs.GtfsTimeTest do
       end
     end
   end
+
+  describe "display/1" do
+    test "keeps GTFS hours and adds seconds only when nonzero" do
+      assert GtfsTime.display(25_500) == "07:05"
+      assert GtfsTime.display(25_530) == "07:05:30"
+      assert GtfsTime.display(90_600) == "25:10"
+      assert GtfsTime.display(86_460) == "24:01"
+      assert GtfsTime.display(0) == "00:00"
+      assert GtfsTime.display(86_399) == "23:59:59"
+    end
+
+    test "wraps negative values with a day count and a true minus sign" do
+      assert GtfsTime.display(-600) == "23:50 −1d"
+      assert GtfsTime.display(-900) == "23:45 −1d"
+      assert GtfsTime.display(-86_400) == "00:00 −1d"
+    end
+
+    test "renders nil as an em dash" do
+      assert GtfsTime.display(nil) == "—"
+    end
+  end
+
+  describe "coerce/1" do
+    test "returns non-negative integers and parsed HH:MM:SS strings as seconds" do
+      assert GtfsTime.coerce(25_200) == 25_200
+      assert GtfsTime.coerce(0) == 0
+      assert GtfsTime.coerce("07:00:30") == 25_230
+      assert GtfsTime.coerce("25:00:00") == 90_000
+    end
+
+    test "returns nil for values that are not non-negative service seconds" do
+      assert GtfsTime.coerce(-1) == nil
+      assert GtfsTime.coerce("7am") == nil
+      assert GtfsTime.coerce("12:60:00") == nil
+      assert GtfsTime.coerce(1.5) == nil
+      assert GtfsTime.coerce(nil) == nil
+    end
+  end
+
+  describe "parse_hhmm/1" do
+    test "converts H:MM and HH:MM to minutes" do
+      assert GtfsTime.parse_hhmm("4:30") == 270
+      assert GtfsTime.parse_hhmm("16:05") == 965
+      assert GtfsTime.parse_hhmm("25:10") == 1_510
+    end
+
+    test "returns nil unless the value is exactly two integer parts" do
+      assert GtfsTime.parse_hhmm("4:30:00") == nil
+      assert GtfsTime.parse_hhmm("4:30pm") == nil
+      assert GtfsTime.parse_hhmm(nil) == nil
+    end
+
+    test "does not bound the minutes field" do
+      assert GtfsTime.parse_hhmm("4:70") == 310
+    end
+  end
 end
