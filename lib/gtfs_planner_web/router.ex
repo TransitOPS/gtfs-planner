@@ -164,6 +164,10 @@ defmodule GtfsPlannerWeb.Router do
       live "/routes/:route_id/schedules", Gtfs.RouteSchedulesLive, :index
       live "/routes/:route_id/schedules/paste", Gtfs.TimetablePasteLive, :new
       live "/stops", Gtfs.StopsLive, :index
+      # The Map view is the same page at its second route. It must be declared
+      # before the stop show route, which would otherwise capture "map" as a
+      # stop ID.
+      live "/stops/map", Gtfs.StopsMapLive, :index
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index

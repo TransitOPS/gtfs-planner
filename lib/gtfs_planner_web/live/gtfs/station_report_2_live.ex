@@ -512,12 +512,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
   defp save_error(_), do: "The stop could not be saved. Your draft remains here; try again."
 
-  # `Stop.changeset/2` is shared with import and other writers, so it cannot
-  # look levels up. The level select only offers this version's levels, but a
-  # crafted submit can name any text, and a stop pointing at a level missing
-  # from `levels.txt` disappears from every floorplan and breaks the export.
+  # `Stop.child_stop_changeset/2` is the station diagram's own rule, and this
+  # drawer only ever holds a stop inside the selected station, so its pre-check
+  # asks the same question the save will: a child stop must name a level. Using
+  # the general `Stop.changeset/2` here made the drawer and the command it writes
+  # through disagree, and a rejected save showed only the pre-check's errors.
+  #
+  # Neither changeset can look levels up. The level select only offers this
+  # version's levels, but a crafted submit can name any text, and a stop pointing
+  # at a level missing from `levels.txt` disappears from every floorplan and
+  # breaks the export.
   defp stop_changeset(stop, attrs, levels) do
-    changeset = Gtfs.change_stop(stop, attrs)
+    changeset = Stop.child_stop_changeset(stop, attrs)
     level_id = Ecto.Changeset.get_field(changeset, :level_id)
 
     if level_id in [nil, ""] or Enum.any?(levels, &(&1.level_id == level_id)) do

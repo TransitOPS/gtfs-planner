@@ -77,4 +77,43 @@ defmodule GtfsPlanner.BrowserGeocoding do
       {:ok, [@selected_result]}
     end
   end
+
+  @impl GtfsPlanner.Geocoding.Behaviour
+  def reverse(lat, lon, opts) when is_number(lat) and is_number(lon) do
+    amenities = [
+      %GtfsPlanner.Geocoding.Place{
+        name: "Cedar Valley Transit Center",
+        city: "Cedar Valley",
+        state: "VT",
+        country: "us",
+        lat: lat,
+        lon: lon,
+        distance_m: 42.0
+      }
+    ]
+
+    streets =
+      if Keyword.get(opts, :only) == :amenity do
+        []
+      else
+        [
+          %GtfsPlanner.Geocoding.Place{
+            name: "Depot Road",
+            street: "Depot Road",
+            city: "Cedar Valley",
+            state: "VT",
+            country: "us",
+            lat: lat,
+            lon: lon,
+            distance_m: 0.0
+          }
+        ]
+      end
+
+    if Keyword.get(opts, :amenities, false) do
+      {:ok, streets ++ amenities}
+    else
+      {:ok, streets}
+    end
+  end
 end

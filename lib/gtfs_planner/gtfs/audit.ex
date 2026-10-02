@@ -130,6 +130,9 @@ defmodule GtfsPlanner.Gtfs.Audit do
         diagram_coordinate
         parent_station
         level_id
+        stop_code
+        tts_stop_name
+        stop_url
       )
 
   def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
@@ -286,7 +289,15 @@ defmodule GtfsPlanner.Gtfs.Audit do
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate,
       parent_station: stop.parent_station,
-      level_id: stop.level_id
+      level_id: stop.level_id,
+      # The stop editor writes these three; without them the audit entry and any
+      # rollback would lose a sign number, a spoken name or a web page.
+      stop_code: stop.stop_code,
+      tts_stop_name: stop.tts_stop_name,
+      stop_url: stop.stop_url,
+      # Read-only here (Settings › Fares owns a zone) but recorded so history
+      # still shows what the stop had.
+      zone_id: stop.zone_id
     }
   end
 
@@ -495,6 +506,17 @@ defmodule GtfsPlanner.Gtfs.Audit do
     end)
   end
 
+  # A stop update carries its reversible columns plus the command's own provenance.
+  # `move`, `replaced_by`, `delete_old` and `replaced` are a move's and a replace's
+  # provenance: which stop took over, whether the old one was removed and how far
+  # the stop moved are not stop columns, and a history entry that cannot say them
+  # cannot explain a feed that changed.
+  defp audited_attrs_for(type, attrs) when type in [:stop, "stop"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in (reversible_fields_for(:stop) ++ ~w(move replaced_by delete_old replaced))
+    end)
+  end
+
   # A transfer write carries the explicit before/after snapshots and its operation
   # scope; no transfer column is diffed field-by-field.
   defp audited_attrs_for(type, attrs) when type in [:transfer, "transfer"] do
@@ -637,6 +659,19 @@ defmodule GtfsPlanner.Gtfs.Audit do
 
       _ ->
         changed
+    end
+  end
+
+  # A stop deletion is the one irreversible write in this module, so what went
+  # with the stop belongs in the log the same way a column diff does. `:stop` is
+  # not a structured audit type, so without this clause the counts a caller
+  # passes are dropped and the entry records only the pre-delete snapshot. A
+  # caller that passes no counts keeps the historical `nil` shape.
+  defp build_changed_fields(entity_type, "deleted", _snapshot, attrs)
+       when entity_type in [:stop, "stop"] do
+    case Map.get(attrs, "removed", Map.get(attrs, :removed)) do
+      nil -> nil
+      removed -> %{"removed" => stringify_map_keys(removed)}
     end
   end
 

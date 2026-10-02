@@ -424,7 +424,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
       changeset =
         %Stop{parent_station: parent}
-        |> Stop.create_changeset(
+        |> Stop.child_stop_changeset(
           Map.drop(attrs, [:parent_station, "parent_station", :parent_platform, "parent_platform"]),
           audit
         )
@@ -446,8 +446,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
       changeset =
         if rename?,
-          do: Stop.create_changeset(stop, attrs, audit),
-          else: Stop.editor_changeset(stop, attrs)
+          do: Stop.child_stop_changeset(stop, attrs, audit),
+          else: Stop.child_stop_changeset(stop, attrs)
 
       ensure_station_parent!(audit, station, changeset)
       ensure_scoped_level!(audit, changeset)
@@ -681,7 +681,12 @@ defmodule GtfsPlanner.Gtfs.Stations do
     run(audit, :share, fn station ->
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
-      write_stop(audit, Stop.editor_changeset(stop, %{diagram_coordinate: coordinate}), "updated")
+
+      write_stop(
+        audit,
+        Stop.child_stop_changeset(stop, %{diagram_coordinate: coordinate}),
+        "updated"
+      )
     end)
   end
 
@@ -1031,8 +1036,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
   defp rollback_changeset(audit, station, %Stop{} = stop, target) do
     changeset =
       if Map.has_key?(target, "stop_id"),
-        do: Stop.create_changeset(stop, target, audit),
-        else: Stop.editor_changeset(stop, target)
+        do: Stop.child_stop_changeset(stop, target, audit),
+        else: Stop.child_stop_changeset(stop, target)
 
     if stop.id == station.id do
       if Ecto.Changeset.get_field(changeset, :location_type) != 1,

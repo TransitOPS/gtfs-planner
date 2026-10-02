@@ -423,7 +423,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
     end
 
-    test "a stop with a parent station requires level_id", %{
+    test "a stop with a parent station needs no level, and the diagram's form still does", %{
       organization: org,
       gtfs_version: version
     } do
@@ -437,8 +437,16 @@ defmodule GtfsPlanner.GtfsTest do
           gtfs_version_id: version.id
         })
 
-      assert {:error, changeset} = insert_stop(attrs)
-      assert %{level_id: ["can't be blank"]} = errors_on(changeset)
+      # `Stop.changeset/2` is the general writer, so it stays permissive about
+      # `level_id`: GTFS needs a level only for an elevator pathway, and the map
+      # editor moves a stop between stations. The station diagram's own form is the
+      # one that requires one, and it says so through `child_stop_changeset/2`.
+      assert {:ok, child} = insert_stop(attrs)
+      assert child.parent_station == station.stop_id
+      assert child.level_id == nil
+
+      assert %{level_id: ["can't be blank"]} =
+               errors_on(Stop.child_stop_changeset(%Stop{}, attrs))
     end
 
     test "import_create_stop/1 allows nil level_id when parent_station is set", %{

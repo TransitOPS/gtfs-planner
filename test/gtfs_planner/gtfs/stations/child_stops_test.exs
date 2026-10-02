@@ -236,6 +236,25 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
     assert actor_id == audit.actor_id
   end
 
+  test "diagram move accepts a platform that has no coordinates", %{
+    audit: audit,
+    organization: organization,
+    version: version,
+    level: level
+  } do
+    child =
+      child_stop_fixture(organization.id, version.id, audit.station_stop_id,
+        level_id: level.level_id,
+        location_type: 0,
+        stop_lat: nil,
+        stop_lon: nil
+      )
+
+    assert {:ok, moved} = Stations.move_child_stop(audit, child.id, %{x: 12, y: 34}, 1)
+    assert moved.diagram_coordinate == %{"x" => 12, "y" => 34}
+    assert Repo.get!(Stop, child.id).diagram_coordinate == %{"x" => 12, "y" => 34}
+  end
+
   test "a deactivated editor cannot mutate the stop or its history", %{
     audit: audit,
     actor: actor,

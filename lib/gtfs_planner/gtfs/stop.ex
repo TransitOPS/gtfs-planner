@@ -77,6 +77,10 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @type accessibility_status :: :accessible | :not_accessible | :unknown
   @type accessibility_source :: :direct | :inherited | :missing
 
+  # The editor's writable fields. `stop_code`, `tts_stop_name` and `stop_url`
+  # join the upstream station-editor set because this run's stop editor writes
+  # them; `organization_id` and `gtfs_version_id` are never cast here, so
+  # ownership always comes from the server (`create_changeset/3`).
   @editor_fields [
     :stop_name,
     :stop_desc,
@@ -85,17 +89,37 @@ defmodule GtfsPlanner.Gtfs.Stop do
     :location_type,
     :wheelchair_boarding,
     :platform_code,
+    :stop_code,
+    :tts_stop_name,
+    :stop_url,
     :diagram_coordinate,
     :parent_station,
     :level_id
   ]
 
-  @doc "Validates fields that a station editor may change."
+  # GTFS requires a name and coordinates only where a rider can board: a stop, a
+  # station or an entrance/exit (types 0-2). A node or a boarding area (3, 4) is
+  # positioned by its parent, so the editor leaves those fields optional.
+  @located_types [nil, 0, 1, 2]
+
+  @doc """
+  Validates fields that a stop editor may change.
+
+  Requires a name and both coordinates for the located location types, refuses a
+  station nested inside another station, and accepts only an absolute
+  `http`/`https` `stop_url` with a host, so a `javascript:` or `data:` value gets
+  a field error instead of reaching the exported feed.
+
+  `level_id` stays optional here: GTFS needs it only for elevator pathways. The
+  station diagram, whose own form always shows a level for a child stop, adds the
+  requirement through `child_stop_changeset/2`.
+  """
   def editor_changeset(stop, attrs) do
     stop
     |> cast(attrs, @editor_fields)
     |> validate_stop_fields()
-    |> validate_parent()
+    |> validate_editor_rules()
+    |> validate_located_type_fields()
   end
 
   @doc "Creates an editor stop with ownership supplied by the server."
@@ -106,19 +130,83 @@ defmodule GtfsPlanner.Gtfs.Stop do
     %{stop | organization_id: org_id, gtfs_version_id: version_id}
     |> cast(attrs, [:stop_id | @editor_fields])
     |> validate_stop_fields()
-    |> validate_parent()
+    |> validate_editor_rules()
+    |> validate_located_type_fields()
   end
 
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do
     stop
     |> base_changeset(attrs)
-    |> validate_parent()
+    |> validate_parent_rule()
+  end
+
+  # GTFS: only a stop that actually names a parent can be a station inside one.
+  defp validate_parent_rule(changeset) do
+    if get_field(changeset, :parent_station) in [nil, ""] do
+      changeset
+    else
+      validate_station_has_no_parent(changeset)
+    end
   end
 
   @doc "Creates an import changeset for a stop with permissive parent/level validation."
   def import_changeset(stop, attrs) do
     base_changeset(stop, attrs)
+  end
+
+  # GTFS needs level_id only for elevator pathways, so `Stop.editor_changeset/2`
+  # leaves it optional and the map editor can move a stop between stations. The
+  # station diagram's child-stop form always shows a level picker and requires one
+  # there, so that form builds its changeset through these functions.
+  @doc """
+  Adds the station diagram's own rule: a child stop must name a level.
+
+  `Stop.editor_changeset/2` is permissive about `level_id` so the map editor can
+  move a stop between stations and so the importer keeps its permissive rules.
+  """
+  def child_stop_changeset(stop, attrs) do
+    stop
+    |> cast(attrs, @editor_fields)
+    |> validate_stop_fields()
+    |> validate_editor_rules()
+    |> require_child_level()
+  end
+
+  @doc "Same rule as `child_stop_changeset/2`, for a stop being created."
+  def child_stop_changeset(%__MODULE__{} = stop, attrs, audit) do
+    %{stop | organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id}
+    |> cast(attrs, [:stop_id | @editor_fields])
+    |> validate_stop_fields()
+    |> validate_editor_rules()
+    |> require_child_level()
+  end
+
+  defp require_child_level(changeset) do
+    if get_field(changeset, :parent_station) in [nil, ""] do
+      changeset
+    else
+      validate_required(changeset, [:level_id])
+    end
+  end
+
+  # The rules every stop-writing surface shares, so all of them refuse the same
+  # nested station and the same unusable web address.
+  defp validate_editor_rules(changeset) do
+    changeset
+    |> validate_parent_rule()
+    |> validate_http_url(:stop_url)
+  end
+
+  # A name and both coordinates are required only where a rider can board. The
+  # station diagram's own form does not ask for them: it positions a child stop
+  # on the diagram, so `child_stop_changeset/2` leaves these fields optional.
+  defp validate_located_type_fields(changeset) do
+    if get_field(changeset, :location_type) in @located_types do
+      validate_required(changeset, [:stop_name, :stop_lat, :stop_lon])
+    else
+      changeset
+    end
   end
 
   # GTFS: a station (location_type=1) must not have a parent_station.
@@ -164,16 +252,6 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> validate_number(:stop_lon, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id])
     |> foreign_key_constraint(:organization_id)
-  end
-
-  defp validate_parent(changeset) do
-    if get_field(changeset, :parent_station) in [nil, ""] do
-      changeset
-    else
-      changeset
-      |> validate_required([:level_id])
-      |> validate_station_has_no_parent()
-    end
   end
 
   @doc "Returns human-readable label for location_type."
