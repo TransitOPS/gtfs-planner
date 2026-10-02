@@ -716,6 +716,11 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
        when is_binary(cursor),
        do: "Only part of the report; pass next_cursor with the digest to continue."
 
+  # An explanation reads retained samples without a cursor, so its
+  # incompleteness is the samples themselves; the panel still gets a reason.
+  defp completeness_reason(%{completeness: "incomplete"}),
+    do: "Only retained samples of this code's findings are available."
+
   defp completeness_reason(_read), do: nil
 
   defp exclusion_label(%{reason: reason, count: count}), do: "#{reason} · #{count}"
@@ -787,13 +792,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     end
   end
 
-  defp take_export_type(args) do
-    case Map.fetch(args, "export_type") do
-      {:ok, value} when is_binary(value) -> {:ok, value}
-      {:ok, _value} -> {:error, invalid_request()}
-      :error -> {:error, invalid_request()}
-    end
-  end
+  defp take_export_type(args), do: take_bound(args, "export_type", 32, true)
 
   defp resolve_export_ref(_args, payload, export_ref) do
     if is_binary(export_ref) do
@@ -812,6 +811,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   # kinds this snapshot admits, defaulting to the full export.
   defp resolve_export_type(payload) do
     case Map.get(payload, "type") do
+      "stations" -> {:ok, "pathways"}
       type when is_binary(type) and type in @export_types -> {:ok, type}
       nil -> {:ok, "full"}
       _other -> {:error, invalid_request()}
