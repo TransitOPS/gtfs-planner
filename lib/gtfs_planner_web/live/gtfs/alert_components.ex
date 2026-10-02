@@ -2126,16 +2126,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   # its period is read from the answer: both dates, and the days between them.
   defp occurrence_count(_occurrences, %{pattern: :continuous, first_date: first, last_date: last})
        when is_struct(first, Date) and is_struct(last, Date) do
-    "#{Date.diff(last, first) + 1} days: #{short_date(first)} to #{short_date(last)}"
+    day_count(Date.diff(last, first) + 1, first, last)
   end
 
   defp occurrence_count(occurrences, _timing) do
-    first = List.first(occurrences)
-    last = List.last(occurrences)
-    days = if length(occurrences) == 1, do: "day", else: "days"
-
-    "#{length(occurrences)} #{days}: #{short_date(first.date)} to #{short_date(last.date)}"
+    day_count(
+      length(occurrences),
+      List.first(occurrences).date,
+      List.last(occurrences).date
+    )
   end
+
+  defp day_count(1, first, _last), do: "1 day: #{short_date(first)}"
+
+  defp day_count(days, first, last),
+    do: "#{days} days: #{short_date(first)} to #{short_date(last)}"
 
   defp occurrence_label(occurrence, %{pattern: :continuous, last_date: last})
        when is_struct(last, Date) do
