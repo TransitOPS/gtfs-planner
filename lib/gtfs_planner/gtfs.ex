@@ -749,16 +749,7 @@ defmodule GtfsPlanner.Gtfs do
 
   @spec row_block_id(term()) :: String.t() | nil
   defp row_block_id(row) when is_map(row) do
-    case Map.get(row, :block_id, Map.get(row, "block_id")) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> nil
-          trimmed -> trimmed
-        end
-
-      _value ->
-        nil
-    end
+    Values.presence(Map.get(row, :block_id, Map.get(row, "block_id")))
   end
 
   defp row_block_id(_row), do: nil

@@ -968,12 +968,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp paste_mode(_params, input), do: input.mode || :add
 
-  defp paste_template(%{"template_timing_id" => id}, _input) when is_binary(id) do
-    case String.trim(id) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
+  defp paste_template(%{"template_timing_id" => id}, _input) when is_binary(id),
+    do: Values.presence(id)
 
   defp paste_template(_params, input), do: input.template_timing_id
 
@@ -1728,7 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     headline =
       case counts do
         [] -> "Applied the paste"
-        counts -> Enum.join(counts, ", ") |> capitalize_first()
+        counts -> Enum.join(counts, ", ") |> Wording.capitalize_first()
       end
 
     [
@@ -1754,9 +1750,6 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp vehicle_flash(%{vehicles_before: count_before, vehicles_after: count_after}) do
     "Vehicles needed: #{count_before} → #{count_after}."
   end
-
-  defp capitalize_first(""), do: ""
-  defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
 
   defp apply_schedules_path(socket, scope) do
     query = [

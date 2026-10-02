@@ -41,6 +41,8 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
   import GtfsPlannerWeb.PlannerComponents,
     only: [drawer_footer: 1, drawer_scroll: 1, form_error_summary: 1, message: 1]
 
+  alias GtfsPlanner.Wording
+
   # AC-22 bounds each listed row group; the remainder is reported as a count, so
   # a 5,000-row HR export cannot turn the review into an unusable wall.
   @note_limit 100
@@ -689,20 +691,11 @@ defmodule GtfsPlannerWeb.Gtfs.RosterOperatorsComponents do
       holdings
       |> Enum.map(&line_clause(&1, named?))
       |> join_clauses()
-      |> capitalize_first()
+      # `String.capitalize/1` would downcase a version name mid-sentence;
+      # `Wording.capitalize_first/1` upcases only the string's first grapheme.
+      |> Wording.capitalize_first()
 
     "#{clauses} #{if one?, do: "becomes", else: "become"} Open."
-  end
-
-  # Only the first letter: `String.capitalize/1` would downcase a version name
-  # in the middle of the sentence. A grapheme rather than a byte, because a
-  # version name may open with anything.
-  defp capitalize_first(""), do: ""
-
-  defp capitalize_first(string) do
-    {first, rest} = String.next_grapheme(string)
-
-    String.upcase(first) <> rest
   end
 
   defp line_clause(%{line_number: number, version_name: name}, true),

@@ -587,7 +587,7 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
 
     case how do
       [] -> nil
-      parts -> "#{capitalize_first(Enum.join(parts, " or "))}."
+      parts -> "#{Wording.capitalize_first(Enum.join(parts, " or "))}."
     end
   end
 
@@ -750,9 +750,6 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
   # whitespace-only names must export unchanged.
   defp non_empty_or(value, _fallback) when is_binary(value) and value != "", do: value
   defp non_empty_or(_value, fallback), do: fallback
-
-  defp capitalize_first(""), do: ""
-  defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
 
   defp lowercase_first(""), do: ""
 

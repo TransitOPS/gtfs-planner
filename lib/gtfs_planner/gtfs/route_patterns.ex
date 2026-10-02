@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -2147,7 +2148,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp selection_in_scope?(_pattern, scope_query, ids) do
     ids = Enum.uniq(ids)
 
-    with true <- Enum.all?(ids, &match?({:ok, _}, Ecto.UUID.cast(&1))),
+    with true <- Enum.all?(ids, &Values.uuid?/1),
          found = from(trip in scope_query, where: trip.id in ^ids, select: trip.id) |> Repo.all(),
          true <- length(found) == length(ids) do
       :ok

@@ -5493,12 +5493,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp header_toward(%{pattern: %{headsign: headsign}}) when is_binary(headsign) do
-    case String.trim(headsign) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
+  defp header_toward(%{pattern: %{headsign: headsign}}) when is_binary(headsign),
+    do: Headsigns.normalize(headsign)
 
   defp header_toward(_assigns), do: nil
 

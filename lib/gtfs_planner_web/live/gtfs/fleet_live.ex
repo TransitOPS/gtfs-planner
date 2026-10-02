@@ -79,6 +79,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias Plug.Conn.Query
 
   @vehicle_type_form_id "vehicle-type-form"
   @vehicle_type_form_error_id "vehicle-type-form-error"
@@ -1875,7 +1876,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     case URI.parse(uri).query do
       nil -> nil
       "" -> nil
-      query -> Plug.Conn.Query.decode(query)
+      query -> Query.decode(query)
     end
   end
 
