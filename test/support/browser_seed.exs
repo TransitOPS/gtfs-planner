@@ -6613,6 +6613,59 @@ case Accounts.register_first_admin(%{
       match_b
     )
 
+    # The in-seat helper's own journey data: one place holding two blocks of one
+    # consecutive cross-route pair each, on the weekday service alone, so both
+    # pairs are the block's next pair on every date they run and may therefore be
+    # prepared. The first pair already carries a type-4 record, so the journey's
+    # save replaces a real setting rather than creating the first one, and the
+    # group's own result names the setting the review changed.
+    in_seat_stop =
+      GtfsPlanner.GtfsFixtures.stop_fixture(org.id, blocks_version.id, %{
+        stop_id: "BB_INSEAT",
+        stop_name: "Blocks In-seat Plaza",
+        stop_lat: 40.8000,
+        stop_lon: -73.9400
+      })
+
+    in_seat_pairs =
+      for {block_id, first} <- [
+            {"BB-ISEAT-1", 10 * 3_600},
+            {"BB-ISEAT-2", 11 * 3_600}
+          ] do
+        from =
+          block_trip.(%{
+            trip_id: "BB_ISEAT_#{block_id}_A",
+            route_id: "BB_R1",
+            block_id: block_id,
+            first_arrival: block_clock.(first),
+            last_arrival: block_clock.(first + 1_800),
+            first_stop: in_seat_stop.stop_id,
+            last_stop: in_seat_stop.stop_id
+          })
+
+        to =
+          block_trip.(%{
+            trip_id: "BB_ISEAT_#{block_id}_B",
+            route_id: "BB_R2",
+            block_id: block_id,
+            first_arrival: block_clock.(first + 4_200),
+            last_arrival: block_clock.(first + 6_000),
+            first_stop: in_seat_stop.stop_id,
+            last_stop: in_seat_stop.stop_id
+          })
+
+        {from, to}
+      end
+
+    [{in_seat_first, in_seat_second} | _rest] = in_seat_pairs
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      blocks_version.id,
+      in_seat_first,
+      in_seat_second
+    )
+
     # A stale type-4 record: BB_STALE_A→BB_STALE_C skips BB_STALE_B, so the record
     # is not the block's next pair on either weekday day type.
     stale_a =

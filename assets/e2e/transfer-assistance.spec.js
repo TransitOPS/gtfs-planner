@@ -31,6 +31,11 @@ const TRANSFERS_VERSION = "Browser Transfers Version";
 
 const E2E_VERSION = "Browser E2E Version";
 
+// The Blocks journey's version. Its seed puts a two-block, two-connection group
+// at BB_INSEAT on the weekday service, so both pairs are consecutive on every
+// date they run and the helper may prepare them.
+const BLOCKS_VERSION = "Browser Blocks Version";
+
 // The approval journey's two routes are both on the seeded browser version: the
 // Schedules read route calls BSS_3 at 06:11, and the grid route leaves BSS_4 at
 // 06:48. Both run on CAL_DAILY, which covers every day either side of the seed
@@ -443,6 +448,135 @@ test.describe("connection approval helper", () => {
   });
 });
 
+// The in-seat journey (EV-18): the Blocks page's own connection group is the
+// helper's only source, the prepared card opens the Set-all review this page
+// already had, and only that review's Save writes. The whole journey lives on
+// the seeded "Browser Blocks Version" group the seed puts at BB_INSEAT, and the
+// provider stand-in prepares the choice the operator asked for from the page's
+// own admitted snapshot.
+//
+// One scenario covers the group half. The single-connection half — the drawer
+// that the helper populates instead of the Set-all review — is proved by the
+// focused LiveView evidence
+// (`test/gtfs_planner_web/live/gtfs/in_seat_assistance_live_test.exs`), because
+// the connection drawer is a modal dialog in the top layer: the helper panel
+// cannot be driven while it is open, so a browser journey would have to change
+// the drawer's own modality to reach the composer.
+test.describe("in-seat helper", () => {
+  test("in-seat: the group becomes the source, the prepared card opens this page's review, and only its save writes", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openBlocksConnections(page);
+
+    // The group the seed derives, opened through the page's own group row, so
+    // the journey drives the same selection a reader does.
+    const groupRow = page
+      .locator('[id^="connections-group-"]')
+      .filter({ hasText: "Blocks In-seat Plaza" })
+      .first();
+    await expect(groupRow).toBeVisible();
+    await groupRow.click();
+    await expect(page.locator("#connections-group-heading")).toContainText(
+      "Blocks In-seat Plaza",
+    );
+
+    // The page offers the helper wherever it can supply a connection, and the
+    // group control names the whole selection rather than one row.
+    await expect(page.locator("#agent-helper-open")).toBeVisible();
+    await expect(page.locator("#in-seat-helper-group")).toBeVisible();
+    await expect(page.locator("#in-seat-helper-notice")).toHaveCount(0);
+
+    // The receipt is the page's own answer: how many connections, and the day
+    // type on screen. Nothing the operator typed names a pair.
+    await page.locator("#in-seat-helper-group").click();
+    const source = page.locator("#in-seat-helper-source");
+    await expect(source).toBeVisible({ timeout: 30_000 });
+    await expect(source).toContainText("2 connections in this group");
+
+    await page.locator("#agent-helper-open").click();
+    await expect(page.locator("#agent-panel")).toBeVisible();
+    await expect(page.locator("#agent-panel")).toContainText(
+      "Blocks · " + BLOCKS_VERSION,
+    );
+    await page.locator("#agent-new-conversation").click();
+
+    await capture(page, testInfo, "in-seat-source-1440x1000");
+
+    await page
+      .locator("#agent-composer-input")
+      .fill("These have to be a reboard");
+    await page.locator("#agent-send").click();
+
+    // The prepared card carries this page's one prepared command kind, under the
+    // label this page gives it.
+    const reviewButton = page.locator('[id^="agent-review-prepared-"]').last();
+    await expect(reviewButton).toHaveText("Review prepared in-seat setting", {
+      timeout: 30_000,
+    });
+
+    // Preparing wrote nothing: the review has not been asked for yet, and the
+    // page offers no notice about a change it has not opened for review.
+    await expect(page.locator("#set-all-review")).toHaveCount(0);
+    await expect(page.locator("#in-seat-helper-notice")).toHaveCount(0);
+
+    await reviewButton.click();
+
+    // The review is this page's existing Set-all review, under the prepared
+    // choice, with the fresh expected rows the page rebuilt. Both rows are
+    // actionable: one carries the seed's own type-4 record and the other carries
+    // none, so the save changes one setting and writes the other.
+    const review = page.locator("#set-all-review");
+    await expect(review).toBeVisible();
+    await expect(review).toContainText("riders must re-board");
+    await expect(page.locator("#set-all-review-included")).toHaveText(
+      "2 of 2 included",
+    );
+    await expect(page.locator("[data-role='bulk-result']")).toHaveCount(0);
+    await expect(page.locator("#in-seat-helper-notice")).toContainText(
+      "Nothing is saved until you save it on this page",
+    );
+
+    await capture(page, testInfo, "in-seat-review-1440x1000", review);
+
+    await page.locator("#set-all-review-save").click();
+
+    // The result is the page's own, naming the setting the review changed and
+    // the count it wrote, with no skipped row.
+    const result = page.locator("[data-role='bulk-result']");
+    await expect(result).toContainText("Saved 2 connections", {
+      timeout: 30_000,
+    });
+    await expect(page.locator("[data-role='bulk-result-skip']")).toHaveCount(0);
+
+    // The receipt belongs to the entry that prepared this setting, settled by
+    // the save rather than by the helper.
+    await expect(page.locator('[id^="agent-prepared-"]').last()).toContainText(
+      "Applied",
+    );
+
+    await capture(page, testInfo, "in-seat-saved-1440x1000", result);
+
+    // The Undo is the page's existing guarded Undo: it restores the row the save
+    // itself wrote and leaves the record the seed already held alone. The panel
+    // is closed first, because the result the Undo lives beside is the page's own
+    // rather than the panel's.
+    await page.locator("#agent-panel-close").click();
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    await page.locator("#bulk-undo").click();
+    await expect(result).toContainText("Restored 2 connections.", {
+      timeout: 30_000,
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const fitsViewport = await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    );
+    expect(fitsViewport).toBe(true);
+    await capture(page, testInfo, "in-seat-saved-390x844");
+  });
+});
+
 // Signs in, reaches the seeded transfers version and opens a new draft whose
 // direction and time this journey reviews.
 async function openDraft(page) {
@@ -489,6 +623,23 @@ async function openSchedules(page) {
 
   await page.goto(`/gtfs/${versionId}/routes/${APPROVAL_FROM.route}/schedules`);
   await page.waitForSelector("#connection-approval-form", { timeout: 15_000 });
+}
+
+// Signs in, reaches the seeded blocks version and opens the Connections view,
+// where the group's own rows are the selection this journey hands over.
+async function openBlocksConnections(page) {
+  await login(page);
+
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: BLOCKS_VERSION });
+  await expect(option).toHaveCount(1);
+  const versionId = await option.getAttribute("data-version-id");
+  if (!versionId)
+    throw new Error(`${BLOCKS_VERSION} is missing its version ID`);
+
+  await page.goto(`/gtfs/${versionId}/blocks?view=connections`);
+  await page.waitForSelector("#connections-panel", { timeout: 15_000 });
 }
 
 async function login(page) {

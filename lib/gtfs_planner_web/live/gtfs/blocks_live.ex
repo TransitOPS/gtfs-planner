@@ -56,6 +56,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
@@ -67,8 +69,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
@@ -231,6 +235,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # drawer shows "Saving…", a second click is refused by the pending state, and
   # the outcome is applied when it arrives.
   @save_bulk_key :save_bulk
+
+  # --- the in-seat helper ---------------------------------------------------
+
+  # The helper's only source is this page's own selection: the group the reader
+  # opened in the Connections view, or the one connection the drawer is showing,
+  # together with the day type on screen. Both are derived from the loaded day
+  # rather than named by an event, so an admitted pair is the page's own answer
+  # and a forged event cannot choose one (INV-1, INV-2).
+  @in_seat_source_kind "in_seat"
+  @in_seat_source_schema_version 1
+
+  # What this page says about the helper beside its own panel. A proposal that no
+  # longer reads against this page's selection is dropped with the first; a failed
+  # admission takes the source away with the second rather than leaving the panel
+  # reading a selection the page no longer holds.
+  @in_seat_prepared_missing "That prepared change is no longer in this conversation. Ask the helper again."
+  @in_seat_source_failed "This version or your access changed, so the helper has no connections to work from."
+  @in_seat_no_group "Open a connection group, then ask the helper about it."
+  @in_seat_no_connection "Open one connection, then ask the helper about it."
+  @in_seat_stale_notice "Those connections are no longer the ones this page selected, so nothing was reviewed."
+  @in_seat_review_notice "Prepared for your review. Nothing is saved until you save it on this page."
+  @in_seat_partial_notice "The helper's proposal was only partly saved, so it is still open for review."
 
   # The bulk outcomes in the group's own words. A failure keeps the review open
   # with the included rows and boxes exactly as the editor left them, because the
@@ -407,7 +433,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:connection_result, nil)
      |> assign(:connection_error, nil)
      |> assign(:connection_pending, false)
-     |> assign_empty_derived()}
+     |> assign(:in_seat_source, nil)
+     |> assign(:in_seat_notice, nil)
+     |> assign(:in_seat_origin, nil)
+     |> assign(:bulk_ref, 0)
+     |> assign(:connection_pair_ref, nil)
+     |> assign(:connection_ref, 0)
+     |> assign_empty_derived()
+     |> AgentPanel.mount("in_seat")}
   end
 
   @impl true
@@ -537,7 +570,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("open_group", %{"group" => group}, socket) do
     socket
     |> assign(:bulk_choice, nil)
-    |> assign(:bulk_review, nil)
+    |> close_bulk_review()
+    |> bump_bulk_ref()
+    |> clear_in_seat_source()
     |> patch(%{group: Values.presence(group)})
   end
 
@@ -546,7 +581,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("close_group", _params, socket) do
     socket
     |> assign(:bulk_choice, nil)
-    |> assign(:bulk_review, nil)
+    |> close_bulk_review()
+    |> bump_bulk_ref()
+    |> clear_in_seat_source()
     |> patch(%{group: nil})
   end
 
@@ -558,7 +595,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("bulk_choice", %{"bulk" => choice}, socket) do
     case Map.fetch(@connection_settings, choice) do
       {:ok, _label} when choice in ["none", "stay", "reboard"] ->
-        {:noreply, socket |> assign(:bulk_choice, choice) |> assign(:bulk_review, nil)}
+        {:noreply,
+         socket
+         |> assign(:bulk_choice, choice)
+         |> close_bulk_review()
+         |> bump_bulk_ref()}
 
       _unknown ->
         {:noreply, socket}
@@ -577,6 +618,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # Choosing a different setting closes the review, so a review never describes a
   # setting the panel no longer shows.
   def handle_event("open_bulk_review", _params, socket) do
+    # The reference is bumped first, so the review is built under the reference
+    # its own save will carry; a review built under the previous one could never
+    # be matched by the result that arrives after it (AC-12, FH-12).
+    socket = bump_bulk_ref(socket)
+
     case bulk_review(socket.assigns) do
       nil -> {:noreply, socket}
       review -> {:noreply, assign(socket, :bulk_review, review)}
@@ -594,8 +640,60 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("toggle_bulk_row", _params, socket), do: {:noreply, socket}
 
   def handle_event("close_bulk_review", _params, socket) do
-    {:noreply, assign(socket, :bulk_review, nil)}
+    {:noreply, socket |> close_bulk_review() |> bump_bulk_ref()}
   end
+
+  # --- the in-seat helper ---------------------------------------------------
+
+  # Offering the group's whole selection to the helper is a read of this page's
+  # own derived group: nothing is named by the event, so the admitted pairs are
+  # the rows the reader is looking at. Nothing is saved and no drawer closes.
+  def handle_event("in_seat_helper_group", _params, socket) do
+    case connections_view(socket.assigns) do
+      %{group: %{token: token, connections: [_first | _rest] = connections}} ->
+        {:noreply,
+         admit_in_seat_source(socket, %{
+           scope: :group,
+           group_token: token,
+           pairs: Enum.map(connections, &{&1.from.id, &1.to.id})
+         })}
+
+      _no_group ->
+        {:noreply, assign(socket, :in_seat_notice, @in_seat_no_group)}
+    end
+  end
+
+  # The single connection is the drawer's own pair, read from the drawer the
+  # editor has open rather than from anything the event carries.
+  def handle_event("in_seat_helper_connection", _params, socket) do
+    case socket.assigns.gap_view do
+      gap when is_map(gap) ->
+        {:noreply,
+         admit_in_seat_source(socket, %{
+           scope: :connection,
+           group_token: in_seat_group_token(socket, gap),
+           pairs: [{gap.from.id, gap.to.id}]
+         })}
+
+      _no_connection ->
+        {:noreply, assign(socket, :in_seat_notice, @in_seat_no_connection)}
+    end
+  end
+
+  # Taking the selection back drops the snapshot with it, so the panel has
+  # nothing to read until the reader supplies connections again (INV-2).
+  def handle_event("in_seat_helper_clear", _params, socket) do
+    {:noreply, socket |> clear_in_seat_source() |> assign(:in_seat_notice, nil)}
+  end
+
+  # The prepared card hands over one entry id and nothing else: the proposal this
+  # page reviews is the one that entry prepared, never one a client names
+  # (INV-1, CR-3).
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_in_seat_prepared(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
 
@@ -618,7 +716,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          socket
          |> assign(:bulk_error, nil)
          |> assign(:bulk_pending, true)
-         |> start_async(@save_bulk_key, fn ->
+         |> start_async({@save_bulk_key, request.ref}, fn ->
            {request, Gtfs.set_in_seat_connections(request.entries, request.choice, request.audit)}
          end)}
 
@@ -1220,7 +1318,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          socket
          |> assign(:connection_error, nil)
          |> assign(:connection_pending, true)
-         |> start_async(@save_connection_key, fn ->
+         |> start_async({@save_connection_key, socket.assigns.connection_ref}, fn ->
            {request,
             Gtfs.set_in_seat_connection(
               request.from,
@@ -1620,6 +1718,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          to: gap.to.trip_id,
          choice: choice,
          expected: expected_rows(gap.records),
+         # The lifecycle reference the drawer was showing when the request was
+         # built, so a late result can only land on this pair (AC-12, FH-12).
+         ref: assigns.connection_ref,
          # A pair with no record has nothing to restore a setting from, so its
          # Undo writes `:not_stated`, which is what removes the row the save made.
          previous: assigns.connection_saved || :not_stated,
@@ -2085,8 +2186,293 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         rows =
           Enum.map(group.connections, &bulk_review_row(&1, choice, bulk_checks(assigns, pairs)))
 
-        %{group_token: group.token, choice: choice, group: group, rows: rows}
+        %{
+          group_token: group.token,
+          choice: choice,
+          group: group,
+          rows: rows,
+          ref: assigns.bulk_ref
+        }
     end
+  end
+
+  # --- the in-seat helper ---------------------------------------------------
+
+  # The helper is offered wherever this page can supply a connection to read: a
+  # loaded day in the Connections view, or a connection drawer the reader has
+  # open. A day with neither has nothing to hand over, so the button is not
+  # offered rather than opened onto an empty selection (AC-12).
+  defp helper_action?(assigns),
+    do:
+      assigns.load_state == :loaded and
+        (assigns.state.view == :connections or not is_nil(assigns.gap_view))
+
+  defp agent_scope_line(assigns), do: "Blocks · " <> assigns.current_gtfs_version.name
+
+  # The panel's action label is named for this page's one prepared command kind,
+  # so the button never promises a review another page owns (INV-1).
+  defp agent_review_label(_prepared), do: "Review prepared in-seat setting"
+
+  # What the helper is reading, in the reader's own words: the group it is
+  # holding, or the one connection the drawer is showing.
+  defp in_seat_source_label(%{scope: :group, pairs: pairs}),
+    do:
+      "#{length(pairs)} #{if length(pairs) == 1, do: "connection", else: "connections"} in this group"
+
+  defp in_seat_source_label(%{scope: :connection}), do: "one connection"
+
+  defp in_seat_day_label(%{label: label}), do: label
+  defp in_seat_day_label(_no_day), do: "this day"
+
+  # The Set-all review's lifecycle reference. Opening, closing or replacing the
+  # review, choosing another setting and opening another group all retire the
+  # reference an in-flight write was started under, so its late result can never
+  # clear the pending state or write an error into the review that replaced it
+  # (AC-12, FH-12).
+  defp bump_bulk_ref(socket),
+    do:
+      socket
+      |> assign(:bulk_ref, socket.assigns.bulk_ref + 1)
+      |> assign(:bulk_pending, false)
+
+  defp close_bulk_review(socket), do: assign(socket, :bulk_review, nil)
+
+  # The selection the helper may read is this page's own: the group the reader
+  # opened in the Connections view, or the one connection the drawer is showing,
+  # together with the day type on screen. Every value in the payload comes from
+  # the loaded day and the day type this page is already showing, never from the
+  # event, so a forged event cannot choose a pair (INV-1, INV-2).
+  defp admit_in_seat_source(socket, selection) do
+    base = Scope.context({:version, socket.assigns.current_gtfs_version.id})
+
+    case socket.assigns.day_type do
+      nil ->
+        assign(socket, :in_seat_notice, @in_seat_source_failed)
+
+      day_type ->
+        payload = %{
+          "schema_version" => @in_seat_source_schema_version,
+          "group_token" => selection.group_token,
+          "day_type_key" => day_type.key,
+          "day_type_label" => day_type.label,
+          "pairs" =>
+            Enum.map(selection.pairs, fn {from_uuid, to_uuid} ->
+              %{"from_uuid" => from_uuid, "to_uuid" => to_uuid}
+            end)
+        }
+
+        case Scope.with_source_snapshot(base, %{kind: @in_seat_source_kind, payload: payload}) do
+          {:ok, context} ->
+            socket
+            |> assign(:in_seat_source, selection)
+            |> assign(:in_seat_notice, nil)
+            |> AgentPanel.set_context(context)
+
+          {:error, _reason} ->
+            socket
+            |> assign(:in_seat_source, nil)
+            |> assign(:in_seat_notice, @in_seat_source_failed)
+            |> AgentPanel.set_context(base)
+        end
+    end
+  end
+
+  # Taking the selection back drops the snapshot with it, so the panel has
+  # nothing to read until the reader supplies connections again (INV-2).
+  defp clear_in_seat_source(socket) do
+    socket
+    |> assign(:in_seat_source, nil)
+    |> assign(:in_seat_origin, nil)
+    |> AgentPanel.set_context(Scope.context({:version, socket.assigns.current_gtfs_version.id}))
+  end
+
+  # One connection's group token is the group this page derived it into, falling
+  # back to the pair's own identity when the day holds no such group. The token is
+  # a label the helper reports back, not an identity it may act on.
+  defp in_seat_group_token(%{assigns: %{connections_all: connections}}, gap) do
+    %{from: from, to: to} = gap
+
+    with %{group_key: key} <-
+           Enum.find(connections.connections, &(&1.id == "#{from.id}|#{to.id}")),
+         %{token: token} <- Enum.find(connections.groups, &(&1.key == key)) do
+      token
+    else
+      _other -> "#{from.id}|#{to.id}"
+    end
+  end
+
+  # The prepared card hands over one entry id; this page asks the session for that
+  # entry's own proposal. Only a command prepared against the selection this page
+  # currently holds is opened, and its pairs must be exactly the pairs this page
+  # admitted, so a proposal built from an earlier group is dropped rather than
+  # reviewed (INV-1, INV-2, CR-3).
+  defp review_in_seat_prepared(socket, id) do
+    with {entry_id, ""} when entry_id > 0 <- Integer.parse(to_string(id)),
+         %{scope: scope, pairs: pairs} when pairs != [] <- socket.assigns.in_seat_source,
+         {:ok, %{command: %{kind: :in_seat_policy, pairs: prepared, choice: choice} = command}} <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         :ok <- in_seat_digest_matches(socket, command),
+         :ok <- in_seat_pairs_match(pairs, prepared),
+         {:ok, setting} <- in_seat_setting(choice) do
+      open_in_seat_review(socket, %{
+        scope: scope,
+        entry_id: entry_id,
+        command: command,
+        setting: setting
+      })
+    else
+      _other ->
+        assign(socket, :in_seat_notice, @in_seat_prepared_missing)
+    end
+  end
+
+  # The admitted snapshot's own digest is what the helper prepared against, so a
+  # proposal built from an earlier selection never reaches this page's review.
+  defp in_seat_digest_matches(%{assigns: %{agent_context: context}}, %{source_digest: digest}) do
+    case context do
+      %{source_snapshot: %{digest: admitted}} -> if(admitted == digest, do: :ok, else: :error)
+      _no_snapshot -> :error
+    end
+  end
+
+  # The prepared pairs are compared as the page's own UUID pairs: the helper never
+  # chooses which pair it prepared, so an extra, missing or malformed pair is a
+  # different selection rather than the same one.
+  defp in_seat_pairs_match(pairs, prepared) do
+    prepared_pairs =
+      Enum.map(prepared, fn
+        %{from_uuid: from_uuid, to_uuid: to_uuid} -> {from_uuid, to_uuid}
+        _other -> :invalid
+      end)
+
+    cond do
+      Enum.any?(prepared_pairs, &(&1 == :invalid)) -> :error
+      MapSet.new(prepared_pairs) == MapSet.new(pairs) -> :ok
+      true -> :error
+    end
+  end
+
+  # Only the two settings the native drawer and the Set-all review offer are
+  # prepared settings; anything else is refused here rather than guessed at.
+  defp in_seat_setting(:stay_on_board), do: {:ok, :stay_on_board}
+  defp in_seat_setting(:must_reboard), do: {:ok, :must_reboard}
+  defp in_seat_setting(_other), do: :error
+
+  # The two prepared settings as the Set-all fieldset names them. The third
+  # setting, "Not stated", is the page's own removal and is never prepared.
+  defp in_seat_bulk_choice(:stay_on_board), do: "stay"
+  defp in_seat_bulk_choice(:must_reboard), do: "reboard"
+
+  # The prepared command opens this page's own existing review and nothing else: a
+  # group's connections populate the Set-all review under the prepared choice, and
+  # one connection populates the drawer's ordinary draft. Neither path writes; both
+  # hand the decision to the same native save and its guarded Undo (AC-12, CR-3).
+  defp open_in_seat_review(socket, %{scope: :group} = origin) do
+    socket =
+      socket
+      |> bump_bulk_ref()
+      |> assign(:bulk_choice, in_seat_bulk_choice(origin.setting))
+      |> assign(:in_seat_notice, @in_seat_review_notice)
+      |> record_in_seat_origin(origin)
+
+    case bulk_review(socket.assigns) do
+      %{rows: [_first | _rest]} = review ->
+        assign(socket, :bulk_review, review)
+
+      _no_review ->
+        socket
+        |> close_bulk_review()
+        |> bump_bulk_ref()
+        |> assign(:bulk_choice, nil)
+        |> assign(:in_seat_origin, nil)
+        |> assign(:in_seat_notice, @in_seat_stale_notice)
+    end
+  end
+
+  defp open_in_seat_review(socket, %{scope: :connection} = origin) do
+    case socket.assigns.gap_view do
+      %{from: from, to: to} ->
+        if in_seat_current_pair?(socket, from, to, origin.setting) do
+          socket
+          |> put_connection_draft(origin.setting)
+          |> assign(:in_seat_notice, @in_seat_review_notice)
+          |> record_in_seat_origin(origin)
+        else
+          assign(socket, :in_seat_notice, @in_seat_stale_notice)
+        end
+
+      _no_drawer ->
+        assign(socket, :in_seat_notice, @in_seat_stale_notice)
+    end
+  end
+
+  # The pair a single-connection proposal is about must be the pair the drawer is
+  # still showing, and the native rule must still allow the prepared setting for
+  # it: a drawer the reader closed or replaced is not this page's review, and a
+  # pair the rule now refuses keeps the drawer's own refusal rather than taking a
+  # prepared choice (AC-12, CR-2).
+  defp in_seat_current_pair?(socket, from, to, setting) do
+    with %{from: %{id: from_id}, to: %{id: to_id}} <- socket.assigns.gap_view do
+      from_id == from.id and to_id == to.id and
+        not connection_blocked?(socket.assigns.connection_check, setting)
+    else
+      _other -> false
+    end
+  end
+
+  # A native save that wrote the whole proposal settles the entry that prepared
+  # it, with the exact command that entry prepared. A proposal that only partly
+  # saved, or one whose save was refused, leaves the entry unconfirmed and says so
+  # beside the panel rather than claiming a whole the reader did not earn
+  # (INV-7, AC-12). The receipt is recorded after the write and never replaces it.
+  defp settle_in_seat_origin(socket, complete?) do
+    case socket.assigns.in_seat_origin do
+      nil ->
+        socket
+
+      origin ->
+        socket
+        |> record_in_seat_receipt(origin, complete?)
+        |> assign(:in_seat_origin, nil)
+    end
+  end
+
+  defp record_in_seat_receipt(socket, origin, true) do
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           origin.command
+         ) do
+      :ok ->
+        assign(socket, :in_seat_notice, nil)
+
+      {:error, :command_changed} ->
+        assign(socket, :in_seat_notice, @in_seat_partial_notice)
+
+      _stale_or_ended ->
+        socket
+    end
+  end
+
+  defp record_in_seat_receipt(socket, _origin, _partly_saved),
+    do: assign(socket, :in_seat_notice, @in_seat_partial_notice)
+
+  # The proposal this page is holding, recorded so a native save can settle the
+  # entry that prepared it. Nothing here writes; the save does, and only through
+  # the native setter.
+  defp record_in_seat_origin(socket, origin) do
+    assign(socket, :in_seat_origin, %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: origin.entry_id,
+      command: origin.command,
+      setting: origin.setting
+    })
   end
 
   # A version the rule cannot read is no answer rather than a refusal, so its
@@ -2162,6 +2548,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {:ok,
        %{
          group_token: review.group_token,
+         # The lifecycle reference this review was built under, so a write started
+         # from it can only land on it (AC-12, FH-12).
+         ref: review.ref,
          setting: review.choice,
          choice: choice,
          entries: entries,
@@ -2652,7 +3041,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # no day behind it, a version the rule cannot read, or a pair that shares no day
   # type each keep their own state instead of a number that would be a guess.
   defp resolve_connection(socket, _day, nil) do
-    assign(socket,
+    socket
+    |> assign(
       connection_check: nil,
       connection_saved: nil,
       connection_draft: nil,
@@ -2661,6 +3051,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       connection_error: nil,
       connection_pending: false
     )
+    |> track_connection_pair(nil)
   end
 
   defp resolve_connection(socket, day, gap) do
@@ -2673,6 +3064,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign(:connection_draft, saved)
     |> assign(:connection_form, connection_form(saved))
     |> assign(:connection_scope, connection_scope(day, gap.from, gap.to))
+    |> track_connection_pair(gap_param(gap.from.id, gap.to.id))
+  end
+
+  # The connection drawer's own lifecycle reference. The pair the drawer resolves
+  # to is the pair an in-flight write belongs to, so closing the drawer or opening
+  # another gap retires the reference the write was started under and its late
+  # result can neither clear the pending state nor write an error into the pair
+  # that replaced it (AC-12, FH-12).
+  defp track_connection_pair(socket, gap) do
+    if socket.assigns.connection_pair_ref == gap do
+      socket
+    else
+      assign(socket,
+        connection_pair_ref: gap,
+        connection_ref: socket.assigns.connection_ref + 1,
+        connection_pending: false
+      )
+    end
   end
 
   # R1's own answer for this pair. A version the rule cannot read is `nil`, which
@@ -5106,40 +5515,55 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The save's own result, in the same group as the page's other asynchronous work
   # so it too can drop a result that arrives after the reader has moved on.
-  def handle_async(@save_connection_key, {:ok, {request, result}}, socket) do
-    if current_connection_request?(socket, request) do
+  def handle_async({@save_connection_key, ref}, {:ok, {request, result}}, socket) do
+    if ref == socket.assigns.connection_ref and current_connection_request?(socket, request) do
       connection_saved(socket, request, result)
     else
-      {:noreply, assign(socket, :connection_pending, false)}
+      # A pair the reader closed or replaced is not a result this page may report,
+      # and the pending state now on screen belongs to whatever replaced it
+      # (AC-12, FH-12).
+      {:noreply, socket}
     end
   end
 
   # A task that exited rather than returning wrote nothing the page can report;
-  # the failure sentence is the one an audit failure and a busy write share.
-  def handle_async(@save_connection_key, {:exit, _reason}, socket) do
-    {:noreply,
-     assign(socket,
-       connection_pending: false,
-       connection_error: %{title: @connection_failed_title, message: @connection_failed_message}
-     )}
+  # the failure sentence is the one an audit failure and a busy write share. An
+  # exit under a retired reference belongs to a pair this page no longer shows, so
+  # it writes no error into the drawer that replaced it (AC-12, FH-12).
+  def handle_async({@save_connection_key, ref}, {:exit, _reason}, socket) do
+    if ref == socket.assigns.connection_ref do
+      {:noreply,
+       assign(socket,
+         connection_pending: false,
+         connection_error: %{title: @connection_failed_title, message: @connection_failed_message}
+       )}
+    else
+      {:noreply, socket}
+    end
   end
 
   # The Set-all write's own result, in the same group as the page's other
   # asynchronous work so it too can drop a result that arrives after the reader
   # has moved on.
-  def handle_async(@save_bulk_key, {:ok, {request, result}}, socket) do
-    if current_bulk_request?(socket, request) do
+  def handle_async({@save_bulk_key, ref}, {:ok, {request, result}}, socket) do
+    if ref == socket.assigns.bulk_ref and current_bulk_request?(socket, request) do
       bulk_saved(socket, request, result)
     else
-      {:noreply, assign(socket, :bulk_pending, false)}
+      {:noreply, socket}
     end
   end
 
   # A task that exited rather than returning wrote nothing the page can report;
   # the failure sentence is the one a busy write and an audit failure share, and
-  # the review stays open so the reader can try again.
-  def handle_async(@save_bulk_key, {:exit, _reason}, socket) do
-    {:noreply, put_bulk_error(socket)}
+  # the review stays open so the reader can try again. An exit under a retired
+  # reference belongs to a review this page no longer shows, so it neither writes
+  # an error into the current one nor clears its pending state (AC-12, FH-12).
+  def handle_async({@save_bulk_key, ref}, {:exit, _reason}, socket) do
+    if ref == socket.assigns.bulk_ref do
+      {:noreply, put_bulk_error(socket)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # The write's result is current while the review it was built from is still the
@@ -5152,7 +5576,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     # The review names its setting the way the fieldset does and the write names
     # it as an atom, so the comparison is against the request's own setting
     # value rather than its write choice.
-    review.group_token == request.group_token and review.choice == request.setting
+    # The lifecycle reference is the half that tells this review from a later one
+    # over the same group and setting, which the token and the choice cannot.
+    review.group_token == request.group_token and review.choice == request.setting and
+      review.ref == request.ref
   end
 
   # R10/AC-20: a successful bulk write closes the review, reloads the day and
@@ -5174,6 +5601,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply,
      socket
      |> assign(:bulk_result, bulk_result(request, result, socket.assigns.connections_all))
+     |> settle_in_seat_origin(result.skipped == [])
      |> focus_within("bulk-result")}
   end
 
@@ -5288,8 +5716,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   #
   # A pair the day no longer derives has no current state to guard against, so
   # the Undo leaves it alone rather than writing over whatever now stands there.
-  defp bulk_undo_writes(%{previous: previous, audit: audit}, connections) do
+  #
+  # Only the pairs the save itself wrote are candidates. A pair the write skipped
+  # is not a row the save left behind, so restoring its previous setting would
+  # put back a setting nobody replaced: it would undo an editor's newer write
+  # with a row this save never touched (INV-4, AC-9).
+  defp bulk_undo_writes(%{previous: previous, saved: saved, audit: audit}, connections) do
+    written = MapSet.new(saved)
+
     previous
+    |> Enum.filter(&MapSet.member?(written, &1.pair))
     |> Enum.map(&Map.put(&1, :expected, bulk_saved_expected(&1.pair, connections)))
     |> Enum.reject(&(is_nil(&1.expected) or &1.expected == :missing))
     |> Enum.group_by(& &1.previous)
@@ -5397,6 +5833,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> resolve_drawers()
      |> assign_page_rows_if_loaded()
      |> close_connection_drawer()
+     |> settle_in_seat_origin(true)
      |> focus_within("connection-result")}
   end
 
@@ -5650,6 +6087,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           <%!-- The header's Review action is the page's primary until the selection
           bar, the first-use panel or a previewed suggestion takes it. --%>
           <:actions :if={@load_state == :loaded}>
+            <%!-- The helper reads connections, so it is offered wherever this page
+            can supply one: the Connections view's group or the connection drawer
+            the reader has open. A day with neither has nothing to hand over, so
+            the button is not offered rather than opened onto nothing. --%>
+            <.button
+              :if={helper_action?(assigns)}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
             <%!-- A suggestion is built from garages, so a version with none cannot
             produce one; the button says why it is off rather than opening a drawer
             that could only fail. --%>
@@ -5784,6 +6237,71 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 version_id={@state.version_id}
                 day={@state.day}
               />
+
+              <%!-- The helper's own selection. Which connections the helper may
+              read is this page's answer, not the reader's: the button offers the
+              group or the drawer pair the page already derived, and the receipt
+              below names what was offered so a later proposal can be checked
+              against it. --%>
+              <div
+                :if={@state.view == :connections or not is_nil(@gap_view)}
+                id="in-seat-helper"
+                class="rounded-card border border-subtle bg-white p-4"
+              >
+                <h2 class="text-sm font-semibold text-strong">In-seat assistance</h2>
+                <p id="in-seat-helper-note" class="mt-1 text-[13px] text-muted">
+                  The helper works from connections you select here. It prepares a change; you
+                  review and save it on this page.
+                </p>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <.button
+                    :if={not is_nil(@connections.group)}
+                    id="in-seat-helper-group"
+                    type="button"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="in_seat_helper_group"
+                    phx-disabled-with="Handing over…"
+                  >
+                    Ask the helper about this group
+                  </.button>
+                  <.button
+                    :if={not is_nil(@gap_view)}
+                    id="in-seat-helper-connection"
+                    type="button"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="in_seat_helper_connection"
+                    phx-disabled-with="Handing over…"
+                  >
+                    Ask the helper about this connection
+                  </.button>
+                  <.button
+                    :if={not is_nil(@in_seat_source)}
+                    id="in-seat-helper-clear"
+                    type="button"
+                    variant="quiet"
+                    class="min-h-11"
+                    phx-click="in_seat_helper_clear"
+                  >
+                    Stop
+                  </.button>
+                </div>
+                <p
+                  :if={not is_nil(@in_seat_source)}
+                  id="in-seat-helper-source"
+                  class="mt-2 text-[13px] text-default"
+                >
+                  Reading {in_seat_source_label(@in_seat_source)} from {in_seat_day_label(@day_type)}.
+                </p>
+                <p
+                  :if={not is_nil(@in_seat_notice)}
+                  id="in-seat-helper-notice"
+                  class="mt-2 text-[13px] text-default"
+                >
+                  {@in_seat_notice}
+                </p>
+              </div>
 
               <BlocksComponents.workspace
                 state={@state}
@@ -5972,6 +6490,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
               wrapper is a fixed, transparent, pointer-transparent layer at
               `z-[1100]`, so the review is the top surface while it is open and
               the map beside it keeps working. --%>
+              <%!-- The helper panel is a right-hand layer rather than a column in
+              the page: the Blocks workspace is a map and a table that already
+              claim the width, and a review the helper opens has to be readable
+              beside the rows it describes. It sits below the Set-all review's
+              own layer, so a review opened from the panel paints over it. --%>
+              <div :if={@agent_open?} class="pointer-events-none fixed inset-0 z-[1050]">
+                <div class="pointer-events-auto flex justify-end p-4">
+                  <div class="max-h-[calc(100dvh-2rem)] w-[380px] max-w-full overflow-y-auto">
+                    <.agent_panel
+                      id="agent-panel"
+                      title={@agent_title}
+                      intro={@agent_intro}
+                      examples={@agent_examples}
+                      scope_line={agent_scope_line(assigns)}
+                      status={@agent_status}
+                      entries={@streams.agent_entries}
+                      form={@agent_form}
+                      notice={@agent_notice}
+                      entries_empty?={@agent_entries_empty?}
+                      review_label={&agent_review_label/1}
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div class="pointer-events-none fixed inset-0 z-[1100]">
                 <BlocksComponents.set_all_review
                   :if={@bulk_review}
