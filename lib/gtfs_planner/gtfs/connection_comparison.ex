@@ -72,11 +72,9 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
-  alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
@@ -85,6 +83,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Transfers.Overlaps
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -890,7 +889,11 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
         |> Map.new(&{&1.stop_id, &1})
       end
 
-    {:ok, %{transfers: transfers, stops: stops}}
+    # Each rule carries its R2 coverage, computed once here by the same function the
+    # transfers catalog uses, and the revision a stored minimum's provenance names.
+    rules = Enum.map(transfers, &Map.put(Transfers.rule(&1, stops), :revision, &1.updated_at))
+
+    {:ok, %{rules: rules}}
   end
 
   defp transfer_stop_ids(transfers) do
@@ -980,34 +983,12 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
     end)
   end
 
-  defp route_zone(request, %Route{agency_id: nil}) do
-    case DisplayClock.resolve_zone(request.organization_id, request.gtfs_version_id) do
-      %{fallback?: false, timezone: timezone} -> {:ok, timezone}
-      %{fallback_reason: reason} -> {:error, reason}
-    end
-  end
-
-  defp route_zone(request, %Route{agency_id: agency_id}) do
-    query =
-      from(a in Agency,
-        where:
-          a.organization_id == ^request.organization_id and
-            a.gtfs_version_id == ^request.gtfs_version_id and a.agency_id == ^agency_id
-      )
-
-    case Repo.one(query) do
-      nil -> {:error, :missing}
-      %Agency{agency_timezone: timezone} -> usable_zone(timezone)
-    end
-  end
-
-  defp usable_zone(timezone) do
-    case timezone && String.trim(timezone) do
-      "" ->
-        {:error, :missing}
-
-      trimmed ->
-        if DisplayClock.valid_zone?(trimmed), do: {:ok, trimmed}, else: {:error, :invalid}
+  # `ServiceQueries` owns the rule; this reads its answer, where a missing or
+  # invalid zone is a reason rather than a local-clock claim.
+  defp route_zone(request, route) do
+    case ServiceQueries.service_timezone(request.organization_id, request.gtfs_version_id, route) do
+      {:ok, timezone} -> {:ok, timezone}
+      {:error, {:timezone_unavailable, reason}} -> {:error, reason}
     end
   end
 
@@ -1139,12 +1120,8 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   # -- the stored minimum ----------------------------------------------------
 
   defp minimum(pair, from, to, data) do
-    applicable =
-      data.policy.transfers
-      |> Enum.filter(&applies?(&1, from, to, data.policy.stops))
-      |> Enum.map(&rule(&1, data.policy.stops))
-
-    applicable
+    data.policy.rules
+    |> Enum.filter(&applies?(&1, from, to))
     |> best_rules()
     |> decided(pair.minimum.origin, supplied_minimum(pair.minimum))
   end
@@ -1152,11 +1129,10 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   # A rule applies to one endpoint when its coverage contains that endpoint's
   # stop and its selectors match that endpoint's trip and route. This is the
   # selector half of the R6 rule `Transfers.Overlaps` ranks.
-  defp applies?(transfer, from, to, stops) do
-    covers?(coverage(transfer.from_stop_id, stops), from) and
-      covers?(coverage(transfer.to_stop_id, stops), to) and
-      selects?(transfer.from_trip_id, transfer.from_route_id, from) and
-      selects?(transfer.to_trip_id, transfer.to_route_id, to)
+  defp applies?(rule, from, to) do
+    covers?(rule.from_coverage, from) and covers?(rule.to_coverage, to) and
+      selects?(rule.from_trip_id, rule.from_route_id, from) and
+      selects?(rule.to_trip_id, rule.to_route_id, to)
   end
 
   defp covers?(leaves, endpoint), do: endpoint.stop_id in leaves
@@ -1164,49 +1140,6 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
   defp selects?(trip_selector, route_selector, endpoint) do
     (is_nil(trip_selector) or trip_selector == endpoint.trip) and
       (is_nil(route_selector) or route_selector == endpoint.route)
-  end
-
-  # A general rule for the R6 ranker, carrying the R2 coverage of its endpoints
-  # and the revision a stored minimum's provenance names.
-  defp rule(transfer, stops) do
-    %{
-      id: transfer.id,
-      from_coverage: coverage(transfer.from_stop_id, stops),
-      to_coverage: coverage(transfer.to_stop_id, stops),
-      from_route_id: transfer.from_route_id,
-      to_route_id: transfer.to_route_id,
-      from_trip_id: transfer.from_trip_id,
-      to_trip_id: transfer.to_trip_id,
-      transfer_type: transfer.transfer_type,
-      min_transfer_time: transfer.min_transfer_time,
-      revision: transfer.updated_at
-    }
-  end
-
-  # R2: only a station expands to its direct children, and only the children
-  # that are stops or platforms. A stop that is not in the version covers
-  # nothing, so a rule naming it cannot apply.
-  defp coverage(nil, _stops), do: []
-
-  defp coverage(stop_id, stops) do
-    case Map.get(stops, stop_id) do
-      nil ->
-        []
-
-      %Stop{location_type: 1} = station ->
-        [station.stop_id | child_stop_ids(station, stops)]
-
-      %Stop{} = stop ->
-        [stop.stop_id]
-    end
-  end
-
-  defp child_stop_ids(station, stops) do
-    stops
-    |> Map.values()
-    |> Enum.filter(&(&1.parent_station == station.stop_id and &1.location_type in [nil, 0]))
-    |> Enum.map(& &1.stop_id)
-    |> Enum.sort()
   end
 
   # The best-ranked applicable rule decides. Type 3 prohibits, equal-best rules
@@ -1234,7 +1167,7 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
           %{kind: :stored_best, rank: rank, transfer_type: 3, rule_ids: rule_ids(rules)}
         )
 
-      length(Enum.uniq(Enum.map(rules, &effect/1))) > 1 ->
+      length(Enum.uniq(Enum.map(rules, &Overlaps.effect/1))) > 1 ->
         unresolved(
           origin,
           supplied,
@@ -1326,9 +1259,6 @@ defmodule GtfsPlanner.Gtfs.ConnectionComparison do
 
   defp supplied_minimum(%{origin: :supplied} = minimum), do: minimum
   defp supplied_minimum(%{origin: :stored}), do: nil
-
-  defp effect(%{transfer_type: 2} = rule), do: {2, Map.get(rule, :min_transfer_time)}
-  defp effect(rule), do: {Map.get(rule, :transfer_type), nil}
 
   defp effect_entry(rule) do
     %{

@@ -158,7 +158,8 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
     Map.update(edges, id, [competitor_id], &[competitor_id | &1])
   end
 
-  defp effect(rule) do
+  @doc false
+  def effect(rule) do
     case Map.fetch!(rule, :transfer_type) do
       2 -> {2, Map.get(rule, :min_transfer_time)}
       type -> {type, nil}

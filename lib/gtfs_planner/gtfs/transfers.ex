@@ -1481,8 +1481,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   # Rules: a general rule for the R6 evaluator, carrying the coverage computed from
-  # the same stop index the rows use.
-  defp rule(transfer, stops) do
+  # the same stop index the rows use. Public so the connection comparison ranks the
+  # stored policy with the same coverage rather than a copy of it.
+  @doc false
+  def rule(transfer, stops) do
     %{
       id: transfer.id,
       from_coverage: coverage(transfer.from_stop_id, stops),

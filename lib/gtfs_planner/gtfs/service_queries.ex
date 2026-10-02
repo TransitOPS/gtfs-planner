@@ -800,14 +800,15 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
   # same snapshot. `DisplayClock`'s UTC fallback is a presentation fallback and
   # is refused here, so an ambiguous, invalid or missing zone never becomes a
   # service time claim.
-  defp service_timezone(organization_id, gtfs_version_id, %Route{agency_id: nil}) do
+  @doc false
+  def service_timezone(organization_id, gtfs_version_id, %Route{agency_id: nil}) do
     case DisplayClock.resolve_zone(organization_id, gtfs_version_id) do
       %{fallback?: false, timezone: timezone} -> {:ok, timezone}
       %{fallback_reason: reason} -> {:error, {:timezone_unavailable, reason}}
     end
   end
 
-  defp service_timezone(organization_id, gtfs_version_id, %Route{agency_id: agency_id}) do
+  def service_timezone(organization_id, gtfs_version_id, %Route{agency_id: agency_id}) do
     query =
       from(a in Agency,
         where:
