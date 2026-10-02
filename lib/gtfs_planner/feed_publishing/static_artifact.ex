@@ -214,6 +214,26 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifact do
 
   def mismatches(_catalog, _snapshots), do: []
 
+  @doc """
+  Returns a stable digest of one inspected inventory.
+
+  A preview binds this digest so a later confirmation can tell whether the
+  disclosed inventory is still the one consent was given for. The digest is over
+  the sorted entry names, so it is independent of the order `inspect/1` walked
+  the archive in.
+  """
+  @spec inventory_digest([String.t()]) :: String.t()
+  def inventory_digest(inventory) when is_list(inventory) do
+    inventory
+    |> Enum.map(&to_string/1)
+    |> Enum.sort()
+    |> Enum.join("\n")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  def inventory_digest(_inventory), do: inventory_digest([])
+
   defp artifact_filename(artifact, path) do
     case Map.get(artifact, :filename) do
       name when is_binary(name) and name != "" -> name
