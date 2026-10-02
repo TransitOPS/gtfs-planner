@@ -533,7 +533,11 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp resource_kind(%{kind: kind}) when is_binary(kind), do: String.capitalize(kind)
   defp resource_kind(_resource), do: "resource"
 
-  defp short_digest(digest) when is_binary(digest), do: binary_part(digest, 0, 12)
+  defp short_digest(digest) when is_binary(digest) and byte_size(digest) >= 12,
+    do: binary_part(digest, 0, 12)
+
+  defp short_digest(""), do: "none"
+  defp short_digest(digest) when is_binary(digest), do: digest
   defp short_digest(_digest), do: "unavailable"
 
   defp revision(nil), do: ""

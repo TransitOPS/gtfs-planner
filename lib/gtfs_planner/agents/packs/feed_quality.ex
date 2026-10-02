@@ -851,7 +851,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       completeness_reason: nil,
       facts: [%{label: "Navigation targets", value: Integer.to_string(length(targets))}],
       source_ref: @source_ref,
-      digest: "",
+      digest: digest({:remedy, kind, Enum.map(targets, &{&1.kind, &1.id})}),
       source_revision: nil,
       scope: %{
         organization_id: scope.organization_id,
@@ -892,7 +892,11 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
         %{label: "Missing times", value: estimate_label(defaults)}
       ],
       source_ref: @source_ref,
-      digest: readiness.digest || "",
+      digest:
+        digest(
+          {:export_options, readiness.export_type, defaults_digest(defaults),
+           readiness.relationship}
+        ),
       source_revision: nil,
       scope: %{
         organization_id: scope.organization_id,
@@ -934,7 +938,15 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   defp estimate_label(%{estimate_missing_times: false}), do: "not estimated"
   defp estimate_label(_defaults), do: "unknown"
 
-  defp defaults_digest(defaults) do
+  defp digest(term) do
+    term
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  @doc false
+  def defaults_digest(defaults) do
     {:export_defaults, defaults.include_flex, defaults.realtime_source,
      defaults.estimate_missing_times, defaults.estimate_method}
     |> :erlang.term_to_binary()

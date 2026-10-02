@@ -14,9 +14,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Packs.FeedQuality
+  alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Validations.Evidence
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult
 
+import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publication_section: 1]
 
   import GtfsPlannerWeb.Gtfs.ExportComponents,
@@ -45,6 +51,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @validation_permission_message "You no longer have permission to check this feed. " <>
                                    "Ask an organization administrator to restore your access."
 
+  @empty_feed_quality %{
+    relationship: "unknown",
+    selected_artifact: nil,
+    currentness: "unknown",
+    publication_status: "unsupported",
+    digest: nil,
+    preflight: []
+  }
+
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -69,7 +84,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_result, nil)
      |> assign(:validation_error, nil)
      |> assign(:recent_checks, [])
-     |> assign(:publication, default_publication())}
+     |> assign(:publication, default_publication())
+     |> assign(:feed_quality, @empty_feed_quality)
+     |> AgentPanel.mount("feed_quality")}
   end
 
   @impl Phoenix.LiveView
@@ -81,20 +98,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     organization = socket.assigns.current_organization
     export_type = resolve_export_type(params["type"], organization)
 
+    socket =
+      socket
+      |> assign(:operations?, ProductSurfaces.visible?(organization, :operations_export))
+      |> assign(:export_type, export_type)
+      |> assign(:export_form, export_form(export_type))
+      |> assign(:export_notice, nil)
+      |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
+      |> assign(:export_defaults, ExportDefaults.get(organization_id))
+      |> refresh_export_run()
+      |> refresh_file_inventory()
+      |> assign_recent_checks()
+      |> load_missing_summary()
+      |> reset_publication()
+      |> assign_publication()
+
+    # The panel holds the host's own source snapshot; the section reads the
+    # same scoped evidence the helper reads, so both describe one selection.
     {:noreply,
      socket
-     |> assign(:operations?, ProductSurfaces.visible?(organization, :operations_export))
-     |> assign(:export_type, export_type)
-     |> assign(:export_form, export_form(export_type))
-     |> assign(:export_notice, nil)
-     |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
-     |> assign(:export_defaults, ExportDefaults.get(organization_id))
-     |> refresh_export_run()
-     |> refresh_file_inventory()
-     |> assign_recent_checks()
-     |> load_missing_summary()
-     |> reset_publication()
-     |> assign_publication()}
+     |> assign(:feed_quality, feed_quality_summary(socket))
+     |> AgentPanel.set_context(feed_quality_context(socket))}
   end
 
   @impl Phoenix.LiveView
@@ -137,6 +161,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # The prepared card hands its proposed type to this page's own native form;
+  # only the exact server command the conversation still holds can select it.
+  @impl Phoenix.LiveView
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_feed_quality_options(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Re-reads the provider-independent readiness without touching any job or form
+  # draft, and rebinds the panel's snapshot to the section it just read.
+  @impl Phoenix.LiveView
+  def handle_event("feed_quality_refresh", _params, socket) do
+    summary = feed_quality_summary(socket)
+
+    {:noreply,
+     socket
+     |> assign(:feed_quality, summary)
+     |> AgentPanel.set_context(feed_quality_context(socket))}
   end
 
   @impl Phoenix.LiveView
@@ -467,68 +512,139 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <.header>
           Export feed
           <:subtitle>{lede(@current_gtfs_version, @operations?)}</:subtitle>
+          <:actions>
+            <.button
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
+          </:actions>
         </.header>
 
         <div
-          id="export-download-container"
-          class="mt-2 grid gap-6 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start"
+          id="export-helper-focus"
+          phx-hook=".ExportHelperFocus"
+          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
         >
-          <div class="grid min-w-0 gap-6">
-            <.result_section
-              id="export-workspace"
-              title="Create a feed file"
-              lede={"Uses #{@current_gtfs_version.name} as it is now."}
+          <div class={@agent_open? && "hidden lg:block"}>
+            <div
+              id="export-download-container"
+              class="mt-2 grid gap-6 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start"
             >
-              <.type_options
-                form={@export_form}
-                export_type={@export_type}
-                operations?={@operations?}
-              />
-              <.closures_omitted
-                :if={@export_type == :pathways and @closure_count > 0}
-                count={@closure_count}
-              />
-              <.operations_note :if={@export_type == :operations} file_inventory={@file_inventory} />
-              <.contents
-                export_type={@export_type}
-                file_inventory={@file_inventory}
-                missing_summary={@missing_summary}
-                defaults={@export_defaults}
-                version_id={@current_gtfs_version.id}
-              />
-              <.run_status
-                run={@export_run}
-                export_type={@export_type}
-                version={@current_gtfs_version}
-                notice={@export_notice}
-                defaults={@export_defaults}
-                publish?={@publication.opener?}
-              />
+<div class="grid min-w-0 gap-6">
+                <.result_section
+                  id="export-workspace"
+                  title="Create a feed file"
+                  lede={"Uses #{@current_gtfs_version.name} as it is now."}
+                >
+                  <.type_options
+                    form={@export_form}
+                    export_type={@export_type}
+                    operations?={@operations?}
+                  />
+                  <.closures_omitted
+                    :if={@export_type == :pathways and @closure_count > 0}
+                    count={@closure_count}
+                  />
+                  <.operations_note
+                    :if={@export_type == :operations}
+                    file_inventory={@file_inventory}
+                  />
+                  <.contents
+                    export_type={@export_type}
+                    file_inventory={@file_inventory}
+                    missing_summary={@missing_summary}
+                    defaults={@export_defaults}
+                    version_id={@current_gtfs_version.id}
+                  />
+                  <.run_status
+                    run={@export_run}
+                    export_type={@export_type}
+                    version={@current_gtfs_version}
+                    notice={@export_notice}
+                    defaults={@export_defaults}
+                    publish?={@publication.opener?}
+                  />
 
-              <.publication_section publication={@publication} />
-            </.result_section>
+                  <.publication_section publication={@publication} />
+                </.result_section>
 
-            <.guide
-              export_type={@export_type}
-              version={@current_gtfs_version}
-              organization={@current_organization}
-            />
-          </div>
+                <.guide
+                  export_type={@export_type}
+                  version={@current_gtfs_version}
+                  organization={@current_organization}
+                />
+              </div>
 
-          <div class="grid min-w-0 gap-6">
-            <.check_panel
-              validating?={@validating}
-              progress={@validation_progress}
-              result={@validation_result}
-              error={@validation_error}
-              validation_run_id={@validation_run_id}
-              version={@current_gtfs_version}
-              include_flex={@include_flex}
-            />
-            <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
+              <div class="grid min-w-0 gap-6">
+                <section
+                  id="feed-quality-evidence"
+                  class="rounded-card border border-control bg-white px-5 py-4"
+                >
+                  <h3 class="text-sm font-bold text-strong">Feed quality</h3>
+                  <p id="feed-quality-relationship" class="mt-1 text-[13px] text-default">
+                    {relationship_copy(@feed_quality)}
+                  </p>
+                  <p class="mt-1 text-[13px] text-muted">
+                    Currentness: {@feed_quality.currentness}. Publication: {@feed_quality.publication_status}.
+                  </p>
+                  <button
+                    id="feed-quality-refresh"
+                    type="button"
+                    phx-click="feed_quality_refresh"
+                    class="mt-2 text-[13px] font-semibold text-action"
+                  >
+                    Refresh check
+                  </button>
+                </section>
+                <.check_panel
+                  validating?={@validating}
+                  progress={@validation_progress}
+                  result={@validation_result}
+                  error={@validation_error}
+                  validation_run_id={@validation_run_id}
+                  version={@current_gtfs_version}
+                  include_flex={@include_flex}
+                />
+                <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
+              </div>
+            </div>
+
+            <div
+              :if={@agent_open?}
+              class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+            >
+              <.agent_panel
+                id="agent-panel"
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={"Export · " <> @current_gtfs_version.name}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+                review_label={&agent_review_label/1}
+              />
+            </div>
           </div>
         </div>
       </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".ExportHelperFocus">
+        export default {
+          mounted() {
+            this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
@@ -762,6 +878,159 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do: Operations.tods_file_inventory(organization_id)
 
   defp tods_inventory(_organization_id, _export_type), do: []
+
+  # -- Feed quality helper ----------------------------------------------------
+
+  # The host builds the snapshot the helper reads: only a server fingerprint of
+  # the section, export reference, type and defaults digest - never report JSON,
+  # paths, logs or personnel fields. A refused or oversized envelope falls back
+  # to the plain context, which the pack answers as unavailable, never a crash.
+  defp feed_quality_context(socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+    export_type = socket.assigns.export_type
+    defaults_digest = FeedQuality.defaults_digest(socket.assigns.export_defaults)
+    selected_export_ref = latest_export_ref(socket)
+
+    payload = %{
+      "schema_version" => 1,
+      "section" => "export",
+      "type" => Atom.to_string(export_type),
+      "selected_export_ref" => selected_export_ref,
+      "defaults_digest" => defaults_digest,
+      "source_digest" =>
+        digest(
+          {:feed_quality_source, version_id, export_type, defaults_digest, selected_export_ref}
+        )
+    }
+
+    case Scope.with_source_snapshot(Scope.context({:version, version_id}), %{
+           kind: "feed_quality",
+           payload: payload
+         }) do
+      {:ok, context} -> context
+      {:error, _reason} -> Scope.context({:version, version_id})
+    end
+  end
+
+  # The section is provider-independent: it reads the same scoped Evidence the
+  # pack reads, and never starts, repairs or publishes anything.
+  defp feed_quality_summary(socket) do
+    case Evidence.readiness(feed_quality_scope(socket), socket.assigns.export_type, nil, :primary) do
+      {:ok, readiness} ->
+        %{
+          relationship: readiness.relationship,
+          selected_artifact: readiness.selected_artifact,
+          currentness: readiness.currentness,
+          publication_status: readiness.publication_status,
+          digest: readiness.digest,
+          preflight: readiness.preflight
+        }
+
+      {:error, _reason} ->
+        @empty_feed_quality
+    end
+  end
+
+  defp feed_quality_scope(socket) do
+    user = socket.assigns.current_user
+
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: user.id,
+      user_email: user.email,
+      pack_id: "feed_quality",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: socket.assigns.agent_context
+    }
+  end
+
+  defp latest_export_ref(socket) do
+    case ExportRuns.latest_for_version(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.export_type
+         ) do
+      %{id: id} -> id
+      _other -> nil
+    end
+  end
+
+  defp digest(term) do
+    term
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp review_feed_quality_options(socket, id) do
+    case Integer.parse(to_string(id)) do
+      {entry_id, ""} -> review_feed_quality_entry(socket, entry_id)
+      _other -> socket
+    end
+  end
+
+  # The command is read only from the conversation's own prepared entry. Any
+  # identity, defaults or context drift is a notice beside the untouched native
+  # form: no retry invents a selection, and nothing is recorded as applied.
+  defp review_feed_quality_entry(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok,
+       %{
+         command:
+           {:feed_quality_export_options,
+            %{
+              export_type: type,
+              defaults_digest: defaults_digest,
+              context_digest: context_digest
+            }}
+       }} ->
+        type_param = Atom.to_string(type)
+
+        if type_param in @export_type_params and
+             defaults_digest == FeedQuality.defaults_digest(socket.assigns.export_defaults) and
+             context_digest == Scope.context_digest(feed_quality_scope(socket)) do
+          socket
+          |> push_patch(
+            to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/export?type=#{type_param}"
+          )
+          |> push_event("agent:focus", %{id: "gtfs-export-form"})
+        else
+          assign(
+            socket,
+            :agent_notice,
+            "The export settings changed since the helper answered. Ask it again."
+          )
+        end
+
+      _stale_or_unknown ->
+        assign(socket, :agent_notice, "That prepared change is no longer available.")
+    end
+  end
+
+  defp relationship_copy(%{relationship: "checked"}),
+    do: "A completed check read these exact bytes."
+
+  defp relationship_copy(%{relationship: "different_bytes"}),
+    do: "A completed check read different bytes for this version."
+
+  defp relationship_copy(%{relationship: "different_profile"}),
+    do: "A completed check's profile differs from this selection."
+
+  defp relationship_copy(%{relationship: "unavailable"}),
+    do: "This export selection is not available."
+
+  defp relationship_copy(_summary),
+    do: "The check history cannot be compared to this selection yet."
+
+  defp agent_review_label(%{command: {:feed_quality_export_options, _command}}),
+    do: "Review options"
+
+  defp agent_review_label(_prepared), do: "Review prepared change"
 
   # The runner supervisor is full. The run that never started is already closed,
   # so the page goes back to the export it was showing and says why.
