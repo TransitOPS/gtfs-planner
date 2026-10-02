@@ -1,12 +1,18 @@
 // The approved policy source intake and the Flex policy helper on the service
 // page, for feature `ai-09-flex-assistance`.
 //
-// Step 4 owns this shell only: login, version selection, the seeded
-// Newport Dial-a-Ride service page, the source intake's own states and the
-// captures step 4's subspec names. The supported review, the overlap report,
-// the staged application and the applied result belong to steps 5 to 7 and are
-// added to this file as those steps land; nothing here asserts a review surface
-// that does not exist yet.
+// Step 4 owns the shell: login, version selection, the seeded Newport
+// Dial-a-Ride service page, the source intake's own states and the captures
+// step 4's subspec names. Step 7 adds the whole assisted journey on top of it:
+// the supported policy reviewed, staged and saved through the page's own Save,
+// the refusals the helper cannot represent, the source-overflow refusal, an
+// unsaved contact that survives staging, the overlap choices, and the 320×800
+// and 1440×900 captures the QA tour links.
+//
+// Every journey drives ordinary navigation and ordinary controls. The only
+// fake boundary is the final provider HTTP, through the repository's existing
+// `GtfsPlanner.Agents.BrowserOpenRouter`, so the pack, the assistant, the
+// native comparison and the guarded save are all the real ones.
 //
 // Capture root follows the run's own spec root so a worktree writes beside the
 // specs it implements. The Playwright runner starts in `assets/`, so
@@ -25,7 +31,7 @@ const CAPTURE_DIR = resolve(SPEC_ROOT, "evidence", "captures");
 
 const EDITOR = {
   email: "diagram-test@gtfs-planner.test",
-  password: "[redacted]",
+  password: "DiagramTest123!",
 };
 
 const FLEX_VERSION = "Browser Flex Version";
@@ -36,8 +42,8 @@ const POLICY_TEXT =
   "Riders must call at least 30 minutes ahead. " +
   "The office is closed on federal holidays.";
 
-const DESKTOP = { width: 1440, height: 1000 };
-const NARROW = { width: 390, height: 844 };
+const DESKTOP = { width: 1440, height: 900 };
+const NARROW = { width: 320, height: 800 };
 
 // Every map tile request is answered with a blank tile, so this journey never
 // depends on the Geoapify plan.
@@ -70,6 +76,55 @@ async function waitForLiveView(page) {
       window.liveSocket?.isConnected(),
     );
   });
+}
+
+// Accepts the editor's own authorized policy text through the intake's form.
+// This is the only thing that gives the helper a source to work from: the
+// pack refuses a conversation whose context carries no accepted source, so
+// every journey below accepts one before it opens the panel.
+async function acceptSource(
+  page,
+  { label = "Newport flex policy", text = POLICY_TEXT } = {},
+) {
+  await page.fill("#flex-policy-source-label", label);
+  await page.fill("#flex-policy-source-text", text);
+  await page.locator("#flex-policy-accept").click();
+  await expect(page.locator("#flex-policy-source-accepted")).toContainText(
+    label,
+  );
+}
+
+// Opens the panel and starts a conversation of its own. Helper sessions live in
+// the server process and survive between tests for this user and version, so a
+// journey that reuses one would read another test's entries.
+async function openHelper(page) {
+  await page.locator("#agent-helper-open").click();
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  await page.locator("#agent-new-conversation").click();
+  await expect(page.locator("#agent-composer-input")).toBeVisible();
+}
+
+// Sends one question and waits for the settled turn: the scripted stand-in
+// reads the saved policy, prepares the candidate and replies, so the prepared
+// card is the last thing to arrive.
+async function askHelper(page, message, preparedCardSelector) {
+  await page.locator("#agent-composer-input").fill(message);
+  await page.locator("#agent-send").click();
+  await expect(
+    page.locator(preparedCardSelector || '[id^="agent-prepared-"]').last(),
+  ).toBeVisible({
+    timeout: 60_000,
+  });
+}
+
+// The prepared card's own action is the only way a review opens, so the
+// journeys click it rather than reaching for a surface directly.
+async function openReview(page) {
+  await page.locator('[id^="agent-review-prepared-"]').last().click();
+  await expect(page.locator("#flex-policy-review")).toBeVisible();
+  await expect(page.locator("#flex-policy-review-state")).toContainText(
+    "Reviewing a prepared change",
+  );
 }
 
 async function routeBlankTiles(page) {
@@ -211,5 +266,321 @@ test.describe("the approved policy source intake", () => {
     await expect(page.locator("#save-bar")).toHaveCount(0);
 
     await capture(page, "step-004-source-accepted-1440");
+  });
+});
+
+// The question the scripted stand-in answers with the complete hours
+// replacement of the seeded service: both saved rows, with the weekday window
+// moved to 08:00-17:00 and the Saturday window exactly as saved.
+const SUPPORTED_QUESTION =
+  "Set the weekday hours to 8 am to 5 pm from this policy.";
+const DISCRETION_QUESTION = "Add same-day bookings when the dispatcher agrees.";
+const OFFICE_QUESTION = "Book a business day ahead using the office calendar.";
+
+// Captures one state at both viewports the tour names, so a reader compares the
+// same surface at 320 px and 1440 px. Each capture refuses a horizontal
+// scrollbar: an intake and a review that push the page sideways are a defect,
+// not a narrow-screen variant.
+async function captureBothViewports(page, name) {
+  for (const viewport of [DESKTOP, NARROW]) {
+    await page.setViewportSize(viewport);
+    await expect(page.locator("#flex-service-page")).toBeVisible();
+    await capture(page, `${name}-${viewport.width}`);
+  }
+
+  await page.setViewportSize(DESKTOP);
+}
+
+// The supported journey, end to end, at one viewport. The step-7 cases below
+// reuse it at the other size rather than repeating the whole walk.
+async function supportedJourney(page, viewport) {
+  await page.setViewportSize(viewport);
+  await routeBlankTiles(page);
+  await openServicePage(page);
+
+  await acceptSource(page);
+  await openHelper(page);
+  await askHelper(page, SUPPORTED_QUESTION);
+  await openReview(page);
+
+  // The review is the native comparison: both saved rows, the one the
+  // proposal moved, the fields nothing touched, and the generated wording on
+  // both sides.
+  await expect(page.locator("#flex-policy-review-hours")).toContainText(
+    "Row 1",
+  );
+  await expect(page.locator("#flex-policy-review-hours")).toContainText(
+    "07:00 → 08:00",
+  );
+  await expect(page.locator("#flex-policy-review-hours")).toContainText(
+    "1 row unchanged",
+  );
+  await expect(page.locator("#flex-policy-review-unchanged")).toContainText(
+    "phone",
+  );
+  await expect(page.locator("#flex-policy-review-wording")).toContainText(
+    "With this change",
+  );
+
+  await captureBothViewports(page, "step-007-supported-review");
+
+  // Reviewing wrote nothing and staged nothing: the page is still clean, so
+  // the one Save in this journey is the page's own.
+  await expect(page.locator("#flex-service-page")).toHaveAttribute(
+    "data-dirty",
+    "false",
+  );
+  await expect(page.locator("#save-bar")).toHaveCount(0);
+  await expect(page.locator("#flex-policy-staged")).toHaveCount(0);
+
+  // A supported policy needs no overlap answer, because the draft is still the
+  // saved page.
+  await expect(page.locator("#flex-policy-overlap")).toHaveCount(0);
+
+  await page.locator("#flex-policy-stage").click();
+
+  // Staging put the reviewed rows in the page's own form and dirtied it, and
+  // said plainly that nothing is saved yet.
+  await expect(page.locator("#flex-policy-staged")).toBeVisible();
+  await expect(page.locator("#flex-service-page")).toHaveAttribute(
+    "data-dirty",
+    "true",
+  );
+  await expect(page.locator("#save-bar")).toBeVisible();
+  await expect(page.locator("#service_hours_0_start")).toHaveValue("08:00");
+  await expect(page.locator("#service_hours_0_end")).toHaveValue("17:00");
+  await expect(page.locator("#rider-preview")).toContainText(
+    "Weekdays 8:00 am–5:00 pm",
+  );
+
+  await page.locator("#save-btn").click();
+
+  // The page's own Save wrote it, the receipt is the native one, and the
+  // assistant's state is spent with it.
+  await expect(page.locator("#flash-group")).toContainText(
+    "Saved Newport Dial-a-Ride.",
+  );
+  await expect(page.locator("#save-bar")).toHaveCount(0);
+  await expect(page.locator("#flex-service-page")).toHaveAttribute(
+    "data-dirty",
+    "false",
+  );
+  await expect(page.locator("#flex-policy-staged")).toHaveCount(0);
+  await expect(page.locator("#flex-policy-review")).toHaveCount(0);
+  await expect(page.locator("#rider-preview")).toContainText(
+    "Weekdays 8:00 am–5:00 pm",
+  );
+}
+
+test.describe("the assisted journey", () => {
+  test("supported policy reviews, stages and saves through the page's own Save", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await routeBlankTiles(page);
+    await supportedJourney(page, DESKTOP);
+
+    await captureBothViewports(page, "step-007-saved");
+  });
+
+  test("unsaved contact work survives the assisted save", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await openServicePage(page);
+
+    // Work the helper never saw: a new phone line and a second booking link,
+    // typed into the page's own form before the review opens.
+    await page.fill("#service_phone", "(541) 555-0999");
+    await page.fill(
+      "#service_info_url",
+      "https://northcoast.example/dial-a-ride-newport",
+    );
+    await page.locator("#service_phone").blur();
+    await expect(page.locator("#flex-service-page")).toHaveAttribute(
+      "data-dirty",
+      "true",
+    );
+
+    await acceptSource(page);
+    await openHelper(page);
+    await askHelper(page, SUPPORTED_QUESTION);
+    await openReview(page);
+
+    // Staging merged the reviewed hours into the whole draft: the assistant
+    // replaced the array it targeted and nothing else (AC-9).
+    await page.locator("#flex-policy-stage").click();
+    await expect(page.locator("#flex-policy-staged")).toBeVisible();
+    await expect(page.locator("#service_hours_0_start")).toHaveValue("08:00");
+    await expect(page.locator("#service_phone")).toHaveValue("(541) 555-0999");
+    await expect(page.locator("#service_info_url")).toHaveValue(
+      "https://northcoast.example/dial-a-ride-newport",
+    );
+
+    await page.locator("#save-btn").click();
+
+    // The native save wrote the whole page, the contact work included.
+    await expect(page.locator("#flash-group")).toContainText(
+      "Saved Newport Dial-a-Ride.",
+    );
+    await expect(page.locator("#service_phone")).toHaveValue("(541) 555-0999");
+    await expect(page.locator("#service_info_url")).toHaveValue(
+      "https://northcoast.example/dial-a-ride-newport",
+    );
+    await expect(page.locator("#rider-preview")).toContainText(
+      "(541) 555-0999",
+    );
+  });
+
+  test("an overlap asks before it stages and the answer is the editor's", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await openServicePage(page);
+
+    // The editor moves the same weekday window the proposal targets, so the
+    // two disagree and the page must ask rather than choose (AC-9).
+    await page.fill("#service_hours_0_end", "16:00");
+    await page.locator("#service_hours_0_end").blur();
+    await expect(page.locator("#flex-service-page")).toHaveAttribute(
+      "data-dirty",
+      "true",
+    );
+
+    await acceptSource(page);
+    await openHelper(page);
+    await askHelper(page, SUPPORTED_QUESTION);
+    await openReview(page);
+
+    // Both answers are visible and actionable, and nothing is chosen yet.
+    await expect(page.locator("#flex-policy-overlap")).toBeVisible();
+    await expect(page.locator("#flex-policy-review-state")).toContainText(
+      "1 overlapping field needs your answer",
+    );
+    await expect(
+      page.locator("#flex-policy-overlap-hours-draft"),
+    ).toBeVisible();
+    await expect(
+      page.locator("#flex-policy-overlap-hours-proposal"),
+    ).toBeVisible();
+
+    await captureBothViewports(page, "step-007-overlap");
+
+    // Staging is refused while the question is open.
+    await page.locator("#flex-policy-stage").click();
+    await expect(page.locator("#flex-policy-review-notice")).toContainText(
+      "Choose what to keep",
+    );
+    await expect(page.locator("#flex-policy-staged")).toHaveCount(0);
+
+    // The editor answers with the proposal, and the proposal's window is what
+    // reaches the draft.
+    await page.locator("#flex-policy-overlap-hours-proposal").click();
+    await expect(
+      page.locator("#flex-policy-overlap-hours-proposal"),
+    ).toBeChecked();
+
+    await page.locator("#flex-policy-stage").click();
+    await expect(page.locator("#flex-policy-staged")).toBeVisible();
+    await expect(page.locator("#service_hours_0_end")).toHaveValue("17:00");
+
+    // The comparison is gone and the section now reads as the staged draft, so
+    // there is no second "Use these changes" to press.
+    await expect(page.locator("#flex-policy-review-state")).toContainText(
+      "Staged into this page",
+    );
+    await expect(page.locator("#flex-policy-stage")).toHaveCount(0);
+    await expect(page.locator("#flex-policy-overlap")).toHaveCount(0);
+  });
+
+  test("an unsupported same-day ask is refused and nothing is staged", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await openServicePage(page);
+
+    await acceptSource(page);
+    await openHelper(page);
+    await page.locator("#agent-composer-input").fill(DISCRETION_QUESTION);
+    await page.locator("#agent-send").click();
+
+    // Operational discretion is not a native rule, so the preparation refuses
+    // and the panel carries the assistant's own reason.
+    await expect(page.locator("#agent-entries")).toContainText(
+      "This policy cannot be represented here",
+      { timeout: 60_000 },
+    );
+    await expect(page.locator("#agent-entries")).toContainText(
+      "same-day bookings when the dispatcher agrees",
+    );
+
+    // No candidate was prepared, so no review could open and the page's own
+    // fields never moved.
+    await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+    await expect(page.locator("#flex-policy-review")).toHaveCount(0);
+    await expect(page.locator("#flex-service-page")).toHaveAttribute(
+      "data-dirty",
+      "false",
+    );
+    await expect(page.locator("#save-bar")).toHaveCount(0);
+    await expect(page.locator("#flex-policy-source-accepted")).toBeVisible();
+
+    await captureBothViewports(page, "step-007-refused-same-day");
+  });
+
+  test("a booking rule on a missing office calendar is refused", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await openServicePage(page);
+
+    await acceptSource(page);
+    await openHelper(page);
+    await page.locator("#agent-composer-input").fill(OFFICE_QUESTION);
+    await page.locator("#agent-send").click();
+
+    // A weekday calendar is not an office calendar, and a rule naming one the
+    // version does not hold is refused rather than resolved to a substitute.
+    await expect(page.locator("#agent-entries")).toContainText(
+      "is not a calendar in office_service_id",
+      { timeout: 60_000 },
+    );
+    await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+    await expect(page.locator("#flex-policy-review")).toHaveCount(0);
+    await expect(page.locator("#save-bar")).toHaveCount(0);
+  });
+
+  test("an oversized source is refused with the whole text kept", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize(DESKTOP);
+    await routeBlankTiles(page);
+    await openServicePage(page);
+
+    // The cap is the whole context's, so the text only has to be longer than
+    // the intake admits; the refusal keeps every byte of it.
+    const oversized =
+      "Newport Dial-a-Ride runs weekdays 7:00 am to 6:00 pm. ".repeat(2200);
+    await page.fill("#flex-policy-source-label", "Newport flex policy");
+    await page.fill("#flex-policy-source-text", oversized);
+    await page.locator("#flex-policy-accept").click();
+
+    await expect(page.locator("#flex-policy-source-refusal")).toContainText(
+      "does not fit in one helper answer of 65,536 bytes",
+    );
+    await expect(page.locator("#flex-policy-source-accepted")).toHaveCount(0);
+    await expect(page.locator("#flex-policy-source-text")).toHaveValue(
+      oversized,
+    );
+    await expect(page.locator("#save-bar")).toHaveCount(0);
+
+    await captureBothViewports(page, "step-007-source-overflow");
   });
 });

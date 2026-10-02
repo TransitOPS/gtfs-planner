@@ -112,7 +112,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
   describe "review and staging write nothing" do
     test "the review shows the comparison and Use changes stages without saving", context do
       view = ready_view(context)
-      entry_id = prepared_entry(context, view)
+      _entry_id = prepared_entry(context, view)
 
       # The review is the native comparison of a freshly prepared candidate: the
       # two moved weekday rows, the untouched rows counted, the fields nothing
@@ -538,7 +538,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
   # pack's context and prepares the complete hours replacement. Only the final
   # provider HTTP is faked; the pack, the assistant and the prepared command are
   # the real ones (INV-5).
-  defp prepared_entry(context, view) do
+  defp prepared_entry(_context, view) do
     accept_source(view, "Newport flex policy", "rev 3", @policy_text)
     view |> element("#agent-helper-open") |> render_click()
     pid = join_session(view)

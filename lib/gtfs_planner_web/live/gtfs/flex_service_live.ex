@@ -2207,7 +2207,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> Enum.reject(&placeholder_rule?/1)
         |> Enum.map(&stringify(Map.take(&1, @rule_fields))),
       "phone" => service.phone,
-      "phone_hours" => service.phone_hours,
+      "phone_hours" => phone_hours_attrs(service.phone_hours),
       "booking_url" => service.booking_url,
       "info_url" => service.info_url,
       "note" => service.note,
@@ -2222,6 +2222,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # and a detour service's distance, wording, measure, stretch, drop-off policy
   # and calendars. A field the page does not render keeps its stored value
   # because it is not in its kind's attrs at all.
+  # The phone line's own hours are submitted with the same `_unused_*`
+  # placeholders every conditional block of this form carries, so only the
+  # three fields a rider reads are the page's content. A hidden placeholder is
+  # not an edit, and leaving it in made an unchanged save read as a changed page.
+  defp phone_hours_attrs(%{} = hours),
+    do: Map.take(hours, Map.keys(@default_phone_hours))
+
+  defp phone_hours_attrs(_hours), do: ""
+
   defp kind_attrs(%FlexService{kind: :area} = service) do
     %{"hub_stop_ids" => service.hub_stop_ids}
   end
