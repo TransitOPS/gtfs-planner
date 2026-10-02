@@ -43,8 +43,7 @@ defmodule GtfsPlanner.Validations.ArtifactValidationTest do
       Path.join(System.tmp_dir!(), "artifact-validation-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root)
-    _old_root = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_path)
-    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_path, root)
+    put_env(:gtfs_task_artifacts_path, root)
 
     # The real production validator, not the process-owned Mox mock: this step's
     # claim is about the bytes the concrete CLI entrypoint receives.
