@@ -726,6 +726,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :services, :list, default: [], doc: "`{service_id, label, total}` per loaded calendar"
   attr :partition_kind, :atom, default: :temporary, values: [:original, :temporary, :normal]
 
+  attr :calendar_link, :string,
+    default: nil,
+    doc:
+      "the verified native path for the calendar on screen, or nil when this version no longer owns it"
+
   def dated_change_plan(assigns) do
     ~H"""
     <section
@@ -815,6 +820,22 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             class="text-[13px] font-[650] text-default"
           >
             Calendar {hd(@services).label}
+          </p>
+
+          <p :if={@page_view} id="dated-change-calendar-link" class="text-[13px] text-muted">
+            <%= if @calendar_link do %>
+              <.link
+                navigate={@calendar_link}
+                class="link min-h-11 font-semibold underline"
+              >
+                Open the {service_label(@page_view.service_id, @services)} calendar
+              </.link>
+            <% else %>
+              <span class="font-semibold text-default">
+                {service_label(@page_view.service_id, @services)}
+              </span>
+              <span class="text-muted">is no longer a calendar in this version.</span>
+            <% end %>
           </p>
 
           <.segmented_control
@@ -930,6 +951,16 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   defp label_id(label), do: label |> String.downcase() |> String.replace(" ", "-")
+
+  # The calendar's own name when the report loaded it, and its identity when the
+  # label is not one this page holds, so the link and its fallback name the same
+  # calendar either way.
+  defp service_label(service_id, services) do
+    case Enum.find(services, &(&1.service_id == service_id)) do
+      %{label: label} -> label
+      _other -> service_id
+    end
+  end
 
   defp state_frame(:complete), do: "border-success/40 bg-success-bg text-default"
   defp state_frame(_other), do: "border-subtle bg-white text-default"
