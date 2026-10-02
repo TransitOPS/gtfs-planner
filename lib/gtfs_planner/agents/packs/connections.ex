@@ -39,6 +39,11 @@ defmodule GtfsPlanner.Agents.Packs.Connections do
   # every approved pair rather than refused whole or truncated silently.
   @max_witness_rows 25
 
+  # The page card is bounded separately from the model's witness: an approval
+  # may hold more pairs than a card can usefully list, and the counts above
+  # always cover every pair that was admitted.
+  @max_card_rows 10
+
   @skill_path Path.expand("../../../../priv/agents/packs/connections/SKILL.md", __DIR__)
   @external_resource @skill_path
 
@@ -436,6 +441,22 @@ defmodule GtfsPlanner.Agents.Packs.Connections do
     }
   end
 
+  # The same row the tool result carries, keyed for the page card: the values are
+  # identical, so a number on screen is never a re-derivation.
+  defp card_row(row) do
+    result = pair_result(row)
+
+    %{
+      id: result["id"],
+      status: result["status"],
+      reason: result["reason"],
+      current: result["current"],
+      candidate: result["candidate"],
+      delta_seconds: result["delta_seconds"],
+      minimum: result["minimum"]
+    }
+  end
+
   defp minimum_result(minimum) do
     %{
       "origin" => to_string(minimum.origin),
@@ -498,7 +519,10 @@ defmodule GtfsPlanner.Agents.Packs.Connections do
         gtfs_version_id: scope.gtfs_version_id,
         identity: identity_label(scope)
       },
-      exclusions: exclusions(report),
+      # The page renders these rows itself, so it never reads a number out of the
+      # model's reply. They are the same rows the tool result carries.
+      rows: Enum.map(Enum.take(report.rows, @max_card_rows), &card_row/1),
+      exclusions: card_exclusions(report) ++ exclusions(report),
       resources:
         Enum.map(Enum.take(report.rows, @max_witness_rows), fn row ->
           %{
@@ -559,6 +583,16 @@ defmodule GtfsPlanner.Agents.Packs.Connections do
     "Only #{report.totals.comparable} of #{report.totals.requested} approved pairs could be compared" <>
       if(reasons == [], do: ".", else: ": " <> Enum.join(reasons, ", ") <> ".")
   end
+
+  # A pair counted but not shown on the page card is disclosed, never dropped
+  # silently, so the totals on screen can be reconciled with the rows on screen.
+  defp card_exclusions(%{totals: %{requested: requested}}) when requested > @max_card_rows do
+    [
+      "#{requested - @max_card_rows} further approved pairs are counted above but not listed here."
+    ]
+  end
+
+  defp card_exclusions(_report), do: []
 
   defp exclusions(report) do
     shown =

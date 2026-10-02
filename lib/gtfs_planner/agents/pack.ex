@@ -38,7 +38,10 @@ defmodule GtfsPlanner.Agents.Pack do
   source read, `digest` is its content digest and `source_revision` stays `nil`
   until a real native revision exists. `scope` records the resolved scope the
   read ran under, `exclusions` the rows deliberately left out and `resources` the
-  typed references the panel may resolve into allowlisted application links.
+  typed references the panel may resolve into allowlisted application links. A
+  pack whose answer is a set of per-row records adds `rows`, the same records its
+  own result reports, so a host may render an official card from the evidence
+  without re-deriving any of it.
   """
   @type evidence :: %{
           required(:kind) => String.t(),
@@ -63,7 +66,8 @@ defmodule GtfsPlanner.Agents.Pack do
             }
           ],
           optional(:completeness_reason) => String.t() | nil,
-          optional(:facts) => [%{required(:label) => String.t(), required(:value) => String.t()}]
+          optional(:facts) => [%{required(:label) => String.t(), required(:value) => String.t()}],
+          optional(:rows) => [map()]
         }
 
   @typedoc """

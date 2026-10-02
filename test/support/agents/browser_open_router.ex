@@ -145,6 +145,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
+  @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -226,6 +227,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       # a Calendars one.
       content =~ @timetable_row ->
         tool_calls_reply("read_timetable_source", %{})
+
+      # The Schedules page asks whether a connection can be made, which is the
+      # connections pack's own read. It takes no arguments: the approved pairs,
+      # the supplied clocks and the supplied minimum are all in the page's
+      # source, and this branch is above the transfer wording below so the
+      # question reaches the pack whose source it was approved against.
+      content =~ ~r/make the connection|how much time|how tight|margin/i ->
+        tool_calls_reply("compare_connection_margins", %{})
 
       transfer_question?(content) ->
         transfer_reply(content)
@@ -342,16 +351,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   # AI-04's timetable tools have their own fixed chain over the accepted
-  # source, and the transfer tools answer with one sentence, so both are
-  # answered apart from the calendar tools and `tool_reply` only decides which
-  # of them stands in for the pack.
+  # source, and the transfer and connection tools answer with one sentence, so
+  # both are answered apart from the calendar tools and `tool_reply` only
+  # decides which of them stands in for the pack.
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
     tool = answered_tool(messages, tool_call_id)
 
     if tool in @timetable_tools do
       timetable_tool_reply(tool, messages)
     else
-      case answered_transfer_tool(tool) do
+      case prose_sentence(tool) do
         nil -> calendar_tool_reply(tool, messages)
         sentence -> text_reply(sentence)
       end
@@ -387,14 +396,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp calendar_tool_reply(_other, _messages), do: text_reply(@generic)
 
-  # The two transfer tools are the only ones whose result reads the same sentence,
-  # so their stand-in answers share one lookup rather than two identical branches.
-  # Any other tool leaves `nil` and is answered by the Schedule pack's clauses.
-  defp answered_transfer_tool(name)
+  # Three tools are answered with one scripted sentence each: the two the
+  # Transfers page drafts with, and the connections read, whose whole answer
+  # comes from the approved source rather than from anything scripted here. Any
+  # other tool leaves `nil` and is answered by the Schedule pack's clauses.
+  defp prose_sentence(name)
        when name in ["inspect_transfer_competition", "prepare_transfer_policy"],
        do: @prepared_transfer
 
-  defp answered_transfer_tool(_other), do: nil
+  defp prose_sentence("compare_connection_margins"), do: @compared_connections
+
+  defp prose_sentence(_other), do: nil
 
   # The seeded A02 answer has two listed departures, so the stand-in's sentence
   # for that call contradicts the card; the refusal branches keep the generic

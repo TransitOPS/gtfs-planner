@@ -207,6 +207,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_notice, nil)
     |> assign(:agent_unavailable?, false)
     |> assign(:agent_entries_empty?, true)
+    |> assign(:agent_latest_evidence, %{})
     |> assign(:agent_form, empty_form())
     |> assign(:agent_last_message, nil)
     |> stream_configure(@entries, dom_id: &"agent-entry-#{&1.id}")
@@ -332,6 +333,31 @@ defmodule GtfsPlannerWeb.AgentPanel do
   """
   @spec context_digest(Phoenix.LiveView.Socket.t()) :: String.t()
   def context_digest(socket), do: Scope.context_digest(scope(socket))
+
+  @doc """
+  The newest server evidence this panel has delivered for `kind`, or `nil`.
+
+  A host that shows an official answer beside the transcript reads it here rather
+  than from the entries stream, which is neither enumerable nor countable. The
+  value is the same resolved evidence the transcript renders - dropped whole when
+  it was read under a scope this panel no longer holds - and it is released with
+  the panel: a replaced context, a new conversation or a closed session clears it
+  alongside the transcript, so an answer never outlives the approval it was read
+  against (INV-2). This module still names no kind of its own; the caller owns
+  the string it asks for.
+  """
+  @spec latest_evidence(Phoenix.LiveView.Socket.t() | map(), String.t()) :: map() | nil
+  def latest_evidence(socket_or_assigns, kind) when is_binary(kind) do
+    socket_or_assigns
+    |> evidence_assigns()
+    |> Map.get(:agent_latest_evidence, %{})
+    |> Map.get(kind)
+  end
+
+  # A host renders inside `render/1`, where it holds the assigns rather than the
+  # socket, so both are accepted and neither is unwrapped by the caller.
+  defp evidence_assigns(%{assigns: assigns}), do: assigns
+  defp evidence_assigns(assigns) when is_map(assigns), do: assigns
 
   ## Opening
 
@@ -465,12 +491,15 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp handle_info({:agent_event, pid, event}, %{assigns: %{agent_session: pid}} = socket) do
     case event do
       {:entry, entry} ->
+        entry = resolve_entry_evidence(entry, socket)
+
         {:halt,
          socket
          |> stream_insert(@entries, resolve_entry_evidence(entry, socket))
          |> assign(:agent_entries_empty?, false)
          |> track_unavailable(entry)
-         |> forward_prepared(entry)}
+         |> forward_prepared(entry)
+         |> assign(:agent_latest_evidence, latest(entry, socket))}
 
       {:status, status} ->
         {:halt, assign(socket, :agent_status, status)}
@@ -513,6 +542,23 @@ defmodule GtfsPlannerWeb.AgentPanel do
   # An unknown message is the host's: the handoff below has no handler here, so it
   # reaches the host's own `handle_info/2` unchanged.
   defp handle_info(_message, socket), do: {:cont, socket}
+
+  # The newest evidence of each kind, kept beside the transcript so a host can
+  # render an official card from it. A later answer replaces an earlier one of
+  # the same kind; a kind this entry does not carry keeps the one before it.
+  defp latest(entry, socket) do
+    Enum.reduce(evidence_kinds(entry), socket.assigns.agent_latest_evidence, fn kind, acc ->
+      Map.put(acc, kind, entry_evidence(entry, kind))
+    end)
+  end
+
+  defp evidence_kinds(entry) do
+    entry |> Map.get(:evidence, []) |> Enum.map(& &1.kind) |> Enum.uniq()
+  end
+
+  defp entry_evidence(entry, kind) do
+    entry |> Map.get(:evidence, []) |> Enum.find(&(&1.kind == kind))
+  end
 
   ## Evidence resolution
 
@@ -681,6 +727,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_status, :idle)
     |> assign(:agent_notice, nil)
     |> assign(:agent_entries_empty?, true)
+    |> assign(:agent_latest_evidence, %{})
     |> assign(:agent_form, empty_form())
     |> assign(:agent_last_message, nil)
     |> stream(@entries, [], reset: true)
@@ -749,6 +796,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_conversation_id, snapshot.conversation_id)
     |> assign(:agent_status, snapshot.status)
     |> assign(:agent_entries_empty?, snapshot.entries == [])
+    |> assign(:agent_latest_evidence, latest_of(snapshot.entries))
     |> assign(:agent_notice, nil)
     |> assign(:agent_unavailable?, false)
     # A new or replaced conversation numbers its entries from one, so ids from the
@@ -767,10 +815,21 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_unavailable?, false)
     |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_entries_empty?, true)
+    |> assign(:agent_latest_evidence, %{})
     |> assign(:agent_form, empty_form())
     |> assign(:agent_last_message, nil)
     |> stream(@entries, [], reset: true)
     |> push_event("agent:focus", %{id: @composer})
+  end
+
+  # The newest evidence of each kind in a conversation this panel has just
+  # attached to, read exactly as a delivered entry would be.
+  defp latest_of(entries) do
+    Enum.reduce(entries, %{}, fn entry, acc ->
+      Enum.reduce(evidence_kinds(entry), acc, fn kind, kinds ->
+        Map.put(kinds, kind, entry_evidence(entry, kind))
+      end)
+    end)
   end
 
   defp open_fresh(socket) do
