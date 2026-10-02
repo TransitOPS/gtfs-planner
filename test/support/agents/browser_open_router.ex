@@ -130,6 +130,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   @behaviour Plug
 
+  alias GtfsPlanner.Agents.BrowserFeedQuality
   alias GtfsPlanner.Agents.BrowserServiceAnswers
 
   @model "test/model-a"
@@ -173,6 +174,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @timetable_inbound_direction_id 1
   @timetable_row ~r/prepare (inbound |outbound )?row (\d+)(?: for calendar ([A-Z0-9_]+))?/i
   @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
+  @feed_quality_tools ~w(list_validation_findings explain_notice prepare_export_options)
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
   @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
@@ -319,6 +321,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       # a Calendars one.
       content =~ @timetable_row ->
         tool_calls_reply("read_timetable_source", %{})
+
+      BrowserFeedQuality.question?(content) ->
+        {name, arguments} = BrowserFeedQuality.user_reply(content)
+        tool_calls_reply(name, arguments)
 
       # The Schedules page asks whether a connection can be made, which is the
       # connections pack's own read. It takes no arguments: the approved pairs,
@@ -524,9 +530,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   # AI-04's timetable tools have their own fixed chain over the accepted
-  # source, and the transfer and connection tools answer with one sentence, so
-  # both are answered apart from the calendar tools and `tool_reply` only
-  # decides which of them stands in for the pack.
+  # source, the transfer and connection tools answer with one sentence, and the
+  # feed quality tools answer with one fixed sentence each, so all three are
+  # answered apart from the calendar tools and `tool_reply` only decides which
+  # group stands in for the pack.
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
     tool = answered_tool(messages, tool_call_id)
 
@@ -536,6 +543,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
       tool in @operations_tools ->
         operations_tool_reply(tool, messages)
+
+      tool in @feed_quality_tools ->
+        text_reply(BrowserFeedQuality.tool_reply(tool))
 
       true ->
         case prose_sentence(tool) do

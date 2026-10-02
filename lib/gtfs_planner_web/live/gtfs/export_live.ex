@@ -22,7 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult
 
-import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publication_section: 1]
 
   import GtfsPlannerWeb.Gtfs.ExportComponents,
@@ -537,7 +537,7 @@ import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
               id="export-download-container"
               class="mt-2 grid gap-6 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start"
             >
-<div class="grid min-w-0 gap-6">
+              <div class="grid min-w-0 gap-6">
                 <.result_section
                   id="export-workspace"
                   title="Create a feed file"

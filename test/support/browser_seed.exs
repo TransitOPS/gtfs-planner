@@ -42,6 +42,7 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
+alias GtfsPlanner.Agents.BrowserFeedQuality
 alias GtfsPlanner.Agents.BrowserServiceAnswers
 alias GtfsPlanner.FaresFixtures
 alias GtfsPlanner.Gtfs
@@ -13552,6 +13553,80 @@ case Accounts.register_first_admin(%{
         "(BROWSER_DATED_CHANGE: DC_WEEKDAY with 2026-11-11 removed, DC_WEEKEND, " <>
         "DC_T_0700/DC_T_0800/DC_T_2510/DC_S_0930) and wide version #{wide_version.id} " <>
         "(BROWSER_DATED_CHANGE_WIDE, DC_WIDE 200,001-day Saturday range, today #{dated_change_today})"
+    )
+
+    # ── Browser Feed Quality Version ──
+    # One completed MobilityData report stored as a historical wrapper: its own
+    # length is 1 while the embedded upstream total is 170 with three retained
+    # samples. The samples name this version's own stop, a stop it never had and
+    # a row-only entry, so the helper can show resolved navigation beside
+    # unmapped evidence. The run keeps a fixed UUID so a journey can open its
+    # result page directly.
+    {:ok, feed_quality_version} =
+      Versions.create_gtfs_version(org.id, %{name: BrowserFeedQuality.version_name()})
+
+    feed_quality_version =
+      Repo.update!(
+        Ecto.Changeset.change(feed_quality_version,
+          published_at: ~U[2020-01-02 00:00:00.000000Z]
+        )
+      )
+
+    {:ok, _feed_quality_stop} =
+      GtfsFixtures.insert_stop(%{
+        stop_id: BrowserFeedQuality.stop_id(),
+        stop_name: "Feed Quality Central",
+        location_type: 0,
+        organization_id: org.id,
+        gtfs_version_id: feed_quality_version.id
+      })
+
+    %ValidationRun{
+      id: BrowserFeedQuality.run_id(),
+      organization_id: org.id,
+      gtfs_version_id: feed_quality_version.id
+    }
+    |> ValidationRun.system_changeset(%{
+      run_type: "mobility_data",
+      status: "completed",
+      started_at:
+        DateTime.utc_now() |> DateTime.add(-120, :second) |> DateTime.truncate(:microsecond),
+      completed_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
+      result_json: %{
+        "notices" => [
+          %{
+            "code" => "duplicate_key",
+            "severity" => "WARNING",
+            "totalNotices" => 1,
+            "notices" => [
+              %{
+                "totalNotices" => 170,
+                "sampleNotices" => [
+                  %{
+                    "filename" => "stops.txt",
+                    "csvRowNumber" => 1,
+                    "fieldName" => "stop_id",
+                    "stopId" => BrowserFeedQuality.stop_id()
+                  },
+                  %{
+                    "filename" => "stops.txt",
+                    "csvRowNumber" => 2,
+                    "fieldName" => "stop_id",
+                    "stopId" => "FQ-MISSING"
+                  },
+                  %{"filename" => "stops.txt", "csvRowNumber" => 3, "fieldName" => "stop_id"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    })
+    |> Repo.insert!()
+
+    IO.puts(
+      "Browser seed: feed quality version #{feed_quality_version.id} " <>
+        "(run #{BrowserFeedQuality.run_id()}, 170 stored findings / 3 retained WARNING samples)"
     )
 
     # The seed bulk-loads its rows, and a new database has no planner statistics
