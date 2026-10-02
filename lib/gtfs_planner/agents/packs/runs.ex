@@ -612,16 +612,10 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
 
   # The runs page has no narrower selection to freeze, so this digest binds the
   # copy's own (empty) selection exactly as the blocks pack binds the blocks the
-  # editor had selected. The host recomputes it from the selection it
-  # re-projects, which is what makes a prepared scope for another copy or another
-  # day refuse.
-  defp selection_digest(payload) do
-    payload
-    |> Map.fetch!("selection")
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-  end
+  # editor had selected. It is the shared owner's own function, which the host
+  # also calls on the copy it re-projects, so the two cannot compute the same
+  # binding two different ways.
+  defp selection_digest(payload), do: OperationsAssistance.selection_digest(payload)
 
   defp configuration_result(payload, mode, command) do
     {_tag, prepared} = command

@@ -244,6 +244,72 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the configuration the helper prepared, beside the drawer it opened.
+
+  This is a summary, never a control: the drawer above it holds the scope radios
+  and the one primary action, and nothing here can start or save anything. It
+  states the day the configuration was prepared from, the scope it named, how
+  many runs the day's own frozen copy already holds and how much work that scope
+  would add, what the copy did not inspect, and — for the one scope that
+  replaces hand-tuned runs — the consequence of that before the reader uses it.
+
+  The counts are the copy's own, so the summary and the drawer cannot describe
+  different days.
+  """
+  attr :review, :map, required: true
+
+  def runs_helper_scope(assigns) do
+    ~H"""
+    <section
+      id="runs-helper-scope-details"
+      aria-labelledby="runs-helper-scope-title"
+      class="mb-3 rounded-control border border-subtle bg-white px-3.5 py-3"
+    >
+      <h2 id="runs-helper-scope-title" class="text-[13px] font-[650] text-strong">
+        Configuration to review
+      </h2>
+      <dl class="mt-2 grid gap-1.5 text-[13px]">
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Service day</dt>
+          <dd class="text-right font-[650] text-strong">{@review.day_key}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Scope</dt>
+          <dd class="text-right font-[650] text-strong">{@review.mode_label}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Runs already on the day</dt>
+          <dd class="text-right font-[650] text-strong">{@review.run_count}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Uncovered trips</dt>
+          <dd class="text-right font-[650] text-strong">{@review.uncovered_trips}</dd>
+        </div>
+      </dl>
+
+      <p :if={@review.exclusions != []} class="mt-2 text-[13px] text-muted">
+        Not inspected: {Enum.map_join(@review.exclusions, ", ", fn {label, count} ->
+          "#{count} #{label}"
+        end)}.
+      </p>
+
+      <p
+        :if={@review.replacement?}
+        id="runs-helper-replacement-warning"
+        class="mt-2 text-[13px] text-muted"
+      >
+        This scope recuts every run on the day, so runs edited by hand may change. Applying asks
+        you to confirm.
+      </p>
+
+      <p class="mt-2 text-[13px] text-muted">
+        Nothing is cut or saved until you preview and then apply in the drawer.
+      </p>
+    </section>
+    """
+  end
+
+  @doc """
   Renders the Suggest runs drawer: which work to plan, the rules used, and the
   travel note.
 
