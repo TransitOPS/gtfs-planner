@@ -158,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
          {:ok, snapshot} <- current_snapshot(selection),
          {:ok, run} <- selected_run(selection) do
       recorded = recorded_facts(run, snapshot)
-      matched = matched_pairs(recorded_pairs(run), page)
+      matched = matched_pairs(recorded_pairs(run, recorded), page)
       base = base_result(selection, run, recorded)
 
       result =
@@ -186,7 +186,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
          {:ok, snapshot} <- current_snapshot(selection),
          {:ok, run} <- selected_run(selection) do
       recorded = recorded_facts(run, snapshot)
-      matched = matched_pairs(recorded_pairs(run), page)
+      matched = matched_pairs(recorded_pairs(run, recorded), page)
 
       result =
         %{
@@ -580,10 +580,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
 
   defp data_equality(_provenance, _snapshot), do: "unknown"
 
-  defp recorded_pairs(%ValidationRun{result_json: %{"pairs" => pairs}}) when is_list(pairs),
-    do: pairs
+  # Only an envelope the reader supports is decoded; any other state reports its
+  # state and notes and no stored rows.
+  defp recorded_pairs(%ValidationRun{result_json: %{"pairs" => pairs}}, %{state: "recorded"})
+       when is_list(pairs),
+       do: pairs
 
-  defp recorded_pairs(_run), do: []
+  defp recorded_pairs(_run, _recorded), do: []
 
   ## Filters, counts and paging
 
@@ -770,8 +773,8 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
 
   ## Projections
 
-  defp base_result(selection, run, recorded) do
-    envelope = run.result_json || %{}
+  defp base_result(selection, run, %{state: state} = recorded) do
+    envelope = if state == "recorded", do: run.result_json || %{}, else: %{}
 
     %{
       "station_stop_id" => selection.station_stop_id,
