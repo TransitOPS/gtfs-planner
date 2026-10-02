@@ -722,8 +722,10 @@ Report standalone Elixir parsing, project formatting, compilation, ExUnit and br
 execution separately. Bare `Code.format_file!/1` does not load the dependency/plugin
 settings in [`.formatter.exs`](../.formatter.exs). A successful startup or syntax check
 does not pass runtime assertions. Record unavailable checks and their actual capability
-failure as pending; do not bypass the restriction or replace the required `mix precommit`
-with a static check. The alias in [`mix.exs`](../mix.exs) also executes database-backed tests.
+failure as pending. Follow [test selection and execution](../AGENTS.md#test-selection-and-execution)
+for focused feedback, final-check ownership, and documentation-only verification. When
+`mix precommit` is required, do not replace it with a static check or bypass an execution
+restriction. The alias in [`mix.exs`](../mix.exs) also executes database-backed tests.
 
 ### Test Philosophy
 
