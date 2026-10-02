@@ -6802,6 +6802,102 @@ case Accounts.register_first_admin(%{
         "across #{map_size(block_stops)} stops and #{map_size(block_routes)} routes"
     )
 
+    # ── In-seat helper browser journey (EV-18) ──
+    #
+    # A published "Browser In-seat Helper Version" holds the in-seat helper's own
+    # journey data: one place with two blocks of one consecutive cross-route pair
+    # each, on the weekday service alone, so both pairs are the block's next pair on
+    # every date they run and may therefore be prepared. The first pair already
+    # carries a type-4 record, so the journey's save replaces a real setting rather
+    # than creating the first one, and the group's own result names the setting the
+    # review changed.
+    #
+    # It is a version of its own because "Browser Blocks Version" is measured by
+    # literal block and record counts. Backdated, so it never becomes the
+    # organization's latest published default.
+    {:ok, helper_blocks_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser In-seat Helper Version"})
+
+    helper_blocks_version =
+      Repo.update!(
+        Ecto.Changeset.change(helper_blocks_version,
+          published_at: ~U[2020-03-02 00:00:00.000000Z]
+        )
+      )
+
+    GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, helper_blocks_version.id, %{
+      service_id: "BB_WEEK",
+      name: "Weekday service",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: block_week_start,
+      end_date: block_week_end
+    })
+
+    in_seat_stop =
+      GtfsPlanner.GtfsFixtures.stop_fixture(org.id, helper_blocks_version.id, %{
+        stop_id: "BB_INSEAT",
+        stop_name: "Blocks In-seat Plaza",
+        stop_lat: 40.8000,
+        stop_lon: -73.9400
+      })
+
+    for {route_id, short_name, long_name} <- [
+          {"BB_R1", "BR1", "Blocks Riverside"},
+          {"BB_R2", "BR2", "Blocks Central"}
+        ] do
+      {:ok, _route} =
+        GtfsPlanner.GtfsFixtures.insert_route(%{
+          organization_id: org.id,
+          gtfs_version_id: helper_blocks_version.id,
+          route_id: route_id,
+          route_short_name: short_name,
+          route_long_name: long_name,
+          route_type: 3,
+          route_color: "0055AA"
+        })
+    end
+
+    in_seat_pairs =
+      for {block_id, from_times, to_times} <- [
+            {"BB-ISEAT-1", {"10:00:00", "10:30:00"}, {"11:10:00", "11:40:00"}},
+            {"BB-ISEAT-2", {"11:00:00", "11:30:00"}, {"12:10:00", "12:40:00"}}
+          ] do
+        in_seat_trip = fn route_id, suffix, {first_arrival, last_arrival} ->
+          GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+            org.id,
+            helper_blocks_version.id,
+            route_id,
+            %{
+              trip_id: "BB_ISEAT_#{block_id}_#{suffix}",
+              service_id: "BB_WEEK",
+              block_id: block_id,
+              trip_headsign: "Blocks journey",
+              first_stop: in_seat_stop.stop_id,
+              last_stop: in_seat_stop.stop_id,
+              first_arrival: first_arrival,
+              last_arrival: last_arrival
+            }
+          )
+        end
+
+        {in_seat_trip.("BB_R1", "A", from_times), in_seat_trip.("BB_R2", "B", to_times)}
+      end
+
+    [{in_seat_first, in_seat_second} | _rest] = in_seat_pairs
+
+    GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+      org.id,
+      helper_blocks_version.id,
+      in_seat_first,
+      in_seat_second
+    )
+
     # ── Advanced blocking browser journey ──
     #
     # A published "Browser Advanced Blocks Version" carries a

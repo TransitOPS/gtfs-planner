@@ -16,6 +16,9 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
   `GtfsPlanner.Gtfs.Transfer` needs no adaptation. `evaluate/2` consumes the
   stop_time incidence it is given and returns rule ids only; it never touches a
   repository, and catalog reads re-evaluate it rather than caching a verdict.
+  `witnesses/2` is the same evaluation reported as the concrete stop and trip of
+  each disagreeing pair, which is what a reviewed policy change shows the editor
+  and what `evaluate/2` is derived from.
 
   Cost is the sum over rules of the (from stop x from class x to stop x to class)
   witnesses one rule applies to: the per-leaf class index collapses trips that are
@@ -44,6 +47,15 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
   @type trip_class :: {:trip, String.t(), String.t()} | {:route, String.t()} | :other
 
   @type witness :: {String.t(), trip_class(), String.t(), trip_class()}
+
+  @typedoc "One witnessed disagreement, named by the concrete stop and trip of each side."
+  @type conflict_witness :: %{
+          from_stop_id: String.t(),
+          from_trip_id: String.t(),
+          to_stop_id: String.t(),
+          to_trip_id: String.t(),
+          rule_ids: [term()]
+        }
 
   # R6's rank table, keyed by the two sides' effective selectors.
   @rank %{
@@ -77,20 +89,52 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
   """
   @spec evaluate([rule()], incidence()) :: %{optional(term()) => [term()]}
   def evaluate(rules, incidence) do
+    rules
+    |> witnesses(incidence)
+    |> Enum.reduce(%{}, fn %{rule_ids: [left, right]}, edges ->
+      edges |> add_edge(left, right) |> add_edge(right, left)
+    end)
+    |> Map.new(fn {id, competitor_ids} -> {id, competitor_ids |> Enum.uniq() |> Enum.sort()} end)
+  end
+
+  @doc """
+  Returns every witnessed equal-specificity disagreement as a concrete witness.
+
+  Each entry names the stop and trip of both sides and the two rules whose
+  effects differ. The named trip of a side is the lexicographically first member
+  of that side's trip class, which is one of the real `stop_time` rows the class
+  was built from, so the entry is an actual arrival/departure pair a rider could
+  make. `evaluate/2` is this function reduced to rule ids.
+  """
+  @spec witnesses([rule()], incidence()) :: [conflict_witness()]
+  def witnesses(rules, incidence) do
     index = class_index(rules, incidence)
 
     rules
     |> Enum.reduce(%{}, fn rule, acc -> record_witnesses(acc, rule, index) end)
-    |> Map.values()
-    |> Enum.reduce(%{}, fn {_rank, best_rules}, edges -> add_edges(edges, best_rules) end)
-    |> Map.new(fn {id, competitor_ids} -> {id, competitor_ids |> Enum.uniq() |> Enum.sort()} end)
+    |> Enum.flat_map(fn {{from_leaf, from_class, to_leaf, to_class}, {_rank, best}} ->
+      from_trip = representative(index, from_leaf, :from, from_class)
+      to_trip = representative(index, to_leaf, :to, to_class)
+
+      for [left, right] <- pairs(best), effect(left) != effect(right) do
+        %{
+          from_stop_id: from_leaf,
+          from_trip_id: from_trip,
+          to_stop_id: to_leaf,
+          to_trip_id: to_trip,
+          rule_ids: Enum.sort([id(left), id(right)])
+        }
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp record_witnesses(acc, rule, index) do
     rule_rank = rank(rule)
 
     rule
-    |> witnesses(index)
+    |> rule_witnesses(index)
     |> Enum.reduce(acc, fn witness, acc -> keep_best(acc, witness, rule_rank, rule) end)
   end
 
@@ -104,20 +148,6 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
     end)
   end
 
-  defp add_edges(edges, best_rules) do
-    best_rules
-    |> pairs()
-    |> Enum.reduce(edges, fn [left, right], edges ->
-      if effect(left) == effect(right) do
-        edges
-      else
-        edges
-        |> add_edge(id(left), id(right))
-        |> add_edge(id(right), id(left))
-      end
-    end)
-  end
-
   defp pairs(rules) do
     indexed = Enum.with_index(rules)
 
@@ -128,7 +158,8 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
     Map.update(edges, id, [competitor_id], &[competitor_id | &1])
   end
 
-  defp effect(rule) do
+  @doc false
+  def effect(rule) do
     case Map.fetch!(rule, :transfer_type) do
       2 -> {2, Map.get(rule, :min_transfer_time)}
       type -> {type, nil}
@@ -142,29 +173,41 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
   # class, other trips of a route named there share one class, and the remaining
   # trips share the last class. Selector matching is constant inside a class, so
   # enumerating classes instead of trips cannot change which rules a witness has.
+  # The index keeps the members of each class, which only `witnesses/2` reads to
+  # name a real trip.
   defp class_index(rules, incidence) do
     Map.new(incidence, fn {leaf, trips} ->
-      {leaf, %{from: classes(trips, rules, leaf, :from), to: classes(trips, rules, leaf, :to)}}
+      {leaf,
+       %{
+         from: class_members(trips, rules, leaf, :from),
+         to: class_members(trips, rules, leaf, :to)
+       }}
     end)
   end
 
-  defp classes(trips, rules, leaf, side) do
+  defp class_members(trips, rules, leaf, side) do
     naming = Enum.filter(rules, &(leaf in coverage(&1, side)))
     named_trips = naming |> Enum.flat_map(&List.wrap(trip_selector(&1, side))) |> MapSet.new()
     named_routes = naming |> Enum.flat_map(&List.wrap(route_selector(&1, side))) |> MapSet.new()
 
-    trips
-    |> Enum.map(fn {trip_id, route_id} ->
+    Enum.group_by(trips, fn {trip_id, route_id} ->
       cond do
         MapSet.member?(named_trips, trip_id) -> {:trip, trip_id, route_id}
         MapSet.member?(named_routes, route_id) -> {:route, route_id}
         true -> :other
       end
     end)
-    |> Enum.uniq()
   end
 
-  defp witnesses(rule, index) do
+  defp representative(index, leaf, side, class) do
+    index
+    |> classes_at(leaf, side)
+    |> Map.fetch!(class)
+    |> Enum.min()
+    |> elem(0)
+  end
+
+  defp rule_witnesses(rule, index) do
     for from_leaf <- coverage(rule, :from),
         from_class <- matching_classes(index, from_leaf, :from, rule),
         to_leaf <- coverage(rule, :to),
@@ -176,13 +219,14 @@ defmodule GtfsPlanner.Gtfs.Transfers.Overlaps do
   defp matching_classes(index, leaf, side, rule) do
     index
     |> classes_at(leaf, side)
+    |> Map.keys()
     |> Enum.filter(&matches?(&1, trip_selector(rule, side), route_selector(rule, side)))
   end
 
   defp classes_at(index, leaf, side) do
     case Map.fetch(index, leaf) do
       {:ok, sides} -> Map.fetch!(sides, side)
-      :error -> []
+      :error -> %{}
     end
   end
 

@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.ConnectionComparison
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -43,12 +44,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
+  alias GtfsPlannerWeb.Gtfs.ScheduleHelperComponents
 
   on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
@@ -75,6 +78,51 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # empty list (R8). A new window is two hours long, like the reference's.
   @default_window %{from: @default_departure, until: @default_until, every: @default_every}
   @window_hours 2
+
+  # --- connection approval ---------------------------------------------------
+
+  # The helpers this page may offer. The order is the order the selector renders,
+  # and every entry is a pack the application ships: the panel refuses to mount a
+  # selector offering anything else, and a forged mode reaches only the handler
+  # below, which ignores an id that is not in this table.
+  @helper_modes [
+    {"service_queries", "Schedule questions"},
+    {"connections", "Approved connections"}
+  ]
+
+  # The approved source the connections helper may read. The kind is the pack's
+  # own admission key and the payload is this page's strings, so a helper reads
+  # numbers the operator typed rather than numbers a model supplied (INV-1,
+  # INV-2).
+  @connection_source_kind "connections"
+  @connection_schema_version 1
+
+  # The refusals this page renders next to its own form, so an operator reads the
+  # same sentence the domain returned rather than a bare atom.
+  @connection_date_error "Choose the service date these connections are for."
+  @connection_pairs_error "Add at least one connection pair."
+  @connection_endpoint_error "Each side needs a route, trip and stop."
+  @connection_sequence_error "Occurrence sequence and service-date offset are whole numbers of 0 or more."
+  @connection_minimum_error "A supplied minimum needs whole seconds of 0 or more and the approval that states it."
+  @connection_id_error "Each connection pair needs its own name."
+  @connection_candidate_error "A candidate clock has to be a time such as 09:07."
+  @connection_candidate_approval_error "Candidate times need the approval that states where they come from."
+  @connection_unreadable_error "The helper cannot read this approval, so nothing was approved. Give every candidate time the same approval label, and include a pair on this page's route."
+  @connection_unavailable_error "These routes, trips or stops are not part of this version, so nothing was approved."
+  @connection_read_error "This version's connections could not be read, so nothing was approved."
+  @connection_invalid_error "That approval was not a shape this page can admit, so nothing was approved."
+  @connection_approved_notice "Approved. The connection helper can now read exactly these pairs."
+
+  @empty_endpoint %{
+    "route_id" => "",
+    "trip_id" => "",
+    "stop_id" => "",
+    "stop_sequence" => "",
+    "service_date_offset" => "0"
+  }
+
+  @empty_minimum %{"origin" => "stored", "seconds" => "", "approval" => ""}
+  @empty_candidate %{"arrival" => "", "departure" => "", "approval" => ""}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -118,7 +166,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:pattern_form, to_form(%{"pattern" => "all"}))
      |> stream_configure(:sections, dom_id: &"section-#{&1.pattern.route_pattern_id}")
      |> stream(:sections, [])
-     |> AgentPanel.mount("service_queries")}
+     |> assign(:schedule_helper_mode, "service_queries")
+     |> assign(:schedule_helper_modes, @helper_modes)
+     |> assign(:connection_pair_limit, ConnectionComparison.pair_limit())
+     |> assign(:connection_form, connection_draft(nil))
+     |> assign(:connection_notice, nil)
+     |> assign(:connection_approval, nil)
+     |> assign(:connection_context, nil)
+     |> AgentPanel.mount("service_queries", allowed_packs: Enum.map(@helper_modes, &elem(&1, 0)))}
   end
 
   @impl true
@@ -143,7 +198,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> report_cleared_selection(cleared_selection?)
 
     if connected?(socket) do
-      {:noreply, socket |> load_schedule(params) |> bind_agent_context()}
+      {:noreply,
+       socket
+       |> load_schedule(params)
+       |> seed_connection_route()
+       # A parameter change is a new version, route or date of the page's own
+       # reading, so nothing the previous reading approved survives it.
+       |> invalidate_connections()
+       |> bind_agent_context()}
     else
       {:noreply, socket |> assign(:load_state, :loading) |> bind_agent_context()}
     end
@@ -155,13 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # transcript; a page whose route did not load falls back to the whole-version
   # context, which the Schedule pack refuses with the one unavailable result.
   defp bind_agent_context(socket) do
-    identity =
-      case socket.assigns[:route] do
-        %GtfsPlanner.Gtfs.Route{} = route -> {:route, route.id}
-        _other -> {:version, socket.assigns.current_gtfs_version.id}
-      end
-
-    AgentPanel.set_context(socket, Scope.context(identity))
+    AgentPanel.set_context(socket, helper_context(socket))
   end
 
   # The selection is page state, so a parameter change clears it. Only a change
@@ -567,6 +623,41 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # --- connection approval ---------------------------------------------------
+
+  @impl true
+  def handle_event("schedule_helper_mode", %{"mode" => mode}, socket) do
+    {:noreply, select_helper_mode(socket, mode)}
+  end
+
+  def handle_event("schedule_helper_mode", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("connection_validate", %{"connection" => params}, socket) do
+    {:noreply, socket |> edit_connection_draft(params) |> invalidate_connections()}
+  end
+
+  def handle_event("connection_validate", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("connection_pair_add", _params, socket) do
+    {:noreply, add_connection_pair(socket)}
+  end
+
+  @impl true
+  def handle_event("connection_pair_remove", %{"id" => id}, socket) do
+    {:noreply, socket |> remove_connection_pair(id) |> invalidate_connections()}
+  end
+
+  def handle_event("connection_pair_remove", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("connection_approve", %{"connection" => params}, socket) do
+    {:noreply, approve_connections(socket, params)}
+  end
+
+  def handle_event("connection_approve", _params, socket), do: {:noreply, socket}
+
   # --- delete ----------------------------------------------------------------
 
   @impl true
@@ -750,7 +841,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
            socket.assigns.route_id,
            requested_filters(socket.assigns.requested)
          ) do
-      {:ok, payload} -> {:ok, put_payload(socket, payload)}
+      {:ok, payload} -> {:ok, socket |> put_payload(payload) |> invalidate_connections()}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -4289,6 +4380,605 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # --- connections: helper mode ---------------------------------------------
+
+  # A mode this page does not offer changes nothing: the rendered control names
+  # only the ids below, and a forged event that names another pack cannot reach
+  # the panel's stored allowlist or this page's state.
+  defp select_helper_mode(socket, mode) do
+    if Enum.any?(@helper_modes, fn {id, _label} -> id == mode end) do
+      select_helper_mode(socket, mode, helper_context_for(socket, mode))
+    else
+      socket
+    end
+  end
+
+  defp select_helper_mode(socket, mode, context) do
+    socket
+    |> assign(:schedule_helper_mode, mode)
+    |> AgentPanel.select_pack(mode, context)
+  end
+
+  defp helper_context(socket), do: helper_context_for(socket, socket.assigns.schedule_helper_mode)
+
+  # The connections helper keeps the admitted source it was bound to, so
+  # switching away and back does not silently ask the person to approve the same
+  # pairs twice; every other helper reads the plain route context, because a
+  # connections source is not input to any other question set.
+  defp helper_context_for(socket, "connections") do
+    case socket.assigns[:connection_context] do
+      nil -> base_helper_context(socket)
+      context -> context
+    end
+  end
+
+  defp helper_context_for(socket, _mode), do: base_helper_context(socket)
+
+  defp base_helper_context(socket) do
+    case socket.assigns[:route] do
+      %GtfsPlanner.Gtfs.Route{} = route -> Scope.context({:route, route.id})
+      _other -> Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    end
+  end
+
+  # An edited approval, a changed route, date or version, and a data reload all
+  # leave this page with nothing approved. The panel falls back to the plain
+  # route context, so the admitted source and the conversation that read it go
+  # together and no later question can be answered from rows this page no longer
+  # shows (INV-2).
+  defp invalidate_connections(socket) do
+    # The context to fall back to is read after the admitted one is dropped, so
+    # the panel cannot rebind the source this call is invalidating.
+    socket = assign(socket, :connection_context, nil)
+
+    socket
+    |> assign(:connection_approval, nil)
+    |> assign(:connection_notice, nil)
+    |> AgentPanel.set_context(helper_context(socket))
+  end
+
+  # --- connections: the operator's draft ------------------------------------
+
+  defp connection_draft(route), do: to_form(blank_connection_params(route), as: :connection)
+
+  defp edit_connection_draft(socket, params),
+    do: assign(socket, :connection_form, to_form(connection_params(params), as: :connection))
+
+  defp blank_connection_params(route) do
+    %{
+      "service_date" => Date.to_iso8601(Date.utc_today()),
+      "pairs" => [blank_connection_pair(1, route)]
+    }
+  end
+
+  defp blank_connection_pair(index, route) do
+    %{
+      "id" => "pair-#{index}",
+      "from" => blank_connection_endpoint(connection_route_id(route)),
+      "to" => blank_connection_endpoint(""),
+      "minimum" => @empty_minimum,
+      "candidate" => @empty_candidate
+    }
+  end
+
+  defp blank_connection_endpoint(route_id), do: Map.put(@empty_endpoint, "route_id", route_id)
+
+  # The blank draft seeds one side from the route this page is showing, so the
+  # operator's own route is already filled in; a page with no route loaded seeds
+  # an empty one rather than naming a route this page does not have.
+  defp connection_route_id(%GtfsPlanner.Gtfs.Route{route_id: route_id}), do: route_id
+  defp connection_route_id(_route), do: ""
+
+  # The page's own route is the one an operator almost always approves from, so a
+  # pair that has not named one yet is seeded with it. A pair that names its own
+  # route - the only side an operator may legitimately supply - is untouched.
+  defp seed_connection_route(socket) do
+    route_id = connection_route_id(socket.assigns[:route])
+
+    if route_id == "" do
+      socket
+    else
+      params =
+        socket.assigns.connection_form.params || blank_connection_params(socket.assigns[:route])
+
+      pairs =
+        Enum.map(Map.get(params, "pairs", []), &seed_pair_route(&1, route_id))
+
+      edit_connection_draft(socket, Map.put(params, "pairs", pairs))
+    end
+  end
+
+  defp seed_pair_route(pair, route_id) do
+    update_in(pair, ["from", "route_id"], fn
+      value when is_binary(value) and value != "" -> value
+      _blank -> route_id
+    end)
+  end
+
+  # The draft this page is editing: the last submitted or changed values, or a
+  # blank draft seeded from the route this page is showing.
+  defp connection_draft_params(socket) do
+    socket.assigns.connection_form.params || blank_connection_params(socket.assigns[:route])
+  end
+
+  # The `pairs` shape is kept whole so removing or adding one never rebuilds the
+  # values of the others, and an indexed map posted by the form becomes the list
+  # `inputs_for/1` renders, in the order the client numbered it.
+  defp connection_params(%{"pairs" => pairs} = params) when is_list(pairs), do: params
+
+  defp connection_params(params) when is_map(params) do
+    params
+    |> Map.put_new("service_date", blank_connection_date())
+    |> Map.update("pairs", [], &connection_pair_params/1)
+  end
+
+  defp connection_params(_params),
+    do: %{"service_date" => blank_connection_date(), "pairs" => []}
+
+  defp connection_pair_params(pairs) when is_map(pairs) do
+    pairs
+    |> Enum.map(fn {key, pair} -> {connection_pair_index(key), pair} end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  defp connection_pair_params(pairs), do: pairs
+
+  defp connection_pair_index(key) do
+    case Integer.parse(to_string(key)) do
+      {index, ""} -> index
+      _other -> 0
+    end
+  end
+
+  defp blank_connection_date, do: Date.to_iso8601(Date.utc_today())
+
+  defp add_connection_pair(socket) do
+    params = connection_draft_params(socket)
+    pairs = Map.get(params, "pairs", [])
+
+    if length(pairs) >= ConnectionComparison.pair_limit() do
+      assign(socket, :connection_notice, connection_pair_limit_error())
+    else
+      params = Map.put(params, "pairs", pairs ++ [next_connection_pair(pairs, socket)])
+
+      socket |> edit_connection_draft(params) |> invalidate_connections()
+    end
+  end
+
+  defp remove_connection_pair(socket, id) do
+    params = connection_draft_params(socket)
+
+    pairs =
+      params
+      |> Map.get("pairs", [])
+      |> Enum.reject(&(&1["id"] == id))
+
+    params =
+      Map.put(
+        params,
+        "pairs",
+        if(pairs == [], do: [blank_connection_pair(1, socket.assigns[:route])], else: pairs)
+      )
+
+    socket |> edit_connection_draft(params) |> invalidate_connections()
+  end
+
+  # The lowest pair name this draft is not already using, so a name an operator
+  # removed is not handed to a different pair.
+  defp next_connection_pair(pairs, socket) do
+    taken = MapSet.new(pairs, & &1["id"])
+
+    index =
+      Enum.find(1..(length(pairs) + 2), &(MapSet.member?(taken, "pair-#{&1}") == false))
+
+    blank_connection_pair(index, socket.assigns[:route])
+  end
+
+  # --- connections: approval -------------------------------------------------
+
+  # Approval is the only path into the admitted source, and it runs entirely on
+  # the values this form posted. The pairs are resolved against this page's own
+  # organization and version before anything is admitted, so a route, trip or
+  # stop the current version does not hold is refused here rather than carried
+  # into a conversation (AC-1, AC-6).
+  defp approve_connections(socket, params) do
+    params = connection_params(params)
+    socket = edit_connection_draft(socket, params)
+
+    with {:ok, request} <- connection_request(socket, params),
+         {:ok, snapshot} <- load_connections(socket, request) do
+      admit_connections(socket, request, snapshot)
+    else
+      {:error, reason} -> refuse_connections(socket, reason)
+    end
+  end
+
+  defp connection_request(socket, params) do
+    with {:ok, service_date} <- connection_date(params["service_date"]),
+         {:ok, pairs, trips} <- connection_pairs(socket, params["pairs"]),
+         {:ok, candidates} <- connection_candidates(Map.get(params, "pairs", [])) do
+      {:ok, %{service_date: service_date, pairs: pairs, candidates: candidates, trips: trips}}
+    end
+  end
+
+  defp connection_date(value) when is_binary(value) do
+    case Date.from_iso8601(String.trim(value)) do
+      {:ok, service_date} -> {:ok, service_date}
+      _other -> {:error, @connection_date_error}
+    end
+  end
+
+  defp connection_date(_value), do: {:error, @connection_date_error}
+
+  # The pair ceiling is a narrowing path of its own, so an over-limit draft is
+  # refused on count before any pair of it is read.
+  defp connection_pairs(socket, pairs) when is_list(pairs) and pairs != [] do
+    if length(pairs) > ConnectionComparison.pair_limit() do
+      {:error, connection_pair_limit_error()}
+    else
+      distinct_pair_ids(socket, pairs)
+    end
+  end
+
+  defp connection_pairs(_socket, _pairs), do: {:error, @connection_pairs_error}
+
+  # Two pairs under one name would report their results under it together, so the
+  # names are checked before any of them is read.
+  defp distinct_pair_ids(socket, pairs) do
+    with {:ok, validated, trips} <- connection_pair_list(socket, pairs) do
+      if length(Enum.uniq_by(validated, & &1.id)) == length(validated),
+        do: {:ok, validated, trips},
+        else: {:error, @connection_id_error}
+    end
+  end
+
+  # The approved rows and the GTFS trip names behind them come back together:
+  # the domain request carries only the five keys it accepts, and the names are
+  # this page's own provenance beside it.
+  defp connection_pair_list(socket, pairs) do
+    Enum.reduce_while(pairs, {:ok, [], []}, fn pair, {:ok, acc, trips} ->
+      case connection_pair(socket, pair) do
+        {:ok, validated, named} ->
+          {:cont, {:ok, acc ++ [validated], trips ++ named}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp connection_pair(socket, pair) when is_map(pair) do
+    with {:ok, id} <- connection_pair_id(pair["id"]),
+         {:ok, from, from_trip} <- connection_endpoint(socket, pair["from"]),
+         {:ok, to, to_trip} <- connection_endpoint(socket, pair["to"]),
+         {:ok, minimum} <- connection_minimum(pair["minimum"]) do
+      {:ok, %{id: id, from: from, to: to, minimum: minimum}, [from_trip, to_trip]}
+    end
+  end
+
+  defp connection_pair(_socket, _pair), do: {:error, @connection_pairs_error}
+
+  defp connection_pair_id(value) when is_binary(value) do
+    case Values.presence(value) do
+      nil -> {:error, @connection_id_error}
+      id -> {:ok, id}
+    end
+  end
+
+  defp connection_pair_id(_value), do: {:error, @connection_id_error}
+
+  # The operator names the route and trip this feed uses, so both are resolved
+  # inside this page's own organization and version before they become a
+  # reference. An identifier another organization or version holds resolves to
+  # nothing here, which is the same refusal a route this version does not have
+  # gets (AC-1).
+  defp connection_endpoint(socket, params) when is_map(params) do
+    with {:ok, route} <- connection_route(socket, params["route_id"]),
+         {:ok, trip} <- connection_trip(socket, params["trip_id"]),
+         {:ok, stop_id} <- connection_text(params["stop_id"]),
+         {:ok, sequence} <- connection_count(params["stop_sequence"]),
+         {:ok, offset} <- connection_offset(params["service_date_offset"]) do
+      {:ok,
+       %{
+         route_id: route.id,
+         trip_id: trip.id,
+         stop_id: stop_id,
+         stop_sequence: sequence,
+         service_date_offset: offset
+       }, %{"id" => trip.id, "trip_id" => trip.trip_id}}
+    end
+  end
+
+  defp connection_endpoint(_socket, _params), do: {:error, @connection_endpoint_error}
+
+  defp connection_route(socket, value) do
+    with {:ok, route_id} <- connection_text(value),
+         %Gtfs.Route{} = route <-
+           Gtfs.get_route_by_route_id(
+             socket.assigns.current_organization.id,
+             version_id(socket),
+             route_id
+           ) do
+      {:ok, route}
+    else
+      nil -> {:error, @connection_unavailable_error}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, @connection_unavailable_error}
+    end
+  end
+
+  defp connection_trip(socket, value) do
+    with {:ok, trip_id} <- connection_text(value),
+         %Gtfs.Trip{} = trip <-
+           Gtfs.get_trip_by_trip_id(
+             socket.assigns.current_organization.id,
+             version_id(socket),
+             trip_id
+           ) do
+      {:ok, trip}
+    else
+      nil -> {:error, @connection_unavailable_error}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, @connection_unavailable_error}
+    end
+  end
+
+  defp version_id(socket), do: socket.assigns.current_gtfs_version.id
+
+  defp connection_text(value) when is_binary(value) do
+    case Values.presence(value) do
+      nil -> {:error, @connection_endpoint_error}
+      text -> {:ok, text}
+    end
+  end
+
+  defp connection_text(_value), do: {:error, @connection_endpoint_error}
+
+  defp connection_count(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {count, ""} when count >= 0 -> {:ok, count}
+      _other -> {:error, @connection_sequence_error}
+    end
+  end
+
+  defp connection_count(_value), do: {:error, @connection_sequence_error}
+
+  # An endpoint on the approved service date itself needs no offset, so a blank
+  # one is that same date rather than a missing number: an occurrence sequence is
+  # still required, because "the stop" alone does not name a visit.
+  defp connection_offset(value) when is_binary(value) do
+    case Values.presence(value) do
+      nil -> {:ok, 0}
+      text -> connection_count(text)
+    end
+  end
+
+  defp connection_offset(_value), do: {:error, @connection_sequence_error}
+
+  defp connection_minimum(%{"origin" => "stored"}), do: {:ok, %{origin: :stored}}
+
+  defp connection_minimum(%{"origin" => "supplied"} = params) do
+    with {:ok, seconds} <- connection_seconds(params["seconds"]),
+         {:ok, approval} <- connection_approval(params["approval"]) do
+      {:ok, %{origin: :supplied, seconds: seconds, approval: approval}}
+    end
+  end
+
+  defp connection_minimum(_params), do: {:error, @connection_minimum_error}
+
+  defp connection_seconds(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {seconds, ""} when seconds >= 0 -> {:ok, seconds}
+      _other -> {:error, @connection_minimum_error}
+    end
+  end
+
+  defp connection_seconds(_value), do: {:error, @connection_minimum_error}
+
+  defp connection_approval(value) when is_binary(value) do
+    case Values.presence(value) do
+      nil -> {:error, @connection_minimum_error}
+      text -> {:ok, text}
+    end
+  end
+
+  defp connection_approval(_value), do: {:error, @connection_minimum_error}
+
+  # Only the pairs the operator supplied a clock for are candidates. A pair with
+  # no supplied clock stays without one, which is missing candidate evidence
+  # rather than a value this page estimates.
+  defp connection_candidates(pairs) when is_list(pairs) do
+    Enum.reduce_while(pairs, {:ok, []}, fn pair, {:ok, acc} ->
+      case connection_candidate(pair) do
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, entry} -> {:cont, {:ok, acc ++ [entry]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp connection_candidates(_pairs), do: {:error, @connection_pairs_error}
+
+  defp connection_candidate(%{"id" => id, "candidate" => candidate}) when is_map(candidate) do
+    arrival = Values.presence(candidate["arrival"])
+    departure = Values.presence(candidate["departure"])
+    approval = Values.presence(candidate["approval"])
+
+    cond do
+      is_nil(arrival) and is_nil(departure) and is_nil(approval) ->
+        {:ok, nil}
+
+      (not is_nil(arrival) or not is_nil(departure)) and is_nil(approval) ->
+        {:error, @connection_candidate_approval_error}
+
+      true ->
+        with {:ok, arrival} <- candidate_clock(arrival),
+             {:ok, departure} <- candidate_clock(departure) do
+          {:ok,
+           %{
+             "pair_id" => String.trim(id),
+             "origin" => "supplied",
+             "arrival" => arrival,
+             "departure" => departure,
+             "approval" => approval
+           }}
+        end
+    end
+  end
+
+  defp connection_candidate(_pair), do: {:ok, nil}
+
+  # The comparison reads a clock as HH:MM:SS, so the page's one R2 grammar reads what
+  # the person typed and the approval carries its normalized form: what the field
+  # invites ("09:07") is what the helper compares.
+  defp candidate_clock(nil), do: {:ok, nil}
+
+  defp candidate_clock(text) do
+    case TimeEntry.parse(text, []) do
+      {:ok, %{secs: secs}} -> {:ok, GtfsTime.format(secs)}
+      {:error, _reason} -> {:error, @connection_candidate_error}
+    end
+  end
+
+  defp load_connections(socket, request) do
+    ConnectionComparison.load(
+      %{
+        organization_id: socket.assigns.current_organization.id,
+        gtfs_version_id: socket.assigns.current_gtfs_version.id
+      },
+      request.pairs,
+      request.service_date
+    )
+  end
+
+  # The admitted source is this page's strings plus the one snapshot digest the
+  # resolved pairs were read at. The scope module measures the whole serialized
+  # context and refuses it when it will not hold, so an approval this page cannot
+  # bind becomes a narrowing instruction rather than a truncated source.
+  defp admit_connections(socket, request, snapshot) do
+    payload = connection_payload(request, snapshot)
+
+    with {:ok, context} <-
+           Scope.with_source_snapshot(
+             base_helper_context(socket),
+             %{kind: @connection_source_kind, payload: payload}
+           ),
+         # The helper refuses an approval its own admission rejects, so it is asked
+         # here, where the person can still correct the form (INV-2).
+         true <- AgentPanel.admits?(socket, @connection_source_kind, context) do
+      # The approval is what the connections helper reads, so the person lands
+      # on the helper that owns it rather than on the one that cannot.
+      socket =
+        socket
+        |> assign(:connection_notice, @connection_approved_notice)
+        |> assign(:connection_context, context)
+        |> select_helper_mode("connections", context)
+
+      # The receipt is built after the switch, because the conversation key it
+      # shows is the one the connections session binds (INV-2).
+      assign(socket, :connection_approval, connection_receipt(socket, request, snapshot))
+    else
+      false -> refuse_connections(socket, @connection_unreadable_error)
+      {:error, reason} -> refuse_connections(socket, reason)
+    end
+  end
+
+  defp refuse_connections(socket, reason) do
+    socket = assign(socket, :connection_context, nil)
+
+    socket
+    |> assign(:connection_notice, connection_refusal(reason))
+    |> assign(:connection_approval, nil)
+    |> AgentPanel.set_context(helper_context(socket))
+  end
+
+  defp connection_refusal(reason) when is_binary(reason), do: reason
+  defp connection_refusal(:not_found), do: @connection_unavailable_error
+  defp connection_refusal(:too_many), do: connection_pair_limit_error()
+  defp connection_refusal(:invalid_input), do: @connection_invalid_error
+  defp connection_refusal(:invalid_snapshot), do: @connection_invalid_error
+  defp connection_refusal(:too_large), do: connection_size_error()
+  defp connection_refusal(_other), do: @connection_read_error
+
+  defp connection_pair_limit_error do
+    "Approve at most #{ConnectionComparison.pair_limit()} connection pairs at a time. Remove a pair, approve, then add the next."
+  end
+
+  # The smaller of the two bounds is the byte one, and this version of the page
+  # has not measured which of a few hundred short pairs reaches it: the copy says
+  # what to shorten rather than claiming which side of the line this was.
+  defp connection_size_error do
+    "Those connections are larger than the helper can hold. Approve fewer pairs, or shorten the approval labels, and approve again."
+  end
+
+  defp connection_payload(request, snapshot) do
+    %{
+      "schema_version" => @connection_schema_version,
+      "service_date" => Date.to_iso8601(request.service_date),
+      "approved_route_ids" => snapshot.approved_route_ids,
+      "base_digest" => snapshot.digest,
+      "pairs" => Enum.map(request.pairs, &connection_pair_payload/1),
+      "candidates" => request.candidates,
+      "trips" => connection_trip_provenance(request)
+    }
+  end
+
+  # The GTFS trip names behind the approved rows, so the page and the helper
+  # report the connections in the identifiers this feed uses rather than in the
+  # rows' own ids.
+  defp connection_trip_provenance(request), do: Enum.uniq(request.trips)
+
+  defp connection_pair_payload(pair) do
+    %{
+      "id" => pair.id,
+      "from" => connection_endpoint_payload(pair.from),
+      "to" => connection_endpoint_payload(pair.to),
+      "minimum" => connection_minimum_payload(pair.minimum)
+    }
+  end
+
+  # The five keys `ConnectionComparison` accepts, and no more: the admitted pair
+  # is the domain's own request, so a later read cannot be handed a shape this
+  # step invented.
+  defp connection_endpoint_payload(endpoint) do
+    %{
+      "route_id" => endpoint.route_id,
+      "trip_id" => endpoint.trip_id,
+      "stop_id" => endpoint.stop_id,
+      "stop_sequence" => endpoint.stop_sequence,
+      "service_date_offset" => endpoint.service_date_offset
+    }
+  end
+
+  defp connection_minimum_payload(%{origin: :stored}), do: %{"origin" => "stored"}
+
+  defp connection_minimum_payload(%{origin: :supplied, seconds: seconds, approval: approval}) do
+    %{"origin" => "supplied", "seconds" => seconds, "approval" => approval}
+  end
+
+  # What the page shows back after an approval: the date, the pair count, the
+  # routes the read resolved, the minimum each pair is compared against, the
+  # supplied candidate count and the digest both the payload and this
+  # conversation are bound to.
+  defp connection_receipt(socket, request, snapshot) do
+    %{
+      service_date: Date.to_iso8601(request.service_date),
+      pairs: length(request.pairs),
+      approved_route_ids: snapshot.approved_route_ids,
+      minimums: Enum.map(request.pairs, &connection_minimum_summary/1),
+      candidates: length(request.candidates),
+      base_digest: snapshot.digest,
+      conversation_digest: AgentPanel.context_digest(socket)
+    }
+  end
+
+  defp connection_minimum_summary(%{id: id, minimum: %{origin: :stored}}),
+    do: "#{id}: the stored minimum"
+
+  defp connection_minimum_summary(%{id: id, minimum: %{origin: :supplied, seconds: seconds}}),
+    do: "#{id}: a supplied minimum of #{seconds} seconds"
+
   # --- parsing helpers -------------------------------------------------------
 
   # The drawer reads the page's one R2 grammar; the context takes HH:MM:SS.
@@ -4557,7 +5247,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           }
         >
           <div class="min-w-0">
-            <div id="route-schedules-helper-actions" class="flex justify-end">
+            <div id="route-schedules-helper-actions" class="flex flex-wrap justify-end gap-2">
+              <div
+                :if={@route}
+                id="schedule-helper-mode"
+                role="group"
+                aria-label="Which helper answers on this page"
+                class="flex items-center gap-1"
+              >
+                <.button
+                  :for={{mode, label} <- @schedule_helper_modes}
+                  id={"schedule-helper-mode-#{mode}"}
+                  type="button"
+                  phx-click="schedule_helper_mode"
+                  phx-value-mode={mode}
+                  aria-pressed={to_string(@schedule_helper_mode == mode)}
+                  variant={if @schedule_helper_mode == mode, do: "secondary", else: "quiet"}
+                >
+                  {label}
+                </.button>
+              </div>
               <.button
                 :if={@route}
                 id="agent-helper-open"
@@ -4566,7 +5275,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 aria-expanded={to_string(@agent_open?)}
                 aria-controls="agent-panel"
                 variant="quiet"
-                class="-mt-2 min-h-11"
+                class="min-h-11"
               >
                 Open helper
               </.button>
@@ -4576,6 +5285,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               <% @load_state == :loading and is_nil(@payload) -> %>
                 <ScheduleComponents.loading_skeleton />
               <% true -> %>
+                <div
+                  :if={@route && @schedule_helper_mode == "connections"}
+                  id="connection-approval-region"
+                  class="mb-6"
+                >
+                  <ScheduleHelperComponents.connection_approval
+                    form={@connection_form}
+                    notice={@connection_notice}
+                    approval={@connection_approval}
+                    pair_limit={@connection_pair_limit}
+                  />
+                </div>
+
                 <ScheduleComponents.scope_bar
                   :if={@payload && scope_visible?(@payload)}
                   calendar_form={@calendar_form}
@@ -4746,6 +5468,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
             :if={@agent_open?}
             class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
           >
+            <ScheduleHelperComponents.connection_results
+              :if={@schedule_helper_mode == "connections"}
+              evidence={connection_evidence(assigns)}
+              status={@agent_status}
+              approved?={@connection_approval != nil}
+            />
+
             <.agent_panel
               id="agent-panel"
               title={@agent_title}
@@ -4784,4 +5513,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp helper_scope_line(%{route: route} = assigns),
     do: "Route #{route.route_id} · #{assigns.current_gtfs_version.name}"
+
+  # The connections helper's official answer, read from the evidence the session
+  # delivered rather than from anything the model wrote. The panel releases it
+  # with the transcript, so an edited approval or a replaced conversation drops
+  # this card with the source it was read against (INV-2).
+  defp connection_evidence(assigns),
+    do: AgentPanel.latest_evidence(assigns, "connection_comparison")
 end

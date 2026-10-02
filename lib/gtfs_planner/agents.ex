@@ -21,10 +21,13 @@ defmodule GtfsPlanner.Agents do
   (`max_children: 200`, so `open/1` returns `{:error, :unavailable}` beyond the
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
-  `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-  approved_digest, subject_id}`, so a second tab on the same route shares the
+  `{user_id, organization_id, gtfs_version_id, pack_id, identity, approved_digest,
+  subject_id, context_digest}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1).
-  `subject_id` is `nil` for a pack with no subject record.
+  `subject_id` is `nil` for a pack with no subject record. The context digest
+  covers the approved extension and any admitted source snapshot together, so
+  attaching a different source starts its own conversation instead of continuing
+  one whose tools already answered from the previous source.
 
   `packs/0` is the only function here that names a concrete pack (INV-1). The
   Alerts pack is keyed by a subject: its tools read one alert of the scope's
@@ -42,7 +45,10 @@ defmodule GtfsPlanner.Agents do
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
-    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
+    "connections" => GtfsPlanner.Agents.Packs.Connections,
+    "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
+    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
+    "transfers" => GtfsPlanner.Agents.Packs.Transfers
   }
 
   @doc "Every shipped capability pack, keyed by `Pack.id/0`."
@@ -145,7 +151,8 @@ defmodule GtfsPlanner.Agents do
   # route's panel from reaching this conversation (FH-3, INV-1).
   defp key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
+     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id,
+     Scope.context_digest(scope)}
   end
 
   defp start_session(scope, pack) do

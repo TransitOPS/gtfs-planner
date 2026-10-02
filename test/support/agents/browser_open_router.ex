@@ -57,7 +57,26 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       Schedule sentence, one of which contradicts the server's count on purpose;
     * the `prepare_calendar_extension` tool result gets the prepared-extension
       sentence;
+    * a `"user"` message asking about a connection between two of the seeded
+      transfer stops gets a `prepare_transfer_policy` call for the selection the
+      Transfers page admitted, so the tool prepares from the page's own draft; a
+      message asking to check one direction first gets an
+      `inspect_transfer_competition` call for the same selection, and its result
+      gets the prepared-change sentence with no write;
     * anything else gets the helper's generic sentence.
+
+  The in-seat script is the Blocks page's own worked example, and it is the one the
+  in-seat journey drives:
+
+    * a `"user"` message asking whether a connection may hold gets the pack's own
+      argument-free `inspect_in_seat_connections` call, so the answer is the
+      source's rather than a scripted one;
+    * any other `"user"` message gets a `prepare_in_seat_policy` call whose
+      `choice` is the person's own wording — `"must reboard"` prepares
+      `must_reboard` and anything else prepares `stay_on_board` — so the tool can
+      only ever prepare the setting the journey actually asked for;
+    * either tool result gets the prepared-change sentence, which says
+      "prepared" and never "saved".
 
   The Alerts script is the alerts skill's Route 12 worked example, and it is
   the one the editor's journey drives:
@@ -112,6 +131,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # twice, so the follow-up names the next action instead of answering anyway.
   @ambiguous_visit "I did not answer, because Central Station is visited more than once on that date. Ask which visit you mean."
   @prepared_extension "I prepared the extension. Review it before applying."
+  @prepared_transfer "I prepared the transfer rule. Review it before applying."
+  @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -122,6 +143,9 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # sentence keeps to the skill's "say I prepared, never saved or published"
   # rule, and the not-found sentence is what the skill asks for when a search
   # did not return what the person meant.
+  @in_seat_marker "the selected in-seat connections"
+  @prepared_in_seat "I prepared the in-seat setting. Review it before applying."
+
   @alerts_marker "Alerts helper"
   @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
   @alerts_prepared "I prepared a detour on Route 12. The answers are filled in on the form. Check the preview."
@@ -147,10 +171,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp reply(messages) do
-    if alerts?(messages) do
-      alerts_reply(messages)
-    else
-      calendars_reply(messages)
+    cond do
+      in_seat?(messages) -> in_seat_reply(messages)
+      alerts?(messages) -> alerts_reply(messages)
+      true -> calendars_reply(messages)
     end
   end
 
@@ -166,6 +190,45 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _other ->
         false
     end)
+  end
+
+  # The Blocks page's in-seat pack, whose skill body names the selection this
+  # script prepares. Its tools carry no pair, no block and no date, so the
+  # scripted call can only ever act on the source the page admitted.
+  defp in_seat?(messages) do
+    Enum.any?(messages, fn
+      %{"role" => "system", "content" => content} when is_binary(content) ->
+        String.contains?(content, @in_seat_marker)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp in_seat_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        if content =~ ~r/hold|may|eligible|can riders|check/i do
+          tool_calls_reply("inspect_in_seat_connections", %{})
+        else
+          tool_calls_reply("prepare_in_seat_policy", %{"choice" => in_seat_choice(content)})
+        end
+
+      %{"role" => "tool"} ->
+        text_reply(@prepared_in_seat)
+
+      _other ->
+        text_reply(@prepared_in_seat)
+    end
+  end
+
+  # The person's own wording is the only argument the call carries, so the
+  # journey's "must reboard" prepares `must_reboard` and its stay-on-board
+  # question prepares `stay_on_board`.
+  defp in_seat_choice(content) do
+    if content =~ ~r/reboard|re-board|get off|new bus/i,
+      do: "must_reboard",
+      else: "stay_on_board"
   end
 
   defp calendars_reply(messages) do
@@ -189,6 +252,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ ~r/extend/i ->
         tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
 
+      # The Schedules page asks whether a connection can be made, which is the
+      # connections pack's own read. It takes no arguments: the approved pairs,
+      # the supplied clocks and the supplied minimum are all in the page's
+      # source, and this branch is above the transfer wording below so the
+      # question reaches the pack whose source it was approved against.
+      content =~ ~r/make the connection|how much time|how tight|margin/i ->
+        tool_calls_reply("compare_connection_margins", %{})
+
+      transfer_question?(content) ->
+        transfer_reply(content)
+
       service_question?(content) ->
         service_question_reply(content)
 
@@ -197,6 +271,17 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
       true ->
         text_reply(@generic)
+    end
+  end
+
+  # The Transfers page names its own selections, so the stand-in prepares the one
+  # the journey staged rather than one it invented: `selection-1` is the first
+  # draft the operator added, and the pack refuses any other id.
+  defp transfer_reply(content) do
+    if content =~ ~r/check|compete|competing|look at/i do
+      tool_calls_reply("inspect_transfer_competition", %{"selection_id" => "selection-1"})
+    else
+      tool_calls_reply("prepare_transfer_policy", %{"selection_ids" => ["selection-1"]})
     end
   end
 
@@ -227,6 +312,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         ~r/depart|leaves? |after \d/i,
         ~r/board|stops? does/i
       ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # The Transfers page asks about connections, so the seeded transfer stops and
+  # this stand-in's own "connection" wording are what no other scripted journey
+  # mentions.
+  defp transfer_question?(content) do
+    Enum.any?(
+      [~r/transfer/i, ~r/connection/i, ~r/change (at|between) stops/i],
       &Regex.match?(&1, content)
     )
   end
@@ -280,7 +375,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
-    case answered_tool(messages, tool_call_id) do
+    name = answered_tool(messages, tool_call_id)
+
+    case prose_sentence(name) do
+      nil -> calendar_tool_reply(messages, name)
+      sentence -> text_reply(sentence)
+    end
+  end
+
+  # The transfer tools are answered above; every other tool this stand-in scripts
+  # belongs to the Schedule pack.
+  defp calendar_tool_reply(messages, name) do
+    case name do
       "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
       "prepare_date_change" -> text_reply(@prepared)
       "get_calendar" -> get_calendar_reply(messages)
@@ -291,6 +397,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _other -> text_reply(@generic)
     end
   end
+
+  # Three tools are answered with one scripted sentence each: the two the
+  # Transfers page drafts with, and the connections read, whose whole answer
+  # comes from the approved source rather than from anything scripted here. Any
+  # other tool leaves `nil` and is answered by the Schedule pack's clauses.
+  defp prose_sentence(name)
+       when name in ["inspect_transfer_competition", "prepare_transfer_policy"],
+       do: @prepared_transfer
+
+  defp prose_sentence("compare_connection_margins"), do: @compared_connections
+
+  defp prose_sentence(_other), do: nil
 
   # The seeded A02 answer has two listed departures, so the stand-in's sentence
   # for that call contradicts the card; the refusal branches keep the generic
