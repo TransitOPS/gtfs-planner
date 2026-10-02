@@ -177,6 +177,47 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       assert has_element?(view, "#alerts-list", "1 stop")
     end
 
+    test "a route named only by a route and stop pair is on the row", context do
+      stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+
+      chosen =
+        route_fixture(context.organization.id, context.version.id, %{
+          route_id: "r_1",
+          route_short_name: "11"
+        })
+
+      paired =
+        route_fixture(context.organization.id, context.version.id, %{
+          route_id: "r_2",
+          route_short_name: "22"
+        })
+
+      {:ok, alert} =
+        save(
+          context.audit,
+          %{
+            "urgency" => "now",
+            "situation" => "detour",
+            "cause" => "construction",
+            "scope" => %{
+              "shape" => "route_stops",
+              "route_ids" => [chosen.id],
+              "stop_ids" => [stop.id],
+              "route_stop_pairs" => [%{"route_id" => paired.id, "stop_id" => stop.id}]
+            },
+            "message" => message()
+          },
+          now_timing(context)
+        )
+
+      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+
+      # The paired route is affected at the stop, so the row names it beside the
+      # route the editor chose.
+      assert has_element?(view, "#alert-row-#{alert.id}", "11")
+      assert has_element?(view, "#alert-row-#{alert.id}", "22")
+    end
+
     test "a draft with no route answer does not read All routes", context do
       draft = incomplete(context)
       {:ok, current} = current_delay(context)
