@@ -139,6 +139,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       refute has_element?(view, "input[name*='keep']")
     end
 
+    test "a stop with no line beside it is measured to the nearest other stop, not to itself",
+         ctx do
+      seeded(ctx)
+
+      view = open_map(ctx, stop: "1531")
+
+      # 1434 is 1,110 m away, which is 0.69 mi. The station at 1500 is skipped
+      # and the bay at 1501 is 1,142 m away, so 1434 is the nearest.
+      assert has_element?(view, "#stops-map-edit-where", "About 0.69 mi from the nearest stop.")
+    end
+
     test "where it's used lists what schedules a visit and says when nothing does", ctx do
       seeded(ctx)
 

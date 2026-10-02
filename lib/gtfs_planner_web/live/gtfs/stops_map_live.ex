@@ -2737,12 +2737,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # The same sentence the add panel shows, for the stop's saved position rather
   # than for a draft. It is what tells an editor whether the pin on the map and
-  # the row in the form are talking about the same place.
+  # the row in the form are talking about the same place. The stop is left out
+  # of the stops it is measured against, so "nearest stop" is another stop and
+  # not the stop itself.
   defp edit_where(%{panel: :edit, edit_stop: %{uuid: uuid}, model: model}) do
     case Enum.find(model.stops, &(&1.id == uuid)) do
       %{point: {lon, lat}} ->
+        others = %{model | stops: Enum.reject(model.stops, &(&1.id == uuid))}
+
         {lon, lat}
-        |> StopPlacement.describe_point(model)
+        |> StopPlacement.describe_point(others)
         |> Map.fetch!(:text)
 
       _unlocated ->
@@ -3011,8 +3015,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       |> StopPlacement.order_stops(line.points)
 
     index = StopPlacement.insertion_index(point, Enum.map(ordered, & &1.point))
+    # `Enum.at/2` counts a negative index from the end, so index 0 has no stop
+    # before it rather than the last one.
+    before = if index == 0, do: nil, else: Enum.at(ordered, index - 1)
 
-    "Between #{neighbour_name(Enum.at(ordered, index - 1), "the start")} and " <>
+    "Between #{neighbour_name(before, "the start")} and " <>
       neighbour_name(Enum.at(ordered, index), "the end")
   end
 

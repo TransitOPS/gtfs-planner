@@ -4232,10 +4232,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     do:
       "#{stop.stop_name || stop.stop_id} is staged at its place along the route. Save and review to apply it."
 
+  # `{lon, lat}`, the order `StopPlacement` measures points in.
   defp stop_point(stop) do
     with lat when not is_nil(lat) <- decimal_to_float(stop.stop_lat),
          lon when not is_nil(lon) <- decimal_to_float(stop.stop_lon) do
-      {lat, lon}
+      {lon, lat}
     else
       _ -> nil
     end

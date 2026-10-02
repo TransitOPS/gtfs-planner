@@ -119,6 +119,30 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapCreatedTest do
              )
     end
 
+    test "a stop south of the first stop is between the start and that stop", ctx do
+      existing_stops(ctx, two_directions(ctx))
+
+      view = ctx |> open_map_version() |> create_stop_east_of_line(44.6345)
+
+      assert has_element?(
+               view,
+               "#stops-map-created-pattern-NB",
+               "Between the start and Bay Street"
+             )
+    end
+
+    test "a stop north of the last stop is between that stop and the end", ctx do
+      existing_stops(ctx, two_directions(ctx))
+
+      view = ctx |> open_map_version() |> create_stop_east_of_line(44.6395)
+
+      assert has_element?(
+               view,
+               "#stops-map-created-pattern-NB",
+               "Between Depot Road and the end"
+             )
+    end
+
     test "a stop with no pattern at its kerb says so rather than listing nothing", ctx do
       view = ctx |> open_map_version() |> place_draft()
 
@@ -242,12 +266,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapCreatedTest do
     view
   end
 
-  # Place eight metres east of the line at 44.6370 — between `Bay Street` at
-  # 44.6350 and `Depot Road` at 44.6390 — and create it.
-  defp create_stop_east_of_line(view) do
+  # Place eight metres east of the line and create it. The default latitude,
+  # 44.6370, is between `Bay Street` at 44.6350 and `Depot Road` at 44.6390.
+  defp create_stop_east_of_line(view, lat \\ 44.6370) do
     view = place_draft(view)
 
-    render_hook(view, "place", %{"lat" => 44.6370, "lon" => east_of_line(8.0)})
+    render_hook(view, "place", %{"lat" => lat, "lon" => east_of_line(8.0)})
     render_async(view, 2_000)
 
     view |> form("#stops-map-add-form") |> render_submit()

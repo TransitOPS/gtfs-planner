@@ -181,6 +181,67 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
     end
   end
 
+  describe "a route that bends" do
+    # Up 300 m, then east 300 m: B1 at the foot, B2 at the corner, B3 at the
+    # east end. At 44.6° a degree of longitude is about 79.2 km, so 0.003786° is
+    # 300 m east and 0.002695° of latitude is 300 m north.
+    setup ctx do
+      pattern =
+        route_pattern_fixture(ctx.organization.id, ctx.version.id, %{
+          route_id: ctx.route.route_id,
+          route_pattern_id: "BENT",
+          route_pattern_name: "Bent",
+          direction_id: 1,
+          headsign: "Harbor"
+        })
+
+      [{"B1", 0.0, 0.0}, {"B2", 0.002695, 0.0}, {"B3", 0.002695, 0.003786}]
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, north, east}, position} ->
+        stop_fixture(ctx.organization.id, ctx.version.id, %{
+          stop_id: stop_id,
+          stop_name: "Bend #{stop_id}",
+          location_type: 0,
+          stop_lat: Decimal.from_float(44.6 + north),
+          stop_lon: Decimal.from_float(-124.05 + east)
+        })
+
+        route_pattern_stop_fixture(pattern, stop_id, position)
+      end)
+
+      %{bent: pattern}
+    end
+
+    test "a stop 100 m from the first leg and 150 m from the second is staged on the first",
+         ctx do
+      # 100 m east and 150 m up from B1: the first leg is the nearer street. The
+      # stop's latitude and longitude are measured in the same metre grid as the
+      # route's, so the east-west and north-south metres are not mixed up.
+      beside_first_leg =
+        stop_fixture(ctx.organization.id, ctx.version.id, %{
+          stop_id: "BESIDE",
+          stop_name: "Beside First Leg",
+          location_type: 0,
+          stop_lat: Decimal.from_float(44.6 + 0.001348),
+          stop_lon: Decimal.from_float(-124.05 + 0.001262)
+        })
+
+      {:ok, view, _html} =
+        live(
+          ctx.conn,
+          path(
+            ctx.version,
+            ctx.route,
+            ctx.bent,
+            "task=stops&add_stop=#{beside_first_leg.stop_id}"
+          )
+        )
+
+      assert staged(ctx, view) == ["B1", "BESIDE", "B2", "B3"]
+      assert :sys.get_state(view.pid).socket.assigns.insert_after == "1"
+    end
+  end
+
   describe "a stop this version does not hold" do
     test "another version's stop stages nothing and says nothing", ctx do
       other_version = gtfs_version_fixture(ctx.organization.id)

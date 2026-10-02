@@ -174,19 +174,21 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # would extend along, so a stop past the end of a shape is as far away as the
   # shape's end really is.
   defp closest_point(x, y, x2, y2) do
+    case along_fraction(x, y, x2, y2) do
+      t when t <= 0.0 -> {0.0, 0.0}
+      t when t >= 1.0 -> {x2, y2}
+      t -> {t * x2, t * y2}
+    end
+  end
+
+  # Where a point projects onto a segment, as a fraction of its length: 0.0 at
+  # the segment's first end, 1.0 at its second, and below or above that for a
+  # point that projects before or past it. A segment with no length has no
+  # direction to project onto, so everything projects to its first end.
+  defp along_fraction(x, y, x2, y2) do
     length_squared = x2 * x2 + y2 * y2
 
-    if length_squared == 0.0 do
-      {0.0, 0.0}
-    else
-      t = (x * x2 + y * y2) / length_squared
-
-      cond do
-        t <= 0.0 -> {0.0, 0.0}
-        t >= 1.0 -> {x2, y2}
-        true -> {t * x2, t * y2}
-      end
-    end
+    if length_squared == 0.0, do: 0.0, else: (x * x2 + y * y2) / length_squared
   end
 
   # Which side of the line the point falls on, relative to the direction the line
@@ -603,53 +605,45 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   Where a point belongs in a pattern's stop order: the number of stops that lie
   before it along the pattern's line.
 
-  The list is the pattern's own stops, in any order — the model reads them as a
-  set per stop rather than as a sequence, and a sequence is exactly what this
-  computes. A point before the first stop is `0` and a point past the last is the
-  length, so a caller can index the list at the answer and read the two stops
-  either side of it as the ones a new stop would fall between.
+  The list is the pattern's own stops in the order a vehicle meets them, and the
+  line is the straight legs between them. The point belongs on the leg it is
+  nearest, so a route that doubles back — a loop, a U — places a point by the
+  street it stands beside and not by how far it would project along some other
+  leg. A point equally near two legs belongs on the earlier one.
+
+  A point before the first stop is `0` and a point past the last is the length, so
+  a caller can index the list at the answer and read the two stops either side of
+  it as the ones a new stop would fall between. "Before" and "past" are read on
+  the first and last legs only: beside the start of the first leg, or beyond the
+  end of the last. A list of fewer than two stops has no leg to measure, so the
+  answer is `0`.
 
   A stop at exactly the same place as the point does not count as before it: the
   two are the same place, and "between" a stop and itself is not an answer.
   """
   @spec insertion_index(point(), [point()]) :: non_neg_integer()
+  def insertion_index(_point, []), do: 0
+  def insertion_index(_point, [_only]), do: 0
+
   def insertion_index(point, ordered_points) do
-    here = along_m(point, ordered_points)
-    count = Enum.count(ordered_points, &(along_m(&1, ordered_points) < here))
+    stops = length(ordered_points)
+    %{leg: leg, fraction: fraction} = nearest_leg(point, ordered_points)
 
-    if past_the_last?(point, ordered_points), do: length(ordered_points), else: count
-  end
-
-  # `along_m/2` clamps each projection to its segment's ends, so a point past
-  # the last stop measures at exactly the last stop's own distance and is not
-  # counted as being before it. That is right for a point that is off the end
-  # of a line's geometry and wrong for the ordinary case of a stop further along
-  # the route than the last one this pattern calls at: appending is cheaper
-  # there than putting it between the last stop and the end of the line, so the
-  # answer is the length.
-  #
-  # Only the terminal leg is consulted, so the head of the line and every
-  # interior position are measured exactly as before. A stop off to the side of
-  # the last stop is past it too, and appending is the right answer for that one
-  # as well.
-  defp past_the_last?(_point, []), do: false
-  defp past_the_last?(_point, [_only]), do: false
-
-  defp past_the_last?(point, ordered_points) do
-    last = List.last(ordered_points)
-    before = Enum.at(ordered_points, -2)
-    {x, y} = local(point, last)
-    {lx, ly} = local(last, before)
-
-    x * lx + y * ly > 0.0
+    cond do
+      leg == 0 and fraction <= 0.0 -> 0
+      leg == stops - 2 and fraction > 1.0 -> stops
+      true -> leg + 1
+    end
   end
 
   @doc """
   A pattern's stops in the order a vehicle meets them along its line.
 
-  Ties — two stops projecting to the same point on the line, which a pattern that
-  visits the same corner twice really does have — are broken by the stop's own
-  id, so the same feed always produces the same order.
+  A stop is placed at the nearest point of the line, so a line that doubles back
+  orders the stops beside each street by that street's own length. Ties — two
+  stops projecting to the same point on the line, which a pattern that visits
+  the same corner twice really does have — are broken by the stop's own id, so
+  the same feed always produces the same order.
   """
   @spec order_stops([checked_stop()], line()) :: [checked_stop()]
   def order_stops(stops, line) do
@@ -657,25 +651,47 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   end
 
   # How far along a polyline a point sits, in metres from the line's first
-  # point. The projection is clamped to each segment's ends, exactly as
-  # `offset_m/2` clamps it, so a point past the end of a line measures to that
-  # end and not to a projection of an extension nobody drives. The distance is
-  # carried along the line as the legs are walked, so every point is measured
-  # from the same end.
-  defp along_m(point, line), do: along_m(point, line, 0.0)
+  # point: the walk to the nearest spot on the line. The nearest spot is clamped
+  # to each leg's ends, exactly as `offset_m/2` clamps it, so a point past the
+  # end of a line measures to that end and not to a projection of an extension
+  # nobody drives.
+  defp along_m(_point, []), do: 0.0
+  defp along_m(_point, [_only]), do: 0.0
+  defp along_m(point, line), do: nearest_leg(point, line).along_m
 
-  defp along_m(_point, [], travelled), do: travelled
-  defp along_m(_point, [_only], travelled), do: travelled
+  # The leg of a polyline nearest a point, for a line of at least two points:
+  #
+  #   * `:leg` is the leg's position, counting from 0 at the first;
+  #   * `:fraction` is where the point projects along it, below 0.0 before its
+  #     start and above 1.0 past its end;
+  #   * `:metres` is how far the point is from the leg, projection clamped to
+  #     its ends;
+  #   * `:along_m` is the walk from the line's first point to that nearest spot.
+  #
+  # `Enum.min_by/2` keeps the first of equal distances, so a tie goes to the
+  # earlier leg. A point exactly on a stop is `0.0` from the leg that ends there
+  # and the leg that starts there, and is placed on the first.
+  defp nearest_leg(point, line) do
+    {legs, _walked} =
+      line
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.with_index()
+      |> Enum.map_reduce(0.0, fn {[from, to], leg}, walked ->
+        {x, y} = local(point, from)
+        {x2, y2} = local(to, from)
+        {foot_x, foot_y} = closest_point(x, y, x2, y2)
 
-  defp along_m(point, [first, second | rest], travelled) do
-    {x, y} = local(point, first)
-    {x2, y2} = local(second, first)
-    {foot_x, foot_y} = closest_point(x, y, x2, y2)
+        found = %{
+          leg: leg,
+          fraction: along_fraction(x, y, x2, y2),
+          metres: :math.sqrt((x - foot_x) * (x - foot_x) + (y - foot_y) * (y - foot_y)),
+          along_m: walked + :math.sqrt(foot_x * foot_x + foot_y * foot_y)
+        }
 
-    # The next segment starts where this one ended, so `second` becomes the
-    # next frame's origin: dropping it would walk a leg of the line twice over
-    # for a point that clamps at a vertex.
-    along_m(point, [second | rest], travelled + :math.sqrt(foot_x * foot_x + foot_y * foot_y))
+        {found, walked + :math.sqrt(x2 * x2 + y2 * y2)}
+      end)
+
+    Enum.min_by(legs, & &1.metres)
   end
 
   # The shapes close enough to serve this point, on the kerb a vehicle on them
@@ -801,8 +817,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
     case nearest do
       nil ->
         %{
-          text:
-            "About #{format_distance(distance_to_nearest_stop(point, model))} from the nearest stop.",
+          text: nearest_stop_sentence(point, model),
           route: nil,
           direction: nil,
           side: nil,
@@ -829,10 +844,12 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # The fallback sentence needs a distance it can name, and "from nothing" is
   # not one. The model's own stops are the only landmarks it holds; with no
   # located stop at all the sentence says that instead of inventing a number.
-  defp distance_to_nearest_stop(point, model) do
+  # A caller describing an existing stop's own position passes a model without
+  # that stop; otherwise the nearest stop is the stop itself, 0 ft away.
+  defp nearest_stop_sentence(point, model) do
     case nearest_stops(point, Map.get(model, :stops, []), 1_000_000.0, 1) do
-      [{_stop, metres}] -> metres
-      [] -> 0.0
+      [{_stop, metres}] -> "About #{format_distance(metres)} from the nearest stop."
+      [] -> "No other stop has a location yet."
     end
   end
 

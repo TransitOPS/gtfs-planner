@@ -50,6 +50,39 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
   defp north_of({lon, lat}, metres), do: {lon, lat + metres / 111_320.0}
   defp south_of({lon, lat}, metres), do: {lon, lat - metres / 111_320.0}
 
+  # A point `east` and `north` metres from `origin`.
+  defp offset_from({lon, lat}, east, north) do
+    {lon + east / (111_320.0 * :math.cos(:math.pi() * lat / 180)), lat + north / 111_320.0}
+  end
+
+  # A loop route's stops: a 200 m square run clockwise from `a`, with the
+  # last stop 10 m short of `a` on the closing leg, the way a loop that ends
+  # beside where it began does. Legs: a-b north, b-c east, c-d south, d-last west.
+  defp square_loop do
+    a = @origin
+
+    [
+      a,
+      offset_from(a, 0.0, 200.0),
+      offset_from(a, 200.0, 200.0),
+      offset_from(a, 200.0, 0.0),
+      offset_from(a, 10.0, 0.0)
+    ]
+  end
+
+  # Three legs of a U: up 300 m, across 100 m, back down 300 m. The two arms are
+  # parallel and 100 m apart, so a point beside one arm projects onto the other.
+  defp u_route do
+    a = @origin
+
+    [
+      a,
+      offset_from(a, 0.0, 300.0),
+      offset_from(a, 100.0, 300.0),
+      offset_from(a, 100.0, 0.0)
+    ]
+  end
+
   describe "classify/2" do
     test "4.9 m apart is the same stop placed twice" do
       assert StopPlacement.classify(@origin, east_of(@origin, 4.9)) == :duplicate
@@ -176,10 +209,7 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
       row = collinear_row()
 
       # Appending is cheaper than putting the stop between the last stop and
-      # the end of the line, so the answer is the length. `along_m/2` clamps
-      # the projection at the terminal vertex, so a plain count of the stops
-      # that measure before this point would place it before the last stop
-      # instead — see the `past_the_last?/2` branch below the function.
+      # the end of the line, so the answer is the length.
       assert StopPlacement.insertion_index(north_of(List.last(row), 50.0), row) == 4
     end
 
@@ -191,6 +221,55 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
 
     test "a row with no stops puts everything at 0" do
       assert StopPlacement.insertion_index(@origin, []) == 0
+    end
+
+    test "a point on the last stop's own place is not before the stop after it" do
+      row = collinear_row()
+
+      assert StopPlacement.insertion_index(List.last(row), row) == 3
+    end
+
+    test "a point just past the first stop of a loop belongs after it, not at the end" do
+      loop = square_loop()
+
+      # 20 m up the first leg. The point is also beyond the last stop along the
+      # closing leg's direction of travel, which is not where it belongs.
+      assert StopPlacement.insertion_index(offset_from(@origin, 0.0, 20.0), loop) == 1
+    end
+
+    test "a point midway along an interior leg of a loop belongs after that leg's start" do
+      loop = square_loop()
+
+      # Halfway down the third leg, from the stop at the north-east corner to the
+      # one at the south-east corner.
+      assert StopPlacement.insertion_index(offset_from(@origin, 200.0, 100.0), loop) == 3
+    end
+
+    test "a point beside the middle of the last leg of a U belongs after that leg's start" do
+      route = u_route()
+
+      # 10 m outside the right-hand arm, halfway down. The left-hand arm is 110 m
+      # away, so the right-hand arm is the nearest leg.
+      assert StopPlacement.insertion_index(offset_from(@origin, 110.0, 150.0), route) == 3
+    end
+
+    test "a point beside the middle of an interior leg of a U belongs after that leg's start" do
+      route = u_route()
+
+      # 10 m above the crossbar, halfway along.
+      assert StopPlacement.insertion_index(offset_from(@origin, 50.0, 310.0), route) == 2
+    end
+
+    test "a point past the end of a U belongs after its last stop" do
+      route = u_route()
+
+      assert StopPlacement.insertion_index(offset_from(@origin, 100.0, -50.0), route) == 4
+    end
+
+    test "a point before the start of a U belongs before its first stop" do
+      route = u_route()
+
+      assert StopPlacement.insertion_index(offset_from(@origin, 0.0, -50.0), route) == 0
     end
   end
 
@@ -218,6 +297,22 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
 
       assert StopPlacement.order_stops(stops, row) |> Enum.map(& &1.stop_id) == ["A", "B"]
     end
+
+    test "stops around a loop come back in the order the line reaches them" do
+      loop = square_loop()
+
+      # One stop on each leg, 20 m, 100 m, 100 m and 100 m into it. The ids run
+      # against the line's order so an id tie-break cannot produce the answer.
+      stops = [
+        %{stop_id: "W", point: offset_from(@origin, 100.0, 0.0)},
+        %{stop_id: "X", point: offset_from(@origin, 200.0, 100.0)},
+        %{stop_id: "Y", point: offset_from(@origin, 100.0, 200.0)},
+        %{stop_id: "Z", point: offset_from(@origin, 0.0, 20.0)}
+      ]
+
+      assert StopPlacement.order_stops(stops, loop) |> Enum.map(& &1.stop_id) ==
+               ["Z", "Y", "X", "W"]
+    end
   end
 
   describe "passing_patterns/2" do
@@ -241,6 +336,23 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
 
     test "a model with no lines passes nothing" do
       assert StopPlacement.passing_patterns(@origin, %{lines: []}) == []
+    end
+  end
+
+  describe "describe_point/2" do
+    test "a point with no line and no stop to measure to says no other stop has a location" do
+      model = %{lines: [], routes: %{}, stops: []}
+
+      assert StopPlacement.describe_point(@origin, model).text ==
+               "No other stop has a location yet."
+    end
+
+    test "a point with no line near it is measured to the nearest located stop" do
+      stop = %{stop_id: "S", point: east_of(@origin, 100.0), location_type: 0}
+      model = %{lines: [], routes: %{}, stops: [stop]}
+
+      assert StopPlacement.describe_point(@origin, model).text ==
+               "About 330 ft from the nearest stop."
     end
   end
 
