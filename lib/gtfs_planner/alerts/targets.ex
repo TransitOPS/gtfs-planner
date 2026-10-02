@@ -575,6 +575,10 @@ defmodule GtfsPlanner.Alerts.Targets do
         "gtfs_id" => trip && trip.trip_id,
         "service_id" => trip && trip.service_id,
         "service_date" => target.service_date && Date.to_iso8601(target.service_date),
+        # The trip instance's own first departure, kept for a frequency-based
+        # trip because a trip id and a service date do not identify one instance
+        # of it (AC-12).
+        "start_time" => target.start_time,
         "label" =>
           (trip && present_name(List.wrap(trip.trip_headsign))) || (trip && trip.trip_id),
         "resolved" => not is_nil(trip)

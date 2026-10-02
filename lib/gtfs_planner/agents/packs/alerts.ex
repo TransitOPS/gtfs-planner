@@ -553,7 +553,11 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       "trips" =>
         Enum.map(
           scope.trips,
-          &%{"trip_id" => &1.trip_id, "service_date" => civil(&1.service_date)}
+          &%{
+            "trip_id" => &1.trip_id,
+            "service_date" => civil(&1.service_date),
+            "start_time" => &1.start_time
+          }
         ),
       "direction_id" => scope.direction_id,
       "all_routes_at_stops" => scope.all_routes_at_stops,
@@ -715,7 +719,12 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
         "type" => "array",
         "items" =>
           object(
-            %{"trip_id" => row_id(), "service_date" => date("The day the trip runs.")},
+            %{
+              "trip_id" => row_id(),
+              "service_date" => date("The day the trip runs."),
+              "start_time" =>
+                gtfs_time("The trip instance's first departure. Only for a frequency-based trip.")
+            },
             ["trip_id", "service_date"]
           ),
         "maxItems" => 400
@@ -792,6 +801,13 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     do: %{"type" => "string", "description" => description}
 
   defp time, do: %{"type" => "string", "description" => "A 24-hour time like 08:00."}
+
+  defp gtfs_time(description) do
+    %{
+      "type" => "string",
+      "description" => "#{description} A GTFS time like 08:00:00, which may read past 24:00:00."
+    }
+  end
 
   defp date_list do
     %{"type" => "array", "items" => date(), "maxItems" => 60}

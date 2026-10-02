@@ -132,7 +132,7 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
 
   defp trips_digest(trips) do
     trips
-    |> Enum.map(&{canonical(&1.trip_id), &1.service_date})
+    |> Enum.map(&{canonical(&1.trip_id), &1.service_date, &1.start_time})
     |> Enum.sort()
   end
 

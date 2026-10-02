@@ -179,6 +179,20 @@ defmodule GtfsPlanner.Alerts.Alert do
   def situations, do: @situations
 
   @doc """
+  Lists the effects the completion rules derive, which are also the values the
+  public feed's GTFS-RT `Effect` enum accepts.
+  """
+  @spec effects() :: [atom()]
+  def effects, do: @effects
+
+  @doc """
+  Lists the causes an alert may state, which are also the values the public
+  feed's GTFS-RT `Cause` enum accepts.
+  """
+  @spec causes() :: [atom()]
+  def causes, do: @causes
+
+  @doc """
   Creates the changeset the editor autosaves and the review step saves.
 
   Casts only the operator's own fields, then each embedded answer through its own
