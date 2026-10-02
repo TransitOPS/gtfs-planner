@@ -26,7 +26,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.ComingSoon
 
   @adapter_key :gtfs_catalog_read_adapter
 
@@ -493,17 +492,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       assert_push_event(view, "gtfs_version_selected", %{version_id: ^selected_version_id})
 
       assert_redirect(view, "/gtfs/#{other_version.id}/flex")
-    end
-  end
-
-  describe "the Coming soon catalog" do
-    test "no longer describes flex" do
-      # `feature/1` answers for the catalog's own keys only, so `:flex` has no
-      # clause; the atom is built at runtime because the compiler can prove the
-      # literal is not a catalog key.
-      key = String.to_existing_atom("flex")
-
-      assert_raise FunctionClauseError, fn -> ComingSoon.feature(key) end
     end
   end
 
