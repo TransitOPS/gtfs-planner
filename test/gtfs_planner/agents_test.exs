@@ -29,6 +29,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.DatedChanges
   alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.SessionSupervisor
@@ -52,6 +53,7 @@ defmodule GtfsPlanner.AgentsTest do
       assert Agents.packs() == %{
                "alerts" => Alerts,
                "calendars" => Calendars,
+               "dated_changes" => DatedChanges,
                "service_queries" => ServiceQueries
              }
 

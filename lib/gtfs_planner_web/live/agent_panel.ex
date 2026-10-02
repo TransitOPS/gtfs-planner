@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     * `:subject_id` - the record this conversation is about, carried into the
       session `Scope` so two records get two conversations.
   """
-@spec mount(Phoenix.LiveView.Socket.t(), String.t()) :: Phoenix.LiveView.Socket.t()
+  @spec mount(Phoenix.LiveView.Socket.t(), String.t()) :: Phoenix.LiveView.Socket.t()
   def mount(socket, pack_id), do: mount(socket, pack_id, allowed_packs: [pack_id])
 
   @doc """
@@ -221,7 +221,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     end
   end
 
-@doc """
+  @doc """
   Switches this panel to the helper `pack_id` for the server-owned `context`.
 
   A pack this host did not allow is refused: the notice says the helper is not
@@ -434,7 +434,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
      |> assign(:agent_status, status)}
   end
 
-# A down for a session this panel released never arrives: the release
+  # A down for a session this panel released never arrives: the release
   # demonitors with `[:flush]`, so a stale session's down is discarded at the
   # moment it stops being this panel's business. Every remaining down therefore
   # belongs to somebody else -- typically a host monitoring its own async work

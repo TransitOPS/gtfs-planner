@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Agents do
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-context_digest, subject_id}`, so a second tab on the same route shares the
+  context_digest, subject_id}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1). The
   digest covers the approved extension and any admitted source snapshot
   together, so attaching a different source starts its own conversation instead
@@ -150,7 +150,7 @@ context_digest, subject_id}`, so a second tab on the same route shares the
   # route's panel from reaching this conversation (FH-3, INV-1).
   defp key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-Scope.identity(scope), Scope.context_digest(scope), scope.subject_id}
+     Scope.identity(scope), Scope.context_digest(scope), scope.subject_id}
   end
 
   defp start_session(scope, pack) do
