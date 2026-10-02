@@ -3384,6 +3384,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:failed, failed)
       |> assign(:unapplied, unapplied)
       |> assign(:counts?, state in [:partial, :failed, :interrupted])
+      |> assign(:outcome, apply_outcome(assigns.decisions, assigns.run))
       |> assign(:retry_label, retry_label(state, failed + unapplied))
       |> assign(:start_over_label, start_over_label(state))
 
@@ -3416,6 +3417,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         <p :if={@state == :partial} id="diff-partial-note" class="m-0 text-[13px] text-muted">
           Applied changes stay in this version. Start over to review the remaining differences against the current data.
         </p>
+
+        <.apply_outcome_list :if={@state == :partial} outcome={@outcome} />
 
         <.failed_decisions_list
           :if={@state in [:partial, :failed, :interrupted]}
@@ -3523,35 +3526,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           ]}
         />
 
-        <%!-- What the worker actually did, told apart from what was approved before
-             it ran. A row confirmed against a captured measurement is named as
-             such, an approval that predates it is named separately, and the
-             actual applied/failed/stale outcome of each row is its own fact
-             rather than a claim this page remembers (INV-1). --%>
-        <div
-          :if={@outcome != []}
-          id="station-apply-outcome"
-          class="max-w-2xl border-t border-subtle pt-4"
-        >
-          <h3 class="m-0 text-sm font-bold text-strong">What each approved change did</h3>
-          <ol class="m-0 mt-3 list-none divide-y divide-subtle p-0">
-            <li
-              :for={row <- @outcome}
-              id={"station-apply-outcome-row-#{row.decision.id}"}
-              data-apply-outcome-row
-              data-outcome={row.status}
-              data-reviewed={to_string(row.reviewed?)}
-              class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
-            >
-              <span class="min-w-0 font-semibold text-default">
-                {row.decision.entity_type} <span class="font-mono">{row.decision.natural_key}</span>
-              </span>
-              <span class="text-muted">
-                {outcome_sentence(row)}
-              </span>
-            </li>
-          </ol>
-        </div>
+        <.apply_outcome_list outcome={@outcome} />
       </div>
       <div class="border-t border-subtle bg-canvas px-5 py-3">
         <.button
@@ -3565,6 +3540,42 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </.button>
       </div>
     </section>
+    """
+  end
+
+  attr :outcome, :list, required: true
+
+  defp apply_outcome_list(assigns) do
+    ~H"""
+    <%!-- What the worker actually did, told apart from what was approved before
+     it ran. A row confirmed against a captured measurement is named as
+     such, an approval that predates it is named separately, and the
+     actual applied/failed/stale outcome of each row is its own fact
+     rather than a claim this page remembers (INV-1). --%>
+    <div
+      :if={@outcome != []}
+      id="station-apply-outcome"
+      class="max-w-2xl border-t border-subtle pt-4"
+    >
+      <h3 class="m-0 text-sm font-bold text-strong">What each approved change did</h3>
+      <ol class="m-0 mt-3 list-none divide-y divide-subtle p-0">
+        <li
+          :for={row <- @outcome}
+          id={"station-apply-outcome-row-#{row.decision.id}"}
+          data-apply-outcome-row
+          data-outcome={row.status}
+          data-reviewed={to_string(row.reviewed?)}
+          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
+        >
+          <span class="min-w-0 font-semibold text-default">
+            {row.decision.entity_type} <span class="font-mono">{row.decision.natural_key}</span>
+          </span>
+          <span class="text-muted">
+            {outcome_sentence(row)}
+          </span>
+        </li>
+      </ol>
+    </div>
     """
   end
 

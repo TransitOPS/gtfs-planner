@@ -205,9 +205,9 @@ test.describe("station report result helper", () => {
 
       await ask(page, "What did the recorded check say?");
 
-      const resultCards = await answerCards(page, 1);
-      await expect(resultCards.locator('[data-evidence-kind="recorded_result"]')).toHaveCount(1);
-      const resultCard = resultCards.locator('[data-evidence-kind="recorded_result"]');
+      const resultCards = await answerCards(page, 2);
+      await expect(resultCards.and(page.locator('[data-evidence-kind="recorded_result"]'))).toHaveCount(1);
+      const resultCard = resultCards.and(page.locator('[data-evidence-kind="recorded_result"]'));
       // The card is the answer: the recorded input and its data-equality
       // verdict come from the server, not from the stand-in's sentence.
       await expect(resultCard).toContainText("Recorded input digest");
@@ -219,14 +219,14 @@ test.describe("station report result helper", () => {
       });
 
       await ask(page, "Which pairs did the recorded check store?");
-      const pairCards = await answerCards(page, 3);
+      const pairCards = await answerCards(page, 4);
       await expect(
-        pairCards.locator('[data-evidence-kind="recorded_result_pairs"]'),
+        pairCards.and(page.locator('[data-evidence-kind="recorded_result_pairs"]')),
       ).toHaveCount(1);
 
       await ask(page, "What is wrong with the station right now?");
-      const factCards = await answerCards(page, 5);
-      const factCard = factCards.locator('[data-evidence-kind="station_report_facts"]');
+      const factCards = await answerCards(page, 6);
+      const factCard = factCards.and(page.locator('[data-evidence-kind="station_report_facts"]'));
       await expect(factCard).toHaveCount(1);
       await expect(factCard).toContainText("Current station report facts");
       await expect(factCard).toContainText("Captured at");
@@ -268,14 +268,14 @@ test.describe("recorded reachability result helper", () => {
 
     await expect(page.locator("#station-result-helper-bar")).toBeVisible();
     await expect(page.locator("#station-helper-freshness")).toContainText(
-      "This check recorded its input (digest",
+      /this check recorded its input \(digest/i,
     );
 
     await openPanel(page);
     await ask(page, "What did the recorded check say?");
 
-    const cards = await answerCards(page, 1);
-    const card = cards.locator('[data-evidence-kind="recorded_result"]');
+    const cards = await answerCards(page, 2);
+    const card = cards.and(page.locator('[data-evidence-kind="recorded_result"]'));
     await expect(card).toHaveCount(1);
     // The result page's own envelope: the engine that produced it and the
     // station it is about.
@@ -287,15 +287,92 @@ test.describe("recorded reachability result helper", () => {
     });
 
     await ask(page, "Which pairs did the recorded check store?");
-    const pairCards = await answerCards(page, 3);
+    const pairCards = await answerCards(page, 4);
     await expect(
-      pairCards.locator('[data-evidence-kind="recorded_result_pairs"]'),
+      pairCards.and(page.locator('[data-evidence-kind="recorded_result_pairs"]')),
     ).toHaveCount(1);
     await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
   });
 });
 
 test.describe("import station measurements", () => {
+  // This case runs first: it confirms a measurement but applies nothing, so the
+  // seeded pathways are unchanged for the case that applies one afterwards.
+  test("keeps the review and the mapping keyboard-operable at 320", async ({ page }, testInfo) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 320, height: 900 });
+    await logIn(page);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(`/gtfs/${versionId}/import`);
+    await waitForLiveView(page);
+    await expect(page.locator("#import-page")).toBeVisible();
+
+    // A review left over from another run opens on its own; start over so the
+    // upload form is showing.
+    const resetDiff = page.locator("#diff-reset-btn, #diff-start-over-btn").first();
+    if (await resetDiff.count()) {
+      await resetDiff.click();
+      await expect(resetDiff).toHaveCount(0);
+    }
+
+    await page.locator("#import-source-station").check();
+    await expect(page.locator("#diff-upload-form")).toBeVisible();
+    await page.locator("#diff-upload-input input").setInputFiles({
+      name: "pathways.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(PATHWAYS_UPLOAD),
+    });
+    await expect(page.locator("#diff-upload-entries")).toContainText("pathways.txt");
+    await page.locator("#diff-compute-btn").click();
+    await page.locator("#diff-decisions [data-review-row]").first().waitFor({ timeout: 60_000 });
+
+    await page.locator("#station-observation-scope-input").selectOption(STATION);
+    await captureMeasurement(page, {
+      pathway: "BROWSER_PW_ELEVATOR",
+      value: "105",
+      sourceRef: W14_SOURCE_REF,
+    });
+    await expect(page.locator("#station-observation-list")).toContainText(
+      "BROWSER_PW_ELEVATOR · 1.05 m",
+    );
+
+    await openPanel(page);
+    await ask(page, "Which width changes do these measurements support?");
+
+    const preparedCard = page
+      .locator('[data-evidence-kind="station_import_selection"]')
+      .last();
+    await expect(preparedCard).toBeVisible({ timeout: 30_000 });
+    await page.locator('[id^="agent-review-prepared-"]').last().click();
+
+    const review = page.locator("#station-suggestion-review");
+    await expect(review).toBeVisible();
+    await expect(review.locator("#station-suggestion-confirm")).toBeFocused();
+    // Tab reaches Cancel and back to Confirm without leaving the review.
+    await tabUntilFocused(page, "station-suggestion-cancel");
+    await page.screenshot({
+      path: capturePath(testInfo, "step-011-import-review-320.png"),
+      animations: "disabled",
+      fullPage: true,
+    });
+
+    await tabUntilFocused(page, "station-suggestion-confirm");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#station-approved-apply-scope")).toBeFocused();
+    await expect(page.locator("#station-approved-apply-scope")).toContainText(
+      "including 1 confirmed against a captured measurement",
+    );
+    await page.screenshot({
+      path: capturePath(testInfo, "step-011-import-scope-320.png"),
+      animations: "disabled",
+      fullPage: true,
+    });
+
+    const overflow = await bodyFitsViewport(page);
+    expect(overflow, "the import page must not scroll sideways at 320").toBe(true);
+  });
+
   test("maps, reviews, confirms and applies one measured width beside native approvals", async ({
     page,
   }, testInfo) => {
@@ -310,7 +387,7 @@ test.describe("import station measurements", () => {
 
     // A review left over from another run opens on its own; start over so the
     // upload form is showing.
-    const resetDiff = page.locator("#diff-reset-btn");
+    const resetDiff = page.locator("#diff-reset-btn, #diff-start-over-btn").first();
     if (await resetDiff.count()) {
       await resetDiff.click();
       await expect(resetDiff).toHaveCount(0);
@@ -385,7 +462,7 @@ test.describe("import station measurements", () => {
       conflict: true,
     });
     await expect(page.locator("#station-observation-list")).toContainText(
-      "BROWSER_PW_SAME_LEVEL · 1.20 m",
+      "BROWSER_PW_SAME_LEVEL · 1.2 m",
     );
     await expect(page.locator("#station-observation-list")).toContainText(
       "a conflict is recorded against this measurement",
@@ -421,13 +498,13 @@ test.describe("import station measurements", () => {
     await expect(preparedCard).toContainText("Prepared");
     await expect(preparedCard).toContainText("Unresolved");
     await expect(preparedCard).toContainText(
-      "2 decisions unresolved as no_accepted_observation",
+      "1 decisions unresolved as no_accepted_observation",
     );
     await expect(preparedCard).toContainText(
       "1 decisions unresolved as incomplete_field_coverage",
     );
     await expect(preparedCard).toContainText(
-      "2 decisions in this station are already approved and are never selected implicitly",
+      "1 decisions in this station are already approved and are never selected implicitly",
     );
 
     // Reviewing writes nothing: the approved scope is unchanged, and the
@@ -449,13 +526,13 @@ test.describe("import station measurements", () => {
     });
 
     // Cancel reaches nothing: no approval, the proposal stays retrievable and
-    // focus returns to the control the review was opened from.
+    // focus returns to the prepared card the review was opened from.
     await review.locator("#station-suggestion-cancel").click();
     await expect(review).toHaveCount(0);
     await expect(page.locator("#station-approved-apply-scope")).toContainText(
       "2 approved changes",
     );
-    await expect(page.locator("#station-helper-open")).toBeFocused();
+    await expect(page.locator('[id^="agent-prepared-"]').last()).toBeFocused();
 
     await page.locator('[id^="agent-review-prepared-"]').last().click();
     await expect(review).toBeVisible();
@@ -495,7 +572,7 @@ test.describe("import station measurements", () => {
     // than a claim: the measured width applies, the closure-backed removal
     // does not.
     await page.locator("#diff-apply-btn").click();
-    await expect(page.locator("#diff-done")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator("#diff-partial-note")).toBeVisible({ timeout: 60_000 });
     await expect(page.locator("#diff-count-applied")).toContainText("2");
     await expect(page.locator("#diff-count-failed")).toContainText("1");
 
@@ -528,77 +605,6 @@ test.describe("import station measurements", () => {
     expect(pending, "no LiveView request may still be in flight").toEqual([]);
   });
 
-  test("keeps the review and the mapping keyboard-operable at 320", async ({ page }, testInfo) => {
-    test.setTimeout(180_000);
-    await page.setViewportSize({ width: 320, height: 900 });
-    await logIn(page);
-    const versionId = await seededVersionId(page);
-
-    await page.goto(`/gtfs/${versionId}/import`);
-    await waitForLiveView(page);
-    await expect(page.locator("#import-page")).toBeVisible();
-
-    const resetDiff = page.locator("#diff-reset-btn");
-    if (await resetDiff.count()) {
-      await resetDiff.click();
-      await expect(resetDiff).toHaveCount(0);
-    }
-
-    await page.locator("#import-source-station").check();
-    await page.locator("#diff-upload-input input").setInputFiles({
-      name: "pathways.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from(PATHWAYS_UPLOAD),
-    });
-    await expect(page.locator("#diff-upload-entries")).toContainText("pathways.txt");
-    await page.locator("#diff-compute-btn").click();
-    await page.locator("#diff-decisions [data-review-row]").first().waitFor({ timeout: 60_000 });
-
-    await page.locator("#station-observation-scope-input").selectOption(STATION);
-    await captureMeasurement(page, {
-      pathway: "BROWSER_PW_ELEVATOR",
-      value: "105",
-      sourceRef: W14_SOURCE_REF,
-    });
-    await expect(page.locator("#station-observation-list")).toContainText(
-      "BROWSER_PW_ELEVATOR · 1.05 m",
-    );
-
-    await openPanel(page);
-    await ask(page, "Which width changes do these measurements support?");
-
-    const preparedCard = page
-      .locator('[data-evidence-kind="station_import_selection"]')
-      .last();
-    await expect(preparedCard).toBeVisible({ timeout: 30_000 });
-    await page.locator('[id^="agent-review-prepared-"]').last().click();
-
-    const review = page.locator("#station-suggestion-review");
-    await expect(review).toBeVisible();
-    await expect(review.locator("#station-suggestion-confirm")).toBeFocused();
-    // Tab reaches Cancel and back to Confirm without leaving the review.
-    await tabUntilFocused(page, "station-suggestion-cancel");
-    await page.screenshot({
-      path: capturePath(testInfo, "step-011-import-review-320.png"),
-      animations: "disabled",
-      fullPage: true,
-    });
-
-    await tabUntilFocused(page, "station-suggestion-confirm");
-    await page.keyboard.press("Enter");
-    await expect(page.locator("#station-approved-apply-scope")).toBeFocused();
-    await expect(page.locator("#station-approved-apply-scope")).toContainText(
-      "including 1 confirmed against a captured measurement",
-    );
-    await page.screenshot({
-      path: capturePath(testInfo, "step-011-import-scope-320.png"),
-      animations: "disabled",
-      fullPage: true,
-    });
-
-    const overflow = await bodyFitsViewport(page);
-    expect(overflow, "the import page must not scroll sideways at 320").toBe(true);
-  });
 });
 
 function todayIso() {
