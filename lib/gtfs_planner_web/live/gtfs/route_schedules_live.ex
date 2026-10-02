@@ -1342,9 +1342,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> reload_cell()
   end
 
+  # Every native write on this page reloads the timetable through one of these
+  # two helpers, so both mark a retained plan not current: the timetable it was
+  # read from has changed, and a person may still be reading the report (AC-15).
+  # Reloading it is not the same as comparing it, so the plan says only that it
+  # is no longer current and leaves the comparison to a re-check.
   defp reload_cell(socket, touched_ids \\ MapSet.new()) do
     case reload_schedule(socket) do
-      {:ok, socket} -> stream_grid_state(socket, touched_ids)
+      {:ok, socket} -> socket |> mark_dated_change_stale() |> stream_grid_state(touched_ids)
       {:error, :not_found} -> route_not_found(socket)
       {:error, :unavailable} -> assign(socket, :load_state, :unavailable)
     end
@@ -3711,7 +3716,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp reload_or_fail(socket) do
     case reload_schedule(socket) do
-      {:ok, socket} -> socket
+      {:ok, socket} -> mark_dated_change_stale(socket)
       {:error, :not_found} -> route_not_found(socket)
       {:error, :unavailable} -> assign(socket, :load_state, :unavailable)
     end
