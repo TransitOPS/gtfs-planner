@@ -121,7 +121,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       membership = Repo.get_by(Accounts.UserOrgMembership, user_id: user.id)
 
       membership
-      |> Ecto.Changeset.change(roles: ["pathways_viewer"], active: false)
+      |> Ecto.Changeset.change(roles: ["pathways_viewer"])
       |> Repo.update!()
 
       foreign_scope = scope(organization, version, user)

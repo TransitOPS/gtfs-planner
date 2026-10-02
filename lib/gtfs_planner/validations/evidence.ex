@@ -65,16 +65,50 @@ defmodule GtfsPlanner.Validations.Evidence do
   resolves, and a pathway id has no typed destination in this slice, so both stay
   as evidence with a stated reason. Nothing here transfers correction authority:
   the result is a list of typed current targets or a reason, never a change.
+
+  ## Native export readiness
+
+  `readiness/4` describes one native export selection inside the same scope. It
+  resolves the requested type against the organization's product surfaces, then
+  reads the current export defaults, the native preflight totals
+  (`GtfsPlanner.Gtfs.Export.Preflight.inspect_summary/3`) and the version's last
+  five completed MobilityData checks as one read-only repeatable-read snapshot,
+  admitted after the membership and the version were resolved.
+
+  `relationship` is the honest answer to "were these exact bytes checked?":
+
+    * `checked` needs a ready, unexpired selected artifact whose known SHA-256
+      equals the digest a completed check recorded *and* whose durable profile
+      equals that check's recorded profile. Nothing else is evidence of it;
+    * `different_bytes` is a known matching profile with different bytes;
+    * `different_profile` is a known check profile that is not this artifact's;
+    * `unknown` is missing or unreadable provenance, a nil digest, a nil
+      profile or no completed check at all;
+    * `unavailable` is no artifact this scope may name.
+
+  A shared version and a shared timestamp never make two builds equal, and a
+  matching digest proves byte identity only: it says nothing about whether the
+  feed is current or whether the check found errors, so `currentness` is always
+  `"unknown"` (there is no native feed revision to compare) and
+  `publication_status` is always `"unsupported"`. Flex is chosen explicitly as
+  its own artifact and profile, never as the primary one.
   """
 
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Calendar
+  alias GtfsPlanner.Gtfs.Export.Preflight
+  alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.ExportDefaults
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+  alias GtfsPlannerWeb.ProductSurfaces
 
   import Ecto.Query
 
@@ -101,6 +135,15 @@ defmodule GtfsPlanner.Validations.Evidence do
   @engines [nil, "mobility_data"]
   @schema_versions [nil, 1]
   @known_severities ["ERROR", "WARNING", "INFO"]
+
+  # The native export types, the shapes a stored or computed export profile may
+  # take, and the number of completed checks a readiness read compares.
+  @export_types [:full, :pathways, :operations]
+  @artifact_kinds [:primary, :flex]
+  @profile_export_types ["full", "pathways", "operations"]
+  @profile_artifact_kinds ["primary", "flex"]
+  @profile_estimate_methods [nil, "distance", "even"]
+  @recent_check_limit 5
 
   @default_group_limit 20
   @max_group_limit 50
@@ -182,6 +225,37 @@ defmodule GtfsPlanner.Validations.Evidence do
           excluded_keys: [String.t()]
         }
 
+  @typedoc "One export profile with atom keys, whether it was just computed or read back from jsonb."
+  @type export_profile :: %{
+          required(:schema_version) => 1,
+          required(:export_type) => String.t(),
+          required(:include_flex) => boolean(),
+          required(:artifact_kind) => String.t(),
+          required(:estimate_method) => String.t() | nil
+        }
+
+  @typedoc "Whether these exact artifact bytes were the ones a check actually read."
+  @type relationship ::
+          String.t()
+
+  @typedoc "The scoped readiness of one native export selection."
+  @type readiness_result :: %{
+          required(:export_type) => atom(),
+          required(:profile) => export_profile(),
+          required(:product_visibility) => %{
+            required(:export_type) => String.t(),
+            required(:flex) => boolean(),
+            required(:operations_export) => boolean()
+          },
+          required(:preflight) => [map()],
+          required(:recent_checks) => [map()],
+          required(:selected_artifact) => map() | nil,
+          required(:relationship) => relationship(),
+          required(:digest) => String.t() | nil,
+          required(:currentness) => String.t(),
+          required(:publication_status) => String.t()
+        }
+
   @doc """
   Returns one bounded page of a scoped completed validation report.
 
@@ -251,6 +325,322 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   def locate(_scope, _run_ref, _instance_ref), do: {:error, :invalid_arguments}
 
+  @doc """
+  Returns the scoped readiness of one native export selection.
+
+  `export_type` is `:full`, `:pathways` or `:operations` (the `stations` alias
+  names the pathways files); a type the organization's product hides is
+  unavailable. `export_ref` optionally names one of this scope's export runs;
+  without one the version's latest run of that type is used. `artifact` names
+  which of that run's artifacts is meant - `:primary` by default, `:flex` for
+  the companion - so a Flex digest is never read as the primary one's.
+
+  The result names the profile the *current defaults* would build, the
+  preflight totals for that type, the version's last five completed
+  MobilityData checks, the artifact this selection would download with its own
+  durable profile, and `relationship` - the only question of which is whether
+  those exact bytes were checked. Nothing here starts, repairs or publishes
+  anything, and no artifact path, log or actor field is returned.
+  """
+  @spec readiness(Scope.t(), atom() | String.t(), String.t() | nil, :primary | :flex) ::
+          {:ok, readiness_result()} | {:error, atom()}
+  def readiness(scope, export_type, export_ref \\ nil, artifact \\ :primary)
+
+  def readiness(%Scope{} = scope, export_type, export_ref, artifact)
+      when artifact in @artifact_kinds do
+    with :ok <- authorize(scope),
+         :ok <- authorize_context(scope),
+         {:ok, type} <- parse_export_type(export_type),
+         {:ok, reference} <- parse_export_ref(export_ref),
+         {:ok, organization} <- current_organization(scope),
+         :ok <- require_visible_export_type(organization, type) do
+      export_snapshot(scope, organization, type, reference, artifact)
+    end
+  end
+
+  def readiness(_scope, _export_type, _export_ref, _artifact), do: {:error, :invalid_arguments}
+
+  # -- native export readiness ------------------------------------------------
+
+  # The membership and the version were resolved above; these reads then see one
+  # committed snapshot, so the defaults, the preflight totals and the export
+  # being inspected cannot come from three different points in time.
+  defp export_snapshot(scope, organization, type, reference, artifact) do
+    case Repo.transaction(
+           fn -> readiness_snapshot(scope, organization, type, reference, artifact) end,
+           isolation: :repeatable_read
+         ) do
+      {:ok, snapshot} -> bounded(snapshot)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp readiness_snapshot(scope, organization, type, reference, artifact_kind) do
+    case current_export_run(scope, type, reference) do
+      {:ok, run} ->
+        checks = recent_checks(scope)
+        artifact = selected_artifact(run, type, artifact_kind)
+
+        %{
+          export_type: type,
+          profile: current_profile(organization, type),
+          product_visibility: product_visibility(organization, type),
+          preflight:
+            Preflight.inspect_summary(scope.organization_id, scope.gtfs_version_id, type),
+          recent_checks: checks,
+          selected_artifact: artifact,
+          relationship: relationship(artifact, checks),
+          digest: artifact_digest(artifact),
+          currentness: "unknown",
+          publication_status: "unsupported"
+        }
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # A run named by a reference must be this scope's own run of the requested
+  # type; a reference to another version's or another type's run is unavailable
+  # rather than a different export read under this selection.
+  defp current_export_run(%Scope{} = scope, type, nil) do
+    {:ok, ExportRuns.latest_for_version(scope.organization_id, scope.gtfs_version_id, type)}
+  end
+
+  defp current_export_run(%Scope{} = scope, type, reference) do
+    case ExportRuns.get_for_version(scope.organization_id, scope.gtfs_version_id, reference) do
+      %Run{export_type: ^type} = run -> {:ok, run}
+      _foreign -> {:error, :unavailable}
+    end
+  end
+
+  # The artifact is the one the caller named. A run that never published that
+  # artifact has no selected artifact rather than the other one.
+  defp selected_artifact(nil, _type, _kind), do: nil
+
+  defp selected_artifact(%Run{} = run, type, kind) do
+    with true <- run.export_type == type,
+         evidence when not is_nil(evidence) <- ExportRuns.artifact_evidence(run, kind) do
+      %{
+        artifact_kind: kind,
+        run_id: run.id,
+        export_type: run.export_type,
+        filename: evidence.filename,
+        sha256: evidence.sha256,
+        size_bytes: evidence.size_bytes,
+        expires_at: evidence.expires_at,
+        available: evidence.available,
+        profile: durable_profile(run, kind),
+        stored_options: %{
+          include_flex: run.include_flex,
+          estimate_missing_times: run.estimate_missing_times,
+          estimate_method: run.estimate_method && Atom.to_string(run.estimate_method)
+        }
+      }
+    else
+      _not_this_selection -> nil
+    end
+  end
+
+  # What this run built, not what the organization would build now. A companion
+  # Flex file never changes the primary artifact's profile, and a Flex artifact
+  # is always the full export's companion rather than an export of its own.
+  defp durable_profile(%Run{} = run, :primary) do
+    %{
+      schema_version: 1,
+      export_type: to_string(run.export_type),
+      include_flex: false,
+      artifact_kind: "primary",
+      estimate_method: stored_estimate_method(run)
+    }
+  end
+
+  defp durable_profile(%Run{} = run, :flex) do
+    %{
+      schema_version: 1,
+      export_type: "full",
+      include_flex: true,
+      artifact_kind: "flex",
+      estimate_method: stored_estimate_method(run)
+    }
+  end
+
+  defp stored_estimate_method(%Run{} = run) do
+    if run.estimate_missing_times,
+      do: run.estimate_method && Atom.to_string(run.estimate_method),
+      else: nil
+  end
+
+  defp artifact_digest(nil), do: nil
+
+  defp artifact_digest(%{available: true, sha256: sha256}) when is_binary(sha256), do: sha256
+
+  defp artifact_digest(_artifact), do: nil
+
+  # `checked` is a conjunction, and every missing half of it falls back to a
+  # weaker answer rather than to the strong one: no artifact is `unavailable`,
+  # no check that recorded a known profile at all is `unknown`, a known profile
+  # that is not this artifact's is `different_profile`, and a matching profile
+  # with different bytes is `different_bytes`.
+  defp relationship(nil, _checks), do: "unavailable"
+
+  defp relationship(%{available: true} = artifact, checks) do
+    known = Enum.filter(checks, & &1.checked_profile)
+    comparable = Enum.filter(known, &same_profile?(&1.checked_profile, artifact.profile))
+
+    cond do
+      known == [] -> "unknown"
+      comparable == [] -> "different_profile"
+      Enum.any?(comparable, &same_bytes?(&1, artifact)) -> "checked"
+      true -> "different_bytes"
+    end
+  end
+
+  defp relationship(_artifact, _checks), do: "unavailable"
+
+  defp same_bytes?(check, artifact),
+    do: is_binary(check.checked_digest) and check.checked_digest == artifact.sha256
+
+  # `nil` is not a known profile: a check that recorded no profile never
+  # matches one, in either direction.
+  defp same_profile?(nil, _profile), do: false
+  defp same_profile?(_profile, nil), do: false
+  defp same_profile?(profile, other), do: profile == other
+
+  defp recent_checks(%Scope{} = scope) do
+    from(run in ValidationRun,
+      where: run.organization_id == ^scope.organization_id,
+      where: run.gtfs_version_id == ^scope.gtfs_version_id,
+      where: run.run_type in ^@run_types and run.status == "completed",
+      order_by: [desc: run.started_at, desc: run.inserted_at],
+      limit: @recent_check_limit
+    )
+    |> Repo.all()
+    |> Enum.map(&recent_check/1)
+  end
+
+  # A check discloses what ran and what it found. Its own provenance is kept in
+  # the known-profile form only: an unreadable or partial stored profile is
+  # unknown here rather than repaired.
+  defp recent_check(%ValidationRun{} = run) do
+    %{
+      id: run.id,
+      run_type: run.run_type,
+      started_at: run.started_at,
+      completed_at: run.completed_at,
+      validator_version: run.validator_version,
+      errors: run.errors_count,
+      warnings: run.warnings_count,
+      infos: run.infos_count,
+      checked_digest: run.checked_zip_sha256,
+      checked_profile: known_profile(run.checked_export_profile)
+    }
+  end
+
+  defp known_profile(profile) when is_map(profile) do
+    read = &profile_value(profile, &1)
+    export_type = read.(:export_type)
+    artifact_kind = read.(:artifact_kind)
+    include_flex = read.(:include_flex)
+    estimate_method = read.(:estimate_method)
+
+    if read.("schema_version") == 1 and export_type in @profile_export_types and
+         artifact_kind in @profile_artifact_kinds and is_boolean(include_flex) and
+         (is_nil(estimate_method) or estimate_method in @profile_estimate_methods) do
+      %{
+        schema_version: 1,
+        export_type: export_type,
+        include_flex: include_flex,
+        artifact_kind: artifact_kind,
+        estimate_method: estimate_method
+      }
+    end
+  end
+
+  defp known_profile(_profile), do: nil
+
+  # A stored profile comes back from jsonb with string keys and a freshly built
+  # one with atom keys; a key that is present but `false` or `nil` is read as
+  # itself rather than as an absent key.
+  defp profile_value(profile, key) do
+    case Map.fetch(profile, key) do
+      {:ok, value} -> value
+      :error -> Map.get(profile, Atom.to_string(key))
+    end
+  end
+
+  # The profile the organization's current defaults would build for this type.
+  # It is reported beside the artifact's own stored profile, never instead of
+  # it: they disagree whenever the defaults changed after the export was built.
+  defp current_profile(organization, type) do
+    defaults = ExportDefaults.get(organization.id)
+
+    %{
+      schema_version: 1,
+      export_type: to_string(type),
+      include_flex:
+        defaults.include_flex and type != :pathways and
+          ProductSurfaces.visible?(organization, :flex),
+      artifact_kind: "primary",
+      estimate_method: defaults_estimate_method(defaults)
+    }
+  end
+
+  defp defaults_estimate_method(defaults) do
+    if defaults.estimate_missing_times,
+      do: defaults.estimate_method && Atom.to_string(defaults.estimate_method),
+      else: nil
+  end
+
+  defp product_visibility(organization, type) do
+    %{
+      export_type: to_string(type),
+      flex: ProductSurfaces.visible?(organization, :flex),
+      operations_export: ProductSurfaces.visible?(organization, :operations_export)
+    }
+  end
+
+  defp current_organization(%Scope{} = scope) do
+    case Organizations.get_organization(scope.organization_id) do
+      %Organization{} = organization -> {:ok, organization}
+      nil -> {:error, :unavailable}
+    end
+  end
+
+  defp require_visible_export_type(organization, :operations) do
+    if ProductSurfaces.visible?(organization, :operations_export),
+      do: :ok,
+      else: {:error, :unavailable}
+  end
+
+  defp require_visible_export_type(_organization, _type), do: :ok
+
+  # The Stations export is the pathways file under the product's own name, so
+  # the alias resolves to the one export type it can produce.
+  defp parse_export_type("stations"), do: {:ok, :pathways}
+  defp parse_export_type(type) when type in @export_types, do: {:ok, type}
+
+  defp parse_export_type(type) when is_binary(type) do
+    case Enum.find(@export_types, &(Atom.to_string(&1) == type)) do
+      nil -> {:error, :invalid_arguments}
+      resolved -> {:ok, resolved}
+    end
+  end
+
+  defp parse_export_type(_type), do: {:error, :invalid_arguments}
+
+  defp parse_export_ref(nil), do: {:ok, nil}
+  defp parse_export_ref(""), do: {:ok, nil}
+
+  defp parse_export_ref(reference) when is_binary(reference) do
+    case Ecto.UUID.cast(reference) do
+      {:ok, id} -> {:ok, id}
+      :error -> {:error, :unavailable}
+    end
+  end
+
+  defp parse_export_ref(_reference), do: {:error, :invalid_arguments}
+
   # A membership withdrawn mid-conversation is not a different answer, so a
   # refused membership and an unknown run are one indistinguishable result.
   defp authorize(%Scope{} = scope) do
@@ -266,6 +656,16 @@ defmodule GtfsPlanner.Validations.Evidence do
       scope.gtfs_version_id,
       request.run_id
     )
+  end
+
+  # The membership and the version a readiness read runs against are resolved
+  # before its snapshot opens, so a withdrawn membership or a version this
+  # organization can no longer resolve is one indistinguishable refusal.
+  defp authorize_context(%Scope{} = scope) do
+    case Scope.authorized_context(scope) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :unavailable}
+    end
   end
 
   # -- the stored report ------------------------------------------------------

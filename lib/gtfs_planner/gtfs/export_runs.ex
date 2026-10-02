@@ -607,6 +607,58 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   def latest_for_version(_, _, _), do: {:error, :invalid_export_type}
 
+  @typedoc """
+  What one run's stored artifact can be described by without naming it.
+
+  `available` is the same ready-and-unexpired predicate `claim_download/3`
+  applies, read through the database clock. The storage key, the actor, the
+  lease and the failure code are deliberately absent: a caller may learn that a
+  file exists and what it hashes to, never where it is or who built it.
+  """
+  @type artifact_evidence :: %{
+          required(:kind) => :primary | :flex,
+          required(:filename) => String.t() | nil,
+          required(:sha256) => String.t() | nil,
+          required(:size_bytes) => integer() | nil,
+          required(:expires_at) => DateTime.t() | nil,
+          required(:available) => boolean()
+        }
+
+  @doc """
+  Returns one run's primary or Flex artifact as bounded evidence, or `nil`.
+
+  The kind is chosen by the caller and never inferred from a hash, so a Flex
+  artifact's digest is never read as the primary artifact's. A run without that
+  artifact returns `nil` rather than the other one.
+  """
+  @spec artifact_evidence(Run.t(), :primary | :flex) :: artifact_evidence() | nil
+  def artifact_evidence(%Run{} = run, :primary), do: evidence(run, :main, :primary)
+  def artifact_evidence(%Run{} = run, :flex), do: evidence(run, :flex, :flex)
+
+  defp evidence(run, file, kind) do
+    artifact = artifact_from_run(run, file)
+
+    if is_binary(artifact.key) do
+      %{
+        kind: kind,
+        filename: artifact.filename,
+        sha256: artifact.sha256,
+        size_bytes: artifact.size,
+        expires_at: run.artifact_expires_at,
+        available: artifact_current?(run)
+      }
+    end
+  end
+
+  @doc """
+  Whether the run still holds a downloadable artifact, by the database clock.
+
+  A run that is not `ready`, or whose artifact has expired, is not available
+  even though its metadata rows remain.
+  """
+  @spec artifact_available?(Run.t()) :: boolean()
+  def artifact_available?(%Run{} = run), do: artifact_current?(run)
+
   @spec topic(Run.t() | Ecto.UUID.t()) :: String.t()
   def topic(%Run{id: id}), do: topic(id)
   def topic(run_id) when is_binary(run_id), do: "export-run:" <> run_id

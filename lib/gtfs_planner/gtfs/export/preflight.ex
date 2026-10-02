@@ -16,6 +16,10 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   fault with this version. Every other check answers one aggregate issue, so
   `run/3` flattens a check that answers a list.
 
+  `inspect_summary/3` returns the same checks as `run/3` with each aggregate
+  count, the entity it counts and its retained examples as values, so a caller
+  never has to parse a message to learn how much of a feed is affected.
+
   Transfers are checked here with their own set-based query. The Transfers page
   flags rules that need attention through `GtfsPlanner.Gtfs.Transfers`, but that
   logic loads every transfer and its stops, routes and trips before it judges
@@ -63,6 +67,27 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
 
   @type issue :: %{code: String.t(), message: String.t()}
 
+  @typedoc """
+  One check that has findings, with the count itself instead of only prose.
+
+  `total` counts every affected entity the check's own SQL matched, `unit`
+  names the kind of entity that count is about, and `examples` retains at most
+  five of them in the query's own deterministic order. `completeness` is
+  `"complete"` only when those examples cover the whole count; it is
+  `"sampled"` whenever the list is shorter than the count, and for transfers
+  always, because a transfer's example names the reference it is missing rather
+  than the transfer itself. A fare finding is one repair or review item, so its
+  total is one and it retains no examples.
+  """
+  @type summary :: %{
+          code: String.t(),
+          message: String.t(),
+          total: non_neg_integer(),
+          unit: :transfers | :trips | :stations | :agencies | :pathways | :fares,
+          examples: [String.t()],
+          completeness: String.t()
+        }
+
   @doc """
   Returns `:ok`, or `{:error, issues}` with one issue per check that has findings.
 
@@ -71,13 +96,31 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   @spec run(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
           :ok | {:error, [issue()]}
   def run(organization_id, gtfs_version_id, export_type \\ :full) do
-    issues =
-      export_type
-      |> checks()
-      |> Enum.flat_map(&List.wrap(check(&1, organization_id, gtfs_version_id)))
-      |> Enum.reject(&is_nil/1)
+    case inspect_summary(organization_id, gtfs_version_id, export_type) do
+      [] -> :ok
+      summaries -> {:error, Enum.map(summaries, &%{code: &1.code, message: &1.message})}
+    end
+  end
 
-    if issues == [], do: :ok, else: {:error, issues}
+  @doc """
+  Returns one structured finding per check that has findings, in check order.
+
+  This is the same scoped SQL as `run/3`, with the aggregate count, the entity
+  it counts and the retained examples returned as values instead of only being
+  written into a message. Nothing here parses a message or infers a total from
+  one, so a caller can show an exact number next to its examples.
+
+  `mixed_agency_timezones` reports the number of conflicting timezones the
+  existing message states, with `unit: :agencies` naming the entities the check
+  is about.
+  """
+  @spec inspect_summary(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+          [summary()]
+  def inspect_summary(organization_id, gtfs_version_id, export_type \\ :full) do
+    export_type
+    |> checks()
+    |> Enum.flat_map(&List.wrap(check(&1, organization_id, gtfs_version_id)))
+    |> Enum.reject(&is_nil/1)
   end
 
   defp checks(:pathways), do: @pathway_checks
@@ -90,7 +133,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
       where: s.location_type == 1 and not is_nil(s.parent_station) and s.parent_station != ""
     )
     |> count_and_sample(:stop_id)
-    |> issue("station_with_parent", fn count, examples ->
+    |> finding("station_with_parent", :stations, fn count, examples ->
       "#{count} #{Wording.noun(count, "station has", "stations have")} a parent station " <>
         "(for example #{examples}). GTFS does not allow a station inside another station. " <>
         "Change its type on the parent station's Floorplans tab or re-import the stops."
@@ -106,7 +149,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
       where: is_nil(s.stop_lat) or is_nil(s.stop_lon)
     )
     |> count_and_sample(:stop_id)
-    |> issue("stops_missing_coordinates", fn count, examples ->
+    |> finding("stops_missing_coordinates", :stations, fn count, examples ->
       "#{count} #{Wording.noun(count, "stop, station or entrance has", "stops, stations or entrances have")} " <>
         "no latitude/longitude (for example #{examples}). GTFS requires coordinates for these. " <>
         "Add them on the station's Floorplans tab or re-import the stops."
@@ -119,7 +162,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
       where: p.pathway_mode == @exit_gate and p.is_bidirectional
     )
     |> count_and_sample(:pathway_id)
-    |> issue("bidirectional_exit_gate", fn count, examples ->
+    |> finding("bidirectional_exit_gate", :pathways, fn count, examples ->
       "#{count} #{Wording.noun(count, "exit gate is", "exit gates are")} two-way " <>
         "(for example #{examples}). GTFS requires exit gates to be one-way. " <>
         "Open each pathway on the station's Floorplans tab and save it to make it one-way."
@@ -151,9 +194,8 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
             select: r.reference
           )
           |> Repo.all()
-          |> Enum.join(", ")
 
-        issue({count, examples}, "transfer_missing_reference", fn count, examples ->
+        finding({count, examples}, "transfer_missing_reference", :transfers, fn count, examples ->
           "#{count} #{Wording.noun(count, "transfer names", "transfers name")} a stop, route or trip " <>
             "that does not exist in this version (for example #{examples}). " <>
             "GTFS requires transfers to name existing stops, routes and trips. " <>
@@ -197,7 +239,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
       distinct: t.service_id
     )
     |> count_and_sample(:service_id)
-    |> issue("trip_missing_service", fn count, examples ->
+    |> finding("trip_missing_service", :trips, fn count, examples ->
       "#{count} #{Wording.noun(count, "trip uses", "trips use")} a service ID that has no calendar or " <>
         "calendar dates (for example #{examples}). GTFS requires every trip's service to be " <>
         "defined. Add the service on the Calendars page or re-import the calendars."
@@ -211,10 +253,12 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     %{repair: repair, review: review} =
       FareChecks.run(organization_id, gtfs_version_id)
 
-    Enum.map(repair ++ review, &fare_issue/1)
+    Enum.map(repair ++ review, &fare_finding/1)
   end
 
-  defp fare_issue(%{code: code, title: title} = item) do
+  # One repair or review item is one finding with no retained example: the item
+  # itself is the whole of what the check found.
+  defp fare_finding(%{code: code, title: title} = item) do
     body = Map.get(item, :body)
 
     message =
@@ -222,7 +266,14 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
         do: title <> ". " <> body,
         else: title
 
-    %{code: "fares_" <> code, message: message}
+    %{
+      code: "fares_" <> code,
+      unit: :fares,
+      total: 1,
+      examples: [],
+      completeness: "complete",
+      message: message
+    }
   end
 
   defp mixed_timezones_issue(organization_id, gtfs_version_id) do
@@ -236,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> Repo.all()
     |> summarize()
-    |> issue("mixed_agency_timezones", fn count, examples ->
+    |> finding("mixed_agency_timezones", :agencies, fn count, examples ->
       "Agencies in this feed use #{count} different timezones (#{examples}). " <>
         "GTFS requires one timezone for every agency in a feed. " <>
         "Set the same timezone on every agency in Settings > Agencies."
@@ -280,10 +331,26 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   end
 
   defp summarize([]), do: nil
-  defp summarize([{_id, count} | _] = rows), do: {count, Enum.map_join(rows, ", ", &elem(&1, 0))}
+  defp summarize([{_id, count} | _] = rows), do: {count, Enum.map(rows, &elem(&1, 0))}
 
-  defp issue(nil, _code, _message), do: nil
+  defp finding(nil, _code, _unit, _message), do: nil
 
-  defp issue({count, examples}, code, message),
-    do: %{code: code, message: message.(count, examples)}
+  defp finding({count, examples}, code, unit, message) do
+    %{
+      code: code,
+      unit: unit,
+      total: count,
+      examples: examples,
+      completeness: completeness(unit, count, length(examples)),
+      message: message.(count, Enum.join(examples, ", "))
+    }
+  end
+
+  # A transfer's examples name the reference it is missing, so several examples
+  # can stand for one transfer and a transfer with one missing reference can be
+  # indistinguishable from a transfer with two. No list of them can claim to
+  # cover every affected transfer, so this unit is never complete.
+  defp completeness(:transfers, _total, _retained), do: "sampled"
+  defp completeness(_unit, total, retained) when retained >= total, do: "complete"
+  defp completeness(_unit, _total, _retained), do: "sampled"
 end
