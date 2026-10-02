@@ -221,6 +221,44 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAutosaveTest do
       assert copy.message.header == "Typed here"
     end
 
+    test "staying on the question keeps the base revision, so the next edit is refused",
+         context do
+      alert = message_alert(context)
+
+      {:ok, view, _html} = live(context.conn, message_path(context, alert))
+
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, 1, %{
+                 "message" => %{"header" => "Saved by the other editor"}
+               })
+
+      view
+      |> form("#alert-form",
+        alert: %{"revision" => "1", "message" => %{"header" => "Typed here"}}
+      )
+      |> render_change()
+
+      assert has_element?(view, "#alert-conflict")
+
+      # The current progress link patches to the same question and reloads the
+      # row at revision 2. The form still holds the refused draft, so it still
+      # posts the revision that draft was composed on.
+      view |> element("#alert-step-message") |> render_click()
+
+      assert has_element?(view, "#alert-conflict")
+      assert view |> element("input[name='alert[revision]']") |> render() =~ ~s(value="1")
+
+      view
+      |> form("#alert-form", alert: %{"message" => %{"header" => "Typed once more"}})
+      |> render_change()
+
+      assert has_element?(view, "#alert-conflict")
+
+      assert {:ok, row} = Alerts.get_alert(context.audit, alert.id)
+      assert row.revision == 2
+      assert row.message.header == "Saved by the other editor"
+    end
+
     test "Load latest shows the newer saved draft", context do
       alert = message_alert(context)
 

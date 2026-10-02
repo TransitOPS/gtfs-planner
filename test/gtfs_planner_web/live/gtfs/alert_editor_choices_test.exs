@@ -355,6 +355,41 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
     end
   end
 
+  describe "a stale card click followed by navigation" do
+    setup :editor_conn
+
+    test "Retry and Save alert do not overwrite the other editor's draft", context do
+      alert = alert_with(context, %{"urgency" => "now"})
+
+      {:ok, view, _html} =
+        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+
+      assert {:ok, _other} =
+               Alerts.save_draft(context.audit, alert.id, alert.revision, %{
+                 "situation" => "delay"
+               })
+
+      view |> element("#situation-detour") |> render_click()
+      assert has_element?(view, "#alert-conflict")
+
+      # Walking to another question reloads the row at the other editor's
+      # revision, and the refused click is still the draft this editor holds.
+      view |> element("#alert-step-urgency") |> render_click()
+
+      assert has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#conflict-save-new")
+      refute has_element?(view, "#alert-save-retry")
+
+      render_click(view, "retry_save")
+      render_click(view, "save_alert")
+
+      assert has_element?(view, "#alert-conflict")
+      assert {:ok, row} = Alerts.get_alert(context.audit, alert.id)
+      assert row.situation == :delay
+      assert row.revision == alert.revision + 1
+    end
+  end
+
   describe "forged answers" do
     setup :editor_conn
 

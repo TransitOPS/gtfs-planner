@@ -912,7 +912,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
              |> push_patch(to: saved_path(socket, saved, advance(saved, :routes, socket)))}
 
           {:error, :stale, current} ->
-            {:noreply, stale_conflict(socket, current, attrs)}
+            {:noreply, stale_conflict(socket, alert, current, attrs)}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, write_error_message(reason))}
@@ -2199,14 +2199,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # -- Autosave ------------------------------------------------------------
 
   defp save(socket, alert, params) do
-    socket = assign(socket, :pending_attrs, params)
+    base = base_revision(socket, params, alert)
+    socket = assign(socket, :pending_attrs, with_base(params, base))
 
-    case Alerts.save_draft(
-           audit_context(socket),
-           alert.id,
-           base_revision(socket, params, alert),
-           castable(params)
-         ) do
+    case Alerts.save_draft(audit_context(socket), alert.id, base, castable(params)) do
       {:ok, saved} ->
         {:noreply,
          socket
@@ -2331,6 +2327,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # changeset. Nothing else is dropped: an unknown key is ignored by `cast/3`
   # anyway, and dropping more would silently lose a future step's answer.
   defp castable(params), do: Map.delete(params, "revision")
+
+  # A refused or stale draft keeps the revision it was composed on, so Retry,
+  # Save alert and the next edit are compared against that revision after the
+  # row is reloaded at a newer one. Without it the draft would be rebased onto
+  # the other editor's save and overwrite it (R6, AC-16).
+  defp with_base(params, base), do: Map.put(params, "revision", Integer.to_string(base))
+
+  # The revision the form posts. A kept draft posts its own base; everything
+  # else posts the row's current revision.
+  defp form_revision(%{"revision" => revision}, _alert) when is_binary(revision), do: revision
+  defp form_revision(_pending_attrs, alert), do: alert && alert.revision
 
   # -- The form the questions render inside -------------------------------
 
@@ -2949,7 +2956,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, advance_without_writing(socket, saved, answered)}
 
       {:error, :stale, current} ->
-        {:noreply, stale_conflict(socket, current, attrs)}
+        {:noreply, stale_conflict(socket, alert, current, attrs)}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, write_error_message(reason))}
@@ -2959,10 +2966,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # A stale write changed nothing: the editor shows the conflict and keeps the
   # values it tried to write, so Save as new alert has something to save and
   # nothing is lost to the other editor's newer revision (R6, AC-16).
-  defp stale_conflict(socket, current, attrs) do
+  defp stale_conflict(socket, alert, current, attrs) do
     socket
     |> assign(:conflict, current)
-    |> assign(:pending_attrs, attrs)
+    |> assign(:pending_attrs, with_base(attrs, alert.revision))
     |> assign(:save_state, :error)
   end
 
@@ -3345,7 +3352,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                        field rather than a server assign because a change replayed
                        by form recovery after a reconnect must still carry the
                        revision it was composed on (R6). --%>
-                <input type="hidden" name="alert[revision]" value={@alert && @alert.revision} />
+                <input
+                  type="hidden"
+                  name="alert[revision]"
+                  value={form_revision(@pending_attrs, @alert)}
+                />
                 <%!-- The form's first submit button is disabled, so Enter in a text
                        field (a route search, a date) does nothing instead of
                        submitting as Save and close. The real Save and close sits in
@@ -3622,6 +3633,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           status={save_status(@alert, @save_state)}
           state={@save_state}
           detail={refusal_detail(@form)}
+          retry?={is_nil(@conflict)}
           show_delete?={not is_nil(@alert)}
           back_path={~p"/gtfs/#{@current_gtfs_version.id}/alerts"}
           form_id={if @mode == :form, do: "alert-form"}

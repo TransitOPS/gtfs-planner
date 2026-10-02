@@ -2873,6 +2873,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     default: nil,
     doc: "why the last save was refused, when no field on the question can say so"
 
+  attr :retry?, :boolean,
+    default: true,
+    doc: "false while a conflict is open, whose banner already offers the ways forward"
+
   attr :show_delete?, :boolean, default: false
   attr :back_path, :string, required: true
 
@@ -2912,7 +2916,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             {@detail}
           </p>
           <.button
-            :if={@state == :error}
+            :if={@state == :error and @retry?}
             id="alert-save-retry"
             type="button"
             variant="quiet"
