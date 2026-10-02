@@ -396,6 +396,54 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMoveTest do
     end
   end
 
+  describe "a result for a panel the editor has left" do
+    test "a move review read after Back to editing does not open the review again", ctx do
+      hold_routing(200)
+      view = open_map(ctx)
+
+      render_hook(view, "pin_moved", %{"lat" => moved_lat(@review_m), "lon" => @stop_lon})
+      view |> form("#stops-map-edit-form") |> render_submit()
+      assert_receive {:routing_held, routing}, 5_000
+      assert has_element?(view, "#stops-map-move-panel")
+
+      # Back is enabled while the review is still being read, so the editor can
+      # leave a question that has not been answered yet.
+      view |> element("#stops-map-move-back") |> render_click()
+      assert has_element?(view, "#stops-map-edit-panel")
+      refute has_element?(view, "#stops-map-move-panel")
+
+      send(routing, :release)
+      settle(view)
+
+      assert has_element?(view, "#stops-map-edit-panel")
+      refute has_element?(view, "#stops-map-move-panel")
+      assert has_element?(view, "#stops-map-edit-moved")
+    end
+
+    test "a save that lands after Add stop was pressed leaves the editor in the add panel",
+         ctx do
+      hold_next_write(:commit)
+      view = open_map(ctx)
+
+      view
+      |> form("#stops-map-edit-form", %{"stop" => %{"stop_name" => "Main Street"}})
+      |> render_submit()
+
+      assert_receive {:write_held, write}, 5_000
+
+      view |> element("#stops-map-add-stop") |> render_click()
+      assert has_element?(view, "#stops-map-add-panel")
+
+      send(write, :release)
+      settle(view)
+
+      # The write committed, and the editor is still where they went.
+      assert stop(ctx).stop_name == "Main Street"
+      assert has_element?(view, "#stops-map-add-panel")
+      refute has_element?(view, "#stops-map-edit-panel")
+    end
+  end
+
   describe "a result for the stop the panel shows" do
     test "a move review that cannot be read says so and keeps the draft", ctx do
       Req.Test.stub(@routing_owner, fn _conn -> exit(:routing_lost) end)

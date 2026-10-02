@@ -620,6 +620,11 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
 
   A stop at exactly the same place as the point does not count as before it: the
   two are the same place, and "between" a stop and itself is not an answer.
+
+  Two consecutive stops at exactly the same place make a leg with no length and
+  no direction. It is never the leg a point is nearest, and the first and last
+  legs are the first and last that have a length, so a pattern that calls at a
+  terminal twice still reads "past the end" beyond that terminal.
   """
   @spec insertion_index(point(), [point()]) :: non_neg_integer()
   def insertion_index(_point, []), do: 0
@@ -627,11 +632,13 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
 
   def insertion_index(point, ordered_points) do
     stops = length(ordered_points)
-    %{leg: leg, fraction: fraction} = nearest_leg(point, ordered_points)
+
+    %{leg: leg, fraction: fraction, first?: first?, last?: last?} =
+      nearest_leg(point, ordered_points)
 
     cond do
-      leg == 0 and fraction <= 0.0 -> 0
-      leg == stops - 2 and fraction > 1.0 -> stops
+      first? and fraction <= 0.0 -> 0
+      last? and fraction > 1.0 -> stops
       true -> leg + 1
     end
   end
@@ -666,7 +673,14 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   #     start and above 1.0 past its end;
   #   * `:metres` is how far the point is from the leg, projection clamped to
   #     its ends;
-  #   * `:along_m` is the walk from the line's first point to that nearest spot.
+  #   * `:along_m` is the walk from the line's first point to that nearest spot;
+  #   * `:first?` and `:last?` say whether it is the first or last leg that has a
+  #     length.
+  #
+  # A leg between two points at exactly the same place has no length and no
+  # direction, so it is skipped: its fraction is always `0.0`, which would hide
+  # "past the end" from a line whose last two points coincide. A line made only
+  # of such legs keeps them all, because there is nothing else to measure.
   #
   # `Enum.min_by/2` keeps the first of equal distances, so a tie goes to the
   # earlier leg. A point exactly on a stop is `0.0` from the leg that ends there
@@ -685,13 +699,25 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
           leg: leg,
           fraction: along_fraction(x, y, x2, y2),
           metres: :math.sqrt((x - foot_x) * (x - foot_x) + (y - foot_y) * (y - foot_y)),
-          along_m: walked + :math.sqrt(foot_x * foot_x + foot_y * foot_y)
+          along_m: walked + :math.sqrt(foot_x * foot_x + foot_y * foot_y),
+          empty?: x2 == 0.0 and y2 == 0.0
         }
 
         {found, walked + :math.sqrt(x2 * x2 + y2 * y2)}
       end)
 
-    Enum.min_by(legs, & &1.metres)
+    measured =
+      case Enum.reject(legs, & &1.empty?) do
+        [] -> legs
+        with_length -> with_length
+      end
+
+    nearest = Enum.min_by(measured, & &1.metres)
+
+    Map.merge(nearest, %{
+      first?: nearest.leg == hd(measured).leg,
+      last?: nearest.leg == List.last(measured).leg
+    })
   end
 
   # The shapes close enough to serve this point, on the kerb a vehicle on them

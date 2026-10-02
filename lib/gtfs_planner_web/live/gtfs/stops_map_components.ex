@@ -3134,7 +3134,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
                   value={candidate.stop_id}
                   checked={@with != nil and @with.stop_id == candidate.stop_id}
                   phx-click="choose_replace"
-                  phx-value-stop-id={candidate.stop_id}
+                  phx-value-stop_id={candidate.stop_id}
                   class="mt-1 size-4 accent-action"
                 />
                 <span class="min-w-0 flex-1">

@@ -271,6 +271,68 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
 
       assert StopPlacement.insertion_index(offset_from(@origin, 0.0, -50.0), route) == 0
     end
+
+    test "a point past a line whose last two stops share a place belongs after the last stop" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(north_of(terminal, 50.0), [start, terminal, terminal]) ==
+               3
+    end
+
+    test "a point past a longer line that ends on a shared place belongs after the last stop" do
+      row = collinear_row()
+      terminal = List.last(row)
+
+      assert StopPlacement.insertion_index(north_of(terminal, 50.0), row ++ [terminal]) == 5
+    end
+
+    test "a point beside the only real leg of a line that ends on a shared place belongs after its start" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(north_of(start, 50.0), [start, terminal, terminal]) ==
+               1
+    end
+
+    test "a point before a line that ends on a shared place belongs before its first stop" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(south_of(start, 50.0), [start, terminal, terminal]) ==
+               0
+    end
+
+    test "a point before a line whose first two stops share a place belongs before its first stop" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(south_of(start, 50.0), [start, start, terminal]) == 0
+    end
+
+    test "a point beside the only real leg of a line that starts on a shared place belongs after the repeated stop" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(north_of(start, 50.0), [start, start, terminal]) == 2
+    end
+
+    test "a point past a line whose first two stops share a place belongs after its last stop" do
+      start = @origin
+      terminal = north_of(start, 100.0)
+
+      assert StopPlacement.insertion_index(north_of(terminal, 50.0), [start, start, terminal]) ==
+               3
+    end
+
+    test "a point beside a leg after a shared place in the middle of a line belongs after that leg's start" do
+      row = collinear_row()
+      [a, b, c, d] = row
+      line = [a, b, b, c, d]
+
+      # Halfway along the b-c leg, which starts at the second copy of b.
+      assert StopPlacement.insertion_index(midway(row, 1), line) == 3
+    end
   end
 
   describe "order_stops/2" do

@@ -373,6 +373,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       assert has_element?(view, "#stops-map-edit-desc[value='Mine']")
     end
 
+    test "after a stale save the where-it's-used list is read again and shown", ctx do
+      seeded(ctx)
+
+      view = open_map(ctx, stop: "1434")
+      settle(view)
+
+      view
+      |> form("#stops-map-edit-form", %{"stop" => %{"stop_desc" => "Mine"}})
+      |> render_change()
+
+      other_editor_write(ctx, "1434", %{"stop_desc" => "Northbound, by Post Office"})
+
+      view |> form("#stops-map-edit-form") |> render_submit()
+      settle(view)
+
+      assert has_element?(view, "#stops-map-edit-conflict")
+      assert has_element?(view, "#stops-map-edit-used-items")
+      assert has_element?(view, "#stops-map-edit-used-pattern-BROWSER_SM_NB", "toward Newport")
+      refute has_element?(view, "#stops-map-edit-used-loading")
+    end
+
     test "a refused save keeps the input and says nothing was changed", ctx do
       seeded(ctx)
 

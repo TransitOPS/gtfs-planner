@@ -72,6 +72,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.StopNaming
   alias GtfsPlanner.Gtfs.StopPlacement
@@ -112,8 +113,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # The tasks the edit panel starts for the opening it belongs to. Each is named
   # for that opening's `edit_token`, so a result can be checked against the
   # panel on screen when it arrives, including a panel reopened on the same stop.
-  # The writes are the ones whose success changes the feed, so a stale success
-  # still reloads the map.
+  # The token is replaced when the panel opens or closes and when the editor
+  # leaves a review or the stop for the add panel, so a result that arrives
+  # after any of those is dropped. The writes are the ones whose success changes
+  # the feed, so a stale success still reloads the map.
   @panel_reads [:move_review, :delete_review, :replace_review]
   @panel_writes [:edit_save, :move_apply, :delete_stop, :replace_apply, :station_create]
 
@@ -572,7 +575,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      socket
      |> assign(:edit_saving, false)
      |> assign(:edit_outcome, :stale)
-     |> assign_edit_conflict(socket.assigns.edit_stop)}
+     |> assign_edit_conflict(conflicted_stop(socket))}
   end
 
   def handle_async(:edit_save, {:ok, {:error, %Ecto.Changeset{} = changeset}}, socket) do
@@ -643,20 +646,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # editor's next action is to look at the stop again, not to be offered the
   # same question about facts that no longer hold.
   def handle_async(:move_apply, {:ok, {:error, :stale_review}}, socket) do
-    # The conflict block names who changed the stop and what they changed, which
-    # the audit log is asked about through the row itself — so the row is read
-    # back rather than the panel's row, which is the same row with fewer fields.
-    changed =
-      case socket.assigns.edit_stop do
-        nil -> nil
-        row -> reload_stop_row(socket, row.stop_id) || row
-      end
-
     {:noreply,
      socket
      |> assign(:move_saving?, false)
      |> assign(:move_outcome, :stale_review)
-     |> assign_edit_conflict(changed)}
+     |> assign_edit_conflict(conflicted_stop(socket))}
   end
 
   # The far-move question has to be answered, and the answer is still missing.
@@ -986,7 +980,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     %{"station_name" => stop.name, "platform_code" => "A"}
   end
 
-  defp maybe_start_landmark(socket, %{point: {lat, lon}})
+  defp maybe_start_landmark(socket, %{point: {lon, lat}})
        when is_number(lat) and is_number(lon) do
     token = socket.assigns.place_token + 1
 
@@ -1340,6 +1334,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign_station_state()
   end
 
+  # The station panel is a panel of its own rather than a state of the edit
+  # panel, so leaving it has to say where the editor goes: back to the stop.
+  defp leave_station_panel(%{assigns: %{panel: :station}} = socket),
+    do: assign(socket, :panel, :edit)
+
+  defp leave_station_panel(socket), do: socket
+
   # --- saving ---------------------------------------------------------------
 
   defp start_save(socket, params) do
@@ -1666,14 +1667,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     # Back to editing keeps the draft and the pending move: the review is a
     # question about this move, and leaving it does not answer it or discard it.
     # The delete panels answer the same way — keeping the stop writes nothing.
+    # The token moves on, so a review still being read for the panel that was
+    # just left cannot open it again when it answers.
     {:noreply,
      socket
+     |> assign(:edit_token, make_ref())
      |> assign(:move_review, nil)
      |> assign(:move_loading?, false)
      |> assign(:move_outcome, :none)
      |> assign_delete_state()
      |> assign_replace_state()
      |> assign_station_state()
+     |> leave_station_panel()
      |> push_map_mode()}
   end
 
@@ -2358,6 +2363,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     end)
   end
 
+  # The stop a conflict is about, as the database holds it now. The conflict
+  # block names who changed the stop and what they changed, which the audit log
+  # is asked about through the row itself, and the usage list is read again for
+  # what the other editor left — so the row is read back rather than taken from
+  # the panel, which is the same stop with fewer fields. A row that cannot be
+  # read leaves the panel's own to name the stop.
+  defp conflicted_stop(socket) do
+    case socket.assigns.edit_stop do
+      nil -> nil
+      row -> reload_stop_row(socket, row.stop_id) || row
+    end
+  end
+
   # The conflict's other half: who saved, when, and what they changed. The audit
   # entry is the only record of that, and it is read for the stop this panel
   # holds rather than for a name the client supplied.
@@ -2384,8 +2402,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           }
       end
 
-    socket |> assign(:edit_conflict, conflict) |> start_edit_usage(stop)
+    socket |> assign(:edit_conflict, conflict) |> refresh_edit_usage(stop)
   end
+
+  # The usage read takes the stop's own row, which only a read of it gives. When
+  # that read failed the list the panel already shows stands, rather than being
+  # cleared for a read that cannot run.
+  defp refresh_edit_usage(socket, %Stop{} = stop), do: start_edit_usage(socket, stop)
+  defp refresh_edit_usage(socket, _panel_row), do: socket
 
   defp last_actor(organization_id, gtfs_version_id, stop) do
     case StopEditing.last_change(organization_id, gtfs_version_id, stop_uuid(stop)) do
@@ -2432,6 +2456,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   defp begin_add(socket, kind) do
     socket
+    # The edit panel's tasks belong to the stop being left, so a save that lands
+    # after this cannot take the editor back out of the add panel.
+    |> assign(:edit_token, make_ref())
     |> assign(:panel, :add)
     |> assign(:placement, nil)
     |> assign(:add_kind, kind)

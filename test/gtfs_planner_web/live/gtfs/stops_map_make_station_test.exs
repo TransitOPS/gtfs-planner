@@ -95,6 +95,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
                "Suggested from the nearest landmark"
     end
 
+    test "the landmark is looked up at the stop's own latitude and longitude", ctx do
+      stub_landmark(ctx, "Newport City Hall", 12.0)
+
+      open_station(ctx)
+
+      assert_receive {:landmark_asked, 44.621, -124.053}
+    end
+
     test "an amenity beyond the radius leaves the field on the stop's own name", ctx do
       stub_landmark(ctx, "Far Field", 4_000.0)
 
@@ -102,6 +110,18 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
 
       refute has_element?(view, "#stops-map-station-landmark")
       assert view |> element("#stops-map-station-name") |> render() =~ "US 101 &amp; SE 1st St"
+    end
+  end
+
+  describe "leaving the panel" do
+    test "Cancel returns to the stop's own edit panel with nothing written", ctx do
+      view = open_station(ctx)
+
+      view |> element("#stops-map-station-cancel") |> render_click()
+
+      assert has_element?(view, "#stops-map-edit-panel", "US 101 & SE 1st St")
+      refute has_element?(view, "#stops-map-station-panel")
+      assert is_nil(station_named(ctx, "US 101 & SE 1st St"))
     end
   end
 
@@ -207,14 +227,19 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapMakeStationTest do
     ctx
   end
 
+  # The stub reports the coordinates it was asked about, so a test can say where
+  # the panel looked rather than only that it did.
   defp stub_landmark(ctx, name, distance_m) do
     _stop = ctx.stop
+    test = self()
 
     Mox.stub(GeocodingMock, :reverse, fn lat, lon, opts ->
       # The panel asks for amenities alone: a station is a place riders look for,
       # and the street beside it is not that.
       assert opts[:amenities] == true
       assert opts[:only] == :amenity
+
+      send(test, {:landmark_asked, lat, lon})
 
       {:ok, [place(name, lat * 1.0, lon * 1.0, distance_m)]}
     end)

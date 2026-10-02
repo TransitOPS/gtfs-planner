@@ -85,6 +85,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
              |> has_element?()
     end
 
+    test "pressing a candidate other than the nearest chooses it and reads its review", ctx do
+      view = open_replace(ctx, "1433")
+
+      view |> element("#stops-map-replace-candidates input[value='1500']") |> render_click()
+
+      assert settle(view) |> has_element?("#stops-map-replace-changes")
+
+      assert view
+             |> element("#stops-map-replace-candidates input[value='1500'][checked]")
+             |> has_element?()
+
+      refute view
+             |> element("#stops-map-replace-candidates input[value='1434'][checked]")
+             |> has_element?()
+    end
+
     test "selecting a stop on the map chooses it instead of opening it", ctx do
       view = open_replace(ctx, "1433")
 
@@ -113,7 +129,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
       # visit it twice in a row.
       assert visit_order(ctx, "REPLACE_A") == ["1433", "1391"]
 
-      render_click(view, "choose_replace", %{"stop_id" => "1391"})
+      view |> element("#stops-map-replace-candidates input[value='1391']") |> render_click()
 
       assert settle(view) |> has_element?("#stops-map-replace-refused")
 
