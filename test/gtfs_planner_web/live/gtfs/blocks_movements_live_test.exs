@@ -320,7 +320,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
   end
 
   describe "the axis" do
-    test "spans a platform start before 00:00 and prints both days", context do
+    test "spans a platform start before 00:00 and prints GTFS hours", context do
       garage_block!(context, "101")
 
       # Main → FAR is 15 entered minutes and the first trip leaves at 00:00, so
@@ -337,11 +337,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
 
       # The axis labels every two hours and drops the last label that would
       # crowd the right edge, so its opening tick carries the `−1d` marker and
-      # its closing tick is the same day's 23:00. The `+1d` marker belongs to the
-      # span itself, which the row's own cell prints.
+      # its closing tick is the same day's 23:00. The span itself continues past
+      # midnight, which the row's own cell prints in GTFS hours.
       assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "23:00 −1d")
       assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "23:00")
-      assert has_element?(view, "#{row("101")} .blocks-meta-out", "23:45 −1d–01:03 +1d")
+      assert has_element?(view, "#{row("101")} .blocks-meta-out", "23:45 −1d–25:03")
 
       # The pull-out is on the track rather than off its left edge: 23:45 is 45
       # minutes after the 23:00 the axis starts at, and the axis spans 25 hours.

@@ -458,7 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "08:00")
     end
 
-    test "a span after midnight prints its next-day clock and time",
+    test "a span after midnight prints its GTFS hours",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
       trip(context, %{trip_id: "overnight", block_id: "103", first: "24:30:00", last: "25:15:00"})
@@ -467,14 +467,37 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
       # The fixture's version has no garage, so the platform span is the trip
-      # span and the cell carries both of its next-day ends.
+      # span and the cell carries both of its after-midnight ends unwrapped.
       assert has_element?(
                view,
                "#blocks-timeline tbody tr[data-block='103'] .blocks-meta-out",
-               "00:30 +1d–01:15 +1d"
+               "24:30–25:15"
              )
 
       assert bar_attribute(view, "overnight", "style") =~ "width: 37.50%"
+    end
+
+    test "a span whose time has nonzero seconds prints them",
+         %{version: version} = context do
+      calendar(context, "WK", "Weekday")
+
+      trip(context, %{
+        trip_id: "seconds",
+        block_id: "104",
+        first: "07:05:30",
+        last: "07:20:00"
+      })
+
+      conn = editor_conn(context)
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      # 25530 seconds: the canonical GTFS-hours display keeps seconds when they
+      # are nonzero rather than truncating to the minute.
+      assert has_element?(
+               view,
+               "#blocks-timeline tbody tr[data-block='104'] .blocks-meta-out",
+               "07:05:30–07:20"
+             )
     end
   end
 

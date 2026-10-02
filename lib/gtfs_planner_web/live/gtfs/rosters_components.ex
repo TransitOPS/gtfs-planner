@@ -100,11 +100,11 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
       sort_header: 1
     ]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Rosters.Candidates
   alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlannerWeb.CoreComponents
-  alias GtfsPlannerWeb.Gtfs.BlocksComponents
   alias Phoenix.HTML.Form
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
@@ -434,8 +434,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     end)
   end
 
-  # Service-day seconds as the rest of the page writes them: hours and minutes,
-  # which is what the grid's weekly paid cell and the prototype both use.
+  # A duration in seconds as hours and minutes, which is what the grid's weekly
+  # paid cell and the prototype use. Service-day times read `GtfsTime.display/1`.
   defp hours_minutes(secs) when is_integer(secs) do
     "#{div(secs, @seconds_per_hour)}:#{pad(rem(div(secs, @seconds_per_minute), 60))}"
   end
@@ -543,10 +543,10 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   ## Why the times are the Runs page's
 
-  A run's sign-on and sign-off are `BlocksComponents.clock/1`, the same helper
-  the Runs page and the Blocks page print, so a run that signs off after
-  midnight reads `01:30 +1d` here as it does everywhere else in the app rather
-  than as a second convention the reader has to learn on this page.
+  A run's sign-on and sign-off are `GtfsTime.display/1`, the same formatter the
+  Runs page and the Blocks page print, so a run that signs off after midnight
+  reads `25:30` here as it does everywhere else in the app rather than as a
+  second convention the reader has to learn on this page.
   """
   attr :roster, :map, required: true
 
@@ -1013,13 +1013,12 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     "#{slot_time(sign_on)}–#{slot_time(sign_off)}"
   end
 
-  # Service-day hours as `H:MM`, unbounded — the same words the weekly paid cell
-  # and the prototype use, so a run that signs off at 00:17 reads `24:17` here
-  # and the page has one clock. A sign-on *before* the service day has no
-  # positive hour to print, so it defers to the Runs page's helper, which says
-  # `23:45 −1d` rather than the meaningless `0:-15`.
-  defp slot_time(secs) when is_integer(secs) and secs < 0, do: BlocksComponents.clock(secs)
-  defp slot_time(secs) when is_integer(secs), do: hours_minutes(secs)
+  # Service-day hours in GTFS hours — the same formatter the Runs page and the
+  # Blocks page print, so a run that signs off at 00:17 reads `24:17` here and
+  # the page has one clock. A sign-on *before* the service day has no positive
+  # hour to print, so the formatter says `23:45 −1d` rather than the meaningless
+  # `0:-15`.
+  defp slot_time(secs) when is_integer(secs), do: GtfsTime.display(secs)
 
   # One marker per slot, and only ever one: a short rest is a warning and a run
   # with errors is an error, and a day that is both says the error.
@@ -1090,8 +1089,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
     %{stored: stored} = slot
 
     "Run #{slot.run_id} changed since it was set: was " <>
-      "#{BlocksComponents.clock(stored.sign_on_secs)}–#{BlocksComponents.clock(stored.sign_off_secs)}, now " <>
-      "#{BlocksComponents.clock(slot.run.work.sign_on_secs)}–#{BlocksComponents.clock(slot.run.work.sign_off_secs)}."
+      "#{GtfsTime.display(stored.sign_on_secs)}–#{GtfsTime.display(stored.sign_off_secs)}, now " <>
+      "#{GtfsTime.display(slot.run.work.sign_on_secs)}–#{GtfsTime.display(slot.run.work.sign_off_secs)}."
   end
 
   defp stale_sentence(_slot, :base_changed), do: "The base week changed for that day."

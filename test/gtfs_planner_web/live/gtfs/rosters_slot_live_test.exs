@@ -263,7 +263,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSlotLiveTest do
       # chooses by: sign-on, sign-off, paid and the rest either side.
       assert has_element?(view, "#rosters-slot-run-2001")
       assert has_element?(view, "#rosters-slot-run-2002")
-      assert has_element?(view, "#rosters-slot-row-2001", "5:35")
+      assert has_element?(view, "#rosters-slot-row-2001", "05:35")
       assert has_element?(view, "#rosters-slot-row-2001", "15:35")
 
       row = text(view, "#rosters-slot-row-2001")

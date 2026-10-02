@@ -19,8 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   local to this page is the timeline table and the gap markers, styled by the
   `blocks (design system)` section of `assets/css/app.css`.
 
-  Times are printed from parsed seconds with `clock/1`; nothing here re-reads a
-  clock string from the database. The timeline reads the block's trips
+  Times are printed from parsed seconds with `GtfsTime.display/1`; nothing here
+  re-reads a clock string from the database. The timeline reads the block's trips
   and findings only, and takes the block's plot order from the pure
   `Checks.sequence/1` so its bars align with the block's own `gaps/1` pairs. The
   List view and the pool take a trip's findings from the day's own finding list,
@@ -1007,7 +1007,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 <tbody class="divide-y divide-subtle/60">
                   <tr :for={move <- @moves}>
                     <td class="px-3 py-1.5">{move.trip.trip_id}</td>
-                    <td class="px-3 py-1.5 tabular-nums">{clock(move.trip.first_departure)}</td>
+                    <td class="px-3 py-1.5 tabular-nums">
+                      {GtfsTime.display(move.trip.first_departure)}
+                    </td>
                     <td class="px-3 py-1.5">{move.from || "Unassigned"}</td>
                     <td class="px-3 py-1.5">
                       <strong data-role="suggestion-proposed" class="text-strong">
@@ -1502,7 +1504,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   "block min-w-0 flex-1",
                   (bar.over_listed? && "bg-error-line") || "bg-navy-300"
                 ]}
-                title={"#{clock(bar.start_secs)} · #{bar.count}"}
+                title={"#{GtfsTime.display(bar.start_secs)} · #{bar.count}"}
               >
               </i>
               <span
@@ -1522,8 +1524,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               </span>
             </div>
             <div class="mt-1 flex justify-between text-xs tabular-nums text-muted">
-              <span>{clock(List.first(@chart.bins).start_secs)}</span>
-              <span>{clock(List.last(@chart.bins).start_secs + 900)}</span>
+              <span>{GtfsTime.display(List.first(@chart.bins).start_secs)}</span>
+              <span>{GtfsTime.display(List.last(@chart.bins).start_secs + 900)}</span>
             </div>
             <p id="plan-summary-chart-summary" class="mt-2 text-sm">
               {chart_summary(@chart.row)}
@@ -2503,10 +2505,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
           <.trip_field label="Departs">
-            <strong>{clock(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
+            <strong>{GtfsTime.display(@trip.first_departure)}</strong> · {stop_name(@trip.first_stop)}
           </.trip_field>
           <.trip_field label="Arrives">
-            <strong>{clock(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
+            <strong>{GtfsTime.display(@trip.last_arrival)}</strong> · {stop_name(@trip.last_stop)}
           </.trip_field>
           <.trip_field label="Headsign">{blank_dash(@trip.trip_headsign)}</.trip_field>
           <.trip_field label="Pattern">{blank_dash(@trip.route_pattern_id)}</.trip_field>
@@ -3322,10 +3324,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
         <dl class="divide-y divide-subtle/70 border-y border-subtle/70 text-sm">
           <.trip_field wide? label="Arrives">
-            <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
+            <strong>{GtfsTime.display(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
           </.trip_field>
           <.trip_field wide? label="Departs">
-            <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
+            <strong>{GtfsTime.display(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
           </.trip_field>
           <.trip_field wide? label="On board">
             <span id="gap-available">{@on_board}</span>
@@ -4630,7 +4632,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp leave_row(pull, trip, garage) do
     %{
       kind: :leave,
-      time: clock(pull.start_secs),
+      time: GtfsTime.display(pull.start_secs),
       activity: "Leave #{garage} garage",
       detail: pull_detail(pull, stop_name(trip && trip.first_stop), :out),
       error?: false,
@@ -4642,7 +4644,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp return_row(pull, _trip, garage) do
     %{
       kind: :return,
-      time: clock(pull.end_secs),
+      time: GtfsTime.display(pull.end_secs),
       activity: "Return to #{garage} garage",
       detail: pull_detail(pull, nil, :back),
       error?: false,
@@ -4732,7 +4734,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     %{
       kind: :drive,
-      time: clock(movement.arrival_secs),
+      time: GtfsTime.display(movement.arrival_secs),
       activity: "Drive to #{to_stop}",
       detail: detail,
       error?: error?,
@@ -4744,7 +4746,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp overlap_row(movement, gap) do
     %{
       kind: :overlap,
-      time: clock(movement.arrival_secs),
+      time: GtfsTime.display(movement.arrival_secs),
       activity: "Overlap",
       detail: "#{minutes(-gap.gap_secs)} overlap",
       error?: true,
@@ -4760,7 +4762,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp wait_row(movement, gap, to_stop, relief?) do
     %{
       kind: :wait,
-      time: clock(movement.arrival_secs + (movement.drive_secs || 0)),
+      time: GtfsTime.display(movement.arrival_secs + (movement.drive_secs || 0)),
       activity: "Wait at #{to_stop}",
       detail:
         "#{div(movement.wait_secs || gap.gap_secs, 60)} min" <>
@@ -6633,7 +6635,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <dd :if={!@same_stop?}>{connection_handoff_names(@group.handoffs)}</dd>
         <dt class="text-muted">On board</dt>
         <dd class="tabular-nums">
-          {connection_wait_text(@group)} min, arrivals {clock(@group.first_arrival)}–{clock(
+          {connection_wait_text(@group)} min, arrivals {GtfsTime.display(@group.first_arrival)}–{GtfsTime.display(
             @group.last_arrival
           )}
         </dd>
@@ -6700,7 +6702,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 </button>
               </td>
               <td class="pr-2 tabular-nums">
-                {clock(connection.from.last_arrival)}
+                {GtfsTime.display(connection.from.last_arrival)}
                 <span class="text-[12px] text-muted">
                   {connection.from.trip_id}→{connection.to.trip_id}
                 </span>
@@ -6980,7 +6982,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                       phx-click="toggle_bulk_row"
                       phx-value-id={row.id}
                       disabled={@pending}
-                      aria-label={"Include block #{row.connection.block_id}, #{clock(
+                      aria-label={"Include block #{row.connection.block_id}, #{GtfsTime.display(
                         row.connection.from.last_arrival
                       )}"}
                       class="size-[18px] accent-action"
@@ -6989,7 +6991,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 </td>
                 <td class="whitespace-nowrap py-2.5 pr-3">
                   <strong>{row.connection.block_id}</strong>
-                  · <span class="tabular-nums">{clock(row.connection.from.last_arrival)}</span>
+                  ·
+                  <span class="tabular-nums">
+                    {GtfsTime.display(row.connection.from.last_arrival)}
+                  </span>
                   <span class="block text-[12px] text-muted">
                     {row.connection.from.trip_id} → {row.connection.to.trip_id}
                   </span>
@@ -7494,13 +7499,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                 class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
                 data-label="Start"
               >
-                {clock(trip.first_departure)}
+                {GtfsTime.display(trip.first_departure)}
               </td>
               <td
                 class="px-3 tabular-nums max-md:before:mr-1.5 max-md:before:text-[13px] max-md:before:text-muted max-md:before:content-[attr(data-label)]"
                 data-label="End"
               >
-                {clock(trip.last_arrival)}
+                {GtfsTime.display(trip.last_arrival)}
               </td>
               <td class="px-3 py-1.5 max-md:col-span-2" data-label="From → To">
                 <.endpoints trip={trip} />
@@ -7539,7 +7544,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp block_span(%{start_secs: nil}), do: ""
 
   defp block_span(summary) do
-    " · #{clock(summary.start_secs)}–#{clock(summary.end_secs)} · #{hours(summary.hours)} h"
+    " · #{GtfsTime.display(summary.start_secs)}–#{GtfsTime.display(summary.end_secs)} · #{hours(summary.hours)} h"
   end
 
   @doc """
@@ -7638,7 +7643,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             </td>
             <td class="px-3 py-1.5 max-md:col-span-2" data-label="Start → end">
               <span class="tabular-nums">
-                {clock(trip.first_departure)} → {clock(trip.last_arrival)}
+                {GtfsTime.display(trip.first_departure)} → {GtfsTime.display(trip.last_arrival)}
               </span>
               <span
                 :if={text = eligibility_text(trip)}
@@ -8524,38 +8529,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     }
   end
 
-  @doc """
-  Prints parsed seconds as `HH:MM`, with ` −1d` before midnight and ` +1d` after
-  it. A negative service-day second floors into the day before rather than
-  truncating towards it, so −900 s reads 23:45 −1d rather than 00:00.
-  """
-  def clock(nil), do: "—"
-
-  def clock(secs) when is_integer(secs) do
-    days = Integer.floor_div(secs, 86_400)
-    # `rem/2` keeps the dividend's sign, which would leave a negative second
-    # still negative and print `00:-15`. `Integer.mod/2` is the operation that
-    # pairs with `floor_div/2`, so the within-day value is never negative.
-    within = Integer.mod(secs, 86_400)
-
-    clock =
-      String.pad_leading(Integer.to_string(div(within, 3600)), 2, "0") <>
-        ":" <> String.pad_leading(Integer.to_string(div(rem(within, 3600), 60)), 2, "0")
-
-    case days do
-      0 -> clock
-      days when days < 0 -> clock <> " −" <> Integer.to_string(-days) <> "d"
-      days -> clock <> " +#{days}d"
-    end
-  end
-
   # The Time out cell: the platform span on one line, or a dash when the block has
   # no span at all rather than a dash at either end of a pair.
   defp time_out(nil, _end_secs), do: "—"
   defp time_out(_start_secs, nil), do: "—"
 
   defp time_out(start_secs, end_secs) do
-    clock(start_secs) <> "–" <> clock(end_secs)
+    GtfsTime.display(start_secs) <> "–" <> GtfsTime.display(end_secs)
   end
 
   # The Garage · type cell. A block whose calendars disagree has no single
@@ -8769,14 +8749,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   defp peak_detail(%{at_secs: nil}), do: "none timed"
-  defp peak_detail(peak), do: "at #{clock(peak.at_secs)}"
+  defp peak_detail(peak), do: "at #{GtfsTime.display(peak.at_secs)}"
 
   # The Peak out figure's definition, printed in the Plan summary: what it counts
   # and what it leaves out.
   defp peak_note(%{at_secs: nil}), do: "No block has timed trips, so there is no peak."
 
   defp peak_note(peak) do
-    "Peak out is the most blocks in progress at once: #{peak.count} at #{clock(peak.at_secs)}. " <>
+    "Peak out is the most blocks in progress at once: #{peak.count} at #{GtfsTime.display(peak.at_secs)}. " <>
       "It leaves out " <>
       count_label(peak.excluded_unassigned, "unassigned trip", "unassigned trips") <>
       " and " <>
@@ -8788,7 +8768,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # rather than one repeated line.
   defp shortfall_summary(shortfalls) do
     Enum.map_join(shortfalls, " ", fn row ->
-      "#{row.garage} · #{row.type}: needs #{row.needed} at #{clock(row.at_secs)}, " <>
+      "#{row.garage} · #{row.type}: needs #{row.needed} at #{GtfsTime.display(row.at_secs)}, " <>
         "#{row.listed} listed."
     end)
   end
@@ -8804,16 +8784,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     row = chart.row
 
     "#{row.garage} #{row.type} vehicles out by 15 minutes; peak #{row.needed} at " <>
-      "#{clock(row.at_secs)}; #{row.listed} listed. Chart covers " <>
-      "#{clock(List.first(chart.bins).start_secs)} to " <>
-      "#{clock(List.last(chart.bins).start_secs + 900)}."
+      "#{GtfsTime.display(row.at_secs)}; #{row.listed} listed. Chart covers " <>
+      "#{GtfsTime.display(List.first(chart.bins).start_secs)} to " <>
+      "#{GtfsTime.display(List.last(chart.bins).start_secs + 900)}."
   end
 
   defp chart_summary(%{at_secs: nil} = row), do: fleet_when(row.at_secs, row.needed)
 
   defp chart_summary(row) do
     sentence =
-      "#{row.garage} · #{row.type}: #{row.needed} out at the busiest time (#{clock(row.at_secs)}); " <>
+      "#{row.garage} · #{row.type}: #{row.needed} out at the busiest time (#{GtfsTime.display(row.at_secs)}); " <>
         "#{row.listed} listed."
 
     if row.short? do
@@ -8849,7 +8829,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # dash rather than a clock the row never reached.
   defp fleet_when(nil, _needed), do: "—"
   defp fleet_when(_at_secs, 0), do: "—"
-  defp fleet_when(at_secs, _needed), do: clock(at_secs)
+  defp fleet_when(at_secs, _needed), do: GtfsTime.display(at_secs)
 
   defp min_layover_label(nil), do: "the plan’s"
   defp min_layover_label(minutes), do: "#{minutes}-minute"
@@ -9111,8 +9091,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # headsign or its ID.
   defp trip_title(trip) do
     case {is_integer(trip.first_departure), Values.presence(trip.trip_headsign)} do
-      {true, nil} -> clock(trip.first_departure)
-      {true, headsign} -> clock(trip.first_departure) <> " to " <> headsign
+      {true, nil} -> GtfsTime.display(trip.first_departure)
+      {true, headsign} -> GtfsTime.display(trip.first_departure) <> " to " <> headsign
       {false, nil} -> "Trip " <> trip.trip_id
       {false, headsign} -> "Trip to " <> headsign
     end
@@ -9183,7 +9163,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       %{
         first?: index == 0,
         style: if(index == 0, do: nil, else: "left: #{percent_value(left)}%"),
-        label: clock(start + index * @tick_secs)
+        label: GtfsTime.display(start + index * @tick_secs)
       }
     end)
   end
@@ -9381,7 +9361,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp bar_title(trip, route) do
     "Trip #{trip.trip_id} · Route #{route_label(route)} · " <>
-      "#{clock(trip.first_departure)}–#{clock(trip.last_arrival)} · " <>
+      "#{GtfsTime.display(trip.first_departure)}–#{GtfsTime.display(trip.last_arrival)} · " <>
       "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
   end
 
@@ -9433,12 +9413,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp source_phrase(_unknown, _seconds), do: "driving time unknown"
 
   defp pull_title(pull, garage, :out) do
-    "Pull-out · leaves #{garage_label(garage)} at #{clock(pull.start_secs)}, " <>
+    "Pull-out · leaves #{garage_label(garage)} at #{GtfsTime.display(pull.start_secs)}, " <>
       "#{source_phrase(pull.source, pull.drive_secs)}"
   end
 
   defp pull_title(pull, garage, :back) do
-    "Pull-back · returns to #{garage_label(garage)} at #{clock(pull.end_secs)}, " <>
+    "Pull-back · returns to #{garage_label(garage)} at #{GtfsTime.display(pull.end_secs)}, " <>
       "#{source_phrase(pull.source, pull.drive_secs)}"
   end
 
@@ -9453,12 +9433,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp drive_title(%{kind: :unknown} = gap, from, to) do
     "Drive to #{stop_name(to.first_stop)} · the driving time from " <>
       "#{stop_name(from.last_stop)} is not known for " <>
-      "#{clock(gap.arrival_secs)}–#{clock(gap.departure_secs)}"
+      "#{GtfsTime.display(gap.arrival_secs)}–#{GtfsTime.display(gap.departure_secs)}"
   end
 
   defp drive_title(gap, _from, to) do
     "Drive to #{stop_name(to.first_stop)} · " <>
-      "#{clock(gap.arrival_secs)}–#{clock(gap.arrival_secs + gap.drive_secs)}, " <>
+      "#{GtfsTime.display(gap.arrival_secs)}–#{GtfsTime.display(gap.arrival_secs + gap.drive_secs)}, " <>
       "#{source_phrase(gap.source, gap.drive_secs)}, then wait " <>
       "#{minutes(gap.wait_secs)}"
   end

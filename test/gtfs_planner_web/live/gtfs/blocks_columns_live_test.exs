@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
   #
   # Every expected time is an entered driving time or a fixture clock, never an
   # estimate: Main → S1 is 2 minutes and S1 → Main is 3, so block 101's platform
-  # span is 05:48–08:33 and the overnight block's is 23:45 −1d–01:33 +1d. The
+  # span is 05:48–08:33 and the overnight block's is 23:45 −1d–24:01. The
   # kilometre figures are only required to be the block's own positive movement
   # totals, which the day load already asserts as literals elsewhere.
   use GtfsPlannerWeb.ConnCase, async: false
@@ -302,16 +302,30 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
       block_attribute!(context, "105", context.main.id, context.cutaway.id)
 
       # The entered pull-out from Main to the far stop is 15 minutes and the trip
-      # leaves at 00:00, so the span starts at 23:45 the day before. The last
-      # trip arrives at 23:58 and the entered pull-back is 3 minutes, so the span
-      # ends at 00:01 the day after: both ends sit outside the service day, which
-      # is what the two day markers are for.
+      # leaves at 00:00, so the span starts at 23:45 the day before and carries
+      # the `−1d` marker. The last trip arrives at 23:58 and the entered
+      # pull-back is 3 minutes, so the span ends at 24:01: GTFS hours continue
+      # past midnight rather than wrapping into a second day marker.
       trip!(context, "a", "105", "00:00:00", "00:30:00", "FAR", "S1")
       trip!(context, "b", "105", "22:00:00", "23:58:00", "S1", "S1")
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
-      assert cell(view, "105", "blocks-meta-out") == "23:45 −1d–00:01 +1d"
+      assert cell(view, "105", "blocks-meta-out") == "23:45 −1d–24:01"
+    end
+
+    test "prints seconds on a span that starts the day before", context do
+      block_attribute!(context, "105", context.main.id, context.cutaway.id)
+
+      # The same span, but the first trip leaves at 00:00:30: the canonical
+      # GTFS-hours display keeps nonzero seconds on a before-midnight value, so
+      # the `−1d` start reads 23:45:30 rather than truncating to 23:45.
+      trip!(context, "a", "105", "00:00:30", "00:30:00", "FAR", "S1")
+      trip!(context, "b", "105", "22:00:00", "23:58:00", "S1", "S1")
+
+      {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
+
+      assert cell(view, "105", "blocks-meta-out") == "23:45:30 −1d–24:01"
     end
 
     test "prints the trip span of a block no garage resolves", context do

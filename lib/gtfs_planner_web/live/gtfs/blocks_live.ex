@@ -63,6 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.Blocking.Connections
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
@@ -3320,7 +3321,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp destination_detail(%{trip_count: count, start_secs: nil}), do: count_label(count)
 
   defp destination_detail(%{trip_count: count, start_secs: start, end_secs: finish}) do
-    "#{count_label(count)} · #{BlocksComponents.clock(start)}–#{BlocksComponents.clock(finish)}"
+    "#{count_label(count)} · #{GtfsTime.display(start)}–#{GtfsTime.display(finish)}"
   end
 
   defp count_label(1), do: "1 trip"
@@ -5268,7 +5269,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp connection_label(nil), do: "Connection"
 
   defp connection_label(connection) do
-    "Block #{connection.block_id}, #{BlocksComponents.clock(connection.from.last_arrival)} " <>
+    "Block #{connection.block_id}, #{GtfsTime.display(connection.from.last_arrival)} " <>
       "(#{connection.from.trip_id} → #{connection.to.trip_id})"
   end
 

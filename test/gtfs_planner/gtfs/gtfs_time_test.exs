@@ -60,6 +60,7 @@ defmodule GtfsPlanner.Gtfs.GtfsTimeTest do
     test "wraps negative values with a day count and a true minus sign" do
       assert GtfsTime.display(-600) == "23:50 −1d"
       assert GtfsTime.display(-900) == "23:45 −1d"
+      assert GtfsTime.display(-30) == "23:59:30 −1d"
       assert GtfsTime.display(-86_400) == "00:00 −1d"
     end
 
