@@ -134,6 +134,15 @@ defmodule GtfsPlannerWeb.Router do
         GtfsPlannerWeb.AssignGtfsVersion
       ] do
       # GTFS routes (viewer or editor roles required)
+      # Alerts is the first task area, and it lists the alerts of the version in
+      # the URL only (R1).
+      live "/alerts", Gtfs.AlertsLive, :index
+      # The alert editor's two entry points share one LiveView, because the
+      # editor is one frame: `new` writes no row until the first answer, and
+      # `edit` is where that answer navigates to. `new` is declared before the
+      # `:alert_id` segment so the literal never reads as an alert ID.
+      live "/alerts/new", Gtfs.AlertEditorLive, :new
+      live "/alerts/:alert_id", Gtfs.AlertEditorLive, :edit
       live "/routes", Gtfs.RoutesLive, :index
       # Transfers is the Routes area's second tab, beside the routes list.
       live "/transfers", Gtfs.TransfersLive, :index
@@ -194,6 +203,11 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/agencies", Gtfs.AgenciesLive, :index
       live "/settings/export-defaults", Gtfs.ExportDefaultsLive, :index
+      # Message scripts and writing guidelines are the organization's alert
+      # wording, read by every version's alert editor. The literal route is
+      # declared ahead of the section route so "alerts" is never read as a
+      # section slug.
+      live "/settings/alerts", Gtfs.AlertSettingsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
       # The Fare zones workspace owns the Fares section. Its three destinations

@@ -3,11 +3,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
 
   alias GtfsPlanner.Agents.BrowserOpenRouter
   alias GtfsPlanner.Agents.Model
+  alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
 
   @user_school "No school service next Monday and Tuesday"
   @prepared_sentence "I prepared the change. Review it before applying."
   @generic_sentence "I can answer questions about calendars and prepare date changes."
+  @alerts_prepared_sentence "I prepared a detour on Route 12."
+  @user_route_12 "Route 12 is detouring between Elm and 3rd"
+  @route_12_id "11111111-2222-3333-4444-555555555555"
+  @today "2026-10-01"
 
   describe "scripted replies" do
     test "a school request asks for the school calendars" do
@@ -88,6 +93,99 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
       assert final_text(post(messages)) ==
                "Three trips leave the first stop after 5:00am."
     end
+
+    test "the Calendars script still answers a Calendars turn that names a route" do
+      assert final_text(post([system(Calendars.skill()), user("Delete route 12")])) =~
+               "That isn't available in Calendars"
+    end
+  end
+
+  describe "scripted alerts replies" do
+    test "a Route 12 request reads the draft first" do
+      assert {"{}", "get_draft"} = tool_call(post([system(Alerts.skill()), user(@user_route_12)]))
+    end
+
+    test "the draft result searches for Route 12" do
+      messages = [system(Alerts.skill())] ++ [user(@user_route_12)] ++ draft_call()
+
+      assert {arguments, "search_routes"} = tool_call(post(messages))
+      assert Jason.decode!(arguments) == %{"query" => "12"}
+    end
+
+    test "the search result prepares a now detour on the row the search returned" do
+      body = post(alerts_conversation())
+
+      assert {arguments, "propose_changes"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "urgency" => "now",
+               "situation" => "detour",
+               "scope" => %{"shape" => "routes", "route_ids" => [@route_12_id]},
+               "timing" => %{"start_date" => @today, "end_kind" => "estimated"}
+             }
+    end
+
+    test "the prepared result finishes with a sentence that never claims a save" do
+      messages =
+        [system(Alerts.skill())] ++
+          [user(@user_route_12)] ++
+          draft_call() ++
+          search_call()
+
+      content = final_text(post(messages ++ propose_call()))
+
+      assert content =~ @alerts_prepared_sentence
+      refute content =~ ~r/saved|published|riders can see/i
+    end
+
+    test "a search that did not return Route 12 prepares nothing" do
+      messages =
+        [system(Alerts.skill())] ++
+          [user(@user_route_12)] ++
+          draft_call() ++
+          [
+            assistant_tool_call("call_search_routes", "search_routes", %{"query" => "12"}),
+            tool_result("call_search_routes", %{
+              "routes" => [%{"id" => "other", "route_id" => "1"}]
+            })
+          ]
+
+      assert final_text(post(messages)) ==
+               "I could not find Route 12 in this service version. Which route did you mean?"
+    end
+
+    test "a refused propose_changes result says nothing was prepared" do
+      messages =
+        [system(Alerts.skill())] ++
+          [user(@user_route_12)] ++
+          draft_call() ++
+          search_call() ++
+          [
+            assistant_tool_call("call_propose_changes", "propose_changes", %{}),
+            tool_result("call_propose_changes", %{"error" => "Unexpected argument: scope.nope"})
+          ]
+
+      assert final_text(post(messages)) ==
+               "I could not prepare that change. Tell me which route and dates you mean."
+    end
+
+    test "any other alerts request gets the interview's first question" do
+      content = final_text(post([system(Alerts.skill()), user("Hello")]))
+
+      assert content =~ "affected right now, or on planned dates"
+    end
+
+    test "the date the turn states is the date the prepared timing carries" do
+      body = post(alerts_conversation())
+      assert {arguments, "propose_changes"} = tool_call(body)
+
+      assert %{"timing" => %{"start_date" => @today}} = Jason.decode!(arguments)
+    end
+
+    test "the alerts marker is the alerts skill's own heading" do
+      assert Alerts.skill() =~ "Alerts helper"
+      refute Calendars.skill() =~ "Alerts helper"
+    end
   end
 
   describe "the production model client" do
@@ -123,6 +221,28 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
              } = reply
 
       assert reply.cost == 0.0
+    end
+
+    test "normalizes the scripted alerts propose_changes reply" do
+      stub_plug()
+
+      assert {:ok, reply} = Model.complete(alerts_conversation(), Alerts.tools())
+
+      assert %{
+               content: nil,
+               finish_reason: "tool_calls",
+               model: "test/model-a"
+             } = reply
+
+      assert [%{id: "call_propose_changes", name: "propose_changes", arguments: arguments}] =
+               reply.tool_calls
+
+      assert Jason.decode!(arguments) == %{
+               "urgency" => "now",
+               "situation" => "detour",
+               "scope" => %{"shape" => "routes", "route_ids" => [@route_12_id]},
+               "timing" => %{"start_date" => @today, "end_kind" => "estimated"}
+             }
     end
   end
 
@@ -165,6 +285,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
 
   defp tomorrow, do: Date.to_iso8601(Date.add(Date.utc_today(), 1))
 
+  defp system(skill),
+    do: %{
+      "role" => "system",
+      "content" =>
+        skill <>
+          "\n\nToday is #{@today}, Thursday, October 1, 2026 (America/Los_Angeles), in the agency's local time.\nService version: Browser Alerts Version.\nSection: Alert assistant."
+    }
+
   # The messages the turn loop has sent by the time it answers the
   # prepare_date_change call: user request, list_calendars call and result, then
   # the prepare_date_change call and result.
@@ -198,6 +326,49 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
 
   defp tool_result(id, payload) do
     %{"role" => "tool", "tool_call_id" => id, "content" => Jason.encode!(payload)}
+  end
+
+  # The messages the alerts turn loop has sent by the time it answers each
+  # call: the user's request, the get_draft call and its result, then the
+  # search_routes call and its result.
+  defp alerts_conversation do
+    [system(Alerts.skill())] ++ [user(@user_route_12)] ++ draft_call() ++ search_call()
+  end
+
+  defp draft_call do
+    [
+      assistant_tool_call("call_get_draft", "get_draft", %{}),
+      tool_result("call_get_draft", %{"revision" => 1, "urgency" => nil, "situation" => nil})
+    ]
+  end
+
+  defp search_call do
+    [
+      assistant_tool_call("call_search_routes", "search_routes", %{"query" => "12"}),
+      tool_result("call_search_routes", %{
+        "routes" => [
+          %{
+            "id" => @route_12_id,
+            "label" => "Route 12",
+            "route_id" => "12",
+            "short_name" => "Route 12",
+            "long_name" => "Nye Beach – Hospital"
+          }
+        ]
+      })
+    ]
+  end
+
+  defp propose_call do
+    [
+      assistant_tool_call("call_propose_changes", "propose_changes", %{
+        "urgency" => "now",
+        "situation" => "detour",
+        "scope" => %{"shape" => "routes", "route_ids" => [@route_12_id]},
+        "timing" => %{"start_date" => @today, "end_kind" => "estimated"}
+      }),
+      tool_result("call_propose_changes", %{"status" => "prepared"})
+    ]
   end
 
   defp tool_call(%{"choices" => [%{"finish_reason" => "tool_calls", "message" => message}]}) do

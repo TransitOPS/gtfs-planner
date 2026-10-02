@@ -61,11 +61,13 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     assert :ok == Migration.validate_all!(Repo)
 
     assert %{rows: rows} = Repo.query!(constraint_status_sql(), [])
-    # Every `*_owner_fkey` in the schema, not a subset: 68 from upstream and four
-    # from the rosters. `roster_lines` and `roster_line_days` join the same
-    # version-owner catalog and carry the same scoped constraint, and two more
-    # keep a day under its own line and a line's operator in its own organization.
-    assert length(rows) == 72
+    # Every `*_owner_fkey` in the schema, not a subset: 68 from upstream, four
+    # from the rosters and one from service alerts. `roster_lines` and
+    # `roster_line_days` join the same version-owner catalog and carry the same
+    # scoped constraint, and two more keep a day under its own line and a line's
+    # operator in its own organization. `service_alerts` carries the same
+    # version-owner key and no other.
+    assert length(rows) == 73
     assert Enum.all?(rows, fn [_name, validated?] -> validated? end)
   end
 

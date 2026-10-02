@@ -11625,6 +11625,416 @@ case Accounts.register_first_admin(%{
         "#{stops_map_segment_count} shared segments, garage #{stops_map_garage.garage_id})"
     )
 
+    # ── Alerts journeys version (spec 30, step 12) ──
+    #
+    # A dedicated published version carries the alert-authoring material so no
+    # other spec's route, stop or trip counts move. Its `published_at` is
+    # backdated like the transfers/helper/interp versions above, so the Browser
+    # E2E Version keeps the organization's latest-published default and the
+    # alert journeys reach this version by its id.
+    #
+    # The shapes below are the ones the editor asks for: two route types so the
+    # mode question appears (Route 1 and Route 12 bus, Route 50 tram), eight
+    # stops with codes so place search matches on a code as well as a name, one
+    # stop (Newport Transit Center) served by Routes 1 and 12 so the shared-stop
+    # question appears, weekday and weekend service spanning today ± 60 days so
+    # "now", a dated cancellation and a nightly recurrence all land on real
+    # service dates, and a Route 1 trip whose last stop time is past midnight so
+    # the departures list has an after-24:00 clock value to render.
+    {:ok, alerts_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Alerts Version"})
+
+    alerts_version =
+      Repo.update!(
+        Ecto.Changeset.change(alerts_version,
+          published_at: ~U[2020-04-01 00:00:00.000000Z]
+        )
+      )
+
+    {:ok, _alerts_agency} =
+      GtfsFixtures.insert_agency(%{
+        organization_id: org.id,
+        gtfs_version_id: alerts_version.id,
+        agency_id: "BROWSER_ALERTS_AGENCY",
+        agency_name: "Browser Alerts Transit",
+        agency_url: "https://example.test",
+        agency_timezone: "America/Los_Angeles"
+      })
+
+    alerts_today = Gtfs.DisplayClock.today(org.id, alerts_version.id).date
+
+    # `stop_code` is written only by the full importer and is never cast, so the
+    # code is set on the inserted row the same way the diagram coordinates are.
+    # `platform_code` carries the same value because the editor's place search
+    # matches a code there (AC-10), and a rider-facing code has to be findable.
+    alerts_stops =
+      [
+        {"AL_NTC", "Newport Transit Center", "1001", "44.6210", "-124.0490"},
+        {"AL_CST6", "N Coast Hwy & NE 6th St", "1012", "44.6250", "-124.0600"},
+        {"AL_CST12", "N Coast Hwy & NE 12th St", "1014", "44.6300", "-124.0750"},
+        {"AL_CST20", "N Coast Hwy & NE 20th St", "1016", "44.6380", "-124.0900"},
+        {"AL_CST36", "N Coast Hwy & NE 36th St", "1018", "44.6520", "-124.1100"},
+        {"AL_LCTC", "Lincoln City Transit Center", "1070", "44.9570", "-124.0150"},
+        {"AL_NYE", "Nye Beach (NW Coast St & Olive)", "1102", "44.6770", "-124.0430"},
+        {"AL_HOSP", "Samaritan Pacific Hospital", "1110", "44.6350", "-124.0330"}
+      ]
+      |> Enum.map(fn {stop_id, stop_name, stop_code, lat, lon} ->
+        {:ok, stop} =
+          GtfsFixtures.insert_stop(%{
+            organization_id: org.id,
+            gtfs_version_id: alerts_version.id,
+            stop_id: stop_id,
+            stop_name: stop_name,
+            location_type: 0,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon)
+          })
+
+        stop
+        |> Ecto.Changeset.change(stop_code: stop_code, platform_code: stop_code)
+        |> Repo.update!()
+      end)
+
+    alerts_routes =
+      [
+        {"1", "Route 1", "Coast Highway", 3},
+        {"12", "Route 12", "Nye Beach – Hospital", 3},
+        {"50", "Route 50", "Lincoln City Connector", 0}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name, route_type} ->
+        {:ok, route} =
+          GtfsFixtures.insert_route(%{
+            organization_id: org.id,
+            gtfs_version_id: alerts_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: route_type
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    alerts_route_1 = Map.fetch!(alerts_routes, "1")
+    alerts_route_12 = Map.fetch!(alerts_routes, "12")
+    alerts_route_50 = Map.fetch!(alerts_routes, "50")
+
+    weekday_service = %{
+      service_id: "ALERTS_WEEKDAY",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: Date.add(alerts_today, -60),
+      end_date: Date.add(alerts_today, 60)
+    }
+
+    weekend_service = %{
+      service_id: "ALERTS_WEEKEND",
+      monday: 0,
+      tuesday: 0,
+      wednesday: 0,
+      thursday: 0,
+      friday: 0,
+      saturday: 1,
+      sunday: 1,
+      start_date: Date.add(alerts_today, -60),
+      end_date: Date.add(alerts_today, 60)
+    }
+
+    Enum.each([weekday_service, weekend_service], fn service ->
+      GtfsPlanner.GtfsFixtures.calendar_fixture(org.id, alerts_version.id, service)
+    end)
+
+    # Route 1 both directions. The direction-0 offsets span 70 minutes, so a
+    # 23:30 departure reaches Lincoln City at 24:40 — the after-midnight value
+    # the departures question renders.
+    alerts_pattern = fn _route, attrs ->
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, alerts_version.id, attrs)
+    end
+
+    route_1_outbound =
+      alerts_pattern.(alerts_route_1, %{
+        route_id: alerts_route_1.route_id,
+        direction_id: 0,
+        route_pattern_id: "AL-R1-P1",
+        route_pattern_name: "Coast Highway to Lincoln City",
+        route_pattern_typicality: 1,
+        route_pattern_sort_order: 1,
+        timing_name: "Weekday base",
+        timing_headsign: "Lincoln City",
+        stops: [
+          {"AL_NTC", 0, 0, 1},
+          {"AL_CST6", 420, 420, 0},
+          {"AL_CST12", 900, 900, 1},
+          {"AL_CST20", 1500, 1560, 0},
+          {"AL_CST36", 2400, 2400, 0},
+          {"AL_LCTC", 4200, 4200, 1}
+        ]
+      })
+
+    route_1_inbound =
+      alerts_pattern.(alerts_route_1, %{
+        route_id: alerts_route_1.route_id,
+        direction_id: 1,
+        route_pattern_id: "AL-R1-P2",
+        route_pattern_name: "Coast Highway to Newport",
+        route_pattern_typicality: 3,
+        route_pattern_sort_order: 1,
+        timing_name: "Weekday base",
+        timing_headsign: "Newport",
+        stops: [
+          {"AL_LCTC", 0, 0, 1},
+          {"AL_CST36", 1800, 1800, 0},
+          {"AL_CST20", 2700, 2760, 0},
+          {"AL_CST12", 3300, 3300, 1},
+          {"AL_CST6", 3780, 3780, 0},
+          {"AL_NTC", 4200, 4200, 1}
+        ]
+      })
+
+    # Route 12 starts and ends at the stop Route 1 also serves, so choosing that
+    # stop on a Route 1 alert raises the shared-route question.
+    route_12_outbound =
+      alerts_pattern.(alerts_route_12, %{
+        route_id: alerts_route_12.route_id,
+        direction_id: 0,
+        route_pattern_id: "AL-R12-P1",
+        route_pattern_name: "Nye Beach to Hospital",
+        route_pattern_typicality: 1,
+        route_pattern_sort_order: 1,
+        timing_name: "Weekday base",
+        timing_headsign: "Hospital",
+        stops: [
+          {"AL_NTC", 0, 0, 1},
+          {"AL_NYE", 900, 960, 0},
+          {"AL_HOSP", 2100, 2100, 1}
+        ]
+      })
+
+    route_12_inbound =
+      alerts_pattern.(alerts_route_12, %{
+        route_id: alerts_route_12.route_id,
+        direction_id: 1,
+        route_pattern_id: "AL-R12-P2",
+        route_pattern_name: "Hospital to Nye Beach",
+        route_pattern_typicality: 3,
+        route_pattern_sort_order: 1,
+        timing_name: "Weekday base",
+        timing_headsign: "Nye Beach",
+        stops: [
+          {"AL_HOSP", 0, 0, 1},
+          {"AL_NYE", 1140, 1200, 0},
+          {"AL_NTC", 2100, 2100, 1}
+        ]
+      })
+
+    route_50_outbound =
+      alerts_pattern.(alerts_route_50, %{
+        route_id: alerts_route_50.route_id,
+        direction_id: 0,
+        route_pattern_id: "AL-R50-P1",
+        route_pattern_name: "Lincoln City Connector",
+        route_pattern_typicality: 1,
+        route_pattern_sort_order: 1,
+        timing_name: "Weekday base",
+        timing_headsign: "Newport",
+        stops: [
+          {"AL_CST12", 0, 0, 1},
+          {"AL_CST20", 420, 420, 0}
+        ]
+      })
+
+    # Every trip carries the headsign a rider names it by, because the departures
+    # question labels a departure with its first stop time and where it goes
+    # (AC-10, AC-19). The night trip leaves at 24:40, so its own clock renders
+    # as the next day rather than as an earlier departure.
+    [
+      {alerts_route_1, route_1_outbound, "AL-R1-T1", "06:05:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T2", "08:15:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T3", "12:40:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T4", "16:20:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T5", "18:35:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T6", "24:40:00", "ALERTS_WEEKDAY",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T7", "09:00:00", "ALERTS_WEEKEND",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T8", "17:30:00", "ALERTS_WEEKEND",
+       "Lincoln City"},
+      {alerts_route_1, route_1_outbound, "AL-R1-T11", "24:40:00", "ALERTS_WEEKEND",
+       "Lincoln City"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T9", "07:00:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_1, route_1_inbound, "AL-R1-T10", "19:00:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T1", "06:50:00", "ALERTS_WEEKDAY", "Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T2", "15:00:00", "ALERTS_WEEKDAY", "Hospital"},
+      {alerts_route_12, route_12_outbound, "AL-R12-T3", "10:00:00", "ALERTS_WEEKEND", "Hospital"},
+      {alerts_route_12, route_12_inbound, "AL-R12-T4", "08:00:00", "ALERTS_WEEKDAY", "Nye Beach"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T1", "07:30:00", "ALERTS_WEEKDAY", "Newport"},
+      {alerts_route_50, route_50_outbound, "AL-R50-T2", "11:00:00", "ALERTS_WEEKEND", "Newport"}
+    ]
+    |> Enum.each(fn {route, bundle, trip_id, start_time, service_id, headsign} ->
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        alerts_version.id,
+        route.route_id,
+        bundle,
+        %{
+          service_id: service_id,
+          trip_id: trip_id,
+          start_time: start_time,
+          trip_headsign: headsign
+        }
+      )
+    end)
+
+    IO.puts(
+      "Browser seed: alerts version #{alerts_version.id} " <>
+        "(Routes 1/12 bus and Route 50 tram, eight coded stops, " <>
+        "Newport Transit Center shared by Routes 1 and 12, weekday and weekend " <>
+        "service today ± 60 days, headsigns on every trip, Route 1 night trip " <>
+        "departing at 24:40)"
+    )
+
+    # One organization script so the message step has an organization-owned
+    # wording to generate from alongside the built-in ones.
+    alerts_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: org.id,
+      gtfs_version_id: alerts_version.id,
+      station_stop_id: nil,
+      actor_id: editor.id,
+      actor_email: editor.email
+    }
+
+    {:ok, _alerts_script} =
+      GtfsPlanner.Alerts.create_script(alerts_audit, %{
+        name: "Route detour",
+        situation: :detour,
+        header_template: "[route] detour: [stop] not served",
+        description_template:
+          "[route] toward [direction] is not serving [stop]. Board at [alternate stop] instead. " <>
+            "Expect up to [minutes] minutes of delay[because].",
+        position: 1
+      })
+
+    IO.puts("Browser seed: organization alert script \"Route detour\"")
+
+    # Four alerts so the list page's four tabs all have something to show:
+    # a current delay about Route 12, a planned street closure that is Upcoming,
+    # a draft still being answered, and an alert whose stop was deleted from the
+    # version so the Needs attention badge has a real cause. Created and finished
+    # through the same commands the editor uses, so no row carries a field an
+    # editor path cannot write.
+    alerts_today = Gtfs.DisplayClock.today(org.id, alerts_version.id).date
+    alerts_check_in = NaiveDateTime.new!(alerts_today, ~T[18:00:00])
+
+    alerts_new = fn attrs ->
+      {:ok, alert} = GtfsPlanner.Alerts.create_alert(alerts_audit, attrs)
+      alert
+    end
+
+    alerts_finish = fn alert, timing ->
+      {:ok, saved} =
+        GtfsPlanner.Alerts.save_draft(alerts_audit, alert.id, alert.revision, %{
+          "timing" => timing
+        })
+
+      saved
+    end
+
+    alerts_current =
+      alerts_new.(%{
+        "urgency" => "now",
+        "situation" => "delay",
+        "cause" => "weather",
+        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+        "message" => %{
+          "header" => "Route 12 delays of up to 20 minutes",
+          "description" => "Wet roads on the coast road. Expect up to 20 minutes of delay."
+        }
+      })
+
+    alerts_finish.(alerts_current, %{
+      "start_date" => Date.to_iso8601(alerts_today),
+      "start_time" => "08:00:00",
+      "end_kind" => "estimated",
+      "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
+    })
+
+    alerts_upcoming =
+      alerts_new.(%{
+        "urgency" => "planned",
+        "situation" => "stop_closed",
+        "cause" => "construction",
+        "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [Enum.at(alerts_stops, 5).id]},
+        "message" => %{
+          "header" => "Harbor Street stop closed for road works",
+          "description" => "Harbor Street stop is closed. Board at the Ferry Terminal stop."
+        }
+      })
+
+    alerts_finish.(alerts_upcoming, %{
+      "pattern" => "continuous",
+      "first_date" => Date.to_iso8601(Date.add(alerts_today, 14)),
+      "last_date" => Date.to_iso8601(Date.add(alerts_today, 18)),
+      "all_day" => true
+    })
+
+    alerts_in_progress = alerts_new.(%{"urgency" => "planned", "situation" => "detour"})
+
+    # The alert names a stop row that exists when it is written, because a write
+    # refuses an identity that is not a row of the version. The stop is deleted
+    # once the alert is finished, which is how a stop leaves a version in
+    # practice and what the Needs attention badge reports.
+    {:ok, alerts_old_depot} =
+      GtfsFixtures.insert_stop(%{
+        organization_id: org.id,
+        gtfs_version_id: alerts_version.id,
+        stop_id: "AL_OLD_DEPOT",
+        stop_name: "Old Depot Road",
+        location_type: 0,
+        stop_lat: Decimal.new("44.6600"),
+        stop_lon: Decimal.new("-124.0500")
+      })
+
+    alerts_needs_attention =
+      alerts_new.(%{
+        "urgency" => "now",
+        "situation" => "stop_closed",
+        "cause" => "construction",
+        "scope" => %{
+          "shape" => "stop_all_routes",
+          "stop_ids" => [alerts_old_depot.id]
+        },
+        "message" => %{
+          "header" => "Old Depot Road stop closed",
+          "description" => "Old Depot Road stop is closed while the retaining wall is rebuilt."
+        }
+      })
+
+    alerts_finish.(alerts_needs_attention, %{
+      "start_date" => Date.to_iso8601(alerts_today),
+      "start_time" => "08:00:00",
+      "end_kind" => "estimated",
+      "check_in_at" => NaiveDateTime.to_iso8601(alerts_check_in)
+    })
+
+    Repo.delete!(alerts_old_depot)
+
+    IO.puts(
+      "Browser seed: alerts #{alerts_current.id} current, " <>
+        "#{alerts_upcoming.id} upcoming, #{alerts_in_progress.id} in progress, " <>
+        "#{alerts_needs_attention.id} needing attention"
+    )
+
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row
     # per table and nests its joins, so the Stops page's routes-serving-stations

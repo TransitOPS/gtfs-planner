@@ -205,10 +205,11 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert nav_link_texts(html) == []
     end
 
-    test "declared visual order lists the six task links and then Organizations" do
+    test "declared visual order lists the seven task links and then Organizations" do
       texts = nav_link_texts(render_nav(editor_assigns("/")))
 
       assert texts == [
+               "Alerts",
                "Routes",
                "Calendars",
                "Operations",
@@ -481,6 +482,13 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-gtfs"), "href") == ["/gtfs/42/export"]
     end
 
+    test "Alerts activates on /gtfs/42/alerts" do
+      doc = LazyHTML.from_fragment(render_nav(editor_assigns("/gtfs/42/alerts")))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#nav-alerts"), "aria-current") == ["page"]
+      assert Enum.count(LazyHTML.query(doc, "#main-navigation a[aria-current='page']")) == 1
+    end
+
     test "Routes does NOT activate on /gtfs/42/stops" do
       html = render_nav(editor_assigns("/gtfs/42/stops"))
       doc = LazyHTML.from_fragment(html)
@@ -610,10 +618,11 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       }
     end
 
-    test "planner organization renders all six task links" do
+    test "planner organization renders all seven task links" do
       doc = LazyHTML.from_fragment(render_nav(product_editor_assigns(planner_struct_org())))
 
       for id <- [
+            "nav-alerts",
             "nav-routes",
             "nav-calendars",
             "nav-operations",
@@ -626,10 +635,10 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       end
     end
 
-    test "pathways organization hides Operations and Flex and keeps the other four" do
+    test "pathways organization hides Operations and Flex and keeps the other five" do
       doc = LazyHTML.from_fragment(render_nav(product_editor_assigns(pathways_struct_org())))
 
-      for id <- ["nav-routes", "nav-calendars", "nav-stops", "nav-gtfs"] do
+      for id <- ["nav-alerts", "nav-routes", "nav-calendars", "nav-stops", "nav-gtfs"] do
         refute Enum.empty?(LazyHTML.query(doc, "##{id}")),
                "expected ##{id} for a pathways organization"
       end
@@ -842,11 +851,12 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       refute html =~ "Organizations"
     end
 
-    test "editor sees the six label-only task links and their destinations" do
+    test "editor sees the seven label-only task links and their destinations" do
       html = render_nav(editor_assigns("/"))
       doc = LazyHTML.from_fragment(html)
 
       assert nav_link_texts(html) == [
+               "Alerts",
                "Routes",
                "Calendars",
                "Operations",
@@ -856,6 +866,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
              ]
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#main-navigation a"), "href") == [
+               "/gtfs/42/alerts",
                "/gtfs/42/routes",
                "/gtfs/42/calendars",
                "/gtfs/42/blocks",

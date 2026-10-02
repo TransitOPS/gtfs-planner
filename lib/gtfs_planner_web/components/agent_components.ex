@@ -12,6 +12,16 @@ defmodule GtfsPlannerWeb.AgentComponents do
   tags and Markdown links or images in a model reply stay literal, and no
   element is ever built from model output (INV-4).
 
+  ## Two layouts, one panel
+
+  `layout={:panel}` is the side panel and is what this module has always
+  rendered: an `<aside>` with a close button, in the reader's own card palette.
+  `layout={:main}` is a host editor's conversation card — a `<section>` in
+  the editor's palette, with no close button because the mode control beside it
+  is how a reader leaves assistant mode. Only the frame and its header differ;
+  the transcript, status, notice and composer are the same markup in both, so a
+  conversation cannot behave differently because of where it is shown.
+
   ## Stream contract
 
   `agent_panel/1` consumes `entries` the way a LiveView stream is consumed: a
@@ -54,7 +64,8 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   `status` is the conversation status. `entries` is the conversation stream.
   `entries_empty?` is true before the conversation has any entry. `notice`
-  carries a panel-level refusal or advisory; `nil` renders no notice.
+  carries a panel-level refusal or advisory; `nil` renders no notice. `layout`
+  is `:panel` for the side panel and `:main` for a full-width conversation card.
   """
   attr :id, :string, required: true, doc: "the panel's DOM id"
   attr :title, :string, required: true, doc: "the pack's panel title"
@@ -84,32 +95,14 @@ defmodule GtfsPlannerWeb.AgentComponents do
     default: "Review changes before applying.",
     doc: "the rule the composer repeats when it can send; a read-only helper passes its own"
 
+  attr :layout, :atom,
+    default: :panel,
+    values: [:panel, :main],
+    doc: ":panel is the side panel; :main is a full-width conversation card"
+
   def agent_panel(assigns) do
     ~H"""
-    <aside
-      id={@id}
-      phx-hook=".AgentPanel"
-      aria-labelledby={"#{@id}-title"}
-      class="flex min-w-0 flex-col rounded-box border border-base-300 bg-base-100 text-sm"
-    >
-      <header class="border-b border-base-300 px-4 py-3.5">
-        <div class="flex items-center justify-between gap-3">
-          <h2 id={"#{@id}-title"} class="text-lg font-semibold">{@title}</h2>
-          <.button
-            id="agent-panel-close"
-            type="button"
-            phx-click="agent_close"
-            variant="quiet"
-            size="sm"
-            class="min-h-11 min-w-11"
-            aria-label={"Close " <> @title}
-          >
-            <.icon name="hero-x-mark" class="size-4" />
-          </.button>
-        </div>
-        <p class="mt-1.5 text-xs text-base-content/70">{@scope_line}</p>
-      </header>
-
+    <.panel_frame id={@id} layout={@layout} title={@title} scope_line={@scope_line}>
       <div class="flex items-center border-b border-base-300 px-2 py-1">
         <.button
           id="agent-new-conversation"
@@ -242,7 +235,66 @@ defmodule GtfsPlannerWeb.AgentComponents do
           }
         }
       </script>
-    </aside>
+    </.panel_frame>
+    """
+  end
+
+  # The panel's frame. The `:panel` layout is the `<aside>` exactly as it has
+  # always rendered, close button included; the `:main` layout is a host
+  # editor's conversation card, which has no close button because the mode
+  # control beside it is how a reader returns to the form.
+  attr :id, :string, required: true
+  attr :layout, :atom, required: true, values: [:panel, :main]
+  attr :title, :string, required: true
+  attr :scope_line, :string, required: true
+  slot :inner_block, required: true
+
+  defp panel_frame(assigns) do
+    ~H"""
+    <%= if @layout == :main do %>
+      <section
+        id={@id}
+        phx-hook=".AgentPanel"
+        aria-labelledby={"#{@id}-title"}
+        class="flex min-w-0 flex-col rounded-card border border-subtle bg-white text-sm"
+      >
+        <header class="border-b border-subtle px-4 py-3.5 sm:px-5">
+          <h2 id={"#{@id}-title"} class="text-base font-bold tracking-normal text-strong">
+            {@title}
+          </h2>
+          <p class="mt-1 text-[13px] text-muted">{@scope_line}</p>
+        </header>
+
+        {render_slot(@inner_block)}
+      </section>
+    <% else %>
+      <aside
+        id={@id}
+        phx-hook=".AgentPanel"
+        aria-labelledby={"#{@id}-title"}
+        class="flex min-w-0 flex-col rounded-box border border-base-300 bg-base-100 text-sm"
+      >
+        <header class="border-b border-base-300 px-4 py-3.5">
+          <div class="flex items-center justify-between gap-3">
+            <h2 id={"#{@id}-title"} class="text-lg font-semibold">{@title}</h2>
+            <.button
+              id="agent-panel-close"
+              type="button"
+              phx-click="agent_close"
+              variant="quiet"
+              size="sm"
+              class="min-h-11 min-w-11"
+              aria-label={"Close " <> @title}
+            >
+              <.icon name="hero-x-mark" class="size-4" />
+            </.button>
+          </div>
+          <p class="mt-1.5 text-xs text-base-content/70">{@scope_line}</p>
+        </header>
+
+        {render_slot(@inner_block)}
+      </aside>
+    <% end %>
     """
   end
 

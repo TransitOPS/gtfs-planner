@@ -136,6 +136,29 @@ defmodule GtfsPlanner.Accounts do
   end
 
   @doc """
+  Updates the user's default alert authoring mode.
+
+  Accepts the atom or the string form of `:form` or `:assistant`; anything else
+  returns `{:error, changeset}` and stores nothing.
+
+  ## Examples
+
+      iex> update_alert_authoring_mode(user, :assistant)
+      {:ok, %User{}}
+
+      iex> update_alert_authoring_mode(user, "chat")
+      {:error, %Ecto.Changeset{}}
+
+  """
+  @spec update_alert_authoring_mode(User.t(), :form | :assistant | String.t()) ::
+          {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  def update_alert_authoring_mode(%User{} = user, mode) do
+    user
+    |> User.alert_authoring_mode_changeset(%{alert_authoring_mode: mode})
+    |> Repo.update()
+  end
+
+  @doc """
   Emulates that the email will change without actually changing
   it in the database.
 
