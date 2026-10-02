@@ -12,12 +12,27 @@
 // the stops-map fixture instead of whichever version the organization opens by
 // default.
 //
-// The seed is not reset between cases, so the two cases that write — "saving a
-// moved stop" and "writing a replacement" — are last in the file and each owns
-// the stops it changes: 1312 is moved, and 1308 is replaced by 1301 and deleted.
-// No other case reads those three, and 1433 and 1434 are never written. A
-// database takes these two cases once; `bin/test-browser` seeds a new one per
-// run.
+// The seed is not reset between cases, and a full run goes through the file in
+// order. What that does and does not allow:
+//
+//   - No case reads a stop another case created. The add cases and the
+//     journey's first step create the stops they look at. The replace cases
+//     could be offered those stops as candidates, so they choose the seeded
+//     duplicate 1434 by ID and do not count what else is offered.
+//   - Three cases measure the seed's own totals: the shell's 17 rows, the drawn
+//     map's mark counts and the checks' one duplicate pair. They come before
+//     the cases that add stops, because a stop added first would change them.
+//   - The two cases that write seeded stops — "saving a moved stop" and
+//     "writing a replacement" — are last in the file and each owns the stops it
+//     changes: 1312 is moved, and 1308 is replaced by 1301 and deleted. No
+//     other case reads those three, and 1433 and 1434 are never written.
+//
+// None of this survives a second pass over one database: the write cases would
+// find their stops already changed, and the cases that measure totals would
+// count the stops the add cases created. `bin/test-browser` seeds a new
+// database per run and the Playwright config sets `retries: 0`, so a case is
+// never rerun after the writes unless someone repeats a run by hand against the
+// same database.
 //
 // The `@seed` case checks the seed itself: it signs in, opens the Stops &
 // stations list and proves the seeded stops are there with the names and types
@@ -1643,6 +1658,21 @@ test("deleting a stop @delete", async ({ page }, testInfo) => {
   );
 });
 
+// The replace panel for 1433 opens on its nearest candidate, which is the
+// duplicate 1434, 5 ft away, and chooses it. Found by ID and place in the list
+// rather than by the list's length, which also holds any stop another case
+// created within the walk.
+async function expectDuplicateOffered(page) {
+  const nearest = page.locator("#stops-map-replace-candidates label").first();
+
+  await expect(nearest).toHaveAttribute(
+    "id",
+    "stops-map-replace-candidate-1434",
+  );
+  await expect(nearest).toContainText("5 ft away");
+  await expect(nearest.locator("input[type=radio]")).toBeChecked();
+}
+
 test("replacing a stop @replace", async ({ page }, testInfo) => {
   test.setTimeout(300_000);
   await page.setViewportSize(DESKTOP);
@@ -1663,23 +1693,19 @@ test("replacing a stop @replace", async ({ page }, testInfo) => {
     "Replace US 101 & SE 1st St",
   );
 
-  // The candidates are the nearest stops within a walk of each other, nearest
-  // first. Two stops are: 1434, the pair the checks list already reports as 5 ft
-  // apart, and 1534, the Cedar Valley Depot the add panel case created beside
-  // it. Everything else in the version is further away than a rider would call
-  // the same place, so it is not offered.
-  await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
-    2,
-  );
-  await expect(page.locator("#stops-map-replace-candidate-1434")).toContainText(
-    "5 ft away",
-  );
-  await expect(page.locator("#stops-map-replace-candidate-1534")).toContainText(
-    "Cedar Valley Depot",
-  );
-  await expect(
-    page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
-  ).toBeChecked();
+  // The candidates are the nearest stops within a walk of this one, nearest
+  // first: 1434 is the pair the checks list already reports as 5 ft apart. A
+  // stop an earlier case created inside the same walk would be offered as well,
+  // so the length of the list is not the seed's to assert. What the seed does
+  // fix is what is never offered: 1355 is past the walk, and the station and its
+  // bays are inside it but are not a choice the command accepts.
+  await expectDuplicateOffered(page);
+
+  for (const stopId of ["1355", "ST-NTC", "NTC-A", "NTC-B"]) {
+    await expect(
+      page.locator(`#stops-map-replace-candidate-${stopId}`),
+    ).toHaveCount(0);
+  }
 
   // The panel opens on an answer, so the review below it is about a real pair.
   // Each pattern is a sentence rather than a count: which route, which way, and
@@ -2233,12 +2259,7 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   await expect(page.locator("#stops-map-edit-more-menu")).toBeAttached();
   await page.locator("#stops-map-edit-replace").click();
 
-  await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
-    2,
-  );
-  await expect(
-    page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
-  ).toBeChecked();
+  await expectDuplicateOffered(page);
   await expect(page.locator("#stops-map-replace-changes")).toContainText(
     "instead.",
   );
