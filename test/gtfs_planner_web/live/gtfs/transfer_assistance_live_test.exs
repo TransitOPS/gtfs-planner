@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferAssistanceLiveTest do
   }
 
   @prepared_notice "That prepared change is no longer in this conversation. Ask the helper again."
-  @edited_notice "The helper's proposal was only partly saved, so it is still open for review."
+  @edited_notice "Only part of the helper's proposal was saved. Ask the helper again for the rest."
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -316,31 +316,100 @@ defmodule GtfsPlannerWeb.Gtfs.TransferAssistanceLiveTest do
 
       view |> element("#transfer-policy-skip") |> render_click()
 
-      assert element(view, "#transfer-policy-status") |> render() =~ "Skipped"
+      # The drawer leaves the page with the review, and what the skip did stays on
+      # the page where the reviewer can still read it.
+      refute has_element?(view, "#transfer-policy-drawer")
+
+      assert element(view, "#transfer-policy-outcome #transfer-policy-status") |> render() =~
+               "Skipped"
+
+      assert element(view, "#transfer-policy-outcome #transfer-policy-counts") |> render() =~
+               "Skipped 1"
+
       assert stored_transfers(ctx) == []
       assert socket_assigns(view).policy_counts.skipped == 1
+    end
+
+    test "the review drawer is on the page only while a review is open", ctx do
+      {view, _pid} = prepared_view(ctx, [forward_draft()])
+
+      refute has_element?(view, "#transfer-policy-drawer")
+      refute has_element?(view, "#transfer-policy-outcome")
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#transfer-policy-drawer #transfer-policy-confirm")
+      refute has_element?(view, "#transfer-policy-outcome")
+
+      render_click(view, "transfer_policy_close", %{})
+      refute has_element?(view, "#transfer-policy-drawer")
     end
   end
 
   describe "a partly applied sequence" do
-    test "the first save retires the rest of the proposal and counts it", ctx do
+    test "the first save re-reviews the rest and the last save settles the whole proposal", ctx do
       {view, pid} = prepared_view(ctx, [forward_draft(), reverse_draft()])
 
       view |> element("#agent-review-prepared-2") |> render_click()
       render_click(view, "transfer_policy_apply", %{})
-      settle(view, &String.contains?(&1, "id=\"transfer-policy-status\""))
+      settle(view, &String.contains?(&1, "Review the next rule"))
 
-      counts = socket_assigns(view).policy_counts
-      assert counts.saved == 1
-      assert counts.not_applied == 1
-
+      # The drawer stays open on the second rule, read against the catalog the
+      # first save changed, and the status says what was saved and what is next.
+      assert has_element?(view, "#transfer-policy-drawer #transfer-policy-review")
       assert element(view, "#transfer-policy-status") |> render() =~ "Saved transfer type 2"
+      assert socket_assigns(view).policy_review.command.attrs.from_stop_id == "MKT"
 
-      # Only the confirmed row landed; the rest of the proposal is not applied
-      # behind the reviewer's back.
+      assert socket_assigns(view).policy_counts == %{
+               saved: 1,
+               skipped: 0,
+               conflict: 0,
+               not_applied: 0
+             }
+
       assert [%{from_stop_id: "CEN-A", to_stop_id: "MKT"}] = stored_transfers(ctx)
 
-      # The entry's whole sequence was not applied, so it stays unconfirmed.
+      render_click(view, "transfer_policy_apply", %{})
+      settle(view, &String.contains?(&1, "from MKT to CEN-A."))
+
+      # Both rules landed, each through its own confirmation, and only now is the
+      # entry's whole sequence applied.
+      assert [%{from_stop_id: "CEN-A"}, %{from_stop_id: "MKT"}] = stored_transfers(ctx)
+
+      assert socket_assigns(view).policy_counts == %{
+               saved: 2,
+               skipped: 0,
+               conflict: 0,
+               not_applied: 0
+             }
+
+      assert_receive {:agent_event, ^pid, {:entry, %{applied?: true}}}, 5_000
+
+      refute has_element?(view, "#transfer-policy-drawer")
+
+      assert element(view, "#transfer-policy-outcome #transfer-policy-counts") |> render() =~
+               "Saved 2"
+    end
+
+    test "a rest the saved rule now conflicts with is counted and the proposal stays unconfirmed",
+         ctx do
+      {view, pid} = prepared_view(ctx, [station_draft(), platform_draft()])
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      render_click(view, "transfer_policy_apply", %{})
+      settle(view, &(&1 =~ "id=\"transfer-policy-outcome\""))
+
+      # The second rule disagrees with the first once the first is stored, so it is
+      # refused where it was re-reviewed instead of being applied from the old read.
+      counts = socket_assigns(view).policy_counts
+      assert counts == %{saved: 1, skipped: 0, conflict: 1, not_applied: 1}
+
+      assert [%{from_stop_id: "MKT", to_stop_id: "CEN"}] = stored_transfers(ctx)
+      refute has_element?(view, "#transfer-policy-drawer")
+
+      # The counts stay on the page after the drawer closes.
+      assert element(view, "#transfer-policy-outcome #transfer-policy-counts") |> render() =~
+               "Conflicts 1 · Not applied 1"
+
       assert_receive {:agent_event, ^pid, {:entry, %{applied?: false}}}, 5_000
       assert notice_text(view) == @edited_notice
       assert element(view, "#agent-prepared-2") |> render() =~ "Ready to review"
@@ -553,6 +622,22 @@ defmodule GtfsPlannerWeb.Gtfs.TransferAssistanceLiveTest do
 
   defp reverse_draft do
     %{"from_stop_id" => "MKT", "to_stop_id" => "CEN-A", "min_transfer_time" => "180"}
+  end
+
+  # Two rules that agree until the first is stored: the station-wide prohibition
+  # covers the platform the second one names, at the same specificity, with a
+  # different effect.
+  defp station_draft do
+    %{"from_stop_id" => "MKT", "to_stop_id" => "CEN", "transfer_type" => "0"}
+  end
+
+  defp platform_draft do
+    %{
+      "from_stop_id" => "MKT",
+      "to_stop_id" => "CEN-A",
+      "transfer_type" => "2",
+      "min_transfer_time" => "300"
+    }
   end
 
   defp submit(view, text) do

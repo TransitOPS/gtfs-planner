@@ -97,7 +97,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, drawer_scroll: 1]
 
   import GtfsPlannerWeb.Gtfs.TransferHelperComponents,
-    only: [policy_review_body: 1, transfer_policy_source: 1]
+    only: [
+      policy_outcome: 1,
+      policy_outcome?: 2,
+      policy_review_body: 1,
+      transfer_policy_source: 1
+    ]
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
@@ -168,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   # An entry whose proposal did not apply exactly stays unconfirmed rather than
   # claiming a receipt the operator did not earn (INV-7).
-  @prepared_edited_notice "The helper's proposal was only partly saved, so it is still open for review."
+  @prepared_edited_notice "Only part of the helper's proposal was saved. Ask the helper again for the rest."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -1035,39 +1040,50 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # Every item of the sequence gets its own review against the catalog as it
   # stands now, so each confirmation the operator gives covers exactly one rule.
   defp open_policy_review(socket, entry_id, items, digest) do
-    case review_policy_items(socket, items) do
-      {:ok, review} ->
+    case review_next(socket, items) do
+      {:ok, review, rest, refused} ->
         socket
         |> assign(:policy_review, review)
-        |> assign(:policy_remaining, tl(items))
+        |> assign(:policy_remaining, rest)
         |> assign(:policy_origin, %{
           session_pid: socket.assigns.agent_session,
           conversation_id: socket.assigns.agent_conversation_id,
           entry_id: entry_id,
+          saved: 0,
           command: %{kind: :transfer_policy_sequence, items: items, source_digest: digest}
         })
         |> assign(:policy_open?, true)
         |> assign(:policy_pending?, false)
         |> assign(:policy_generation, socket.assigns.policy_generation + 1)
         |> assign(:policy_return_focus, "agent-prepared-#{entry_id}")
+        |> count_refused(refused)
 
-      {:error, reason} ->
-        assign(socket, :agent_notice, policy_refusal_message(reason))
+      {:none, refused} ->
+        assign(socket, :agent_notice, policy_refusal_message(none_reviewed_reason(refused)))
     end
   end
 
-  defp review_policy_items(socket, items) do
-    Enum.reduce_while(items, {:error, :empty}, fn item, acc ->
-      case review_policy_item(socket, item) do
-        {:ok, review} -> {:halt, {:ok, review}}
-        {:error, reason} -> {:cont, {:error, acc_reason(acc, reason)}}
-      end
-    end)
+  # The first item that reviews cleanly against the catalog as it stands, the items
+  # after it, and the reasons the earlier ones were refused.
+  defp review_next(socket, items), do: review_next(socket, items, [])
+
+  defp review_next(_socket, [], refused), do: {:none, Enum.reverse(refused)}
+
+  defp review_next(socket, [item | rest], refused) do
+    case review_policy_item(socket, item) do
+      {:ok, review} -> {:ok, review, rest, Enum.reverse(refused)}
+      {:error, reason} -> review_next(socket, rest, [reason | refused])
+    end
   end
 
-  defp acc_reason({:error, :empty}, reason), do: reason
-  defp acc_reason({:error, _first}, _later), do: :empty
-  defp acc_reason(_halted, _later), do: :empty
+  defp none_reviewed_reason([reason]), do: reason
+  defp none_reviewed_reason(_several), do: :empty
+
+  defp count_refused(socket, refused) do
+    counts = Enum.reduce(refused, socket.assigns.policy_counts, &count_policy_outcome(&2, &1))
+
+    assign(socket, :policy_counts, counts)
+  end
 
   defp review_policy_item(socket, item) do
     Transfers.review_policy_change(
@@ -1109,24 +1125,19 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     |> refresh_policy_review()
   end
 
-  # A saved rule ends the whole proposal: every remaining item was reviewed
-  # against a catalog that no longer exists, so they are counted rather than
-  # applied from a stale read (AC-5).
+  # A saved rule changes the catalog every remaining item was reviewed against, so
+  # each is reviewed again against the catalog as it now stands (AC-5): the first
+  # that still reviews opens next, and every one the new catalog refuses is counted
+  # rather than applied from a stale read.
   defp settle_policy(socket, {:ok, {:applied, {:ok, transfer}}}) do
-    remaining = socket.assigns.policy_remaining
+    counts = socket.assigns.policy_counts
 
     socket
     |> assign(:policy_pending?, false)
-    |> assign(:policy_review, nil)
-    |> assign(:policy_open?, false)
-    |> assign(:policy_counts, %{
-      socket.assigns.policy_counts
-      | saved: socket.assigns.policy_counts.saved + 1,
-        not_applied: socket.assigns.policy_counts.not_applied + length(remaining)
-    })
-    |> assign(:policy_status, policy_saved_message(transfer))
-    |> record_policy_applied(remaining == [])
+    |> assign(:policy_counts, %{counts | saved: counts.saved + 1})
+    |> update_policy_origin(&%{&1 | saved: &1.saved + 1})
     |> reload_policy_catalog()
+    |> review_remaining(policy_saved_message(transfer), socket.assigns.policy_remaining)
   end
 
   # An exit or an answer this page does not recognize is left unconfirmed: the
@@ -1138,6 +1149,32 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     |> assign(:policy_status, "Not confirmed. Re-read the transfer rules before trying again.")
     |> reload_policy_catalog()
   end
+
+  defp review_remaining(socket, saved_message, remaining) do
+    case review_next(socket, remaining) do
+      {:ok, review, rest, refused} ->
+        socket
+        |> assign(:policy_review, review)
+        |> assign(:policy_remaining, rest)
+        |> assign(:policy_generation, socket.assigns.policy_generation + 1)
+        |> assign(:policy_status, saved_message <> " Review the next rule.")
+        |> count_refused(refused)
+
+      {:none, refused} ->
+        socket
+        |> assign(:policy_review, nil)
+        |> assign(:policy_open?, false)
+        |> assign(:policy_remaining, [])
+        |> assign(:policy_status, saved_message)
+        |> count_refused(refused)
+        |> record_policy_applied()
+    end
+  end
+
+  defp update_policy_origin(%{assigns: %{policy_origin: nil}} = socket, _update), do: socket
+
+  defp update_policy_origin(socket, update),
+    do: assign(socket, :policy_origin, update.(socket.assigns.policy_origin))
 
   defp policy_saved_message(transfer),
     do:
@@ -1196,17 +1233,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     end
   end
 
-  # The receipt is recorded with the exact command the entry prepared, so an entry
-  # whose sequence only partly applied stays unconfirmed rather than claiming a
-  # whole the operator did not save (INV-7).
-  defp record_policy_applied(%{assigns: %{policy_origin: nil}} = socket, _whole), do: socket
-
   # A receipt is recorded with the exact command the entry prepared, and only when
   # every item of that sequence was saved. A partly applied proposal leaves the
   # entry unconfirmed and says so, rather than claiming a whole (INV-7).
-  defp record_policy_applied(socket, true) do
-    origin = socket.assigns.policy_origin
+  defp record_policy_applied(%{assigns: %{policy_origin: nil}} = socket), do: socket
 
+  defp record_policy_applied(%{assigns: %{policy_origin: origin}} = socket) do
+    if origin.saved == length(origin.command.items) do
+      record_policy_receipt(socket, origin)
+    else
+      assign(socket, :agent_notice, @prepared_edited_notice)
+    end
+  end
+
+  defp record_policy_receipt(socket, origin) do
     case Agents.record_applied(
            origin.session_pid,
            origin.conversation_id,
@@ -1221,13 +1261,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
       _stale_or_ended ->
         socket
-    end
-  end
-
-  defp record_policy_applied(socket, false) do
-    case socket.assigns.policy_origin do
-      nil -> socket
-      _partly_saved -> assign(socket, :agent_notice, @prepared_edited_notice)
     end
   end
 
@@ -1253,8 +1286,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       | skipped: socket.assigns.policy_counts.skipped + 1 + length(remaining),
         not_applied: socket.assigns.policy_counts.not_applied + length(remaining)
     })
-    |> assign(:policy_status, "Skipped. Nothing was written for this proposal.")
+    |> assign(:policy_status, skipped_message(socket.assigns.policy_origin))
   end
+
+  defp skipped_message(%{saved: saved}) when saved > 0,
+    do: "Skipped. The rules already saved from this proposal stay saved."
+
+  defp skipped_message(_origin), do: "Skipped. Nothing was written for this proposal."
 
   # Closing bumps the generation, so a result still in flight lands on no review
   # at all (AC-12).
@@ -1947,6 +1985,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         <div id="transfer-helper-focus" phx-hook=".TransferHelperFocus" phx-update="ignore"></div>
 
         <%!--
+        What a reviewed proposal did stays on the page once its drawer closes; while the drawer is open
+        the same status and counts render inside it, so each id exists once. --%>
+        <section
+          :if={not @policy_open? and policy_outcome?(@policy_status, @policy_counts)}
+          id="transfer-policy-outcome"
+          aria-label="Helper proposal outcome"
+          class="mt-4 rounded-lg border border-subtle p-3"
+        >
+          <.policy_outcome status={@policy_status} counts={@policy_counts} />
+        </section>
+
+        <%!--
         The grid gives the workspace the full width while the panel is closed and a fixed 24rem
         column while it is open, and the workspace column is hidden at phone width so the panel
         replaces the list. --%>
@@ -2079,6 +2129,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         </div>
 
         <.drawer
+          :if={@policy_open?}
           id="transfer-policy-drawer"
           chrome="planner"
           open={@policy_open?}
@@ -2092,14 +2143,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           <:lede>The helper proposed this. Nothing is saved until you confirm.</:lede>
           <.drawer_scroll>
             <p
-              :if={@policy_status}
-              id="transfer-policy-status"
-              role="status"
-              class="text-[13px] text-muted"
-            >
-              {@policy_status}
-            </p>
-            <p
               :if={@policy_notice}
               id="transfer-policy-notice"
               role="status"
@@ -2107,10 +2150,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
             >
               {@policy_notice}
             </p>
+            <.policy_outcome status={@policy_status} counts={@policy_counts} />
             <.policy_review_body :if={@policy_review} review={@policy_review} />
-            <p id="transfer-policy-counts" class="text-[13px] text-muted">
-              {policy_counts_text(@policy_counts)}
-            </p>
           </.drawer_scroll>
           <.drawer_footer>
             <.button
@@ -2164,11 +2205,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # rules to read, and the in-seat list is a different policy with no draft here.
   defp helper_action?(assigns),
     do: assigns.catalog_state == :ready and assigns.view == :general
-
-  # The counts are the truth a reviewer reads after a partly applied sequence.
-  defp policy_counts_text(counts) do
-    "Saved #{counts.saved} · Skipped #{counts.skipped} · Conflicts #{counts.conflict} · Not applied #{counts.not_applied}"
-  end
 
   # The panel's action label is named for this page's one prepared command kind, so
   # a button label never promises another page's review (INV-1).
