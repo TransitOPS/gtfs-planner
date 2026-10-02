@@ -228,6 +228,15 @@ if System.get_env("GTFS_PUBLISH_TEST_LOOPBACK") == "true" do
   }
 end
 
+# Feed-publishing storage substitutes only the Req final HTTP transport in test,
+# so no test can reach an object store while the concrete Req/SigV4 request
+# construction stays real. `GtfsPlanner.FeedPublishing.HTTPBoundary` is an
+# in-memory object store keyed by the calling process, so a test that seeds an
+# object or asserts on the signed request owns its own state.
+config :gtfs_planner,
+  :feed_publishing_http_options,
+  finch_request: &GtfsPlanner.FeedPublishing.HTTPBoundary.request/4
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
