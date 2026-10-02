@@ -3485,7 +3485,14 @@ case Accounts.register_first_admin(%{
 
     fare_points = FareZones.list_stop_points(org.id, fare_zones_version.id)
     fare_rule_groups = FareZones.list_rule_groups(org.id, fare_zones_version.id)
-    fare_fares = FareZones.list_fares(org.id, fare_zones_version.id)
+
+    fare_fares =
+      from(a in FareAttribute,
+        where: a.organization_id == ^org.id and a.gtfs_version_id == ^fare_zones_version.id,
+        order_by: a.fare_id,
+        select: %{fare_id: a.fare_id, price: a.price, currency_type: a.currency_type}
+      )
+      |> Repo.all()
 
     %{
       zones: fare_scale_zone_list,
