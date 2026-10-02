@@ -537,3 +537,113 @@ test.describe("native batches", () => {
   });
 });
 
+
+// The totals live outside the streamed witness rows, so their absence is what
+// says the report was withdrawn.
+function refuteComparisonTotals(page) {
+  return page.locator("#timetable-comparison-totals").count().then((n) => n === 0);
+}
+
+test.describe("approved comparison", () => {
+  test("the comparison states the server's own totals, pages its witnesses and is withdrawn when the source is edited", async ({
+    page,
+  }) => {
+    // No write is performed by this journey: comparing reads the route's feed
+    // and the source edit below only changes the reviewed source, so the
+    // seeded route is the same one the next run compares.
+    test.setTimeout(120_000);
+    const consoleErrors = watchConsoleErrors(page);
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+    await readPaste(page, versionId, EXACT_PASTE);
+
+    await fillSource(page, {
+      label: "Riverside printed table",
+      revision: "rev 4",
+      notes: "Thanksgiving is not served.",
+      removedDates: THANKSGIVING,
+      confirm: true,
+    });
+    await page.click("#timetable-source-accept");
+    await expect(page.locator("#timetable-source-accepted")).toContainText(
+      "2 mapped rows",
+    );
+
+    // The comparison is the page's own task and reads only the accepted
+    // source, so the helper panel is never opened.
+    await page.click("#timetable-compare");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+
+    // The comparison is scoped to the one pattern the accepted source maps, and
+    // that pattern carries the seven seeded outbound weekday trips. Each runs
+    // on the 21 feed weekdays the interval holds, so the feed describes 147
+    // trip-date pairs; the source names two trips on the 20 dates it reviews,
+    // which match, and the other 107 pairs are disclosed as missing rather
+    // than hidden behind an all-clear. The two named trips on Thanksgiving
+    // are part of those 107: the feed runs that date and the source does not.
+    await expect(page.locator("#timetable-comparison-total-matched")).toContainText(
+      "40",
+    );
+    await expect(page.locator("#timetable-comparison-total-missing")).toContainText(
+      "107",
+    );
+
+    // One page holds fifty witnesses and the page says which of the retained
+    // sample it is showing, so a bounded sample never reads as all of it.
+    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(50);
+    await expect(page.locator("#timetable-comparison-sample")).toContainText(
+      "50 shown on page 1",
+    );
+    await page.click("#timetable-comparison-next");
+    await expect(page.locator("#timetable-comparison-sample")).toContainText(
+      "50 shown on page 2",
+    );
+
+    // The retained sample is 107 witnesses, so a third page holds the last 7.
+    await page.click("#timetable-comparison-next");
+    await expect(page.locator("#timetable-comparison-rows tr")).toHaveCount(7);
+    await expect(page.locator("#timetable-comparison-next")).toHaveCount(0);
+
+    // Freshness is the server's own re-read of the feed digest. Nothing wrote
+    // to this route, so the report stays ready and the page says when it was
+    // last checked rather than claiming to be current forever.
+    await page.click("#timetable-comparison-freshness");
+    await expect(page.locator("#timetable-comparison-differences")).toBeVisible();
+    await expect(page.locator("#timetable-comparison-checked")).toContainText(
+      "checked just now",
+    );
+
+    // The card sits under the reviewed-source form, so it is scrolled into
+    // view before each capture: a shot of the source form alone would not show
+    // the totals or a single witness.
+    await dismissFlash(page);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-differences-incomplete-stale-1440");
+
+    // The narrow viewport keeps the totals, the disclosure and the witness
+    // table legible rather than pushing them off the page.
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.locator("#timetable-comparison").scrollIntoViewIfNeeded();
+    await capture(page, "comparison-differences-incomplete-stale-320");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // Editing the reviewed source invalidates the report on that keystroke:
+    // the source is the other half of the comparison, so the numbers are
+    // withdrawn rather than left looking current. The stale notices a committed
+    // feed change produces are exercised in the ExUnit file, which can commit
+    // a trip; this journey writes nothing.
+    await page.fill(
+      "#timetable-source-notes",
+      "Thanksgiving is not served; Friday corrected.",
+    );
+    await expect(page.locator("#timetable-comparison")).toContainText(
+      "Accept the reviewed source above before comparing it with the feed.",
+    );
+    refuteComparisonTotals(page);
+
+    expect(consoleErrors).toEqual([]);
+  });
+});

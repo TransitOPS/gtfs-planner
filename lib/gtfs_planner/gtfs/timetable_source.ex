@@ -263,6 +263,154 @@ defmodule GtfsPlanner.Gtfs.TimetableSource do
     end
   end
 
+  @doc """
+  Rebuilds the reviewed source from the payload `assistant_payload/1` wrote.
+
+  The admitted snapshot is JSON-safe, so its interval and dates arrive as ISO
+  strings and its clocks as integers, `"unknown"` or `"not_served"`. They are
+  read back into exactly the values the host's own source holds, so a caller
+  holding only the snapshot compares the source the editor reviewed rather than
+  a retelling of it.
+
+  Two things cannot survive the JSON round trip and are named rather than
+  invented: the reviewed column `mapping`, which no comparison reads (the feed
+  is narrowed by rows, not by pasted columns), and the typed `unresolved` and
+  `exclusions` terms, which the payload carries as their `inspect/1` text. Those
+  texts are carried through unchanged, so a rebuilt source keeps disclosing that
+  something was not settled and can never read clean because the reason could
+  not be re-read.
+
+  Returns `{:error, :invalid_snapshot}` unless the payload declares an accepted
+  source with a digest, an interval and rows.
+  """
+  @spec from_payload(map()) :: {:ok, source()} | {:error, :invalid_snapshot}
+  def from_payload(payload) when is_map(payload) do
+    with true <- Map.get(payload, "accepted?") == true,
+         digest when is_binary(digest) <- Map.get(payload, "digest"),
+         {:ok, interval} <- payload_interval(Map.get(payload, "interval")),
+         {:ok, rows} <- payload_rows(Map.get(payload, "rows")) do
+      {:ok,
+       %{
+         raw_text: Map.get(payload, "text") || "",
+         notes: Map.get(payload, "notes") || "",
+         label: Map.get(payload, "label") || "",
+         revision: Map.get(payload, "revision"),
+         interval: interval,
+         layout: payload_layout(Map.get(payload, "layout")),
+         header?: Map.get(payload, "header?") != false,
+         rows: rows,
+         mapping: %{},
+         date_rules: Map.get(payload, "date_rules") || %{},
+         unresolved: payload_terms(Map.get(payload, "unresolved")),
+         exclusions: payload_terms(Map.get(payload, "exclusions")),
+         digest: digest,
+         accepted?: true
+       }}
+    else
+      _other -> {:error, :invalid_snapshot}
+    end
+  end
+
+  def from_payload(_payload), do: {:error, :invalid_snapshot}
+
+  defp payload_interval(%{"first_date" => first, "last_date" => last}) do
+    with {:ok, first_date} <- Date.from_iso8601(first),
+         {:ok, last_date} <- Date.from_iso8601(last) do
+      {:ok, {first_date, last_date}}
+    else
+      _other -> :error
+    end
+  end
+
+  defp payload_interval(_interval), do: :error
+
+  defp payload_layout("trips_in_rows"), do: :trips_in_rows
+  defp payload_layout("stops_in_rows"), do: :stops_in_rows
+  defp payload_layout(_layout), do: :auto
+
+  # The payload's disclosures are `inspect/1` text rather than JSON values, so
+  # they are carried as they were written: a disclosed reason stays disclosed.
+  defp payload_terms(terms) when is_list(terms), do: terms
+  defp payload_terms(_terms), do: []
+
+  defp payload_rows(rows) when is_list(rows) do
+    rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, built} ->
+      case payload_source_row(row) do
+        {:ok, source_row} -> {:cont, {:ok, built ++ [source_row]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp payload_rows(_rows), do: :error
+
+  defp payload_source_row(row) when is_map(row) do
+    with source_row_id when is_integer(source_row_id) <- Map.get(row, "source_row_id"),
+         dates when is_list(dates) <- Map.get(row, "dates"),
+         cells when is_list(cells) <- Map.get(row, "cells"),
+         {:ok, dates} <- payload_dates(dates),
+         {:ok, cells} <- payload_cells(cells) do
+      {:ok,
+       %{
+         source_row_id: source_row_id,
+         pattern_id: Map.get(row, "pattern_id"),
+         direction_id: Map.get(row, "direction_id"),
+         feed_trip_id: Map.get(row, "feed_trip_id"),
+         service_id: Map.get(row, "service_id"),
+         dates: dates,
+         cells: cells
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  defp payload_source_row(_row), do: :error
+
+  defp payload_dates(dates) do
+    dates
+    |> Enum.reduce_while({:ok, []}, fn date, {:ok, parsed} ->
+      case Date.from_iso8601(date) do
+        {:ok, date} -> {:cont, {:ok, parsed ++ [date]}}
+        {:error, _reason} -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp payload_cells(cells) do
+    cells
+    |> Enum.reduce_while({:ok, []}, fn cell, {:ok, parsed} ->
+      case payload_cell(cell) do
+        {:ok, source_cell} -> {:cont, {:ok, parsed ++ [source_cell]}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp payload_cell(%{"stop_id" => stop_id, "stop_sequence" => stop_sequence} = cell)
+       when is_binary(stop_id) and is_integer(stop_sequence) do
+    with {:ok, arrival} <- payload_clock(Map.get(cell, "arrival")),
+         {:ok, departure} <- payload_clock(Map.get(cell, "departure")) do
+      {:ok,
+       %{
+         occurrence: %{stop_id: stop_id, stop_sequence: stop_sequence},
+         arrival: arrival,
+         departure: departure
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  defp payload_cell(_cell), do: :error
+
+  defp payload_clock(value) when is_integer(value), do: {:ok, value}
+  defp payload_clock(nil), do: {:ok, nil}
+  defp payload_clock("unknown"), do: {:ok, :unknown}
+  defp payload_clock("not_served"), do: {:ok, :not_served}
+  defp payload_clock(_value), do: :error
+
   @doc "The number of inclusive dates a source interval compares."
   @spec date_count(interval()) :: pos_integer()
   def date_count({first, last}), do: Date.diff(last, first) + 1
