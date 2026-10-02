@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.GeocodingMock
+  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
@@ -162,6 +163,42 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
     end
   end
 
+  describe "a stop with nothing nearby" do
+    test "replace from the More menu says no other stop is within reach", ctx do
+      isolated_stop(ctx)
+      view = open_stop(ctx, "1700")
+
+      view |> element("#stops-map-edit-more") |> render_click()
+      view |> element("#stops-map-edit-replace") |> render_click()
+      settle(view)
+
+      # The press has an answer in the panel the editor is looking at, and the
+      # menu that asked the question is closed.
+      assert has_element?(view, "#stops-map-edit-replace-none", "within 855 ft")
+      assert has_element?(view, "#stops-map-edit-panel")
+      refute has_element?(view, "#stops-map-edit-more-menu")
+      refute has_element?(view, "#stops-map-replace-panel")
+    end
+
+    test "replace from a blocked delete says it where the editor pressed it", ctx do
+      isolated_stop(ctx, in_pattern?: true)
+      view = open_stop(ctx, "1700")
+
+      view |> element("#stops-map-edit-more") |> render_click()
+      view |> element("#stops-map-edit-delete") |> render_click()
+      settle(view)
+
+      assert has_element?(view, "#stops-map-delete-blocked-message")
+
+      view |> element("#stops-map-delete-replace") |> render_click()
+      settle(view)
+
+      assert has_element?(view, "#stops-map-delete-replace-none", "within 855 ft")
+      assert has_element?(view, "#stops-map-delete-panel")
+      refute has_element?(view, "#stops-map-replace-panel")
+    end
+  end
+
   # --- fixture ---------------------------------------------------------------
 
   # 1433 is the stop with something to move away; 1434 is the duplicate 1.5 m
@@ -202,6 +239,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
     route_pattern_stop_fixture(pattern, "1391", 2)
 
     stops
+  end
+
+  # A stop 2 km from every other stop in the version, well outside the 260 m
+  # the panel looks in. It optionally sits in REPLACE_A, which is what makes a
+  # delete refuse and offer the replace button instead.
+  defp isolated_stop(ctx, opts \\ []) do
+    stop_fixture(ctx.organization.id, ctx.version.id, %{
+      stop_id: "1700",
+      stop_name: "Far Point",
+      stop_lat: Decimal.from_float(@base_lat + 2_000.0 / @metres_per_degree),
+      stop_lon: Decimal.from_float(@base_lon)
+    })
+
+    if opts[:in_pattern?] do
+      pattern =
+        Repo.get_by!(RoutePattern,
+          organization_id: ctx.organization.id,
+          gtfs_version_id: ctx.version.id,
+          route_pattern_id: "REPLACE_A"
+        )
+
+      route_pattern_stop_fixture(pattern, "1700", 3)
+    end
   end
 
   defp stop_exists?(ctx, stop_id) do

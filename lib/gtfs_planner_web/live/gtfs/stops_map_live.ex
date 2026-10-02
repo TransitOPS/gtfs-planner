@@ -252,6 +252,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:replace_saving?, false)
     |> assign(:replace_outcome, :none)
     |> assign(:replace_delete_old, true)
+    |> assign(:replace_none_within, nil)
   end
 
   # Everything the move review owns, in one place, for the same reason the edit
@@ -937,8 +938,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:replace_candidates, replace_candidates(socket.assigns, stop_id))
 
         case socket.assigns.replace_candidates do
-          [] -> socket
-          [nearest | _] -> choose_replace(socket, nearest.stop_id)
+          [] ->
+            # Nothing to choose from, so the panel stays where it is and says so
+            # beside the button that asked: a press with no visible answer reads
+            # as a broken button.
+            socket
+            |> assign(:replace_none_within, format_distance(@replace_candidate_metres))
+            |> assign(:edit_more_open?, false)
+
+          [nearest | _] ->
+            choose_replace(socket, nearest.stop_id)
         end
     end
   end
@@ -3279,6 +3288,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                     version_id={@current_gtfs_version.id}
                     saving?={@delete_saving?}
                     outcome={@delete_outcome}
+                    replace_none_within={@replace_none_within}
                   />
                 <% else %>
                   <%= if @move_review != nil or @move_loading? or @move_outcome == :review_failed do %>
@@ -3314,6 +3324,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
                       pin_off_canvas?={pin_off_canvas?(assigns)}
                       conflict={@edit_conflict}
                       more_open?={@edit_more_open?}
+                      replace_none_within={@replace_none_within}
                       tech_open?={@edit_tech_open?}
                       discard_action={@discard_action}
                     />

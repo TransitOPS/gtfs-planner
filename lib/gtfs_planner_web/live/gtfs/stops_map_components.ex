@@ -1550,6 +1550,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   attr :pin_off_canvas?, :boolean, default: false
   attr :conflict, :map, default: nil
   attr :more_open?, :boolean, default: false
+  attr :replace_none_within, :string, default: nil
   attr :tech_open?, :boolean, default: false
   attr :discard_action, :any, default: nil
 
@@ -1661,6 +1662,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
               {moved_message(@move_saved)}
             </.message>
           </div>
+
+          <.replace_none_message
+            :if={@replace_none_within}
+            id="stops-map-edit-replace-none"
+            within={@replace_none_within}
+            class="mt-5"
+          />
 
           <div
             :if={@outcome == :stale and @conflict}
@@ -2225,6 +2233,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   defp outcome_words(_other), do: "The line stays as it is."
 
+  # The answer to "Replace with another stop…" when no stop is within reach. Both
+  # buttons that ask the question show it where they are, so a press is never
+  # answered by nothing.
+  attr :id, :string, required: true
+  attr :within, :string, required: true
+  attr :class, :string, default: nil
+
+  defp replace_none_message(assigns) do
+    ~H"""
+    <div id={@id} class={@class}>
+      <.message kind="info" title="No stop to replace this one with" id={"#{@id}-message"}>
+        No other stop is within {@within} of it.
+      </.message>
+    </div>
+    """
+  end
+
   defp moved_message(%{redrawn: [], stale: []}), do: "The stop is at its new position."
 
   defp moved_message(%{redrawn: redrawn, stale: []}) do
@@ -2470,6 +2495,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   attr :version_id, :any, default: nil
   attr :saving?, :boolean, default: false
   attr :outcome, :atom, default: :none
+  attr :replace_none_within, :string, default: nil
 
   def delete_panel(assigns) do
     assigns = assign(assigns, :mode, delete_mode(assigns.review))
@@ -2585,6 +2611,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
             >
               <.icon name="hero-arrows-right-left" class="size-4" /> Replace with another stop…
             </button>
+
+            <.replace_none_message
+              :if={@replace_none_within}
+              id="stops-map-delete-replace-none"
+              within={@replace_none_within}
+              class="mt-3"
+            />
 
             <p :if={delete_pending_count(@review) > 0} class="m-0 mt-6 text-[13px] text-muted">
               When it can be deleted, its {count_word(

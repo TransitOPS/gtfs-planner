@@ -12,6 +12,13 @@
 // the stops-map fixture instead of whichever version the organization opens by
 // default.
 //
+// The seed is not reset between cases, so the two cases that write — "saving a
+// moved stop" and "writing a replacement" — are last in the file and each owns
+// the stops it changes: 1312 is moved, and 1308 is replaced by 1301 and deleted.
+// No other case reads those three, and 1433 and 1434 are never written. A
+// database takes these two cases once; `bin/test-browser` seeds a new one per
+// run.
+//
 // The `@seed` case checks the seed itself: it signs in, opens the Stops &
 // stations list and proves the seeded stops are there with the names and types
 // the later cases' fixtures name. It depends only on routes that already exist,
@@ -311,14 +318,14 @@ test("the map view shell @shell", async ({ page }, testInfo) => {
     page.locator("#stop-map[phx-hook=StopMap][phx-update=ignore]"),
   ).toBeAttached();
 
-  // The panel says what it holds, and its count is the header's count: one
-  // sentence, two places, so the page never contradicts itself.
+  // The panel says what it holds, and its count is the header's count. Once the
+  // map reports its view the panel counts the rows in it, so the wait is for the
+  // map: 17 rows are the header's 16 stops and 1 station.
+  await waitForMapReady(page);
   await expect(page.locator("#stops-map-panel")).toContainText(
     "Stops in this area",
   );
-  await expect(page.locator("#stops-map-panel")).toContainText(
-    "16 stops and 1 station in Browser Stops Map Version",
-  );
+  await expect(page.locator("#stops-map-panel")).toContainText("17 on the map");
   await expect(page.locator("#stops-map-scope-note")).toHaveText(
     "16 stops and 1 station in Browser Stops Map Version",
   );
@@ -695,13 +702,21 @@ test("the panel search @search", async ({ page }, testInfo) => {
 
   await captureBoth(page, testInfo, "results", "search-");
 
-  // Choosing a stop result selects it, and the panel's heading says which one.
+  // Choosing a stop result opens that stop in the edit panel, and its heading
+  // says which one. Cancelling a form with nothing typed in it asks nothing and
+  // brings the browse panel back.
   await page
     .locator("#stops-map-search-results-stops li button")
     .first()
     .click();
-  await expect(page.locator("#stops-map-panel h2")).toContainText("SE 1st St");
-  await expect(page.locator("#stops-map-panel")).toContainText("Stop · ID");
+  await expect(page.locator("#stops-map-edit-panel h2")).toContainText(
+    "SE 1st St",
+  );
+  await expect(page.locator("#stops-map-edit-panel")).toContainText(
+    "Stop · ID",
+  );
+  await page.locator("#stops-map-edit-cancel").click();
+  await expect(page.locator("#stops-map-panel")).toBeAttached();
 
   // Clearing the field gives the list back.
   await page.locator("#stops-map-search-query").fill("");
@@ -1347,10 +1362,9 @@ test("the edit panel @edit", async ({ page }, testInfo) => {
 
   await capture(page, testInfo, "edit-station-desktop");
 
-  // The save-failed and conflict states are left to the ExUnit cases: the save
-  // submits through the panel's own form, and this journey's presses on that
-  // form did not reach the server, which is a known limit of this harness
-  // rather than something to paper over with a synthetic event.
+  // The save-failed and conflict states are left to the ExUnit cases: they need
+  // a write that fails or a row that changed under the editor, and the seeded
+  // version offers neither.
 
   // The prototype's own states for the same moments, captured last because the
   // reference is a file:// page: driving the app and reading the prototype are
@@ -1484,7 +1498,7 @@ test("moving a stop @move", async ({ page }, testInfo) => {
 
   await captureBoth(page, testInfo, "far", "move-far-");
 
-  await submitEditForm(page);
+  await page.locator("#stops-map-edit-save").click();
   await expect(page.locator("#stops-map-move-panel")).toBeAttached();
   await expect(page.locator("#stops-map-move-heading")).toHaveText(
     "Review move",
@@ -1510,9 +1524,8 @@ test("moving a stop @move", async ({ page }, testInfo) => {
     "Is this the same stop?",
   );
 
-  // A click on the panel's own submit button does not reach the server from this
-  // harness, so the review states are reached by asking the form to submit
-  // itself. The save outcomes are covered by stops_map_move_test.exs instead.
+  // Back to editing leaves the review without writing anything and keeps the
+  // drag. The move is written in "saving a moved stop", on a stop of its own.
   await page.locator("#stops-map-move-back").click();
   await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
 
@@ -1650,15 +1663,19 @@ test("replacing a stop @replace", async ({ page }, testInfo) => {
     "Replace US 101 & SE 1st St",
   );
 
-  // The candidates are the nearest stops within a walk of each other, and in
-  // this seed only one other stop is: 1434, the pair the checks list already
-  // reports as 5 ft apart. Everything else in the version is further away than
-  // a rider would call the same place, so it is not offered.
+  // The candidates are the nearest stops within a walk of each other, nearest
+  // first. Two stops are: 1434, the pair the checks list already reports as 5 ft
+  // apart, and 1534, the Cedar Valley Depot the add panel case created beside
+  // it. Everything else in the version is further away than a rider would call
+  // the same place, so it is not offered.
   await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
-    1,
+    2,
   );
   await expect(page.locator("#stops-map-replace-candidate-1434")).toContainText(
     "5 ft away",
+  );
+  await expect(page.locator("#stops-map-replace-candidate-1534")).toContainText(
+    "Cedar Valley Depot",
   );
   await expect(
     page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
@@ -1688,6 +1705,23 @@ test("replacing a stop @replace", async ({ page }, testInfo) => {
   await page.locator("#stops-map-replace-cancel").click();
   await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
   await expect(page.locator("#stops-map-replace-panel")).toHaveCount(0);
+
+  // A stop with nothing within walking distance has no candidate to offer, so
+  // the press is answered on the form it came from and the menu closes.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1531`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+
+  await page.locator("#stops-map-edit-more").click();
+  await page.locator("#stops-map-edit-replace").click();
+
+  await expect(page.locator("#stops-map-edit-replace-none")).toContainText(
+    "No other stop is within",
+  );
+  await expect(page.locator("#stops-map-edit-more-menu")).toHaveCount(0);
+  await expect(page.locator("#stops-map-replace-panel")).toHaveCount(0);
+
+  await captureBoth(page, testInfo, "none", "replace-");
 
   await captureReference(page, testInfo, "replace", "review", "replace-ref-");
 });
@@ -1761,16 +1795,6 @@ async function dragPinBy(page, dx, dy) {
   await page.mouse.down();
   await page.mouse.move(x + dx, y + dy, { steps: 6 });
   await page.mouse.up();
-}
-
-// The form asked to submit itself. `requestSubmit` fires the same submit event
-// the button would; it is here because the button click does not reach the
-// server from this harness (a known limit of the harness), not because the panel
-// needs it.
-async function submitEditForm(page) {
-  await page
-    .locator("#stops-map-edit-form")
-    .evaluate((form) => form.requestSubmit());
 }
 
 // A mark the reader can see. Leaflet keeps a marker for every stop in the
@@ -2125,17 +2149,16 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   await expect(page.locator(".stop-map-ghost-marker")).toHaveCount(1);
   await expect(page.locator(".stop-map-distance")).toHaveCount(1);
 
-  // A click on a panel submit button does not reach the server from this
-  // harness, so the review state is reached by asking the form to submit
-  // itself. The write itself, and the
-  // out-of-date message the save produces, are the ExUnit claim in
+  // A drag past the band turns the button into Review move, and pressing it
+  // opens the review without writing. The write is "saving a moved stop", and
+  // the out-of-date message a stale save produces is the ExUnit claim in
   // stops_map_move_test.exs; what this journey proves is that the review is
   // reachable from the same panel the journey arrived on.
   await dragPinBy(page, 0, -60);
   await expect(page.locator("#stops-map-edit-save")).toContainText(
     "Review move",
   );
-  await submitEditForm(page);
+  await page.locator("#stops-map-edit-save").click();
 
   await expect(page.locator("#stops-map-move-panel")).toBeAttached();
   await expect(page.locator("#stops-map-move-patterns")).toContainText(
@@ -2201,7 +2224,7 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   await page.locator("#stops-map-delete-keep").click();
 
   // 5 · Replace its duplicate. The pair is the same place 5 ft apart, so the
-  // panel offers exactly one candidate, the route's own sentence says which
+  // panel offers it first and checked, the route's own sentence says which
   // pattern stops where instead, and the answer is a count of the writes.
   await page.goto(`/gtfs/${versionId}/stops/map?stop=1433`);
   await waitForLiveView(page);
@@ -2211,7 +2234,7 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   await page.locator("#stops-map-edit-replace").click();
 
   await expect(page.locator("#stops-map-replace-candidates label")).toHaveCount(
-    1,
+    2,
   );
   await expect(
     page.locator("#stops-map-replace-candidate-1434 input[type=radio]"),
@@ -2224,8 +2247,8 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
   );
   await captureBoth(page, testInfo, "replace", "journey-");
 
-  // The replacement write is covered by stops_map_replace_test.exs; the journey
-  // ends on the review, which is the last state a person sees before deciding.
+  // The journey ends on the review, which is the last state a person sees
+  // before deciding. The replacement is written in "writing a replacement".
   await page.locator("#stops-map-replace-cancel").click();
   await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
 
@@ -2236,4 +2259,114 @@ test("from a curb to a route @journey", async ({ page }, testInfo) => {
     "staged",
     "journey-ref-",
   );
+});
+
+// ── the writes ─────────────────────────────────────────────────────────────
+
+// Every press in these two cases is a real click on the panel's own button, and
+// each ends on what the LiveView renders once the write has landed. They change
+// the seed, so they stay last and own their stops (see the header).
+
+// 1312 is on the southbound line, far from 1433 and 1434. A 60 px drag is
+// hundreds of metres, so the button reads Review move and the review asks
+// whether this is the same stop.
+test("saving a moved stop @move", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+  const stopUrl = `/gtfs/${versionId}/stops/map?stop=1312`;
+
+  await page.goto(stopUrl);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await expect(page.locator("#stops-map-edit-panel h2")).toHaveText(
+    "US 101 & NE 11th St",
+  );
+  await expect(page.locator("#stops-map-edit-lat")).toHaveValue("44.64458");
+
+  await dragPinBy(page, 0, -60);
+  await expect(page.locator("#stops-map-edit-save")).toContainText(
+    "Review move",
+  );
+  await page.locator("#stops-map-edit-save").click();
+  await expect(page.locator("#stops-map-move-panel")).toBeAttached();
+
+  // The question has no default, so the answer is the editor's: the same stop
+  // has moved, which keeps its ID. Save move reads the review the panel
+  // holds, and the editor's answer is all the browser sends.
+  await page.locator("#stops-map-move-far label").first().click();
+  await expect(
+    page.locator("#stops-map-move-far input[value='same']"),
+  ).toBeChecked();
+  await expect(page.locator("#stops-map-move-save")).toHaveText("Save move");
+  await page.locator("#stops-map-move-save").click();
+
+  // The review is over and the editor is back on the form, with the outcome
+  // stated on it and the coordinates the write left behind.
+  await expect(page.locator("#stops-map-move-saved-message")).toContainText(
+    "The stop has moved",
+  );
+  await expect(page.locator("#stops-map-move-panel")).toHaveCount(0);
+  await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-edit-lat")).not.toHaveValue("44.64458");
+
+  const movedLat = await page.locator("#stops-map-edit-lat").inputValue();
+
+  await captureBoth(page, testInfo, "saved", "move-");
+
+  // The write is the row's, not the panel's: a fresh load of the stop opens on
+  // the position the save left.
+  await page.goto(stopUrl);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-edit-lat")).toHaveValue(movedLat);
+});
+
+// 1308 and 1301 are the two stops at NW 14th St, one a side of US 101. The
+// southbound pattern stops at 1308, so replacing it moves that pattern to 1301
+// and, with the box checked as it is by default, removes 1308.
+test("writing a replacement @replace", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await logIn(page);
+  const versionId = await versionIdByName(page, VERSION_NAME);
+
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1308`);
+  await waitForLiveView(page);
+  await waitForMapReady(page);
+
+  await page.locator("#stops-map-edit-more").click();
+  await page.locator("#stops-map-edit-replace").click();
+
+  await expect(page.locator("#stops-map-replace-panel")).toBeAttached();
+  await expect(
+    page.locator("#stops-map-replace-candidate-1301 input[type=radio]"),
+  ).toBeChecked();
+  await expect(page.locator("#stops-map-replace-delete-old")).toBeChecked();
+  await expect(page.locator("#stops-map-replace-go")).toContainText(
+    "Replace in 1 pattern",
+  );
+  await page.locator("#stops-map-replace-go").click();
+
+  // The panel moves to the stop that is now the stop, and the flash says what
+  // used the old one. Both stops carry the same name, so the ID is what tells
+  // them apart.
+  await expect(page.locator("#flash-info")).toContainText(
+    "What used US 101 & NW 14th St now uses US 101 & NW 14th St.",
+  );
+  await expect(page.locator("#stops-map-replace-panel")).toHaveCount(0);
+  await expect(page.locator("#stops-map-edit-code")).toHaveValue("1301");
+
+  await captureBoth(page, testInfo, "applied", "replace-");
+
+  // The old stop is gone from the version: its link opens the list again.
+  await page.goto(`/gtfs/${versionId}/stops/map?stop=1308`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-panel")).toBeAttached();
+  await expect(page.locator("#stops-map-edit-panel")).toHaveCount(0);
 });
