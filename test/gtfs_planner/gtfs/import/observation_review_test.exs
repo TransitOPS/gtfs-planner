@@ -40,7 +40,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
 
   setup do
     organization = organization_fixture()
-    editor = editor_fixture(organization)
+    editor = user_fixture()
     membership = organization_membership_fixture(editor, organization)
     version = gtfs_version_fixture(organization.id)
 
@@ -166,7 +166,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
 
       # The stored provenance names no editor email, no journal prose, no storage
       # key and no free text of any kind.
-      encoded = Jason.encode!(reloaded.source_manifest)
+      encoded = Jason.encode!(reloaded.source_manifest["reviewed_evidence"])
       refute encoded =~ ctx.editor.email
       refute encoded =~ "note"
       refute encoded =~ ".source"
@@ -442,31 +442,16 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
                  payload
                )
 
-      # A run that is no longer in review holds no decision this may confirm.
-      assert {:ok, _pending} =
-               ChangeRuns.request_apply(ctx.organization.id, run.id, actor(ctx))
-
-      assert {:error, :unavailable} =
-               ChangeRuns.confirm_observation_selection(
-                 ctx.organization.id,
-                 ctx.version.id,
-                 actor(ctx),
-                 frozen_source(scope),
-                 payload
-               )
-
       # Another station's decision is not this station's to confirm, and a
       # payload prepared for this station cannot be pointed at another run or
       # another station.
-      still_reviewing = width_run(%{ctx | version: gtfs_version_fixture(ctx.organization.id)})
-      other_scope = selection_scope(ctx, ctx.station, still_reviewing, [])
-      source = frozen_source(other_scope)
+      source = frozen_source(scope)
 
       for {label, selection} <- [
-            {"another run", Map.put(payload, "run_id", still_reviewing.id)},
+            {"another run", Map.put(payload, "run_id", Ecto.UUID.generate())},
             {"another station",
              %{
-               "run_id" => still_reviewing.id,
+               "run_id" => run.id,
                "station_stop_id" => "STATION_B",
                "input_digest" => String.duplicate("a", 64),
                "decisions" => [
@@ -478,7 +463,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
              }},
             {"another station's decision in this station's run",
              %{
-               "run_id" => still_reviewing.id,
+               "run_id" => run.id,
                "station_stop_id" => "STATION_A",
                "input_digest" => String.duplicate("a", 64),
                "decisions" => [
@@ -499,6 +484,19 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
                  ),
                "expected #{label} to refuse"
       end
+
+      # A run that is no longer in review holds no decision this may confirm.
+      assert {:ok, _pending} =
+               ChangeRuns.request_apply(ctx.organization.id, run.id, actor(ctx))
+
+      assert {:error, :unavailable} =
+               ChangeRuns.confirm_observation_selection(
+                 ctx.organization.id,
+                 ctx.version.id,
+                 actor(ctx),
+                 frozen_source(scope),
+                 payload
+               )
     end
 
     test "at the history bound the confirmation refuses and every decision stays pending", ctx do
@@ -686,7 +684,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
       approved = decision_row(run, "pathway:PW_W14")
 
       assert {:ok, deserialized} =
-               ChangeDecisionSerializer.deserialize(
+               ChangeDecisionSerializer.deserialize(%{
                  serializer_version: 1,
                  decision_id: approved.decision_id,
                  entity_type: approved.entity_type,
@@ -699,7 +697,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
                  dependency_keys: approved.dependency_keys,
                  current_fingerprint: approved.current_fingerprint,
                  user_edited: approved.user_edited
-               )
+               })
 
       assert {:ok, round_tripped} = ChangeDecisionSerializer.serialize(deserialized)
       assert round_tripped.uploaded_values == approved.uploaded_values
@@ -755,10 +753,9 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
     # leaves a run whose source artifacts are still readable through the same
     # accessor a retry uses.
     stage_for_run(claimed, organization_id, version_id, ctx.root)
-
-    claimed
   end
 
+  # Returns the run holding the manifest that names the staged files.
   defp stage_for_run(run, organization_id, version_id, root) do
     {:ok, staged} =
       ChangeArtifactStorage.stage(
@@ -785,8 +782,6 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
         end),
       "total_bytes" => Enum.sum(Enum.map(staged, & &1.size))
     })
-
-    staged
   end
 
   defp observation(source_ref, pathway_id, value, unit) do
@@ -891,12 +886,15 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
 
   defp update_decision(run, decision_id, attrs) when is_list(attrs) do
     decision_row(run, decision_id)
-    |> ChangeDecision.system_changeset(attrs)
+    |> ChangeDecision.system_changeset(Map.new(attrs))
     |> Repo.update!()
   end
 
   defp update_decision(run, decision_id, attrs) when is_map(attrs),
     do: update_decision(run, decision_id, Map.to_list(attrs))
+
+  defp put_source_files(run, files) when is_list(files),
+    do: put_source_files(run, Map.put(run.source_manifest, "files", files))
 
   defp put_source_files(run, manifest) do
     run

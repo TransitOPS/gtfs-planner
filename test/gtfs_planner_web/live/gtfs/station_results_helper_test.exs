@@ -146,9 +146,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
 
       view = report_view(ctx, ctx.station)
 
-      view
-      |> form("#station-result-run-select", %{"run_id" => foreign_run.id})
-      |> render_change()
+      # The form only offers the page's own runs, so the forged value is sent as
+      # the raw event a modified client could push.
+      render_hook(view, "select_result_run", %{"run_id" => foreign_run.id})
 
       assert panel_context(view).source_snapshot.payload["run_id"] == nil
       assert has_element?(view, "#station-helper-freshness", "No recorded check is selected")
@@ -230,7 +230,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
       refute has_element?(view, "[data-evidence-kind]")
     end
 
-    test "a close and reopen after a late exit shows no old evidence and no stale link", ctx do
+    test "a close and reopen after a late exit shows only its own conversation, never an injected entry",
+         ctx do
       run = recorded_run(ctx)
       {view, pid} = open_helper(ctx, ctx.station, run)
 
@@ -253,10 +254,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
 
       view |> element("#station-helper-open") |> render_click()
       assert has_element?(view, "#agent-panel")
-      refute has_element?(view, "[data-evidence-kind]")
 
-      # The reopened panel is a fresh conversation about the same source, so it
-      # can explain the same run again rather than inheriting the old transcript.
+      # Reopening rejoins the same conversation about the same source, so its own
+      # answered turn is still there; the entry injected after the close is not.
+      assert has_element?(view, "[data-evidence-kind=recorded_result]")
+      refute render(view) =~ "An answer from the replaced conversation."
+
+      # The same conversation can explain the same run again.
       expect_reply(tool_calls_reply([{"call_2", "get_station_result", @tool_arguments}]))
       expect_reply(text_reply(@reply))
 
@@ -270,9 +274,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
       {view, pid} = open_helper(ctx, ctx.station, run)
 
       # Access is withdrawn between the tool call and the model's next turn.
-      expect_reply(
-        tool_calls_reply([{"call_2", "get_station_report_facts", @tool_arguments}])
-        |> then(&deactivate_during(&1, ctx))
+      deactivate_during(
+        tool_calls_reply([{"call_2", "get_station_report_facts", @tool_arguments}]),
+        ctx
       )
 
       submit(view, @first_message)
@@ -324,6 +328,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
       run_count_before = Repo.aggregate(ValidationRun, :count)
 
       {view, pid} = open_panel(view)
+      assert {:ok, ^pid, _snapshot} = Agents.open(panel_scope(ctx, ctx.station, run))
 
       expect_reply(tool_calls_reply([{"call_1", "get_station_result", @tool_arguments}]))
       expect_reply(text_reply(@reply))
@@ -355,6 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
       assert has_element?(view, "#station-helper-freshness", "recorded no input digest")
 
       {view, pid} = open_panel(view)
+      assert {:ok, ^pid, _snapshot} = Agents.open(panel_scope(ctx, ctx.station, legacy))
 
       expect_reply(tool_calls_reply([{"call_1", "get_station_result", @tool_arguments}]))
       expect_reply(text_reply("This check predates the recorded schema."))

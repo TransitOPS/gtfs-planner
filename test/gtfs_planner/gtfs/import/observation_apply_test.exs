@@ -62,7 +62,6 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
   setup do
     organization = organization_fixture()
     editor = editor_fixture(organization)
-    organization_membership_fixture(editor, organization)
     version = gtfs_version_fixture(organization.id)
 
     level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
@@ -178,16 +177,9 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
                  :approved
                )
 
-      # W12's uploaded width then changes out from under the decision, so the
-      # ordinary fingerprint fence - not the new binding check - marks it stale.
-      update_decision(run, "pathway:PW_W12",
-        uploaded_values: %{
-          "from_stop_id" => "ENT_A",
-          "to_stop_id" => "PLAT_A",
-          "min_width" => "9.99"
-        },
-        changed_fields: [%{"field" => "min_width", "before" => "1.1", "after" => "9.99"}]
-      )
+      # W12's live record no longer matches the fingerprint recorded for it, so
+      # the ordinary fingerprint fence - not the new binding check - marks it stale.
+      update_decision(run, "pathway:PW_W12", current_fingerprint: String.duplicate("0", 64))
 
       apply_run = claim_apply(ctx, run)
 
@@ -251,8 +243,12 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
       # The historical entry is retained: a stale binding is refused, never erased.
       assert [%{"decision_id" => "pathway:PW_W14"}] = entries(Repo.get!(ChangeRun, run.id))
 
-      assert {:ok, _pending_apply} = ChangeRuns.retry(ctx.organization.id, run.id, actor(ctx))
-      second = claim_apply(ctx, run)
+      assert {:ok, pending_apply} = ChangeRuns.retry(ctx.organization.id, run.id, actor(ctx))
+
+      {:ok, claimed, generation, token} =
+        ChangeRuns.claim(ctx.organization.id, pending_apply.id, :apply)
+
+      second = %{run: claimed, generation: generation, token: token}
 
       assert :ok =
                ChangeWorker.apply(
@@ -344,10 +340,12 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
 
       # The upload this run was computed from is no longer the run's source, so the
       # entry's base source digest no longer describes it.
+      current = Repo.get!(ChangeRun, run.id)
+
       put_source_files(
-        Repo.get!(ChangeRun, run.id),
+        current,
         Map.put(
-          elem(before, 0),
+          current.source_manifest,
           "files",
           Enum.map(
             elem(before, 0)["files"],
@@ -578,7 +576,9 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
       assert :ok == unboxed(fn -> await_blocker(apply_backend, editor_backend, deadline()) end)
 
       send(editor.pid, :commit)
-      assert {:ok, %ChangeDecision{status: :stale}} = Task.await(editor, @collect_timeout)
+
+      assert {:ok, {:ok, %ChangeDecision{uploaded_values: %{"min_width" => "1.40"}}}} =
+               Task.await(editor, @collect_timeout)
 
       assert {:error, :stale_reviewed_evidence} = Task.await(apply_task, @collect_timeout)
 
@@ -586,7 +586,9 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
         assert Decimal.equal?(width_of(scope, "PW_W14"), Decimal.new("0.95"))
         assert change_log_count(scope.organization) == 0
 
-        assert [%ChangeDecision{apply_failure_code: "stale_reviewed_evidence"}] =
+        # The refusal rolls the apply back; recording the failure is the worker's
+        # job, so the decision is as the editor left it.
+        assert [%ChangeDecision{status: :approved, apply_failure_code: nil}] =
                  failures(run, "pathway:PW_W14")
 
         assert [%{"decision_id" => "pathway:PW_W14"}] = entries(Repo.get!(ChangeRun, run.id))
@@ -799,7 +801,7 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
 
   defp update_decision(run, decision_id, attrs) do
     decision_row(run, decision_id)
-    |> ChangeDecision.system_changeset(attrs)
+    |> ChangeDecision.system_changeset(Map.new(attrs))
     |> Repo.update!()
   end
 

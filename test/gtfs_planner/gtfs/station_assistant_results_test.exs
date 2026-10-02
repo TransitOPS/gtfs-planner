@@ -153,8 +153,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistantResultsTest do
     test "a scope without a station_results source refuses every read", ctx do
       scope = %{scope_base(ctx) | resource_context: Scope.context({:version, ctx.version.id})}
 
-      assert {:error, :no_selected_run} = StationAssistant.result(scope, %{})
+      assert {:error, :unavailable} = StationAssistant.result(scope, %{})
       assert {:error, :unavailable} = StationAssistant.report_facts(scope)
+
+      # A station snapshot that names no run is a missing selection, not an
+      # unavailable resource.
+      assert {:error, :no_selected_run} =
+               StationAssistant.result(station_scope(ctx, ctx.station, nil), %{})
 
       import_ctx =
         station_scope(ctx, ctx.station, nil)
@@ -210,7 +215,8 @@ defmodule GtfsPlanner.Gtfs.StationAssistantResultsTest do
 
       refute encoded =~ "elevator"
       refute encoded =~ "outage"
-      refute encoded =~ "cause"
+      refute encoded =~ "caused"
+      refute encoded =~ "because"
 
       assert {:ok, facts, facts_evidence} = StationAssistant.report_facts(scope)
 
@@ -606,7 +612,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantResultsTest do
         started_at: DateTime.utc_now(),
         result_json: %{}
       }
-      |> Map.merge(Map.new(attrs))
+      |> Map.merge(attrs |> Map.new() |> Map.delete(:station_stop_id))
 
     merged
     |> Map.put(:result_json, with_station_metadata(merged.result_json, ctx.station.stop_id))

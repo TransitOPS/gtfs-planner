@@ -319,11 +319,11 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
 
       run_turn(scope, "What did the check say?")
 
-      assert_receive {:model_request, request}, 5_000
-
-      # The last request carries the tool message the model read; nothing the
-      # station journal holds may appear anywhere in it.
-      encoded = Jason.encode!(request)
+      # The follow-up request carries the tool message the model read; nothing
+      # the station journal holds may appear in any request the turn sent.
+      requests = model_requests()
+      assert Enum.any?(requests, &(tool_messages(&1) != []))
+      encoded = Jason.encode!(requests)
 
       refute encoded =~ sentinel
       refute encoded =~ "SENTINEL-PHOTO-FILENAME"
@@ -406,12 +406,15 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
     end
 
     test "a foreign station, version or organization is unavailable, not a lesser answer", ctx do
-      for {organization_id, version_id, station} <- [
-            {ctx.foreign_organization.id, ctx.foreign_version.id, ctx.foreign_station},
-            {ctx.organization.id, ctx.other_version.id, ctx.station},
-            {ctx.organization.id, ctx.version.id, ctx.other_station}
+      # Each scope is this editor's own organization naming a resource it does
+      # not hold: another organization's version, another organization's station
+      # that shares this station's GTFS id, or another version of this one.
+      for {version_id, station} <- [
+            {ctx.foreign_version.id, ctx.foreign_station},
+            {ctx.version.id, ctx.foreign_station},
+            {ctx.other_version.id, ctx.station}
           ] do
-        scope = foreign_scope(ctx, organization_id, version_id, station)
+        scope = foreign_scope(ctx, version_id, station)
 
         assert {:error, :unavailable} = StationResults.authorize_context(scope)
 
@@ -530,7 +533,7 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
                  id: id,
                  target_type: "station",
                  body: body,
-                 captured_at: DateTime.utc_now() |> DateTime.truncate(:second)
+                 captured_at: DateTime.utc_now()
                }
              ])
 
@@ -543,7 +546,7 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
       content_type: "image/jpeg",
       byte_size: 2,
       sha256: :crypto.hash(:sha256, "sentinel"),
-      captured_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      captured_at: DateTime.utc_now()
     })
 
     body
@@ -552,10 +555,7 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
   # The foreign conversation belongs to a real editor of the foreign
   # organization: a membership of this one would be refused as `:forbidden`
   # before the station or the run was ever examined.
-  defp foreign_scope(_ctx, organization_id, version_id, station) do
-    foreign = GtfsPlanner.Organizations.get_organization!(organization_id)
-    user = editor_fixture(foreign)
-
+  defp foreign_scope(ctx, version_id, station) do
     {:ok, resource_context} =
       Scope.context({:version, version_id})
       |> Scope.with_source_snapshot(%{
@@ -568,10 +568,10 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
       })
 
     %Scope{
-      organization_id: organization_id,
+      organization_id: ctx.organization.id,
       gtfs_version_id: version_id,
-      user_id: user.id,
-      user_email: user.email,
+      user_id: ctx.user.id,
+      user_email: ctx.user.email,
       pack_id: "station_results",
       version_name: "Foreign",
       resource_context: resource_context
@@ -848,6 +848,14 @@ defmodule GtfsPlanner.Agents.StationResultsPackTest do
     |> case do
       [] -> tool_result()
       messages -> messages |> List.last() |> Map.fetch!("content") |> Jason.decode!()
+    end
+  end
+
+  defp model_requests do
+    receive do
+      {:model_request, request} -> [request | model_requests()]
+    after
+      0 -> []
     end
   end
 

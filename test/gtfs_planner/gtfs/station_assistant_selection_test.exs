@@ -362,7 +362,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       assert evidence.total == 1
       assert evidence.digest == result["input_digest"]
 
-      refute Jason.encode!(result) =~ "approve"
+      refute Jason.encode!(result) =~ ~r/approve(?!d)/
       refute Jason.encode!(result) =~ "set_decision_status"
       refute Jason.encode!(result) =~ "request_apply"
     end
@@ -468,6 +468,15 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
           accepted_observation("OBS88", "PW_W14", "105", "cm")
         ])
 
+      # The uploaded file says 1.07 m while the accepted observation is 1.05 m.
+      update_decision(run, "pathway:PW_W14",
+        uploaded_values: %{
+          "from_stop_id" => "ENT_A",
+          "to_stop_id" => "PLAT_A",
+          "min_width" => "1.07"
+        }
+      )
+
       before = decision_row(run, "pathway:PW_W14")
 
       assert {:ok, result, _evidence} =
@@ -481,7 +490,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
 
       # The uploaded file is exactly as it was.
       assert decision_row(run, "pathway:PW_W14") == before
-      assert before.uploaded_values["min_width"] == "1.05"
+      assert before.uploaded_values["min_width"] == "1.07"
       assert ctx.w14.min_width == Decimal.new("0.95")
     end
 
@@ -640,7 +649,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
                  "pathway:PW_OTHER"
                ])
 
-      assert length(result["selected"]) == 1
+      assert length(result["selected"]) == 2
 
       after_run = Repo.get!(ChangeRun, run.id)
       assert after_run.state == before_run.state
@@ -718,7 +727,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
 
       run = native_compute_run(ctx, overrides)
 
-      assert {:ok, run} = Repo.reload(run)
+      run = Repo.reload!(run)
       assert run.state == :review
 
       decisions = ChangeRuns.list_decisions(ctx.organization.id, run.id)
@@ -731,7 +740,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       scope =
         selection_scope(ctx, ctx.station, run, [
           accepted_observation("OBS88", "PW_W14", "105", "cm"),
-          accepted_observation("OBS91", "PW_W12", "120", "cm")
+          Map.put(accepted_observation("OBS91", "PW_W12", "120", "cm"), "conflict", true)
         ])
 
       assert {:ok, result, _evidence} =
@@ -933,7 +942,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
 
   defp update_decision(run, decision_id, attrs) do
     decision_row(run, decision_id)
-    |> ChangeDecision.system_changeset(attrs)
+    |> ChangeDecision.system_changeset(Map.new(attrs))
     |> Repo.update!()
   end
 

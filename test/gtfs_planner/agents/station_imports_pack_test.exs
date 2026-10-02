@@ -201,8 +201,8 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
       assert result["counts"]["excluded_total"] == 1
 
       assert result["excluded"] == %{
-               none: 3,
-               unresolvable_or_other_endpoint: 1
+               "none" => 3,
+               "unresolvable_or_other_endpoint" => 1
              }
 
       refute Jason.encode!(result) =~ "PW_CROSS"
@@ -229,7 +229,8 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
     end
 
     test "accepted provenance reaches the model without the journal's prose or author", ctx do
-      body = journal_entry(ctx, "SENTINEL-JOURNAL-PROSE-DO-NOT-SEND")
+      body = "SENTINEL-JOURNAL-PROSE-DO-NOT-SEND"
+      journal_entry(ctx, body)
 
       scope = import_scope(ctx, ctx.station, ctx.run, observations(ctx))
       expect_reply(tool_calls_reply([{"call_1", "get_observation_provenance", ~s({})}]))
@@ -241,7 +242,8 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
       assert entry.status == :done
       assert entry.activity == ["Read accepted measurement provenance"]
 
-      result = tool_result()
+      request = tool_request()
+      result = request_tool_result(request)
 
       assert result["counts"] == %{"submitted" => 2, "accepted" => 2, "rejected" => 0}
 
@@ -257,8 +259,6 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
       assert [evidence] = entry.evidence
       assert evidence.kind == "station_observation_provenance"
       assert evidence.total == 2
-
-      assert_receive {:model_request, request}, 5_000
 
       encoded = Jason.encode!(request)
       refute encoded =~ body
@@ -596,9 +596,11 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
     test "a revoked membership stops the request and the read", ctx do
       deactivate_membership_fixture(ctx.membership)
 
+      # The pack's own check says unavailable; Dispatch refuses earlier, at the
+      # scope's membership check, with forbidden.
       assert {:error, :unavailable} = StationImports.authorize_context(ctx.scope)
 
-      assert {:error, :unavailable} =
+      assert {:error, :forbidden} =
                Dispatch.call(
                  StationImports,
                  ctx.scope,
@@ -624,10 +626,14 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
     end
 
     test "the native compute path yields the same selection", ctx do
+      # `create_pending_compute/4` returns the version's active run, so the
+      # setup's hand-written review is removed before the real compute.
+      Repo.delete!(ctx.run)
+
       run = native_compute_run(ctx)
       scope = import_scope(ctx, ctx.station, run, observations(ctx))
 
-      assert {:ok, result, _evidence} =
+      assert {:prepared, _prepared, result, _evidence} =
                Dispatch.call(
                  StationImports,
                  scope,
@@ -818,11 +824,13 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
       %{filename: "pathways.txt", content: pathways_csv(ctx)}
     ]
 
+    run_id = Ecto.UUID.generate()
+
     assert {:ok, manifest} =
              ChangeArtifactStorage.stage(
                ctx.organization.id,
                ctx.version.id,
-               Ecto.UUID.generate(),
+               run_id,
                files,
                root: root
              )
@@ -832,7 +840,8 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
         ctx.organization.id,
         ctx.version.id,
         actor(ctx),
-        manifest
+        manifest,
+        run_id
       )
 
     {:ok, claimed, generation, token} =
@@ -1089,15 +1098,20 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
     end
   end
 
-  defp tool_result do
+  defp tool_result, do: tool_request() |> request_tool_result()
+
+  # The first provider request that replays a tool message.
+  defp tool_request do
     assert_receive {:model_request, request}, 5_000
 
-    request
-    |> tool_messages()
-    |> case do
-      [] -> tool_result()
-      messages -> messages |> List.last() |> Map.fetch!("content") |> Jason.decode!()
+    case tool_messages(request) do
+      [] -> tool_request()
+      _messages -> request
     end
+  end
+
+  defp request_tool_result(request) do
+    request |> tool_messages() |> List.last() |> Map.fetch!("content") |> Jason.decode!()
   end
 
   defp tool_messages(request) do

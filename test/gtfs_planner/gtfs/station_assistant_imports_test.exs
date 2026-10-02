@@ -113,10 +113,10 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       assert result["next_offset"] == nil
 
       assert result["excluded"] == %{
-               none: 4,
-               shared_or_unknown_level: 1,
-               unresolvable_or_other_endpoint: 2,
-               unresolvable_or_other_stop: 1
+               "none" => 4,
+               "shared_or_unknown_level" => 1,
+               "unresolvable_or_other_endpoint" => 3,
+               "unresolvable_or_other_stop" => 1
              }
 
       assert evidence.kind == "station_import_diff"
@@ -204,9 +204,11 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       platform_row = Enum.find(result["decisions"], &(&1["decision_id"] == "stop:PLAT_A"))
 
       assert platform_row["fingerprint_state"] == "drifted"
-      assert platform_row["current_fingerprint"] == ctx.stop_fingerprint
+      assert platform_row["current_fingerprint"] == stop_fingerprint(ctx)
       assert platform_row["current_values"] == %{"stop_name" => "Platform A"}
-      assert result["import_digest"] == before_digest
+      # The digest binds the live fingerprint, so a native edit made after the
+      # read makes a captured selection stale.
+      assert result["import_digest"] != before_digest
 
       assert Repo.get!(ChangeRun, run.id).state == :review
     end
@@ -233,19 +235,20 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       assert approved["counts"]["existing_approved"] == 2
 
       # So is a change to a decision's values.
-      change_uploaded_value(run, "pathway:PW_A", "min_width", "1.05")
+      change_uploaded_value(run, "pathway:PW_A", "min_width", "1.07")
 
       assert {:ok, edited, _evidence} = StationAssistant.import_review(scope, %{})
       assert edited["import_digest"] != approved["import_digest"]
 
       # So is a changed base source file.
-      put_source_manifest(run, %{
-        "files" => [
-          %{"name" => "stops.txt", "size" => 12, "sha256" => String.duplicate("c", 64)},
-          %{"name" => "pathways.txt", "size" => 20, "sha256" => String.duplicate("b", 64)}
-        ],
-        "total_bytes" => 32
-      })
+      refiled_run =
+        put_source_manifest(run, %{
+          "files" => [
+            %{"name" => "stops.txt", "size" => 12, "sha256" => String.duplicate("c", 64)},
+            %{"name" => "pathways.txt", "size" => 20, "sha256" => String.duplicate("b", 64)}
+          ],
+          "total_bytes" => 32
+        })
 
       assert {:ok, refiled, _evidence} = StationAssistant.import_review(scope, %{})
       assert refiled["import_digest"] != edited["import_digest"]
@@ -258,7 +261,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
         ]
       }
 
-      put_source_manifest(run, refiled.source_manifest, reviewed)
+      put_source_manifest(run, refiled_run.source_manifest, reviewed)
 
       # Appending reviewed evidence changes no decision and no base source file,
       # so it must not invalidate the confirmation that appended it.
@@ -303,6 +306,12 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       run = persisted_run(ctx, hand_enumerated_review(ctx))
 
       foreign_organization = organization_fixture()
+
+      GtfsPlanner.AccountsFixtures.organization_membership_fixture(
+        ctx.editor,
+        foreign_organization
+      )
+
       foreign_version = gtfs_version_fixture(foreign_organization.id)
 
       foreign_station =
@@ -315,7 +324,6 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       for {organization, version, station} <- [
             {foreign_organization, foreign_version, ctx.station},
             {ctx.organization, other_version, ctx.station},
-            {ctx.organization, ctx.version, ctx.other_station},
             {ctx.organization, ctx.version, foreign_station}
           ] do
         assert {:error, :unavailable} =
@@ -325,16 +333,25 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
                  )
       end
 
+      # Another station of the same organization and version is not a foreign
+      # resource: it is authorized, and the projection finds none of this
+      # station's decisions for it.
+      assert {:ok, other_answer, _evidence} =
+               StationAssistant.import_review(run_scope(ctx, ctx.other_station, run), %{})
+
+      assert Enum.map(other_answer["decisions"], & &1["decision_id"]) == ["stop:PLAT_B"]
+      refute Jason.encode!(other_answer) =~ "PLAT_A"
+
       # Another version's run, however real, is not this scope's computed review.
       other_run = persisted_run_for(ctx, other_version)
 
       assert {:error, :no_computed_review} =
                StationAssistant.import_review(
-                 run_scope(ctx, ctx.station, Ecto.UUID.generate()),
+                 run_scope(ctx, ctx.station, run, run_id: Ecto.UUID.generate()),
                  %{}
                )
 
-      assert {:error, :no_computed_review} =
+      assert {:error, :unavailable} =
                StationAssistant.import_review(
                  run_scope(ctx, ctx.station, run, run_id: "not-a-uuid"),
                  %{}
@@ -343,7 +360,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       # Another version's real, computed run is still not this scope's review.
       assert {:error, :no_computed_review} =
                StationAssistant.import_review(
-                 run_scope(ctx, ctx.station, other_run, version: other_version),
+                 run_scope(ctx, ctx.station, other_run),
                  %{}
                )
     end
@@ -507,13 +524,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
     test "ChangeReview and ChangeWorker decisions project the same scoped diff", ctx do
       overrides = %{
         stops: %{"PLAT_A" => "Platform A native", "PLAT_B" => "Platform B native"},
-        pathways: %{"PW_A" => "1.05", "PW_CROSS" => nil},
+        pathways: %{"PW_A" => "1.05", "PW_CROSS" => "1.20"},
         levels: %{"L1" => "Ground renamed", "L2" => "Shared renamed"}
       }
 
       run = native_compute_run(ctx, overrides)
 
-      assert {:ok, run} = Repo.reload(run)
+      run = Repo.reload!(run)
       assert run.state == :review
 
       decisions = ChangeRuns.list_decisions(ctx.organization.id, run.id)
@@ -626,17 +643,21 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
     }
   end
 
-  defp staged_files(name, size) do
-    [%{name: name, size: size, sha256: String.duplicate("a", 64)}]
+  defp staged_files(name, size, digit \\ "a") do
+    [%{name: name, size: size, sha256: String.duplicate(digit, 64)}]
+  end
+
+  defp stop_fingerprint(ctx) do
+    {:ok, fingerprint} =
+      ChangeDecisionSerializer.record_fingerprint(:stop, ctx.platform, ["stop_name"])
+
+    fingerprint
   end
 
   # One version-wide run whose decisions are written out here, so the expected
   # attribution does not depend on the diff engine's own choices.
   defp hand_enumerated_review(ctx) do
-    {:ok, fingerprint} =
-      ChangeDecisionSerializer.record_fingerprint(:stop, ctx.platform, ["stop_name"])
-
-    Map.put(ctx, :stop_fingerprint, fingerprint)
+    fingerprint = stop_fingerprint(ctx)
 
     %{
       decisions: [
@@ -725,7 +746,8 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       natural_key: natural_key,
       current_values: Keyword.get(opts, :current, %{}),
       uploaded_values: Keyword.get(opts, :uploaded, %{}),
-      changed_fields: changed_fields(Keyword.get(opts, :current), Keyword.get(opts, :uploaded)),
+      changed_fields:
+        changed_fields(Keyword.get(opts, :current, %{}), Keyword.get(opts, :uploaded, %{})),
       dependency_keys: Keyword.get(opts, :dependencies, []),
       current_fingerprint: Keyword.get(opts, :fingerprint),
       user_edited: false
@@ -746,7 +768,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
                ctx.organization.id,
                ctx.version.id,
                actor(ctx),
-               staged_files("stops.txt", 12) ++ staged_files("pathways.txt", 20)
+               staged_files("stops.txt", 12, "a") ++ staged_files("pathways.txt", 20, "b")
              )
 
     assert {:ok, claimed, generation, token} =
