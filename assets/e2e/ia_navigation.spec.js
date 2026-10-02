@@ -581,14 +581,14 @@ test.describe("header presentation", () => {
     // Keyboard focus uses the design system's two-pixel outline.
     await page.keyboard.press("Tab"); // skip to main content
     await page.keyboard.press("Tab"); // product link
-    await page.keyboard.press("Tab"); // Routes
+    await page.keyboard.press("Tab"); // Alerts, the first task
 
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
-      "nav-routes",
+      "nav-alerts",
     );
 
     const outline = await page
-      .locator("#nav-routes")
+      .locator("#nav-alerts")
       .evaluate((el) => getComputedStyle(el));
     expect(parseFloat(outline.outlineWidth)).toBeGreaterThanOrEqual(2);
     expect(outline.outlineStyle).not.toBe("none");
