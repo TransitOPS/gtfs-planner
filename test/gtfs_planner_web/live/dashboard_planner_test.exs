@@ -210,7 +210,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
              )
 
       assert render(element(view, "#resume-list")) =~
-               ~r/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{1,2}:\d{2} [AP]M\b/
+               ~r/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M\b/
     end
 
     test "a member with no changes sees the team list with author emails", context do

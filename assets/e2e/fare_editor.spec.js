@@ -58,14 +58,13 @@ const BLANK_TILE = Buffer.from(
   "base64",
 );
 
-// Resolve design references and retained captures from the primary checkout.
-// Spec artifacts deliberately do not belong to implementation worktrees.
+// Spec artifacts deliberately do not belong to implementation worktrees. Set
+// FARE_EDITOR_SPEC_ROOT to the canonical package when this test runs in one.
+const SPEC_ROOT =
+  process.env.FARE_EDITOR_SPEC_ROOT ||
+  resolve(REPO_ROOT, "..", "gtfs-planner", ".specs", "29-fares-v1-v2-add-edit");
 const REFERENCE_PATH = resolve(
-  REPO_ROOT,
-  "..",
-  "gtfs-planner",
-  ".specs",
-  "29-fares-v1-v2-add-edit",
+  SPEC_ROOT,
   "references",
   "fares-editor-prototype.html",
 );

@@ -398,9 +398,9 @@ for (const { width, height, label } of VIEWPORTS) {
       await page.waitForURL(/\/settings\/fares$/);
       await waitForLiveView(page);
       await expect(page.locator("h1")).toHaveText("Fares");
-      // The default seeded version carries no fare zone, so the workspace opens
-      // on its first-use state rather than the zones panel.
-      await expect(page.locator("#fare-zone-first-use")).toBeAttached();
+      // The default seeded version carries no fares, so the workspace opens on
+      // its first-use setup rather than the prices grid.
+      await expect(page.locator("#fare-setup")).toBeAttached();
       await expect(page.locator("#coming-soon")).toHaveCount(0);
       await expect(page.locator("#settings-nav")).toHaveCount(0);
       await expect(page.locator("#settings-back")).toHaveText("Settings");
