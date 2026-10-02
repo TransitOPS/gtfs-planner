@@ -26,6 +26,16 @@ defmodule GtfsPlanner.Gtfs.Flex do
   This serializes with the version's other input writers; the caller's struct
   still carries the `lock_version` that decides the `:stale` outcome.
 
+  `save_service/5` is the same whole-page save fenced for an assistant-reviewed
+  candidate. It is the only writer that takes the version row
+  `FOR UPDATE` (`Versions.lock_for_exclusive_write!/2`) instead, at the same
+  point in the transaction, and under that fence it re-reads the saved service,
+  its areas and geometry and every calendar its stored fields name, and
+  re-checks both the reviewed baseline fingerprint and the reviewed whole-page
+  digest before the first write. A dependency or a page that moved since the
+  review rolls back as `{:error, :assistant_stale}` with nothing written. See
+  `GtfsPlanner.Gtfs.Flex.Assistant.Guard` for what such a guard carries.
+
   `map_payload/2` is the read the browser's flex maps draw from: the active
   services' stored geometry, the version's fixed route lines and its connecting
   stops, all through the same scoped reads and through
@@ -42,6 +52,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
   alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.Flex.Assistant
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
@@ -531,6 +542,9 @@ defmodule GtfsPlanner.Gtfs.Flex do
   `{:error, :version_unavailable}` for a version the organization does not own
   or that is not published, `{:error, :stale}` for a miss or a lost race, and
   the changeset's errors for attrs or areas the editor changesets refuse.
+
+  This is the ordinary whole-page save. An assistant-reviewed save is
+  `save_service/5`, which fences the same write differently.
   """
   @spec save_service(AuditContext.t(), FlexService.t(), map(), [area_input()]) ::
           {:ok, FlexService.t()}
@@ -551,12 +565,134 @@ defmodule GtfsPlanner.Gtfs.Flex do
           Repo.rollback(:stale)
 
         %FlexService{} ->
-          loaded
-          |> FlexService.changeset(attrs)
-          |> update_service!()
-          |> replace_areas!(organization_id, version_id, area_inputs)
+          write_service!(loaded, organization_id, version_id, attrs, area_inputs)
       end
     end)
+  end
+
+  @doc """
+  Saves the service page against a reviewed assistant guard, or writes nothing.
+
+  The options map is exactly `%{assistant_guard: guard}`, where `guard` is a
+  `GtfsPlanner.Gtfs.Flex.Assistant.Guard` the server built after an editor
+  reviewed a prepared candidate. No other options are accepted and no guard is
+  ever read from a client payload: an options map that is not a well-built guard
+  answers `{:error, :assistant_stale}` and writes nothing, because a save that
+  cannot prove the state it was reviewed against must not persist.
+
+  The write itself is `save_service/4`'s. What changes is the fence and the two
+  checks that run under it:
+
+    * The transaction takes the scoped version row `FOR UPDATE` at entry, after
+      the membership check and before any entity read, instead of the `FOR SHARE`
+      lock an ordinary save takes. It never takes the share lock first, so it
+      never asks for a lock it already holds, and while it is held neither an
+      ordinary Flex write nor a calendar write can commit into this version.
+    * The saved service, its areas and their geometry, and the weekly rows,
+      exceptions and attributes of every calendar its stored fields name are
+      re-read under that lock and re-fingerprinted. A digest other than the
+      guard's baseline, or a whole submitted page other than the one the review
+      showed, rolls the transaction back as `{:error, :assistant_stale}` before
+      any update, area replacement or audit row.
+
+  The native outcomes are unchanged and still reachable: a revoked editor is
+  `{:error, :forbidden}` before the version lock, a version the organization does
+  not own or that is not published is `{:error, :version_unavailable}`, a
+  service that is gone is `{:error, :stale}`, a lost optimistic race is
+  `{:error, :stale}`, and attrs or areas the native changesets refuse return
+  their own changeset or `{:error, {:invalid_area, key, reason}}`.
+  """
+  @spec save_service(AuditContext.t(), FlexService.t(), map(), [area_input()], map()) ::
+          {:ok, FlexService.t()}
+          | {:error,
+             :assistant_stale
+             | :stale
+             | :forbidden
+             | :version_unavailable
+             | Ecto.Changeset.t()
+             | {:invalid_area, String.t(), term()}}
+  def save_service(%AuditContext{} = audit, %FlexService{} = loaded, attrs, area_inputs, options)
+      when is_list(area_inputs) do
+    case assistant_guard(options) do
+      {:ok, %Assistant.Guard{} = guard} ->
+        organization_id = audit.organization_id
+        version_id = audit.gtfs_version_id
+
+        transact(
+          audit,
+          fn ->
+            case scoped_service(organization_id, version_id, loaded.id) do
+              nil ->
+                Repo.rollback(:stale)
+
+              %FlexService{} = saved ->
+                verify_assistant_guard!(guard, saved, loaded, attrs, area_inputs)
+
+                write_service!(loaded, organization_id, version_id, attrs, area_inputs)
+            end
+          end,
+          :exclusive
+        )
+
+      :error ->
+        {:error, :assistant_stale}
+    end
+  end
+
+  # The whole page one reviewed save writes, shared by the ordinary and the
+  # guarded save so the two can never persist different things. The changeset is
+  # built from the caller's own `loaded` struct, so its `lock_version` still
+  # decides the `:stale` outcome; the guarded save's fresh read is only ever the
+  # baseline it compares, never the row it writes through.
+  defp write_service!(loaded, organization_id, version_id, attrs, area_inputs) do
+    loaded
+    |> FlexService.changeset(attrs)
+    |> update_service!()
+    |> replace_areas!(organization_id, version_id, area_inputs)
+  end
+
+  # Exactly one option, and it is a guard: a map that carries a guard beside
+  # anything else is not this save's options map.
+  defp assistant_guard(%{assistant_guard: %Assistant.Guard{} = guard} = options) do
+    if Map.keys(options) == [:assistant_guard], do: {:ok, guard}, else: :error
+  end
+
+  defp assistant_guard(_options), do: :error
+
+  # The reviewed state, verified under the exclusive version fence before the
+  # first write. The baseline digest is the workspace content the review read,
+  # re-read now, so a calendar-only, area-only or service-only commit since the
+  # review is caught here rather than being persisted on top of. The candidate
+  # digest is the whole page the review showed, computed from the caller's own
+  # loaded struct exactly as the host computed it, so a field edited after the
+  # review is caught too. A page the native changeset refuses has no candidate to
+  # compare, and the native refusal below is the editor's answer.
+  defp verify_assistant_guard!(
+         %Assistant.Guard{} = guard,
+         %FlexService{} = saved,
+         %FlexService{} = loaded,
+         attrs,
+         inputs
+       ) do
+    organization_id = saved.organization_id
+    version_id = saved.gtfs_version_id
+
+    baseline =
+      organization_id
+      |> Assistant.dependencies(version_id, saved)
+      |> Assistant.fingerprint()
+
+    if baseline != guard.saved_fingerprint do
+      Repo.rollback(:assistant_stale)
+    end
+
+    case Assistant.Guard.candidate_digest(loaded, attrs, inputs) do
+      {:ok, digest} ->
+        if digest != guard.candidate_digest, do: Repo.rollback(:assistant_stale)
+
+      :invalid ->
+        :ok
+    end
   end
 
   @doc """
@@ -975,12 +1111,18 @@ defmodule GtfsPlanner.Gtfs.Flex do
   # lock. A pair the organization does not own, or one that is not a version,
   # rolls back `:not_found` and answers `:version_unavailable`; a version that
   # is not published cannot be authored (R10).
-  defp transact(%AuditContext{} = audit, fun) do
+  #
+  # `:exclusive` selects the version's `FOR UPDATE` fence for a guarded
+  # assistant save (AC-10); `:shared` is the default every ordinary write keeps.
+  # Both are taken here, at entry after the membership check and before any
+  # entity read, and the two are never taken together: a transaction never holds
+  # a share lock it then asks to upgrade.
+  defp transact(%AuditContext{} = audit, fun, fence \\ :shared) do
     result =
       Repo.transaction(fn ->
         Authorization.lock_editor!(audit)
 
-        case Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id) do
+        case lock_version(audit, fence) do
           %GtfsVersion{publication_status: @published_status} -> fun.()
           %GtfsVersion{} -> Repo.rollback(:version_unavailable)
         end
@@ -997,6 +1139,12 @@ defmodule GtfsPlanner.Gtfs.Flex do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp lock_version(%AuditContext{} = audit, :shared),
+    do: Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
+  defp lock_version(%AuditContext{} = audit, :exclusive),
+    do: Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
 
   defp insert_service!(changeset) do
     case Repo.insert(changeset) do

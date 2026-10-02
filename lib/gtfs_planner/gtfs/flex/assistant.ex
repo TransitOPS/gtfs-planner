@@ -62,6 +62,14 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   service's records are in the workspace for the server's own use and are never
   in the view.
 
+  `dependencies/3` re-reads that exact saved content for a caller that already
+  holds a lock of its own, so `fingerprint/1` can be recomputed at write time
+  against the same shape the workspace froze. It is how a guarded native save
+  (`GtfsPlanner.Gtfs.Flex.save_service/5`, with
+  `GtfsPlanner.Gtfs.Flex.Assistant.Guard`) proves that the service, its areas and
+  the calendars its stored fields name have not moved since the review, and
+  `canonical/1` is the single encoding every digest in this slice is built on.
+
   ## Preparing a candidate
 
   `prepare/2` accepts one allowlisted, string-keyed map and nothing else:
@@ -277,6 +285,32 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   end
 
   @doc """
+  Re-reads the exact dependency content `fingerprint/1` digests.
+
+  This is the same read `workspace/2` freezes, in the same shape, for a caller
+  that already holds a lock of its own: a guarded native save calls it inside
+  its exclusive transaction and compares `fingerprint/1` over the result with
+  the baseline its reviewed guard carries, so a calendar-only, area-only or
+  service-only commit that landed since the review is visible before any write.
+
+  It opens no transaction and takes no lock of its own, so it describes exactly
+  the state the caller's transaction can see. A calendar the service names that
+  is no longer in the version is simply absent from `calendar_rows` here: the
+  digest moves, and the caller decides what that means.
+  """
+  @spec dependencies(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) :: dependencies()
+  def dependencies(organization_id, version_id, %FlexService{} = service) do
+    service = %{service | areas: areas_in_position_order(organization_id, version_id, service.id)}
+
+    %{
+      service: service,
+      areas: service.areas,
+      geojson: Geometry.get_geojson(Enum.map(service.areas, & &1.id)),
+      calendar_rows: referenced_calendar_rows(organization_id, version_id, service)
+    }
+  end
+
+  @doc """
   The canonical digest of one workspace's saved dependencies.
 
   It covers the exact stored content — the service's complete ordered fields
@@ -295,7 +329,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
       areas: Enum.map(dependencies.areas, &area_snapshot(&1, dependencies.geojson)),
       calendars: dependencies.calendar_rows
     }
-    |> canonical()
+    |> canonical_value()
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
@@ -1093,18 +1127,24 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
   # --- the workspace ----------------------------------------------------------
 
   defp build(organization_id, version_id, %FlexService{} = service) do
-    calendar_rows = referenced_calendar_rows(organization_id, version_id, service)
+    dependencies = dependencies(organization_id, version_id, service)
 
-    with :ok <- check_referenced_calendars(service, calendar_rows) do
-      dependencies = %{
-        service: service,
-        areas: service.areas,
-        geojson: Geometry.get_geojson(Enum.map(service.areas, & &1.id)),
-        calendar_rows: calendar_rows
-      }
-
-      build_workspace(organization_id, version_id, service, dependencies)
+    with :ok <- check_referenced_calendars(dependencies.service, dependencies.calendar_rows) do
+      build_workspace(organization_id, version_id, dependencies.service, dependencies)
     end
+  end
+
+  # The service's own area rows in position order, the same read the scoped
+  # loader performs, so a re-read inside a caller's transaction sees the areas
+  # that transaction can see rather than a struct's preloaded list.
+  defp areas_in_position_order(organization_id, version_id, flex_service_id) do
+    from(a in FlexArea,
+      where:
+        a.flex_service_id == ^flex_service_id and a.organization_id == ^organization_id and
+          a.gtfs_version_id == ^version_id,
+      order_by: [asc: a.position]
+    )
+    |> Repo.all()
   end
 
   defp build_workspace(organization_id, version_id, service, dependencies) do
@@ -1385,40 +1425,54 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
 
   # --- canonical dependency content -------------------------------------------
 
+  @doc """
+  The deterministic canonical encoding every digest in this slice is built on.
+
+  A `%DateTime{}`, `%Date{}` or `%Decimal{}` becomes its exact text, an enum atom
+  becomes its name, a map becomes its entries sorted by key and a struct becomes
+  its own fields without `:__meta__`. Two equal contents therefore always encode
+  identically and any committed change to any of them does not.
+  """
+  @spec canonical(term()) :: term()
+  def canonical(value), do: canonical_value(value)
+
+  defp canonical_value(%DateTime{} = value), do: {:datetime, DateTime.to_iso8601(value)}
+  defp canonical_value(%Date{} = value), do: {:date, Date.to_iso8601(value)}
+  defp canonical_value(%Decimal{} = value), do: {:decimal, Decimal.to_string(value, :normal)}
+
+  defp canonical_value(%_{} = value),
+    do: value |> Map.from_struct() |> Map.drop([:__meta__]) |> canonical_value()
+
+  defp canonical_value(nil), do: nil
+  defp canonical_value(value) when is_atom(value), do: {:atom, Atom.to_string(value)}
+
+  defp canonical_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, entry} -> {to_string(key), canonical_value(entry)} end)
+    |> Enum.sort_by(&elem(&1, 0))
+  end
+
+  defp canonical_value(value) when is_list(value), do: Enum.map(value, &canonical_value/1)
+
+  defp canonical_value(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> canonical_value()
+
+  defp canonical_value(value), do: value
+
   # The service's complete ordered fields with its `lock_version`, so a change
   # to any stored field changes the fingerprint.
   defp service_snapshot(%FlexService{} = service) do
     service
     |> Map.from_struct()
     |> Map.drop([:areas, :__struct__, :__meta__])
-    |> canonical()
+    |> canonical_value()
   end
 
   # One area's stored row plus its geometry, so an area-only change is visible.
   defp area_snapshot(%FlexArea{} = area, geojson) do
     %{
-      row: area |> Map.from_struct() |> Map.drop([:__struct__, :__meta__]) |> canonical(),
-      geojson: canonical(Map.get(geojson, area.id))
+      row: area |> Map.from_struct() |> Map.drop([:__struct__, :__meta__]) |> canonical_value(),
+      geojson: canonical_value(Map.get(geojson, area.id))
     }
   end
-
-  defp canonical(%DateTime{} = value), do: {:datetime, DateTime.to_iso8601(value)}
-  defp canonical(%Date{} = value), do: {:date, Date.to_iso8601(value)}
-  defp canonical(%Decimal{} = value), do: {:decimal, Decimal.to_string(value, :normal)}
-
-  defp canonical(%_{} = value),
-    do: value |> Map.from_struct() |> Map.drop([:__meta__]) |> canonical()
-
-  defp canonical(nil), do: nil
-  defp canonical(value) when is_atom(value), do: {:atom, Atom.to_string(value)}
-
-  defp canonical(value) when is_map(value) do
-    value
-    |> Enum.map(fn {key, entry} -> {to_string(key), canonical(entry)} end)
-    |> Enum.sort_by(&elem(&1, 0))
-  end
-
-  defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
-  defp canonical(value) when is_tuple(value), do: value |> Tuple.to_list() |> canonical()
-  defp canonical(value), do: value
 end
