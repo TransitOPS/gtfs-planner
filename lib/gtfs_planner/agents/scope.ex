@@ -177,7 +177,7 @@ defmodule GtfsPlanner.Agents.Scope do
   end
 
   defp valid_kind?(kind) when is_binary(kind),
-    do: String.length(kind) in 1..@max_snapshot_kind_length and String.trim(kind) != ""
+    do: String.length(kind) in 1..@max_snapshot_kind_length and Values.present?(kind)
 
   defp valid_kind?(_kind), do: false
 
@@ -453,7 +453,7 @@ defmodule GtfsPlanner.Agents.Scope do
                approved,
              true <- is_binary(service_id),
              true <- String.length(text) in 1..@max_approval_length,
-             true <- String.trim(text) != "",
+             true <- Values.present?(text),
              {:ok, _calendar} <-
                Gtfs.get_calendar_in_version(
                  scope.organization_id,

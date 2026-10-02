@@ -908,20 +908,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # would read as a stated one.
   defp policy_side(params, stop_key, route_key, trip_key) do
     %{
-      "stop_id" => present_value(params[stop_key]),
-      "route_id" => present_value(params[route_key]),
-      "trip_id" => present_value(params[trip_key])
+      "stop_id" => Values.presence(params[stop_key]),
+      "route_id" => Values.presence(params[route_key]),
+      "trip_id" => Values.presence(params[trip_key])
     }
   end
-
-  defp present_value(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp present_value(_other), do: nil
 
   defp policy_type(value) when is_binary(value) do
     case Integer.parse(value) do
