@@ -16,6 +16,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   (`expanded_codes`), so the disclosures survive a re-render.
   """
   use GtfsPlannerWeb, :live_view
+  alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.Evidence
+  alias GtfsPlannerWeb.AgentPanel
+
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
@@ -110,42 +116,87 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_failure_message, nil)
      |> assign(:pathways_failure_diagnostics, [])
-     |> assign(:pathways_case_results, [])}
+     |> assign(:pathways_case_results, [])
+     |> assign(:feed_quality_available?, false)
+     |> assign(:feed_quality, nil)
+     |> assign(:feed_quality_digest, nil)
+     |> assign(:feed_quality_instances, [])
+     |> assign(:requested_instance_ref, nil)
+     |> AgentPanel.mount("feed_quality")}
   end
 
   @impl Phoenix.LiveView
   def handle_params(%{"validation_id" => validation_id}, _uri, socket) do
-    run = Validations.get_validation_run!(validation_id)
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    # Verify authorization: ensure the run belongs to the current organization
-    if run.organization_id != organization_id or run.gtfs_version_id != gtfs_version_id do
-      {:noreply,
-       socket
-       |> put_flash(:error, "Unauthorized access to validation run")
-       |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
-    else
-      validation_runs_history =
-        Validations.list_validation_runs(organization_id, gtfs_version_id)
+    # The run is resolved inside this organization and version before any
+    # report JSON is read, so a foreign, absent or malformed id is the same
+    # redirect and never another organization's report (INV-1, AC-1).
+    case Validations.fetch_scoped_run(organization_id, gtfs_version_id, validation_id) do
+      {:error, :unavailable} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Unauthorized access to validation run")
+         |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
 
-      {run, pathways_case_results} = load_pathways_render_data(run)
-      pathways_failure = pathways_failure(run)
-      pathways_failure_message = pathways_failure_message(run)
-      pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+      {:ok, run} ->
+        validation_runs_history =
+          Validations.list_validation_runs(organization_id, gtfs_version_id)
 
-      {:noreply,
-       socket
-       |> assign(:validation_id, validation_id)
-       |> assign(:run, run)
-       |> assign(:expanded_codes, default_expanded_codes(run))
-       |> assign(:pathways_failure, pathways_failure)
-       |> assign(:pathways_failure_message, pathways_failure_message)
-       |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
-       |> assign(:pathways_case_results, pathways_case_results)
-       |> stream(:validation_runs, validation_runs_history)}
+        {run, pathways_case_results} = load_pathways_render_data(run)
+        pathways_failure = pathways_failure(run)
+        pathways_failure_message = pathways_failure_message(run)
+        pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+
+        socket =
+          socket
+          |> assign(:validation_id, validation_id)
+          |> assign(:run, run)
+          |> assign(:expanded_codes, default_expanded_codes(run))
+          |> assign(:pathways_failure, pathways_failure)
+          |> assign(:pathways_failure_message, pathways_failure_message)
+          |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
+          |> assign(:pathways_case_results, pathways_case_results)
+          |> stream(:validation_runs, validation_runs_history)
+
+        {:noreply, assign_feed_quality(socket)}
     end
   end
+
+  @impl Phoenix.LiveView
+  def handle_event("feed_quality_refresh", _params, socket) do
+    {:noreply, assign_feed_quality(socket)}
+  end
+
+  # The native Inspect target action is the only way a finding becomes approved
+  # for the helper: it resolves the reference server-side first, then pins it in
+  # the panel's own context. A model explanation can never approve an edit, and
+  # nothing is written or applied here.
+  @impl Phoenix.LiveView
+  def handle_event("feed_quality_inspect", %{"instance_ref" => instance_ref}, socket)
+      when is_binary(instance_ref) do
+    case Evidence.locate(feed_quality_scope(socket), socket.assigns.run.id, instance_ref) do
+      {:ok, _location} ->
+        socket = assign(socket, :requested_instance_ref, instance_ref)
+
+        socket =
+          AgentPanel.set_context(socket, feed_quality_context(socket))
+
+        {:noreply,
+         assign(
+           socket,
+           :agent_notice,
+           "This finding is approved for navigation. Ask the helper for its handoff."
+         )}
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(socket, :agent_notice, "That finding does not resolve to a current record.")}
+    end
+  end
+
+  def handle_event("feed_quality_inspect", _params, socket), do: {:noreply, socket}
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
@@ -219,51 +270,134 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="validation-result-page" class="ds-page pb-16">
-        <.back_link id="back-to-export" navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}>
-          Back to export
-        </.back_link>
+      <div
+        id="validation-helper-focus"
+        phx-hook=".ValidationHelperFocus"
+        class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+      >
+        <div class={@agent_open? && "hidden lg:block"}>
+          <div id="validation-result-page" class="ds-page pb-16">
+            <.back_link id="back-to-export" navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}>
+              Back to export
+            </.back_link>
 
-        <.header>
-          Validation results
-          <:subtitle>
-            {validation_lede(@run, @current_gtfs_version)}
-            <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
-          </:subtitle>
-          <:actions>
-            <.button id="open-history" variant="secondary" class="min-h-11" phx-click="open_history">
-              <.icon name="hero-list-bullet" class="size-4" /> View history
-            </.button>
-          </:actions>
-        </.header>
+            <.header>
+              Validation results
+              <:subtitle>
+                {validation_lede(@run, @current_gtfs_version)}
+                <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
+              </:subtitle>
+              <:actions>
+                <.button
+                  :if={@feed_quality_available?}
+                  id="agent-helper-open"
+                  type="button"
+                  phx-click="agent_open"
+                  aria-expanded={to_string(@agent_open?)}
+                  aria-controls="agent-panel"
+                  variant="quiet"
+                  class="min-h-11"
+                >
+                  Open helper
+                </.button>
+                <.button
+                  id="open-history"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="open_history"
+                >
+                  <.icon name="hero-list-bullet" class="size-4" /> View history
+                </.button>
+              </:actions>
+            </.header>
 
-        <%= cond do %>
-          <% @run.status == "failed" and @pathways_failure -> %>
-            <.pathways_failure_card
-              failure={@pathways_failure}
-              message={@pathways_failure_message}
-              diagnostics={@pathways_failure_diagnostics}
-              version={@current_gtfs_version}
-            />
-          <% @run.status == "failed" -> %>
-            <.validation_failure_card run={@run} version={@current_gtfs_version} />
-          <% @run.status in ["started", "running"] -> %>
-            <.checking_card status={@run.status} />
-          <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
-            <.walk_results
-              run={@run}
-              cases={@pathways_case_results}
-              version={@current_gtfs_version}
-            />
-          <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
-            <.mobility_results
-              run={@run}
-              expanded_codes={@expanded_codes}
-              version={@current_gtfs_version}
-            />
-          <% true -> %>
-            <.no_result_card version={@current_gtfs_version} />
-        <% end %>
+            <section
+              :if={@feed_quality_available?}
+              id="feed-quality-evidence"
+              class="mt-2 rounded-card border border-control bg-white px-5 py-4"
+            >
+              <h2 class="text-sm font-bold text-strong">Feed quality</h2>
+              <p id="feed-quality-samples" class="mt-1 text-[13px] text-default tabular-nums">
+                {@feed_quality.total_instances} findings · {@feed_quality.retained_instances} retained samples · {@feed_quality.completeness}
+              </p>
+              <p id="feed-quality-provenance" class="mt-1 text-[13px] text-muted">
+                Validator {validator_label(@feed_quality.validator_version)} · report digest {short_digest(
+                  @feed_quality_digest
+                )}
+              </p>
+              <p id="feed-quality-unmapped" class="mt-1 text-[13px] text-muted">
+                {unmapped_label(@feed_quality.exclusions)}
+              </p>
+              <div id="feed-quality-inspect-target" class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  :for={{instance, index} <- Enum.with_index(@feed_quality_instances)}
+                  id={"feed-quality-inspect-#{index}"}
+                  type="button"
+                  phx-click="feed_quality_inspect"
+                  phx-value-instance_ref={instance.ref}
+                  class="rounded-control border border-control px-2 py-1 text-[13px] font-semibold text-action"
+                >
+                  Inspect target {index + 1}
+                </button>
+                <span :if={@feed_quality_instances == []} class="text-[13px] text-muted">
+                  No retained sample names a current record.
+                </span>
+                <button
+                  id="feed-quality-refresh"
+                  type="button"
+                  phx-click="feed_quality_refresh"
+                  class="text-[13px] font-semibold text-action"
+                >
+                  Refresh findings
+                </button>
+              </div>
+            </section>
+
+            <%= cond do %>
+              <% @run.status == "failed" and @pathways_failure -> %>
+                <.pathways_failure_card
+                  failure={@pathways_failure}
+                  message={@pathways_failure_message}
+                  diagnostics={@pathways_failure_diagnostics}
+                  version={@current_gtfs_version}
+                />
+              <% @run.status == "failed" -> %>
+                <.validation_failure_card run={@run} version={@current_gtfs_version} />
+              <% @run.status in ["started", "running"] -> %>
+                <.checking_card status={@run.status} />
+              <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
+                <.walk_results
+                  run={@run}
+                  cases={@pathways_case_results}
+                  version={@current_gtfs_version}
+                />
+              <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
+                <.mobility_results
+                  run={@run}
+                  expanded_codes={@expanded_codes}
+                  version={@current_gtfs_version}
+                />
+              <% true -> %>
+                <.no_result_card version={@current_gtfs_version} />
+            <% end %>
+          </div>
+        </div>
+
+        <div :if={@agent_open?} class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]">
+          <.agent_panel
+            id="agent-panel"
+            title={@agent_title}
+            intro={@agent_intro}
+            examples={@agent_examples}
+            scope_line={"Validation · " <> @current_gtfs_version.name}
+            status={@agent_status}
+            entries={@streams.agent_entries}
+            form={@agent_form}
+            notice={@agent_notice}
+            entries_empty?={@agent_entries_empty?}
+            review_label={&agent_review_label/1}
+          />
+        </div>
       </div>
 
       <.drawer
@@ -311,6 +445,14 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           Shows the last 20 checks for this version.
         </p>
       </.drawer>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".ValidationHelperFocus">
+        export default {
+          mounted() {
+            this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
@@ -1180,6 +1322,122 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   # ── Presentation helpers ──
+
+  # -- Feed quality helper ----------------------------------------------------
+
+  # Only a supported completed MobilityData report has helper reads; every other
+  # engine or state keeps the native report and no helper button.
+  defp assign_feed_quality(socket) do
+    run = socket.assigns.run
+
+    if run.status == "completed" and run.run_type in ["mobility_data", "mobility_data_flex"] and
+         not is_nil(run.result_json) do
+      case Evidence.findings(feed_quality_scope(socket), %{run_id: run.id, limit: 3}) do
+        {:ok, report} ->
+          socket =
+            socket
+            |> assign(:feed_quality_available?, true)
+            |> assign(:feed_quality_digest, report.digest)
+            |> assign(:feed_quality_instances, retained_instances(report))
+            |> assign(:feed_quality, feed_quality_summary(report, run))
+
+          AgentPanel.set_context(socket, feed_quality_context(socket))
+
+        {:error, _reason} ->
+          unavailable_feed_quality(socket)
+      end
+    else
+      unavailable_feed_quality(socket)
+    end
+  end
+
+  defp unavailable_feed_quality(socket) do
+    socket
+    |> assign(:feed_quality_available?, false)
+    |> assign(:feed_quality, nil)
+    |> assign(:feed_quality_digest, nil)
+    |> assign(:feed_quality_instances, [])
+    |> AgentPanel.set_context(Scope.context({:version, socket.assigns.current_gtfs_version.id}))
+  end
+
+  defp feed_quality_summary(report, run) do
+    %{
+      total_instances: report.total_instances,
+      retained_instances: report.retained_instances,
+      totals_by_severity: report.totals_by_severity,
+      completeness: report.completeness,
+      exclusions: report.exclusions,
+      validator_version: run.validator_version
+    }
+  end
+
+  # At most three retained samples are offered as native Inspect targets; the
+  # full report stays in the page's own disclosures.
+  defp retained_instances(report) do
+    report.groups
+    |> Enum.flat_map(& &1.instances)
+    |> Enum.take(3)
+  end
+
+  # The host's own fingerprint of the section: run, report digest and the one
+  # approved instance reference. No report JSON, path, log or actor travels.
+  defp feed_quality_context(socket) do
+    run = socket.assigns.run
+
+    payload =
+      %{
+        "schema_version" => 1,
+        "section" => "validation",
+        "run_ref" => run.id,
+        "report_digest" => socket.assigns.feed_quality_digest || "none"
+      }
+      |> put_requested_instance(socket.assigns.requested_instance_ref)
+
+    case Scope.with_source_snapshot(
+           Scope.context({:version, socket.assigns.current_gtfs_version.id}),
+           %{kind: "feed_quality", payload: payload}
+         ) do
+      {:ok, context} -> context
+      {:error, _reason} -> Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    end
+  end
+
+  defp put_requested_instance(payload, ref) when is_binary(ref),
+    do: Map.put(payload, "requested_instance_ref", ref)
+
+  defp put_requested_instance(payload, _ref), do: payload
+
+  defp feed_quality_scope(socket) do
+    user = socket.assigns.current_user
+
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: user.id,
+      user_email: user.email,
+      pack_id: "feed_quality",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: socket.assigns.agent_context
+    }
+  end
+
+  defp validator_label(nil), do: "unknown"
+  defp validator_label(version), do: version
+
+  defp short_digest(nil), do: "unknown"
+  defp short_digest(digest) when byte_size(digest) >= 12, do: binary_part(digest, 0, 12) <> "…"
+  defp short_digest(digest), do: digest
+
+  defp unmapped_label([]), do: "No unmapped references."
+
+  defp unmapped_label(exclusions) do
+    "Unmapped: " <> Enum.map_join(exclusions, ", ", &"#{&1.reason} · #{&1.count}")
+  end
+
+  defp agent_review_label(%{command: {:feed_quality_export_options, _command}}),
+    do: "Review options"
+
+  defp agent_review_label(_prepared), do: "Review prepared change"
 
   defp validation_lede(%{run_type: "pathways_tests"}, version) do
     "Older results: whether riders could walk from each test address to a stop in #{version.name}."
