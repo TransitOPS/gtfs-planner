@@ -3,6 +3,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   Shared pure utilities for station report check submodules.
   """
 
+  alias GtfsPlanner.Values
+
   @earth_radius_m 6_371_000.0
   @known_acronyms MapSet.new(~w[BART DART MBTA MUNI PATH])
 
@@ -27,10 +29,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   """
   @spec haversine(term(), term(), term(), term()) :: float()
   def haversine(lat1, lon1, lat2, lon2) do
-    lat1 = decimal_to_float(lat1)
-    lon1 = decimal_to_float(lon1)
-    lat2 = decimal_to_float(lat2)
-    lon2 = decimal_to_float(lon2)
+    lat1 = Values.to_float(lat1)
+    lon1 = Values.to_float(lon1)
+    lat2 = Values.to_float(lat2)
+    lon2 = Values.to_float(lon2)
 
     dlat = deg_to_rad(lat2 - lat1)
     dlon = deg_to_rad(lon2 - lon1)
@@ -162,15 +164,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   end
 
   def extract_direction_tokens(_), do: MapSet.new()
-
-  @doc """
-  Converts a Decimal, float, integer, or nil to float.
-  """
-  @spec decimal_to_float(term()) :: float() | nil
-  def decimal_to_float(nil), do: nil
-  def decimal_to_float(%Decimal{} = d), do: Decimal.to_float(d)
-  def decimal_to_float(f) when is_float(f), do: f
-  def decimal_to_float(i) when is_integer(i), do: i / 1
 
   @doc """
   Formats a duration in seconds the way a person says it: `"40 s"`, `"6 min"`,

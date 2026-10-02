@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Api.V1.JournalJSON
 
@@ -243,11 +244,7 @@ defmodule GtfsPlannerWeb.Api.V1.StationController do
 
   defp serialize_coordinates(nil, _lon), do: {nil, nil}
   defp serialize_coordinates(_lat, nil), do: {nil, nil}
-  defp serialize_coordinates(lat, lon), do: {decimal_to_number(lat), decimal_to_number(lon)}
-
-  defp decimal_to_number(%Decimal{} = d), do: Decimal.to_float(d)
-  defp decimal_to_number(nil), do: nil
-  defp decimal_to_number(n) when is_number(n), do: n
+  defp serialize_coordinates(lat, lon), do: {Values.to_float(lat), Values.to_float(lon)}
 
   defp parse_page(params) do
     case params["page"] do

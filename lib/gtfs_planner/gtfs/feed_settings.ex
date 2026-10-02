@@ -638,10 +638,10 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   end
 
   # A literal lock string is required by Ecto; sharing the scoped version row excludes
-  # cooperating writers for the duration of the save. The `uuid?/1` guards keep a
-  # malformed scope out of the query instead of raising on a cast.
+  # cooperating writers for the duration of the save. The `Values.uuid?/1` guards
+  # keep a malformed scope out of the query instead of raising on a cast.
   defp published_version_for_share(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
+    if Values.uuid?(organization_id) and Values.uuid?(version_id) do
       from(v in GtfsVersion,
         where:
           v.id == ^version_id and v.organization_id == ^organization_id and
@@ -665,7 +665,7 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
   end
 
   defp published_version_for_update(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
+    if Values.uuid?(organization_id) and Values.uuid?(version_id) do
       from(v in GtfsVersion,
         where:
           v.id == ^version_id and v.organization_id == ^organization_id and
@@ -675,9 +675,6 @@ defmodule GtfsPlanner.Gtfs.FeedSettings do
       |> Repo.one()
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # Blank here is PostgreSQL's `btrim`, so a route reference is classified the same way as
   # the version zone candidates. Exact counts keep the stored string: a padded reference is

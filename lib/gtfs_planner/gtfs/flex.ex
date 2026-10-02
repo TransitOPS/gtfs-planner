@@ -342,12 +342,10 @@ defmodule GtfsPlanner.Gtfs.Flex do
         nil
 
       {west, south, east, north} ->
-        {to_float(west), to_float(south), to_float(east), to_float(north)}
+        {Values.to_float(west), Values.to_float(south), Values.to_float(east),
+         Values.to_float(north)}
     end
   end
-
-  defp to_float(%Decimal{} = value), do: Decimal.to_float(value)
-  defp to_float(value) when is_number(value), do: value * 1.0
 
   # The name riders read in the create drawer's select. A version that carries
   # only one of the two names (or neither) still gets one label per route.
@@ -895,7 +893,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     )
     |> Repo.all()
     |> Enum.group_by(&elem(&1, 0), fn {_shape_id, lon, lat} ->
-      [coordinate(lon), coordinate(lat)]
+      [Values.to_float(lon), Values.to_float(lat)]
     end)
   end
 
@@ -934,7 +932,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> Enum.find_value([], fn trip_rows ->
       points =
         Enum.map(trip_rows, fn {_route_id, _trip_id, lon, lat} ->
-          [coordinate(lon), coordinate(lat)]
+          [Values.to_float(lon), Values.to_float(lat)]
         end)
 
       if length(points) >= 2, do: points
@@ -959,15 +957,12 @@ defmodule GtfsPlanner.Gtfs.Flex do
       %{
         id: stop.id,
         name: Values.presence(stop.name) || stop.id,
-        lon: coordinate(stop.lon),
-        lat: coordinate(stop.lat),
+        lon: Values.to_float(stop.lon),
+        lat: Values.to_float(stop.lat),
         hub: true
       }
     end)
   end
-
-  # Feed coordinates are decimals; the browser draws floats.
-  defp coordinate(%Decimal{} = value), do: Decimal.to_float(value)
 
   # `route_color` is the feed's hex string without the leading `#`; the map adds
   # it. A route with no colour sends nil and the hook falls back.

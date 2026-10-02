@@ -212,22 +212,4 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
       assert Helpers.extract_direction_tokens(nil) == MapSet.new()
     end
   end
-
-  describe "decimal_to_float/1" do
-    test "converts Decimal to float" do
-      assert Helpers.decimal_to_float(Decimal.new("1.5")) == 1.5
-    end
-
-    test "returns float as-is" do
-      assert Helpers.decimal_to_float(1.5) == 1.5
-    end
-
-    test "converts integer to float" do
-      assert Helpers.decimal_to_float(3) == 3.0
-    end
-
-    test "returns nil for nil" do
-      assert Helpers.decimal_to_float(nil) == nil
-    end
-  end
 end

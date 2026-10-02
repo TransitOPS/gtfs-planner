@@ -107,6 +107,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   @published_status "published"
@@ -932,7 +933,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   defp lock_version_and_run(organization_id, gtfs_version_id, fun) do
     version =
-      if uuid?(organization_id) and uuid?(gtfs_version_id),
+      if Values.uuid?(organization_id) and Values.uuid?(gtfs_version_id),
         do: published_version_for_update(organization_id, gtfs_version_id)
 
     case version do
@@ -950,9 +951,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     )
     |> Repo.one()
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # A preview has no lock to roll back to, so it returns the target error instead.
   defp validate_target(_organization_id, _gtfs_version_id, nil), do: :ok

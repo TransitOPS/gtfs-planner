@@ -29,6 +29,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Restore
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.SetTiming
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Shift
+  alias GtfsPlanner.Values
 
   @max_trips 500
   @max_delta_secs 24 * 3_600
@@ -214,9 +215,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   """
   @spec validate(term()) :: {:ok, command()} | {:error, :invalid_command | :too_many_trips}
   def validate({:edit_stop, trip_id, params}) when is_map(params) do
-    with {:ok, trip_id} <- cast_uuid(trip_id),
+    with {:ok, trip_id} <- Ecto.UUID.cast(trip_id),
          :ok <- validate_stop_edit(params) do
       {:ok, {:edit_stop, trip_id, canonical_stop_edit(params)}}
+    else
+      :error -> {:error, :invalid_command}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -230,8 +234,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   def validate({:set_timing, ids, timing_id}) do
     with {:ok, ids} <- validate_ids(ids),
-         {:ok, timing_id} <- cast_uuid(timing_id) do
+         {:ok, timing_id} <- Ecto.UUID.cast(timing_id) do
       {:ok, {:set_timing, ids, timing_id}}
+    else
+      :error -> {:error, :invalid_command}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -262,8 +269,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
     windows = value(attrs, :windows)
     exact_times = value(attrs, :exact_times)
 
-    with {:ok, pattern_id} <- cast_uuid(pattern_id),
-         {:ok, timed_pattern_id} <- cast_uuid(timed_pattern_id),
+    with {:ok, pattern_id} <- Ecto.UUID.cast(pattern_id),
+         {:ok, timed_pattern_id} <- Ecto.UUID.cast(timed_pattern_id),
          true <- valid_service?(service_id),
          true <- valid_windows?(windows),
          true <- exact_times in [0, 1] do
@@ -285,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
     windows = value(params, :windows)
     exact_times = value(params, :exact_times)
 
-    with {:ok, trip_id} <- cast_uuid(trip_id),
+    with {:ok, trip_id} <- Ecto.UUID.cast(trip_id),
          true <- valid_windows?(windows),
          true <- exact_times in [0, 1, :keep] do
       {:ok, {:update_frequency, trip_id, %{windows: windows, exact_times: exact_times}}}
@@ -295,8 +302,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   end
 
   def validate({:convert_frequency, trip_id}) do
-    with {:ok, trip_id} <- cast_uuid(trip_id) do
-      {:ok, {:convert_frequency, trip_id}}
+    case Ecto.UUID.cast(trip_id) do
+      {:ok, trip_id} -> {:ok, {:convert_frequency, trip_id}}
+      :error -> {:error, :invalid_command}
     end
   end
 
@@ -519,13 +527,6 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   defp cast_ids(_ids), do: {:error, :invalid_command}
 
-  defp cast_uuid(uuid) do
-    case Ecto.UUID.cast(uuid) do
-      {:ok, uuid} -> {:ok, uuid}
-      :error -> {:error, :invalid_command}
-    end
-  end
-
   defp validate_trip_count([]), do: {:error, :invalid_command}
   defp validate_trip_count(ids) when length(ids) > @max_trips, do: {:error, :too_many_trips}
   defp validate_trip_count(_ids), do: :ok
@@ -565,12 +566,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   defp valid_window?(_window), do: false
 
   defp restore_payload?(payload) do
-    uuid?(value(payload, :operation_id)) and uuid?(value(payload, :organization_id)) and
-      uuid?(value(payload, :gtfs_version_id)) and is_binary(value(payload, :route_id)) and
+    Values.uuid?(value(payload, :operation_id)) and Values.uuid?(value(payload, :organization_id)) and
+      Values.uuid?(value(payload, :gtfs_version_id)) and is_binary(value(payload, :route_id)) and
       map_list?(value(payload, :trips)) and map_list?(value(payload, :created))
   end
-
-  defp uuid?(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
 
   defp map_list?(value) when is_list(value), do: Enum.all?(value, &is_map/1)
   defp map_list?(_value), do: false

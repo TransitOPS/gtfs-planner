@@ -904,7 +904,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
     gtfs_version_id = attempt_field(attempt, :gtfs_version_id)
 
     cond do
-      not Enum.all?([attempt_id, actor_id, organization_id, gtfs_version_id], &uuid?/1) ->
+      not Enum.all?([attempt_id, actor_id, organization_id, gtfs_version_id], &Values.uuid?/1) ->
         {:error, :not_found}
 
       actor_id != audit.actor_id ->
@@ -926,7 +926,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # UPDATE before any read or write so allocation and agency resolution see
   # committed state; reconcile reads without the lock.
   defp lock_published_version!(audit, lock \\ true) do
-    if uuid?(audit.organization_id) and uuid?(audit.gtfs_version_id) do
+    if Values.uuid?(audit.organization_id) and Values.uuid?(audit.gtfs_version_id) do
       query =
         from(version in GtfsVersion,
           where:
@@ -963,7 +963,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   defp load_created_route(audit, route_uuid) do
-    if uuid?(route_uuid) do
+    if Values.uuid?(route_uuid) do
       from(route in Route,
         where:
           route.id == ^route_uuid and route.organization_id == ^audit.organization_id and
@@ -1456,9 +1456,6 @@ defmodule GtfsPlanner.Gtfs.Routes do
        do: true
 
   defp retryable_conflict?(_reason), do: false
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # --- comparison internals -----------------------------------------------
 

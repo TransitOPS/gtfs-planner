@@ -1332,13 +1332,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
       platform_code: stop.platform_code,
       parent_name: Map.get(parent_names, stop.parent_station),
       child_count: Map.get(child_counts, stop.stop_id, 0),
-      lat: decimal_to_float(stop.stop_lat),
-      lon: decimal_to_float(stop.stop_lon)
+      lat: Values.to_float(stop.stop_lat),
+      lon: Values.to_float(stop.stop_lon)
     }
   end
-
-  defp decimal_to_float(nil), do: nil
-  defp decimal_to_float(%Decimal{} = value), do: Decimal.to_float(value)
 
   # R2 coverage of one stop from a scoped load. A stop that is not in this
   # organization and version covers nothing, so a foreign or unknown ID can never
@@ -1564,8 +1561,8 @@ defmodule GtfsPlanner.Gtfs.Transfers do
     %{
       stop_id: stop.stop_id,
       name: stop.stop_name,
-      lat: decimal_to_float(stop.stop_lat),
-      lon: decimal_to_float(stop.stop_lon),
+      lat: Values.to_float(stop.stop_lat),
+      lon: Values.to_float(stop.stop_lon),
       location_type: stop.location_type
     }
   end
@@ -1643,10 +1640,10 @@ defmodule GtfsPlanner.Gtfs.Transfers do
 
   defp extent(%{south: south, west: west, north: north, east: east}) do
     %{
-      south: decimal_to_float(south),
-      west: decimal_to_float(west),
-      north: decimal_to_float(north),
-      east: decimal_to_float(east)
+      south: Values.to_float(south),
+      west: Values.to_float(west),
+      north: Values.to_float(north),
+      east: Values.to_float(east)
     }
   end
 

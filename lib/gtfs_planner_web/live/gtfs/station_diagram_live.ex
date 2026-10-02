@@ -898,8 +898,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     do: geo_stop_count > 0
 
   defp child_stop_marker(stop, badges_by_stop) do
-    lat = marker_float(stop.stop_lat)
-    lon = marker_float(stop.stop_lon)
+    lat = Values.to_float(stop.stop_lat)
+    lon = Values.to_float(stop.stop_lon)
     diagram_coordinate = marker_diagram_coordinate(stop)
     has_geo? = is_float(lat) and is_float(lon)
 
@@ -929,10 +929,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Map.get(stop_id, [])
     |> Enum.map(&%{pathway_mode: &1.pathway_mode, pathway_id: &1.pathway_id})
   end
-
-  defp marker_float(%Decimal{} = d), do: Decimal.to_float(d)
-  defp marker_float(n) when is_number(n), do: n * 1.0
-  defp marker_float(_), do: nil
 
   defp station_platform_options(all_child_stops, station_stop_id) do
     all_child_stops
@@ -1809,8 +1805,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("canvas_click", %{"x" => x, "y" => y}, socket) do
-    x = to_float(x)
-    y = to_float(y)
+    x = click_coordinate(x)
+    y = click_coordinate(y)
 
     case socket.assigns.mode do
       :view ->
@@ -4151,8 +4147,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> Enum.filter(& &1.on_active_level)
     |> Enum.flat_map(fn stop ->
       with %{x: x, y: y} <- Coordinates.normalize_point(stop.diagram_coordinate),
-           lat when is_number(lat) <- anchor_coordinate(stop.stop_lat),
-           lon when is_number(lon) <- anchor_coordinate(stop.stop_lon) do
+           lat when is_number(lat) <- finite_coordinate(stop.stop_lat),
+           lon when is_number(lon) <- finite_coordinate(stop.stop_lon) do
         [%{x: x, y: y, lat: lat, lon: lon}]
       else
         _ -> []
@@ -4166,12 +4162,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   # Mirrors `Gtfs.direct_candidates_for/1`'s conversion. NaN and infinity have
   # no float representation and are dropped rather than raised out of a
   # debounced event.
-  defp anchor_coordinate(%Decimal{} = value) do
+  defp finite_coordinate(%Decimal{} = value) do
     if Decimal.nan?(value) or Decimal.inf?(value), do: nil, else: Decimal.to_float(value)
   end
 
-  defp anchor_coordinate(value) when is_number(value), do: value * 1.0
-  defp anchor_coordinate(_), do: nil
+  defp finite_coordinate(value) when is_number(value), do: value * 1.0
+  defp finite_coordinate(_), do: nil
 
   # Package 08 step 4: review-vocabulary copy. The legacy preview helpers were
   # removed in the same cutover that wired this contract (INV-2).
@@ -6081,17 +6077,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp to_snakecase_id(_), do: ""
 
-  defp to_float(val) when is_float(val), do: val
-  defp to_float(val) when is_integer(val), do: val / 1
+  # Canvas click coordinates arrive as strings and `nil` means zero; the
+  # canonical `Values.to_float/1` returns nil and would crash at `Float.to_string/1`.
+  defp click_coordinate(val) when is_float(val), do: val
+  defp click_coordinate(val) when is_integer(val), do: val / 1
 
-  defp to_float(val) when is_binary(val) do
+  defp click_coordinate(val) when is_binary(val) do
     case Float.parse(val) do
       {parsed, _rest} -> parsed
       :error -> 0.0
     end
   end
 
-  defp to_float(nil), do: 0.0
+  defp click_coordinate(nil), do: 0.0
 
   defp parse_finite_float(nil), do: {:error, :invalid_coordinate}
   defp parse_finite_float(""), do: {:error, :invalid_coordinate}

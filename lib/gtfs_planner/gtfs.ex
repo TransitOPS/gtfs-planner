@@ -73,6 +73,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @default_catalog_read_adapter CatalogReadAdapter.Repo
@@ -2629,8 +2630,8 @@ defmodule GtfsPlanner.Gtfs do
         stop_id: stop.id,
         svg_x: sx,
         svg_y: sy,
-        lat: decimal_to_float(stop.stop_lat),
-        lon: decimal_to_float(stop.stop_lon)
+        lat: Values.to_float(stop.stop_lat),
+        lon: Values.to_float(stop.stop_lon)
       }
     end)
   end
@@ -2689,8 +2690,8 @@ defmodule GtfsPlanner.Gtfs do
       level_index_delta: delta,
       svg_x: sx,
       svg_y: sy,
-      lat: decimal_to_float(partner_stop.stop_lat),
-      lon: decimal_to_float(partner_stop.stop_lon)
+      lat: Values.to_float(partner_stop.stop_lat),
+      lon: Values.to_float(partner_stop.stop_lon)
     }
   end
 
@@ -2732,10 +2733,6 @@ defmodule GtfsPlanner.Gtfs do
       nil -> {nil, nil}
     end
   end
-
-  defp decimal_to_float(%Decimal{} = d), do: Decimal.to_float(d)
-  defp decimal_to_float(n) when is_number(n), do: n * 1.0
-  defp decimal_to_float(_), do: nil
 
   @doc """
   Recalculates same-level pathway lengths from the diagram after a scale change.

@@ -1389,14 +1389,11 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions do
   end
 
   defp validate_scope(organization_id, gtfs_version_id) do
-    if uuid?(organization_id) and uuid?(gtfs_version_id) and
+    if Values.uuid?(organization_id) and Values.uuid?(gtfs_version_id) and
          Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
       :ok
     else
       :error
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 end

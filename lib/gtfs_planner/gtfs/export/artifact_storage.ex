@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
   @default_max_run_bytes 150 * 1024 * 1024
 
   alias GtfsPlanner.Gtfs.TaskArtifactCapacity
+  alias GtfsPlanner.Values
 
   @type artifact :: %{
           required(:key) => String.t(),
@@ -253,11 +254,8 @@ defmodule GtfsPlanner.Gtfs.Export.ArtifactStorage do
   end
 
   defp valid_scope?(organization_id, version_id, run_id) do
-    Enum.all?([organization_id, version_id, run_id], &uuid?/1)
+    Enum.all?([organization_id, version_id, run_id], &Values.uuid?/1)
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_), do: false
 
   defp safe_filename?(value) when is_binary(value) do
     Path.basename(value) == value and value not in ["", ".", ".."] and byte_size(value) <= 255

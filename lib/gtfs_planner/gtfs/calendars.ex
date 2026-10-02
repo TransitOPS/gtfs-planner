@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -3872,7 +3873,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   # A literal lock string is required by Ecto.
   defp published_version_for_update(organization_id, version_id) do
-    if uuid?(organization_id) and uuid?(version_id) do
+    if Values.uuid?(organization_id) and Values.uuid?(version_id) do
       from(v in GtfsVersion,
         where:
           v.id == ^version_id and v.organization_id == ^organization_id and
@@ -3882,9 +3883,6 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       |> Repo.one()
     end
   end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # -- Snapshots, fingerprints and digests ----------------------------------
 

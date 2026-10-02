@@ -96,6 +96,23 @@ defmodule GtfsPlanner.ValuesTest do
       assert Values.to_float("1") == nil
       assert Values.to_float([1]) == nil
     end
+
+    # Moved from StationReport2.Helpers.decimal_to_float/1 (step 12); expected values unchanged.
+    test "converts Decimal to float" do
+      assert Values.to_float(Decimal.new("1.5")) == 1.5
+    end
+
+    test "returns float as-is" do
+      assert Values.to_float(1.5) == 1.5
+    end
+
+    test "converts integer to float" do
+      assert Values.to_float(3) == 3.0
+    end
+
+    test "returns nil for nil" do
+      assert Values.to_float(nil) == nil
+    end
   end
 
   describe "positive_integer/2" do

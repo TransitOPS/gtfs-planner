@@ -70,6 +70,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
 
   # A series is bounded so one drawer submission cannot create an unbounded
@@ -3665,7 +3666,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
 
-    unless uuid?(pattern_id) and uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(pattern_id) and Values.uuid?(timed_pattern_id),
+      do: Repo.rollback(:not_found)
 
     # Rule-table lock order: the calendar's version row `FOR SHARE` first, then the
     # route `FOR UPDATE`, then the pattern `FOR UPDATE`. Timing rows are loaded
@@ -4036,7 +4038,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
 
-    unless uuid?(trip_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(trip_id), do: Repo.rollback(:not_found)
 
     # The pre-lock read chooses the calendar identity and pattern to lock and
     # detects a trip that moved underneath the caller; the locked row read below
@@ -4321,7 +4323,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     version_id = audit_context.gtfs_version_id
     timed_pattern_id = attr(attrs, :timed_pattern_id)
 
-    unless uuid?(trip_id) and uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
+    unless Values.uuid?(trip_id) and Values.uuid?(timed_pattern_id), do: Repo.rollback(:not_found)
 
     current = scoped_trip!(organization_id, version_id, route_id, trip_id)
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, current.service_id)
@@ -4414,7 +4416,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     version_id = audit_context.gtfs_version_id
     trip_uuids = Enum.uniq(trip_ids)
 
-    unless Enum.all?(trip_uuids, &uuid?/1), do: Repo.rollback(:not_found)
+    unless Enum.all?(trip_uuids, &Values.uuid?/1), do: Repo.rollback(:not_found)
 
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
     route = RoutePatterns.lock_published_route!(audit_context, route_id)
@@ -4565,7 +4567,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp lock_headsign_trips!(organization_id, version_id, changes) do
     ids = Enum.map(changes, & &1.id)
 
-    unless Enum.all?(ids, &uuid?/1), do: Repo.rollback(:invalid_selection)
+    unless Enum.all?(ids, &Values.uuid?/1), do: Repo.rollback(:invalid_selection)
 
     trips =
       from(t in Trip,
@@ -4887,8 +4889,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       {:ok, Enum.map(0..(count - 1), &(start_secs + &1 * every_secs))}
     end
   end
-
-  defp uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
 
   defp attr(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key)))
   defp attr(_map, _key), do: nil

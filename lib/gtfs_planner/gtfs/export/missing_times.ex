@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
         acc
 
       {stop_id, lat, lon}, acc ->
-        Map.put(acc, stop_id, {to_float(lat), to_float(lon)})
+        Map.put(acc, stop_id, {Values.to_float(lat), Values.to_float(lon)})
     end)
   end
 
@@ -296,10 +296,6 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
       record -> Map.get(record, :stop_sequence, "position #{index + 1}")
     end
   end
-
-  defp to_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
-  defp to_float(value) when is_float(value), do: value
-  defp to_float(value) when is_integer(value), do: value / 1
 
   defp empty_summary do
     %{

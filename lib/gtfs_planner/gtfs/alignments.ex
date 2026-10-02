@@ -44,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.StreetRouting
+  alias GtfsPlanner.Values
 
   @type visit :: %{
           occurrence_id: Ecto.UUID.t(),
@@ -654,7 +655,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       )
       |> Repo.all()
       |> Enum.group_by(& &1.shape_id, fn row ->
-        [decimal_to_float(row.lat), decimal_to_float(row.lon), row.sequence, row.dist]
+        [Values.to_float(row.lat), Values.to_float(row.lon), row.sequence, row.dist]
       end)
     end
   end
@@ -1850,7 +1851,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     %{
       shape_id: shape.shape_id,
       trip_count: shape.trip_count,
-      points: Enum.map(shape.points, &Enum.map(&1, fn value -> hook_float(value) end)),
+      points: Enum.map(shape.points, &Enum.map(&1, fn value -> Values.to_float(value) end)),
       length_m: shape.length_m,
       visit_distances: hook_float_list(shape.visit_distances)
     }
@@ -1859,11 +1860,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp hook_atom(nil), do: nil
   defp hook_atom(atom) when is_atom(atom), do: to_string(atom)
 
-  defp hook_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
-  defp hook_float(value), do: value
-
   defp hook_float_list(nil), do: nil
-  defp hook_float_list(list), do: Enum.map(list, &hook_float/1)
+  defp hook_float_list(list), do: Enum.map(list, &Values.to_float/1)
 
   defp scoped_pattern(organization_id, gtfs_version_id, route_id, route_pattern_id) do
     from(p in RoutePattern,
@@ -1979,8 +1977,8 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     points =
       Enum.map(rows, fn row ->
         [
-          decimal_to_float(row.shape_pt_lon),
-          decimal_to_float(row.shape_pt_lat),
+          Values.to_float(row.shape_pt_lon),
+          Values.to_float(row.shape_pt_lat),
           row.shape_dist_traveled
         ]
       end)
@@ -2091,15 +2089,12 @@ defmodule GtfsPlanner.Gtfs.Alignments do
         position: row.position,
         stop_id: row.stop_id,
         name: name,
-        lat: decimal_to_float(row.stop_lat),
-        lon: decimal_to_float(row.stop_lon),
+        lat: Values.to_float(row.stop_lat),
+        lon: Values.to_float(row.stop_lon),
         label: label
       }
     end)
   end
-
-  defp decimal_to_float(nil), do: nil
-  defp decimal_to_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
 
   defp load_overrides(_pattern, []), do: []
 

@@ -420,7 +420,7 @@ defmodule GtfsPlanner.Gtfs.FloorplanTransformTest do
     # `stops.stop_lat` / `stops.stop_lon` are `:decimal` columns, so a caller
     # that forwards them unconverted supplies a Decimal here. This function
     # takes numbers: a Decimal is skipped, not coerced and not fatal. Callers
-    # convert first — `GtfsPlanner.Gtfs` already does, via `decimal_to_float/1`.
+    # convert first — `GtfsPlanner.Gtfs` already does, via `Values.to_float/1`.
     test "an anchor whose target latitude is a Decimal is skipped, not coerced" do
       align = fit_alignment()
       [a, b, c, d, e] = anchors_for(align)

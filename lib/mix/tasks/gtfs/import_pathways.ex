@@ -42,23 +42,17 @@ defmodule Mix.Tasks.Gtfs.ImportPathways do
   end
 
   defp parse_args([organization_id, file_path]) do
-    with {:ok, org_uuid} <- validate_uuid(organization_id),
+    with {:ok, org_uuid} <- Ecto.UUID.cast(organization_id),
          :ok <- validate_file(file_path) do
       {:ok, org_uuid, file_path}
     else
+      :error -> {:error, "Invalid UUID: #{organization_id}"}
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp parse_args(_) do
     {:error, "Expected 2 arguments: organization_id, file_path"}
-  end
-
-  defp validate_uuid(string) do
-    case Ecto.UUID.cast(string) do
-      {:ok, uuid} -> {:ok, uuid}
-      :error -> {:error, "Invalid UUID: #{string}"}
-    end
   end
 
   defp validate_file(file_path) do

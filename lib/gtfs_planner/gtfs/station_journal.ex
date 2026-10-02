@@ -29,10 +29,10 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   @spec resolve_scope(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, Scope.t()} | {:error, :not_found | :invalid_id}
   def resolve_scope(organization_id, gtfs_version_id, station_id, actor_id) do
-    with {:ok, organization_id} <- cast_uuid(organization_id),
-         {:ok, gtfs_version_id} <- cast_uuid(gtfs_version_id),
-         {:ok, station_id} <- cast_uuid(station_id),
-         {:ok, actor_id} <- cast_uuid(actor_id) do
+    with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, gtfs_version_id} <- Ecto.UUID.cast(gtfs_version_id),
+         {:ok, station_id} <- Ecto.UUID.cast(station_id),
+         {:ok, actor_id} <- Ecto.UUID.cast(actor_id) do
       case Repo.one(
              from(stop in Stop,
                where:
@@ -113,7 +113,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   @spec close_entry(Scope.t(), Ecto.UUID.t()) ::
           {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def close_entry(%Scope{} = scope, entry_id) do
-    case cast_uuid(entry_id) do
+    case Ecto.UUID.cast(entry_id) do
       {:ok, id} ->
         case apply_transition(scope, id, :close) do
           {:ok, {entry, _tag}} -> {:ok, entry}
@@ -128,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   @spec reopen_entry(Scope.t(), Ecto.UUID.t()) ::
           {:ok, JournalEntry.t()} | {:error, :not_found | :forbidden | Ecto.Changeset.t()}
   def reopen_entry(%Scope{} = scope, entry_id) do
-    case cast_uuid(entry_id) do
+    case Ecto.UUID.cast(entry_id) do
       {:ok, id} ->
         case apply_transition(scope, id, :reopen) do
           {:ok, {entry, _tag}} -> {:ok, entry}
@@ -184,8 +184,8 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
         }) ::
           {:ok, JournalPhoto.t()} | {:error, atom() | Ecto.Changeset.t()}
   def create_photo(%Scope{} = scope, attrs, upload) when is_map(attrs) and is_map(upload) do
-    with {:ok, photo_id} <- cast_uuid(attr(attrs, :id)),
-         {:ok, entry_id} <- cast_uuid(attr(attrs, :journal_entry_id)),
+    with {:ok, photo_id} <- Ecto.UUID.cast(attr(attrs, :id)),
+         {:ok, entry_id} <- Ecto.UUID.cast(attr(attrs, :journal_entry_id)),
          {:ok, staged} <- PhotoStorage.stage(scope, photo_id, upload),
          {:ok, photo} <- create_staged_photo(scope, photo_id, entry_id, attrs, staged) do
       broadcast_changed(scope)
@@ -400,7 +400,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   defp sync_entry(scope, targets, attrs) when is_map(attrs) do
-    case cast_uuid(attr(attrs, :id)) do
+    case Ecto.UUID.cast(attr(attrs, :id)) do
       {:ok, id} ->
         case Repo.get(JournalEntry, id) do
           nil -> sync_new_entry(scope, targets, id, attrs)
@@ -541,7 +541,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   defp member_target?(set, value) do
-    case cast_uuid(value) do
+    case Ecto.UUID.cast(value) do
       {:ok, uuid} -> MapSet.member?(set, uuid)
       :error -> false
     end
@@ -553,8 +553,6 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   defp error_id(attrs) when is_map(attrs), do: attr(attrs, :id)
   defp error_id(_attrs), do: nil
-  defp cast_uuid(value) when is_binary(value), do: Ecto.UUID.cast(value)
-  defp cast_uuid(_value), do: :error
 
   defp owned_by_scope?(entry, scope) do
     entry.organization_id == scope.organization_id and
@@ -638,7 +636,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp filter_by_target(query, nil), do: query
 
   defp filter_by_target(query, {type, id}) do
-    {:ok, uuid} = cast_uuid(id)
+    {:ok, uuid} = Ecto.UUID.cast(id)
 
     from(entry in query,
       where: entry.target_type == ^type and entry.target_id == ^uuid
@@ -704,7 +702,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   defp validate_opt!(:target, {type, id}) when type in ["node", "pathway"] do
-    case cast_uuid(id) do
+    case Ecto.UUID.cast(id) do
       {:ok, _uuid} ->
         :ok
 

@@ -692,6 +692,7 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
+  # Stricter than Values.uuid?/1: only the lowercase 36-character form names the run directory.
   defp canonical_uuid?(value),
     do: is_binary(value) and match?({:ok, ^value}, Ecto.UUID.cast(value))
 
