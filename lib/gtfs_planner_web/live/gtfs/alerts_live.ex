@@ -12,10 +12,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   scoped, so the list is the organization's alerts and never a slice of one
   selected version (AC-8).
 
-  The page shows what an editor is working on now and what is coming. It carries
-  no publication state and no publication action: saving an alert never
-  publishes one in this package, so Live, Scheduled, Ended, End and feed copy is
-  absent here by construction, not by omission (R2, CR-1).
+  The page shows what an editor is working on now and what is coming. It
+  carries no publication action, but it does carry one piece of publication
+  state: a confirmed removal whose bytes a served manifest has not dropped yet,
+  read from `Alerts.Publication.pending_removals/1`, so an alert that is gone
+  from the list is not silently still public (AC-16, FH-14).
 
   A row's title navigates to `/alerts/:id`, and Create alert to `/alerts/new`.
   Both are `AlertEditorLive`'s routes, so they are live navigations rather than
@@ -34,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Alerts.Publication
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -69,6 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
      |> assign(:counts, %{})
      |> assign(:alerts_state, :loading)
      |> assign(:alerts_empty?, true)
+     |> assign(:pending_removals, [])
      |> stream_configure(:alerts, dom_id: &"alert-row-#{&1.id}")
      |> stream_configure(:alerts_mobile, dom_id: &"alert-card-#{&1.id}")
      |> stream(:alerts, [])
@@ -94,6 +97,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         socket
         |> assign(:alerts_state, :organization_required)
         |> assign(:alerts_empty?, true)
+        |> assign(:pending_removals, [])
         |> stream(:alerts, [], reset: true)
         |> stream(:alerts_mobile, [], reset: true)
 
@@ -115,6 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         |> assign(:counts, counts)
         |> assign(:alerts_state, :ready)
         |> assign(:alerts_empty?, Enum.all?(@tabs, &(Map.fetch!(grouped, &1) == [])))
+        |> assign(:pending_removals, pending_removals(audit_context))
         |> stream(:alerts, rows, reset: true)
         |> stream(:alerts_mobile, rows, reset: true)
 
@@ -125,6 +130,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         socket
         |> assign(:alerts_state, :unavailable)
         |> assign(:alerts_empty?, true)
+        |> assign(:pending_removals, [])
         |> stream(:alerts, [], reset: true)
         |> stream(:alerts_mobile, [], reset: true)
     end
@@ -299,6 +305,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     end
   end
 
+  # A removal the delivery steps have not applied yet. The alert is already
+  # gone from the list, so this is the one place its pending withdrawal is still
+  # visible; reading it cannot publish or withdraw anything (AC-16).
+  defp pending_removals(%AuditContext{organization_id: organization_id}) do
+    Publication.pending_removals(organization_id)
+  end
+
+  defp pending_removal_message([single]) do
+    label = Map.get(single, :header) || "An alert"
+    "#{label} was removed and is still on the public feed until the next update."
+  end
+
+  defp pending_removal_message(removals) do
+    "#{length(removals)} removed alerts are still on the public feed until the next update."
+  end
+
   # -- Rendering -----------------------------------------------------------
 
   @impl true
@@ -353,6 +375,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
           title="These alerts are not available to you."
         >
           You no longer have permission to change alerts in this organization.
+        </.message>
+
+        <.message
+          :if={@pending_removals != []}
+          id="alerts-pending-removal"
+          kind="warning"
+          title="Removal in progress"
+        >
+          {pending_removal_message(@pending_removals)}
         </.message>
 
         <%= if @alerts_state == :ready do %>

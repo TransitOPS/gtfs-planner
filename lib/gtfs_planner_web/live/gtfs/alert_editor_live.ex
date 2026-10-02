@@ -116,18 +116,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   the row does not hold, and it carries the Rider preview's own derivations
   rather than a second reading of the same facts.
 
-  **Save alert** is the whole action set of that step. It writes through
-  `Alerts.save_draft/4` first, so the question "is this alert finished?" is
-  asked of the row this editor holds, and then it runs
-  `Alerts.Completion.errors/1` - the same function the row's `complete` flag
-  comes from. With questions outstanding they are listed with a link to each
-  step that answers one, and the summary takes the reader to the first; with
-  none, the editor returns to the list with the flash **Alert saved.**
-  (AC-23, FH-23).
+  **Save alert** writes through `Alerts.save_review/5`. Unchecked, that is the
+  private save this step always made, so the question "is this alert finished?"
+  is asked of the row this editor holds and `Alerts.Completion.errors/1` lists
+  what is outstanding with a link to each step that answers one; with none, the
+  editor returns to the list with the flash **Alert saved.** (AC-23, FH-23).
+  Checked, the same command also accepts the committed revision for publication,
+  and the action card reports the accepted state, the refusal that names what to
+  fix, or the manifest's own confirmation date (AC-11, AC-14, AC-15).
 
-  Nothing on this step publishes. There is no Live, Scheduled, Ended, End,
-  Publish, Schedule or feed copy here or anywhere else in this LiveView,
-  because saving an alert never publishes one in this package (R2, CR-1).
+  The Publish/Republish checkbox is the only consent this editor reads. An
+  unchecked save and every autosave stay private, so a periodic realtime refresh
+  never turns a draft into a publication (INV-3, FH-6).
 
   ## Assistant mode is the same draft, interviewed
 
@@ -164,14 +164,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   step asks for wording and puts the request in the composer, so nothing is
   sent that the operator did not read first.
 
-  ## What this frame does not do
+  ## What this frame carries, and what it does not
 
-  It carries no publication state and no publication action: saving an alert
-  never publishes one in this package, so Live, Scheduled, Ended, End and feed
-  copy is absent by construction (R2, CR-1). The question bodies belong to the
-  steps that own them; this step builds the frame they render inside, creation on
-  the first answer, the version check, the preference, the autosave form with its
-  save status and conflict banner, **Delete alert**, and the assistant frame the
+  It carries the publication state and the one Publish/Republish action, and
+  nothing else about publishing: the served bytes, the manifest and the queues
+  belong to the backend steps. The question bodies belong to the steps that own
+  them; this frame builds them, creation on the first answer, the version check,
+  the preference, the autosave form with its save status and conflict banner,
+  **Delete alert**, the publication controls, and the assistant frame the
   interview runs in.
   """
 
@@ -216,9 +216,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Message
   alias GtfsPlanner.Alerts.MessageAnswer
+  alias GtfsPlanner.Alerts.Publication
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.TimingAnswer
+  alias GtfsPlanner.FeedPublishing.Config, as: PublishingConfig
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -363,6 +367,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:message_guidelines, "")
      |> assign(:review_errors, [])
      |> assign(:review_checks, [])
+     |> assign(:publication, nil)
+     |> assign(:publish?, false)
+     |> assign(:offset_choices, %{})
+     |> assign(:publication_errors, [])
+     |> assign(:reference_version, nil)
+     |> assign(:reference_missing?, false)
      |> assign(:assistant_note_form, assistant_note_form())
      |> assign(:assistant_candidate, nil)
      |> assign(:assistant_filled?, false)
@@ -1292,16 +1302,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  def handle_event("save_alert", _params, socket) do
+  def handle_event("save_alert", params, socket) when is_map(params) do
     # The write goes first, so the completeness question is asked of the row
     # this editor holds rather than of the row as it was before the last
     # answer. A refused or stale write keeps the editor open, exactly as
     # `save_and_close` does, rather than answering a question about a row the
     # database refused (INV-1, R6).
-    case write_pending(socket) do
-      {:ok, socket} -> finish_review(socket)
-      {:refused, socket} -> {:noreply, socket}
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> save_alert(socket, alert, Map.get(params, "publish") == "true")
     end
+  end
+
+  # The review's publication control keeps its own state between saves: the
+  # checkbox value and the offset an editor chose for an ambiguous reading are
+  # mirrored here as they change, so a refused publication can be retried with
+  # the same intent rather than reset to unchecked (AC-15, AC-16).
+  def handle_event("set_publication_inputs", params, socket) when is_map(params) do
+    {:noreply,
+     socket
+     |> assign(:publish?, Map.get(params, "publish") == "true")
+     |> assign(:offset_choices, offset_choices_from(Map.get(params, "offset_choices")))}
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
@@ -1338,6 +1359,232 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     Enum.map(errors, fn {step, _field, message} ->
       %{href: editor_path(socket, step: step), msg: message}
     end)
+  end
+
+  # -- Publication ---------------------------------------------------------
+
+  # The accepted row, the manifest's own receipt, and whether this organization
+  # has publishing configured at all. The read is scoped to the context's
+  # organization, so another tenant's publication is never named here. This is
+  # the `Alerts.Publication` read model rendered as one prepared state, so the
+  # templates never query (CR-2).
+  defp assign_publication(socket, alert) do
+    socket
+    |> assign(:publication, prepare_publication(socket, alert))
+    |> assign(:reference_version, reference_version(socket, alert))
+    |> assign(:reference_missing?, reference_missing?(alert))
+  end
+
+  defp prepare_publication(_socket, nil), do: nil
+
+  defp prepare_publication(socket, %Alert{} = alert) do
+    row =
+      Repo.get_by(Publication,
+        alert_id: alert.id,
+        organization_id: socket.assigns.current_organization.id
+      )
+
+    now = DateTime.utc_now()
+    zone = alert.timezone
+
+    %{
+      status: publication_status(row, now),
+      disabled?: PublishingConfig.current() == :disabled,
+      accepted?: not is_nil(row && row.desired_revision),
+      date_label: confirmed_date_label(row && row.last_published_at, zone),
+      requested_label: requested_label(row, now, zone)
+    }
+  end
+
+  # A row that a served manifest confirmed at its newest accepted revision is
+  # published; one whose notice has not begun is scheduled; one that is accepted
+  # but not yet confirmed is staging. A pending withdrawal outranks them all,
+  # because the removal is the newest intent (AC-15, AC-16).
+  defp publication_status(nil, _now), do: :never_published
+  defp publication_status(%{withdrawal: :pending}, _now), do: :removal_pending
+  defp publication_status(%{desired_revision: nil}, _now), do: :never_published
+
+  defp publication_status(%{desired_revision: desired, confirmed_revision: confirmed}, _now)
+       when desired == confirmed,
+       do: :published
+
+  defp publication_status(%{desired_snapshot: snapshot}, now) do
+    publication_status_from_snapshot(snapshot, DateTime.to_unix(now))
+  end
+
+  defp confirmed_date_label(nil, _zone), do: nil
+
+  defp confirmed_date_label(%DateTime{} = at, zone),
+    do: "Reflected in the public feed " <> localize_label(at, zone)
+
+  # A scheduled acceptance has a request time, not a publication time: the
+  # clock it names is the notice boundary, and the confirmation date stays the
+  # one an earlier manifest proved (AC-14, AC-15).
+  defp requested_label(nil, _now, _zone), do: nil
+  defp requested_label(%{withdrawal: :pending}, _now, _zone), do: nil
+  defp requested_label(%{requested_at: nil}, _now, _zone), do: nil
+
+  defp requested_label(%{desired_revision: desired, confirmed_revision: confirmed}, _now, _zone)
+       when desired == confirmed,
+       do: nil
+
+  defp requested_label(%{desired_snapshot: snapshot} = row, now, zone) do
+    if publication_status(row, now) == :scheduled do
+      "Scheduled to start " <> instant_label(Map.get(snapshot || %{}, "notice_at"), zone)
+    else
+      "Changes requested " <> localize_label(row.requested_at, zone)
+    end
+  end
+
+  defp instant_label(nil, _zone), do: "soon"
+
+  defp instant_label(unix, zone) when is_integer(unix) do
+    unix |> DateTime.from_unix!() |> localize_label(zone)
+  end
+
+  # A publication instant is a UTC timestamp; the alert's own retained zone is
+  # how the reader knows which local day it was. The conversion goes through
+  # `DisplayClock`, the project's one zone reader, rather than a second one.
+  defp localize_label(%DateTime{} = at, zone) do
+    zone = valid_zone(zone)
+
+    [local] =
+      DisplayClock.localize_many([at], %{
+        timezone: zone,
+        fallback?: false,
+        fallback_reason: nil
+      })
+
+    Calendar.strftime(local, "%-d %b %Y at %H:%M") <> " " <> zone
+  end
+
+  defp valid_zone(zone) when is_binary(zone) do
+    case String.trim(zone) do
+      "" -> "UTC"
+      trimmed -> trimmed
+    end
+  end
+
+  defp valid_zone(_zone), do: "UTC"
+
+  # The trusted reference version the selectors were captured from, named for
+  # the reader. A version that no longer resolves is named as deleted rather
+  # than hidden, because that is the reason the selectors need re-choosing.
+  defp reference_version(_socket, nil), do: nil
+
+  defp reference_version(socket, %Alert{} = alert) do
+    case Alerts.version_name_for(audit_context(socket), alert.id) do
+      {:ok, name} -> name
+      {:error, _reason} -> "the deleted version"
+    end
+  end
+
+  # An identity the capture could not resolve is a selector that cannot become
+  # a public route, stop or trip, so the note names it before the operator
+  # tries to publish rather than as a bare field refusal afterwards (AC-10,
+  # FH-13).
+  defp reference_missing?(nil), do: false
+
+  defp reference_missing?(%Alert{} = alert) do
+    selectors = get_in(alert.target_reference || %{}, ["selectors"]) || %{}
+
+    Enum.any?(["unresolved_routes", "unresolved_stops"], &present_ids?(Map.get(selectors, &1))) or
+      Enum.any?(Map.get(selectors, "route_stops") || [], &(not Map.get(&1, "resolved", false))) or
+      Enum.any?(Map.get(selectors, "trips") || [], &(not Map.get(&1, "resolved", false)))
+  end
+
+  defp present_ids?(ids) when is_list(ids), do: Enum.reject(ids, &(&1 in [nil, []])) != []
+  defp present_ids?(_ids), do: false
+
+  defp offset_choices_from(nil), do: %{}
+
+  defp offset_choices_from(choices) when is_map(choices) do
+    Map.new(choices, fn {key, value} ->
+      case Integer.parse(to_string(value)) do
+        {seconds, ""} -> {key, seconds}
+        _other -> {key, 0}
+      end
+    end)
+  end
+
+  defp offset_choices_from(_choices), do: %{}
+
+  # The accepted save keeps its draft and its checkbox intent whatever the
+  # publication did: a refusal only adds the field errors the operator has to
+  # answer, and a success says what was accepted (AC-11, AC-12).
+  defp apply_publication_result(socket, saved, outcome) do
+    socket =
+      socket
+      |> assign(:alert, saved)
+      |> assign(:pending_attrs, nil)
+      |> assign(:form, draft_form(saved))
+      |> assign(:save_state, :saved)
+      |> rebuild(saved)
+
+    case outcome do
+      {:refused, errors} ->
+        assign(socket, :publication_errors, errors)
+
+      status when status in [:private, :pending, :scheduled] ->
+        socket
+        |> assign(:publication_errors, [])
+        |> put_flash(:info, publication_flash(status))
+    end
+  end
+
+  defp publication_flash(:private), do: "Alert saved."
+  defp publication_flash(:scheduled), do: "Publication scheduled."
+  defp publication_flash(_pending), do: "Publication requested."
+
+  # An unchecked Save is the private save this editor always made: the same
+  # write, then the same completeness reading that lists the outstanding
+  # questions or finishes the alert (AC-23).
+  defp save_alert(socket, _alert, false) do
+    case write_pending(socket) do
+      {:ok, socket} -> finish_review(socket)
+      {:refused, socket} -> {:noreply, socket}
+    end
+  end
+
+  # A checked Save is one command: the same private write and, when it commits,
+  # the acceptance of exactly that revision as this alert's public intent. The
+  # draft is saved either way, so a refused publication leaves the operator on
+  # their work with the exact correction to make (AC-11, AC-12).
+  defp save_alert(socket, alert, true) do
+    attrs = socket.assigns.pending_attrs || %{}
+    base = base_revision(socket, attrs, alert)
+
+    case Alerts.save_review(
+           audit_context(socket),
+           alert.id,
+           base,
+           castable(attrs),
+           publish?: true,
+           offset_choices: socket.assigns.offset_choices
+         ) do
+      {:ok, %{alert: saved} = result} ->
+        {:noreply, apply_publication_result(socket, saved, Map.fetch!(result, :publication))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:form, draft_form(changeset))
+         |> assign(:save_state, :error)
+         |> assign(:publication_errors, [])}
+
+      {:error, :stale, current} ->
+        {:noreply, stale_conflict(socket, alert, current, with_base(attrs, base))}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+    end
+  end
+
+  defp publication_status_from_snapshot(snapshot, now) do
+    case Map.get(snapshot || %{}, "notice_at") do
+      notice when is_integer(notice) -> if notice > now, do: :scheduled, else: :publishing
+      _later -> :publishing
+    end
   end
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
@@ -2368,6 +2615,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:flags, flags)
     |> assign(:steps, prepare_steps(steps_for(alert, flags), socket.assigns.step, flags, socket))
     |> assign(:preview, preview(socket, alert))
+    |> assign_publication(alert)
     |> prepare_questions(alert)
   end
 
@@ -2629,6 +2877,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:conflict, draft.conflict)
     |> assign(:pending_attrs, draft.pending_attrs)
     |> assign(:review_errors, [])
+    |> assign(:publish?, false)
+    |> assign(:offset_choices, %{})
+    |> assign(:publication_errors, [])
+    |> assign_publication(alert)
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
     |> assign(:route_error, nil)
@@ -3701,6 +3953,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                 :if={@step == :review}
                 effect={@preview.effect}
                 checks={@review_checks}
+                publication={@publication}
+                publish?={@publish?}
+                offset_choices={@offset_choices}
+                publication_errors={@publication_errors}
+                reference_version={@reference_version}
+                reference_missing?={@reference_missing?}
+                timezone={@alert && @alert.timezone}
               />
 
               <.rider_preview

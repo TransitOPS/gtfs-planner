@@ -39,8 +39,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLive do
   and the entered text. Nothing is written and no success is reported (R5,
   FH-24).
 
-  This page carries no publication state and no publication action: saving a
-  script never publishes an alert in this package (R2, CR-1).
+  This page carries no publication action: a script or a guideline never
+  publishes an alert by itself. An alert is accepted for publication only from
+  the alert editor's own review step (R2, CR-1).
   """
 
   use GtfsPlannerWeb, :live_view

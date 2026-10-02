@@ -236,17 +236,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       refute has_element?(view, "#review-no-service")
     end
 
-    test "nothing on the review offers a publication state or an action", context do
+    test "the review shows the read-only publication status when publishing is off", context do
       alert = closed_stop(context)
       {:ok, view, _html} = live(context.conn, review_path(alert))
 
-      html = render(view)
+      # Step 19 supersedes the authoring-only review: the review is now the one
+      # place an alert's publication is read and accepted, so it carries the
+      # publication status the accepted row holds (AC-11, AC-14, AC-15).
+      assert has_element?(view, "#alert-publication-status", "Not published")
+      assert has_element?(view, "#alert-publication-date", "No confirmed publication yet.")
 
-      # Saving an alert never publishes one in this package, so no Live,
-      # Scheduled, Ended, End, Publish, Schedule or feed word appears anywhere
-      # on this step, in any case (R2, CR-1).
-      refute html =~ ~r/publish/i
-      refute html =~ ~r/schedul/i
+      # Publishing is not configured in this environment, so the status is
+      # read-only and the Publish/Republish control is correctly absent rather
+      # than offering a write the configuration cannot carry (CL-1, FH-1).
+      assert has_element?(view, "#alert-publication-disabled")
+      refute has_element?(view, "#alert-publish-checkbox")
+      refute has_element?(view, "#review-publication-form")
 
       # The actions the step offers are the two that save: the review's own
       # **Save alert**, and the editor's **Save and close**.
