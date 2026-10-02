@@ -121,20 +121,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
     if Date.day_of_week(date) <= 5, do: date, else: Date.add(date, 8 - Date.day_of_week(date))
   end
 
-  # The inverse of `first_service_day/1`: the Mon–Fri date a weekly calendar with
-  # the given end_date actually serves last.
-  defp last_service_day(date) do
-    if Date.day_of_week(date) <= 5, do: date, else: Date.add(date, 5 - Date.day_of_week(date))
-  end
-
-  defp ends_soon_label(last_date, today) do
-    case Date.diff(last_date, today) do
-      0 -> "Ends today"
-      1 -> "Ends in 1 day"
-      days -> "Ends in #{days} days"
-    end
-  end
-
   defp postgres_local_today(timezone) do
     %{rows: [[%Date{} = date]]} = Repo.query!("SELECT (now() AT TIME ZONE $1)::date", [timezone])
 
@@ -1691,11 +1677,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
   describe "design-system list presentation" do
     setup :use_real_adapter
 
-    test "leads each row with its regular days and labels a weekday calendar ending tomorrow from its last service day",
+    test "leads each row with its regular days and gives a calendar ending tomorrow a singular day",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
       today = postgres_local_today("Etc/UTC")
-      expected_end_label = ends_soon_label(last_service_day(Date.add(today, 1)), today)
 
       calendar_fixture(organization.id, version.id, %{
         service_id: "WEEKD",
@@ -1739,7 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert dates =~ "Beta dates Runs on specific dates · DATES"
 
       assert text_of(html, ~s(#calendars-list td[data-label="Status"])) |> Enum.map(&squish/1) ==
-               [expected_end_label, "Not used by trips"]
+               ["Ends in 1 day", "Not used by trips"]
     end
 
     test "carries the one way forward in the first-use panel and offers no header actions",
