@@ -1019,32 +1019,34 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
   defp start_value_change(supervisor, run) do
     parent = self()
 
-    Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        Repo.transaction(fn ->
-          send(parent, {:editor_holds, backend_pid()})
+    Task.Supervisor.async_nolink(supervisor, fn -> committed_value_change(run, parent) end)
+  end
 
-          decision =
-            Repo.one!(
-              from(d in ChangeDecision,
-                where: d.change_run_id == ^run.id and d.decision_id == "pathway:PW_W14",
-                lock: "FOR UPDATE"
-              )
-            )
+  defp committed_value_change(run, parent) do
+    unboxed(fn -> Repo.transaction(fn -> edit_held_decision(run, parent) end) end)
+  end
 
-          updated =
-            ChangeDecision.system_changeset(decision, %{
-              uploaded_values: Map.put(decision.uploaded_values, "min_width", "1.40"),
-              changed_fields: [%{"field" => "min_width", "before" => "0.95", "after" => "1.40"}]
-            })
-            |> Repo.update!()
+  defp edit_held_decision(run, parent) do
+    send(parent, {:editor_holds, backend_pid()})
 
-          await_message(:commit)
+    decision =
+      Repo.one!(
+        from(d in ChangeDecision,
+          where: d.change_run_id == ^run.id and d.decision_id == "pathway:PW_W14",
+          lock: "FOR UPDATE"
+        )
+      )
 
-          {:ok, updated}
-        end)
-      end)
-    end)
+    updated =
+      ChangeDecision.system_changeset(decision, %{
+        uploaded_values: Map.put(decision.uploaded_values, "min_width", "1.40"),
+        changed_fields: [%{"field" => "min_width", "before" => "0.95", "after" => "1.40"}]
+      })
+      |> Repo.update!()
+
+    await_message(:commit)
+
+    {:ok, updated}
   end
 
   defp start_apply(supervisor, scope, run) do
