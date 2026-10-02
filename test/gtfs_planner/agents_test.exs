@@ -30,6 +30,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.ServiceQueries
+  alias GtfsPlanner.Agents.Packs.Timetables
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.SessionSupervisor
   alias GtfsPlanner.Agents.TurnSupervisor
@@ -52,7 +53,8 @@ defmodule GtfsPlanner.AgentsTest do
       assert Agents.packs() == %{
                "alerts" => Alerts,
                "calendars" => Calendars,
-               "service_queries" => ServiceQueries
+               "service_queries" => ServiceQueries,
+               "timetables" => Timetables
              }
 
       assert Agents.packs() |> Map.keys() |> Enum.sort() ==
@@ -265,7 +267,8 @@ defmodule GtfsPlanner.AgentsTest do
 
   defp registry_key(scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
+     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id,
+     Scope.context_digest(scope)}
   end
 
   defp active_sessions, do: DynamicSupervisor.count_children(SessionSupervisor).active
