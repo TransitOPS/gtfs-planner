@@ -17,7 +17,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     gtfs_change_runs gtfs_export_runs gtfs_validation_runs journal_entries levels
     locations networks pathway_evolutions pathways relief_points rider_categories route_networks
     roster_line_days roster_lines
-    route_operating_settings route_pattern_stops route_patterns routes shapes station_editing_statuses
+    route_operating_settings route_pattern_stops route_patterns routes service_alerts shapes
+    station_editing_statuses
     stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
     translations trip_runs trips walkability_tests
   )

@@ -239,6 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
                [
+                 "settings-entry-alerts",
                  "settings-entry-garages",
                  "settings-entry-fleet",
                  "settings-entry-export_defaults",

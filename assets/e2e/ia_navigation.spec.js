@@ -38,6 +38,7 @@ const VIEWPORTS = [DESKTOP, MOBILE];
 
 // `[id, label, path segment]`, in the information architecture's order.
 const TASKS = [
+  ["nav-alerts", "Alerts", "alerts"],
   ["nav-routes", "Routes", "routes"],
   ["nav-calendars", "Calendars", "calendars"],
   ["nav-operations", "Operations", "blocks"],
@@ -158,7 +159,7 @@ for (const { width, height, label } of VIEWPORTS) {
 
       const versionId = await seededVersionId(page);
 
-      // ── Main navigation: the six literal labels, in order, without icons ──
+      // ── Main navigation: the seven literal labels, in order, without icons ──
       for (const [id, taskLabel, segment] of TASKS) {
         const link = page.locator(`#main-navigation #${id}`);
         await expect(link).toHaveText(taskLabel);
@@ -580,14 +581,14 @@ test.describe("header presentation", () => {
     // Keyboard focus uses the design system's two-pixel outline.
     await page.keyboard.press("Tab"); // skip to main content
     await page.keyboard.press("Tab"); // product link
-    await page.keyboard.press("Tab"); // Routes
+    await page.keyboard.press("Tab"); // Alerts, the first task
 
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
-      "nav-routes",
+      "nav-alerts",
     );
 
     const outline = await page
-      .locator("#nav-routes")
+      .locator("#nav-alerts")
       .evaluate((el) => getComputedStyle(el));
     expect(parseFloat(outline.outlineWidth)).toBeGreaterThanOrEqual(2);
     expect(outline.outlineStyle).not.toBe("none");

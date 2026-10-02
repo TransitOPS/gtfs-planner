@@ -272,6 +272,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
 
       for {id, label} <- [
+            {"nav-alerts", "Alerts"},
             {"nav-routes", "Routes"},
             {"nav-calendars", "Calendars"},
             {"nav-operations", "Operations"},
@@ -281,6 +282,14 @@ defmodule GtfsPlannerWeb.HeaderTest do
           ] do
         assert has_element?(view, "#main-navigation ##{id}", label)
       end
+
+      # Alerts is the first task link: it is what an editor comes back to.
+      document = view |> render() |> LazyHTML.from_fragment()
+
+      assert ["nav-alerts" | _rest] =
+               document
+               |> LazyHTML.query("#main-navigation a")
+               |> Enum.map(&List.first(LazyHTML.attribute(&1, "id")))
 
       assert has_element?(view, "#main-navigation #nav-routes[aria-current='page']")
       refute has_element?(view, "#main-navigation svg")
@@ -553,6 +562,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       {:ok, view, _html} = live(conn, ~p"/gtfs/#{version.id}/routes")
 
       for {id, label} <- [
+            {"nav-alerts", "Alerts"},
             {"nav-routes", "Routes"},
             {"nav-calendars", "Calendars"},
             {"nav-stops", "Stops & stations"},
