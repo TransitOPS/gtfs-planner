@@ -2320,6 +2320,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          {:ok, setting} <- in_seat_setting(choice) do
       open_in_seat_review(socket, %{
         scope: scope,
+        pairs: pairs,
         entry_id: entry_id,
         command: command,
         setting: setting
@@ -2379,46 +2380,48 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:in_seat_notice, @in_seat_review_notice)
       |> record_in_seat_origin(origin)
 
-    case bulk_review(socket.assigns) do
-      %{rows: [_first | _rest]} = review ->
-        assign(socket, :bulk_review, review)
+    review = bulk_review(socket.assigns)
 
-      _no_review ->
-        socket
-        |> close_bulk_review()
-        |> bump_bulk_ref()
-        |> assign(:bulk_choice, nil)
-        |> assign(:in_seat_origin, nil)
-        |> assign(:in_seat_notice, @in_seat_stale_notice)
+    if in_seat_group_review?(review, origin) do
+      assign(socket, :bulk_review, review)
+    else
+      socket
+      |> close_bulk_review()
+      |> bump_bulk_ref()
+      |> assign(:bulk_choice, nil)
+      |> assign(:in_seat_origin, nil)
+      |> assign(:in_seat_notice, @in_seat_stale_notice)
     end
   end
 
   defp open_in_seat_review(socket, %{scope: :connection} = origin) do
-    case socket.assigns.gap_view do
-      %{from: from, to: to} ->
-        if in_seat_current_pair?(socket, from, to, origin.setting) do
-          socket
-          |> put_connection_draft(origin.setting)
-          |> assign(:in_seat_notice, @in_seat_review_notice)
-          |> record_in_seat_origin(origin)
-        else
-          assign(socket, :in_seat_notice, @in_seat_stale_notice)
-        end
-
-      _no_drawer ->
-        assign(socket, :in_seat_notice, @in_seat_stale_notice)
+    if in_seat_current_pair?(socket, origin) do
+      socket
+      |> put_connection_draft(origin.setting)
+      |> assign(:in_seat_notice, @in_seat_review_notice)
+      |> record_in_seat_origin(origin)
+    else
+      assign(socket, :in_seat_notice, @in_seat_stale_notice)
     end
   end
 
-  # The pair a single-connection proposal is about must be the pair the drawer is
-  # still showing, and the native rule must still allow the prepared setting for
-  # it: a drawer the reader closed or replaced is not this page's review, and a
-  # pair the rule now refuses keeps the drawer's own refusal rather than taking a
-  # prepared choice (AC-12, CR-2).
-  defp in_seat_current_pair?(socket, from, to, setting) do
+  # The review is built from the group the URL names now, so it is the proposal's
+  # only when its connections are exactly the pairs the helper was admitted for: a
+  # group, day or filter the reader has moved to since is a different selection.
+  defp in_seat_group_review?(%{rows: [_first | _rest] = rows}, %{pairs: pairs}),
+    do: MapSet.new(rows, &{&1.connection.from.id, &1.connection.to.id}) == MapSet.new(pairs)
+
+  defp in_seat_group_review?(_no_review, _origin), do: false
+
+  # The pair the proposal was admitted for must be the pair the drawer is still
+  # showing, and the native rule must still allow the prepared setting for it: a
+  # drawer the reader closed or replaced is not this page's review, and a pair the
+  # rule now refuses keeps the drawer's own refusal rather than taking a prepared
+  # choice (AC-12, CR-2).
+  defp in_seat_current_pair?(socket, %{pairs: pairs, setting: setting}) do
     case socket.assigns.gap_view do
       %{from: %{id: from_id}, to: %{id: to_id}} ->
-        from_id == from.id and to_id == to.id and
+        pairs == [{from_id, to_id}] and
           not connection_blocked?(socket.assigns.connection_check, setting)
 
       _no_drawer ->
@@ -5584,6 +5587,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       review.ref == request.ref
   end
 
+  # Every row the review could write was included, so the save covers the whole
+  # set the helper prepared rather than the subset the reader left ticked.
+  defp bulk_whole_set?(review),
+    do: Enum.all?(review.rows, &(&1.include? or &1.result not in [:add, :replace, :remove]))
+
+  # The save wrote the setting the helper prepared, not another one the reader
+  # chose in the review.
+  defp prepared_setting?(%{assigns: %{in_seat_origin: %{setting: setting}}}, choice),
+    do: setting == choice
+
+  defp prepared_setting?(_socket, _choice), do: false
+
   # R10/AC-20: a successful bulk write closes the review, reloads the day and
   # leaves a persistent result at the top of the group panel naming the count it
   # wrote, every pair it skipped with that pair's own reason, and the Undo R9
@@ -5591,6 +5606,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # read, so the panel describes the write that happened rather than the one
   # that was reviewed.
   defp bulk_saved(socket, request, {:ok, result}) do
+    complete? =
+      result.skipped == [] and bulk_whole_set?(socket.assigns.bulk_review) and
+        prepared_setting?(socket, request.choice)
+
     socket =
       socket
       |> assign(:bulk_pending, false)
@@ -5603,7 +5622,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply,
      socket
      |> assign(:bulk_result, bulk_result(request, result, socket.assigns.connections_all))
-     |> settle_in_seat_origin(result.skipped == [])
+     |> settle_in_seat_origin(complete?)
      |> focus_within("bulk-result")}
   end
 
@@ -5835,7 +5854,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> resolve_drawers()
      |> assign_page_rows_if_loaded()
      |> close_connection_drawer()
-     |> settle_in_seat_origin(true)
+     |> settle_in_seat_origin(prepared_setting?(socket, request.choice))
      |> focus_within("connection-result")}
   end
 
