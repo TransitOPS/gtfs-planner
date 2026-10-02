@@ -1539,6 +1539,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # the existing `station_imports` envelope: this page installs it and
   # `StationAssistant` reads it back, so no second protocol exists (CR-4).
   defp bind_observation_helper(socket) do
+    socket |> install_observation_context() |> drop_stale_suggestion()
+  end
+
+  # A review read for another station, run or measurement set must not stay open
+  # beside a conversation that no longer holds it.
+  defp drop_stale_suggestion(%{assigns: %{station_suggestion: %{command: command}}} = socket) do
+    case station_imports_source(socket) do
+      %{digest: digest} when digest == command.source_digest -> socket
+      _other -> close_station_suggestion(socket)
+    end
+  end
+
+  defp drop_stale_suggestion(socket), do: socket
+
+  defp install_observation_context(socket) do
     context = Scope.context({:version, socket.assigns.current_gtfs_version.id})
 
     case observation_source_snapshot(socket) do
@@ -3101,7 +3116,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:approved_count, length(approved))
       |> assign(:total, map_size(assigns.decisions))
       |> assign(:consequence, consequence(approved))
-      |> assign(:reviewed_ids, reviewed_decision_ids(assigns.run))
+      |> assign(
+        :reviewed_ids,
+        # History is kept after a rejection, so only rows that are approved now
+        # count as confirmed against a measurement.
+        MapSet.intersection(
+          reviewed_decision_ids(assigns.run),
+          MapSet.new(approved, & &1.decision_id)
+        )
+      )
       |> assign(:bulk, bulk_actions(assigns.filter, assigns.summary, assigns.decisions))
 
     ~H"""

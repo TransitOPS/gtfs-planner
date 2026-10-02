@@ -154,6 +154,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationImportHelperHandoffTest do
                Agents.prepared(session_pid(view), conversation_id(view), entry_id)
     end
 
+    test "starting over closes an open review instead of leaving a stale Confirm", ctx do
+      view = prepared_view(ctx)
+      assert has_element?(view, "#station-suggestion-review")
+
+      view |> element("#diff-reset-btn") |> render_click()
+
+      refute has_element?(view, "#station-suggestion-review")
+      refute has_element?(view, "#station-suggestion-confirm")
+    end
+
     test "a malformed entry id and an entry this conversation never issued open nothing", ctx do
       view = prepared_view(ctx)
       run_id = run_id(ctx)
@@ -253,6 +263,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationImportHelperHandoffTest do
              )
 
       assert has_element?(view, "#diff-apply-btn", "Apply 2 changes")
+    end
+
+    test "a rejected measured row is not counted as confirmed against a measurement", ctx do
+      view = prepared_view(ctx)
+      _confirmed = view |> element("#station-suggestion-confirm") |> render_click()
+
+      assert has_element?(view, "#station-approved-apply-scope", "including 1 confirmed")
+
+      view
+      |> element(
+        "#diff-decisions button[phx-click='reject-decision'][phx-value-id='#{@w14_decision}']"
+      )
+      |> render_click()
+
+      approve_natively(view, @other_decision)
+
+      assert has_element?(view, "#station-approved-apply-scope", "including 0 confirmed")
     end
 
     test "a revoked membership refuses and keeps the review and every draft", ctx do
