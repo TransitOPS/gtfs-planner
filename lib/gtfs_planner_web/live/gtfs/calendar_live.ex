@@ -1848,13 +1848,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       class="inline-flex min-h-11 items-center gap-1 rounded-control border border-subtle bg-canvas pl-3 pr-1 text-sm"
                     >
                       <span class="font-semibold text-strong">
-                        {Editor.weekday_date(date_from_iso(iso))}
+                        {Wording.weekday_date_with_year(date_from_iso(iso))}
                       </span>
                       <button
                         type="button"
                         phx-click="remove_draft_date"
                         phx-value-date={iso}
-                        aria-label={"Remove #{Editor.format_date(date_from_iso(iso))}"}
+                        aria-label={"Remove #{Wording.date(date_from_iso(iso))}"}
                         class="inline-flex size-11 items-center justify-center rounded-control text-muted hover:bg-white hover:text-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                       >
                         <.icon name="hero-x-mark" class="size-4" />
@@ -2409,7 +2409,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp date_block_title(%{command: {:remove_exceptions, _service_id, [date]}}) do
-    "#{Editor.format_date(date)} was not removed"
+    "#{Wording.date(date)} was not removed"
   end
 
   defp date_block_title(%{command: {:remove_exceptions, _service_id, dates}}) do
@@ -2536,7 +2536,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Add service on #{Editor.weekday_date(date)}?",
+          do: "Add service on #{Wording.weekday_date_with_year(date)}?",
           else: "Add service on #{Wording.count_noun(length(dates), "date")}?"
         ),
       confirm: if(kind == :weekly, do: "Add extra service", else: "Add service date"),
@@ -2578,7 +2578,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Restore the regular schedule on #{Editor.weekday_date(date)}?",
+          do: "Restore the regular schedule on #{Wording.weekday_date_with_year(date)}?",
           else: "Restore service on #{Wording.count_noun(length(dates), "date")}?"
         ),
       confirm: "Restore service",
@@ -2592,7 +2592,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     %{
       title:
         if(length(dates) == 1,
-          do: "Remove #{Editor.weekday_date(date)}?",
+          do: "Remove #{Wording.weekday_date_with_year(date)}?",
           else: "Remove #{Wording.count_noun(length(dates), "service date")}?"
         ),
       confirm: if(length(dates) == 1, do: "Remove date", else: "Remove dates"),

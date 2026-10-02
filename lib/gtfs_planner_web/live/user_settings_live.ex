@@ -35,10 +35,9 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Authorization.Roles
+  alias GtfsPlanner.Wording
 
   import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
-
-  @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
 
   def render(assigns) do
     ~H"""
@@ -92,7 +91,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
             user={@current_user}
             roles={@role_details}
             organization={assigns[:current_organization]}
-            account_created={format_date(@current_user.inserted_at)}
+            account_created={@current_user.inserted_at && Wording.date(@current_user.inserted_at)}
             confirmed={not is_nil(@current_user.confirmed_at)}
           />
         </div>
@@ -740,16 +739,6 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
         nil -> %{name: to_string(role), description: nil}
       end
     end)
-  end
-
-  # Built by hand rather than through `Calendar.strftime/3`, whose `%-d` is
-  # platform-dependent. The house format is "Mar 3, 2025". Matches on the
-  # fields rather than the struct type so it serves both `inserted_at`
-  # (`:utc_datetime_usec`) and `confirmed_at` (`:naive_datetime`).
-  defp format_date(nil), do: nil
-
-  defp format_date(%{year: year, month: month, day: day}) do
-    "#{Enum.at(@months, month - 1)} #{day}, #{year}"
   end
 
   ## Existing helpers

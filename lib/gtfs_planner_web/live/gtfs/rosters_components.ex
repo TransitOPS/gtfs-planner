@@ -3277,7 +3277,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
               </thead>
               <tbody>
                 <tr :for={row <- @preview} class="border-b border-subtle last:border-b-0">
-                  <td class="tabular px-3 py-2.5 align-middle">{date_label(row.date)}</td>
+                  <td class="tabular px-3 py-2.5 align-middle">{Wording.date(row.date)}</td>
                   <td class="px-3 py-2.5 align-middle font-semibold">{row.run_id}</td>
                   <td class="px-3 py-2.5 align-middle font-mono text-[13px]">{row.employee_id}</td>
                   <td class="px-3 py-2.5 align-middle">{row.operator_name}</td>
@@ -3302,7 +3302,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   # sentence the ZIP's report carries (INV-14).
   defp warning_sentences(assignments) do
     assignments
-    |> AssignmentsExport.sentences(&date_label/1)
+    |> AssignmentsExport.sentences(&Wording.date/1)
     |> Enum.reject(&(elem(&1, 0) == "tods_assignments_planned"))
     |> Enum.map(&elem(&1, 1))
   end
@@ -3319,9 +3319,4 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
 
   defp warning_title(1), do: "1 thing the export leaves out"
   defp warning_title(count), do: "#{count} things the export leaves out"
-
-  # "Oct 12, 2026" — the page's date format. The export's own report writes
-  # ISO dates and the spec asks for this one here; the rest of the sentence is
-  # shared, so only the date differs between the two.
-  defp date_label(date), do: Calendar.strftime(date, "%b %-d, %Y")
 end

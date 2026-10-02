@@ -963,7 +963,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   end
 
   defp item_detail(%{kind: :check_errors} = item) do
-    "Found #{day(item.local_at)}. Apps may reject the pathways files until they are fixed. " <>
+    "Found #{Wording.short_date(item.local_at)}. Apps may reject the pathways files until they are fixed. " <>
       "Warnings do not block anything."
   end
 
@@ -988,7 +988,7 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
   defp export_line(%{local_finished_at: nil, state: state}), do: export_state(state)
 
   defp export_line(%{local_finished_at: at, state: state}),
-    do: "#{day(at)} · #{export_state(state)}"
+    do: "#{Wording.short_date(at)} · #{export_state(state)}"
 
   defp export_state(:ready), do: "download available"
   defp export_state(state) when state in [:pending, :building], do: "exporting…"
@@ -1006,8 +1006,6 @@ defmodule GtfsPlannerWeb.Home.StationBoardComponents do
       :success -> "text-success-fg"
     end
   end
-
-  defp day(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d")
 
   defp stage_query(query, :all), do: query
   defp stage_query(query, stage), do: query ++ [stage: Atom.to_string(stage)]

@@ -757,8 +757,8 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
       summary: %{
         title: "Extend #{target_name(target.service_id, targets)}",
         detail:
-          end_label(extension.previous_end_date) <>
-            " → " <> end_label(extension.requested_end_date),
+          Wording.weekday_date_with_year(extension.previous_end_date) <>
+            " → " <> Wording.weekday_date_with_year(extension.requested_end_date),
         lines: [
           "Approved by the editor · #{approval_label(approved.approval_text)}",
           "Newly active dates · #{Wording.count_noun(extension.newly_active_date_count, "date")}",
@@ -818,8 +818,8 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
         %{
           label: "End date",
           value:
-            end_label(extension.previous_end_date) <>
-              " → " <> end_label(extension.requested_end_date)
+            Wording.weekday_date_with_year(extension.previous_end_date) <>
+              " → " <> Wording.weekday_date_with_year(extension.requested_end_date)
         },
         %{label: "Routes", value: Integer.to_string(length(extension.routes))},
         %{label: "Trips", value: Integer.to_string(length(extension.trip_identities))},
@@ -854,8 +854,6 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   end
 
   defp command_service_id({:save, service_id, _attrs}), do: service_id
-
-  defp end_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
 
   defp approval_label(text) do
     if String.length(text) > @approval_preview_length do
@@ -967,11 +965,11 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   defp summary_title([], _run), do: "Run service"
   defp summary_title(_stop, _run), do: "Change service"
 
-  defp summary_detail([date]), do: date_label(date)
+  defp summary_detail([date]), do: Wording.weekday_date_with_year(date)
 
   defp summary_detail(dates) do
     if consecutive?(dates) do
-      "#{range_start(dates)} – #{date_label(List.last(dates))} · #{length(dates)} dates"
+      "#{range_start(dates)} – #{Wording.weekday_date_with_year(List.last(dates))} · #{length(dates)} dates"
     else
       "#{length(dates)} dates"
     end
@@ -985,13 +983,11 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
     first = List.first(dates)
 
     if first.year == List.last(dates).year do
-      Elixir.Calendar.strftime(first, "%a %b %-d")
+      Wording.weekday_date(first)
     else
-      date_label(first)
+      Wording.weekday_date_with_year(first)
     end
   end
-
-  defp date_label(date), do: Elixir.Calendar.strftime(date, "%a %b %-d, %Y")
 
   defp summary_lines(service_ids, action, targets) do
     service_ids

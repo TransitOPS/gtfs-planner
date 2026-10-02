@@ -734,7 +734,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       # Chronological order: a Date struct compares day-first, so the range needs
       # the ordered dates.
-      assert has_element?(view, "#service-dates-drawer", "02 Mar 2026 – 01 Apr 2026")
+      assert has_element?(view, "#service-dates-drawer", "Mar 2, 2026 – Apr 1, 2026")
       assert has_element?(view, "#service-dates-drawer", "Spring dates · 3 days")
     end
 

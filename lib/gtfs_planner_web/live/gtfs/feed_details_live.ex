@@ -61,6 +61,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   alias GtfsPlanner.Gtfs.LanguageCodes
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -614,13 +615,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Valid from"
           hint="First day apps treat this schedule as reliable."
-          value={date(@feed_info.feed_start_date)}
+          value={@feed_info.feed_start_date && Wording.date(@feed_info.feed_start_date)}
           kind={:date}
         />
         <:row
           label="Valid through"
           hint="Apps stop relying on this schedule after this day."
-          value={date(@feed_info.feed_end_date)}
+          value={@feed_info.feed_end_date && Wording.date(@feed_info.feed_end_date)}
           kind={:date}
         />
         <:row
@@ -868,9 +869,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     do: "Choose a language from the list."
 
   defp rule_message(form, :feed_end_date, {_message, []}) do
-    case date(Ecto.Changeset.get_field(form.source, :feed_start_date)) do
+    case Ecto.Changeset.get_field(form.source, :feed_start_date) do
       nil -> "Choose a date on or after the valid-from date."
-      start -> "Choose a date on or after #{start}, the valid-from date."
+      start -> "Choose a date on or after #{Wording.date(start)}, the valid-from date."
     end
   end
 
@@ -908,12 +909,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     "Applies to #{Values.presence(version.name) || "this version"} only. Each version keeps its own feed details."
   end
 
-  # The display helpers return nil for a value the version does not carry, so
+  # The display helper returns nil for a value the version does not carry, so
   # `summary_value/1` is the one place that words it "Not set".
   defp language(code), do: LanguageCodes.label(code)
-
-  defp date(nil), do: nil
-  defp date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
 
   defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"

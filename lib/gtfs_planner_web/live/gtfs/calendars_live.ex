@@ -1584,7 +1584,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
         {:error,
          %{
            end_date:
-             "That date is not later than the calendar's current end date, #{CalendarComponents.format_date(summary.calendar.end_date)}."
+             "That date is not later than the calendar's current end date, #{Wording.date(summary.calendar.end_date)}."
          }}
 
       over_extension_horizon?(summary, end_date) ->
@@ -1615,7 +1615,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   end
 
   defp extension_approved_message(approved) do
-    "Approved extending #{approved.service_id} through #{CalendarComponents.format_date(approved.end_date)}. " <>
+    "Approved extending #{approved.service_id} through #{Wording.date(approved.end_date)}. " <>
       "Ask the helper to prepare it, then review the result before it is applied."
   end
 
@@ -1864,7 +1864,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     changed = Map.get(result, :changed_count, 0)
 
     "Extended #{extension_service_label(socket)} through " <>
-      "#{CalendarComponents.format_date(socket.assigns.extension_review.extension.requested_end_date)}. " <>
+      "#{Wording.date(socket.assigns.extension_review.extension.requested_end_date)}. " <>
       "#{changed} #{if changed == 1, do: "row", else: "rows"} changed."
   end
 
@@ -2485,10 +2485,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     if column == sort_by, do: sort_dir, else: "none"
   end
 
-  defp format_date(date), do: Calendar.strftime(date, "%b %-d, %Y")
-
-  defp format_day(date), do: Calendar.strftime(date, "%a, %b %-d")
-
   @badge_tones %{
     success: "bg-success-bg text-success-fg",
     warning: "bg-warning-bg text-warning-fg",
@@ -2522,10 +2518,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp zone_fallback_text(_missing),
     do: "The agency time zone is missing, so “today” and ending-soon dates use UTC."
 
-  defp gap_label(%{first_date: date, last_date: date}), do: format_date(date)
+  defp gap_label(%{first_date: date, last_date: date}), do: Wording.date(date)
 
   defp gap_label(%{first_date: first, last_date: last}),
-    do: "#{format_date(first)} – #{format_date(last)}"
+    do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   defp result_count(%{constraints?: true} = assigns) do
     "#{length(assigns.calendars)} of #{assigns.counts.calendars} calendars"
@@ -2621,10 +2617,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp date_change_label([]), do: "No dates selected"
 
-  defp date_change_label([date]), do: Calendar.strftime(date, "%a, %b %-d, %Y")
+  defp date_change_label([date]), do: Wording.weekday_date_with_year(date)
 
   defp date_change_label([first | _rest] = dates) do
-    "#{length(dates)} dates · #{format_date(first)} – #{format_date(List.last(dates))}"
+    "#{length(dates)} dates · #{Wording.date(first)} – #{Wording.date(List.last(dates))}"
   end
 
   # The reviewed change count is the domain's real per-row count: a plan set for
@@ -2693,7 +2689,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp line_effect(%{kind: :run, trips: trips}),
     do: "#{Wording.count_noun(trips, "trip")} will run."
 
-  defp line_dates(%{dates: [date]}), do: format_day(date)
+  defp line_dates(%{dates: [date]}), do: Wording.weekday_date(date)
   defp line_dates(%{dates: dates}), do: "#{length(dates)} dates"
 
   defp line_these(%{dates: [_date]}), do: "this date"
@@ -2706,19 +2702,19 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp warning_text(%{reason: :ends_soon, last_date: date, days_remaining: days}),
     do:
-      "Service ends #{format_date(date)} · #{days} #{if days == 1, do: "day", else: "days"} away."
+      "Service ends #{Wording.date(date)} · #{days} #{if days == 1, do: "day", else: "days"} away."
 
   defp warning_text(%{reason: :ended, last_date: date}),
-    do: "Service ended #{format_date(date)}."
+    do: "Service ended #{Wording.date(date)}."
 
   defp warning_text(%{reason: :outside_range, date: date, exception: exception}),
-    do: "#{format_date(date)} is outside the regular range for a #{exception} date."
+    do: "#{Wording.date(date)} is outside the regular range for a #{exception} date."
 
   defp warning_text(%{reason: :redundant_addition, date: date}),
-    do: "#{format_date(date)} already runs on the regular schedule."
+    do: "#{Wording.date(date)} already runs on the regular schedule."
 
   defp warning_text(%{reason: :removal_on_nonservice_day, date: date}),
-    do: "#{format_date(date)} already had no regular service."
+    do: "#{Wording.date(date)} already had no regular service."
 
   defp warning_text(_warning), do: "This change needs review."
 
@@ -3109,7 +3105,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                       </li>
                     </ul>
                     <span :if={@today} id="calendars-today" class="text-muted">
-                      Today · {format_date(@today)}
+                      Today · {Wording.date(@today)}
                     </span>
                     <p
                       :if={
@@ -3186,7 +3182,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                   class="flex flex-wrap items-center gap-x-2 border-b border-subtle px-4 text-[13px] text-muted md:px-5"
                 >
                   <span :if={@range == "whole"}>
-                    Timeline starts {format_date(@coverage.first_date)}; earlier service since {format_date(
+                    Timeline starts {Wording.date(@coverage.first_date)}; earlier service since {Wording.date(
                       @screen.horizon.first_date
                     )} is hidden.
                   </span>

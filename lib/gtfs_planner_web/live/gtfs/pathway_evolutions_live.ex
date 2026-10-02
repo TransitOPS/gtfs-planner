@@ -1227,11 +1227,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # -- access preview: presentation ------------------------------------------
 
-  defp moment_label(%Date{} = date, time), do: "#{GtfsTime.display(time)} on #{long_date(date)}"
-
-  defp long_date(%Date{} = date), do: Calendar.strftime(date, "%A, %B %-d, %Y")
-
-  defp short_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
+  defp moment_label(%Date{} = date, time), do: "#{GtfsTime.display(time)} on #{full_date(date)}"
 
   # The moment the result describes: its service date and time, and the local
   # clock time it falls on. The agency zone and its offset are secondary text
@@ -1243,9 +1239,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       elsewhere =
         if NaiveDateTime.to_date(local) == assigns.preview.service_date,
           do: "",
-          else: " #{short_date(NaiveDateTime.to_date(local))}"
+          else: " #{Wording.short_date(NaiveDateTime.to_date(local))}"
 
-      "#{long_date(assigns.preview.service_date)} · " <>
+      "#{full_date(assigns.preview.service_date)} · " <>
         "#{GtfsTime.display(assigns.preview.service_time)} service time " <>
         "(#{DisplayClock.format_time(local)}#{elsewhere})"
     else
@@ -1308,7 +1304,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp short_moment(%Date{} = date, time),
-    do: "#{GtfsTime.display(time)} on #{Calendar.strftime(date, "%a, %b %-d")}"
+    do: "#{GtfsTime.display(time)} on #{Wording.weekday_date(date)}"
 
   defp preview_error_detail(%{preview_error: :too_large}) do
     "That date and time need too many service dates to check. Choose a moment within the version's calendar range."
@@ -1568,13 +1564,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     if Date.compare(instance.service_date, assigns.preview.service_date) == :eq do
       nil
     else
-      "from the #{long_date(instance.service_date)} service day · until #{local_end_label(instance.ends_at, assigns.preview_zone)}"
+      "from the #{full_date(instance.service_date)} service day · until #{local_end_label(instance.ends_at, assigns.preview_zone)}"
     end
   end
 
   defp local_end_label(%DateTime{} = instant, %{fallback?: false} = zone) do
     [local] = DisplayClock.localize_many([instant], zone)
-    "#{DisplayClock.format_time(local)} #{short_date(NaiveDateTime.to_date(local))}"
+    "#{DisplayClock.format_time(local)} #{Wording.short_date(NaiveDateTime.to_date(local))}"
   end
 
   defp local_end_label(_instant, _zone), do: nil
@@ -1673,7 +1669,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     spill =
       if Date.compare(instance.service_date, service_date) == :eq,
         do: "",
-        else: " from the #{long_date(instance.service_date)} service day"
+        else: " from the #{full_date(instance.service_date)} service day"
 
     pathway_reference(row && row.pathway, instance.pathway_id) ++
       [" is closed #{window_label(instance)}#{spill}."]

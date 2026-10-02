@@ -1982,7 +1982,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # New timings are named `Pasted <Mon D> · A` (R10/AC-12): the stamp is
   # today's date in the codebase's `%b %-d` display convention. The
   # fingerprint excludes the stamp, so dating a paste never stales it.
-  defp paste_stamp, do: Calendar.strftime(Date.utc_today(), "%b %-d")
+  # The stamp is UTC today, not the agency's local day: it names when the paste was read.
+  defp paste_stamp, do: Wording.short_date(Date.utc_today())
 
   defp input_text(socket) do
     case socket.assigns[:input] do

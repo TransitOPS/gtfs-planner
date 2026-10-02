@@ -3265,7 +3265,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp dates_label(%{
          calendar: %ServiceCalendar{start_date: %Date{} = from, end_date: %Date{} = to}
        }),
-       do: "#{short_date(from)} – #{short_date(to)}"
+       do: "#{Wording.date(from)} – #{Wording.date(to)}"
 
   defp dates_label(_row), do: nil
 
@@ -3296,8 +3296,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       _other -> nil
     end
   end
-
-  defp short_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
 
   # One strip row per weekday: the draft's hours rows whose calendar runs that
   # day, placed on the 5 am–2 am axis the strip draws.
@@ -3392,7 +3390,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp finding_classes(_level), do: "border-info-line bg-info-bg text-info-fg"
 
   defp updated_line(%FlexService{updated_at: %DateTime{} = at}),
-    do: "Updated #{short_date(DateTime.to_date(at))}"
+    do: "Updated #{Wording.date(DateTime.to_date(at))}"
 
   defp updated_line(%FlexService{}), do: "Not saved yet"
 

@@ -299,16 +299,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp calendar_dates(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
-    " · #{date_label(first, last)}"
+    " · #{date_span_label(first, last)}"
   end
 
   defp calendar_dates(_calendar), do: ""
 
-  defp date_label(date, date), do: Calendar.strftime(date, "%b %-d, %Y")
+  # A range keeps both ends; a single date reads once. `Wording.date/1` formats each end.
+  defp date_span_label(date, date), do: Wording.date(date)
 
-  defp date_label(first, last) do
-    "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"
-  end
+  defp date_span_label(first, last), do: "#{Wording.date(first)} – #{Wording.date(last)}"
 
   defp direction_options(trips) do
     for direction_id <- [0, 1] do
@@ -365,7 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp calendar_detail(%{first_active_date: %Date{} = first, last_active_date: %Date{} = last}) do
-    "#{Calendar.strftime(first, "%b %-d, %Y")} – #{Calendar.strftime(last, "%b %-d, %Y")}"
+    "#{Wording.date(first)} – #{Wording.date(last)}"
   end
 
   defp calendar_detail(_calendar), do: nil

@@ -163,16 +163,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   def calendar_detail(_option), do: nil
 
-  defp calendar_span(first, first, _count), do: "#{long_date(first)} only"
-  defp calendar_span(first, _last, 1), do: "#{long_date(first)} only"
+  defp calendar_span(first, first, _count), do: "#{Wording.date(first)} only"
+  defp calendar_span(first, _last, 1), do: "#{Wording.date(first)} only"
 
   defp calendar_span(first, last, count),
-    do: "#{short_date(first)} – #{long_date(last)} · #{count} service days"
+    do: "#{Wording.short_date(first)} – #{Wording.date(last)} · #{count} service days"
 
-  defp long_date(%Date{} = date),
-    do: "#{Calendar.strftime(date, "%b")} #{date.day}, #{date.year}"
-
-  defp short_date(%Date{} = date), do: "#{Calendar.strftime(date, "%b")} #{date.day}"
+  # The chosen service day is the page's subject: the access preview, the timeline
+  # and a range cause all read it in full, weekday and long month, instead of as
+  # the canonical `Wording.date/1`. `PathwayEvolutionsLive` shares it.
+  @doc false
+  def full_date(%Date{} = date), do: Calendar.strftime(date, "%A, %B %-d, %Y")
 
   @doc """
   Groups one station's pathways for the locator list.
@@ -1974,7 +1975,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       bar_id: "timeline-bar-#{instance.evolution_id}-#{Date.to_iso8601(instance.service_date)}",
       instance_id: instance.evolution_id,
       service_date: Date.to_iso8601(instance.service_date),
-      service_label: service_date_label(instance.service_date),
+      service_label: Wording.weekday_date(instance.service_date),
       start_time: instance.start_time,
       end_time: instance.end_time,
       from: left,
@@ -2054,8 +2055,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     |> :erlang.float_to_binary(decimals: 3)
   end
 
-  defp service_date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
-
   defp weekday(%Date{} = date), do: Calendar.strftime(date, "%a")
 
   defp timeline_title(row, instance, elsewhere?) do
@@ -2063,7 +2062,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     suffix =
       if elsewhere?,
-        do: " on the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day",
+        do: " on the #{full_date(instance.service_date)} service day",
         else: ""
 
     "#{label} closed #{window_label(instance)}#{suffix}"
@@ -2183,7 +2182,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       index: index,
       period_count: 1,
       service_date: Date.to_iso8601(service_date),
-      date_label: date_label(service_date),
+      date_label: Wording.weekday_date(service_date),
       local_start: NaiveDateTime.to_iso8601(finding.local_start),
       local_end: NaiveDateTime.to_iso8601(finding.local_end),
       start_offset: finding.start_utc_offset,
@@ -2289,7 +2288,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     case dates do
       [one] ->
-        date_label(one)
+        Wording.weekday_date(one)
 
       _many ->
         first = hd(dates)
@@ -2321,7 +2320,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
     cond do
       Date.compare(local_start_date, service_date) != :eq ->
-        window <> " on #{date_label(local_start_date)}"
+        window <> " on #{Wording.weekday_date(local_start_date)}"
 
       Date.compare(local_end_date, local_start_date) != :eq ->
         days = Date.diff(local_end_date, local_start_date)
@@ -2372,7 +2371,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       if Date.compare(instance.service_date, service_date) == :eq do
         nil
       else
-        "from the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day"
+        "from the #{full_date(instance.service_date)} service day"
       end
 
     %{
@@ -2631,8 +2630,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     </details>
     """
   end
-
-  defp date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
 
   attr :id, :string, required: true
   attr :title, :string, required: true

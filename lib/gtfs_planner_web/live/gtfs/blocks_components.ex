@@ -522,7 +522,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               :for={date <- dates}
               class="rounded-badge bg-canvas px-2 py-1 text-[13px] tabular-nums text-default"
             >
-              {short_date(date)}
+              {weekday_day(date)}
             </li>
           </ul>
         </section>
@@ -8885,13 +8885,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp range_text(dates) do
     {first, last} = Enum.min_max_by(dates, &Date.to_gregorian_days/1)
-    "#{format_date(first)} – #{format_date(last)}"
+    "#{Wording.date(first)} – #{Wording.date(last)}"
   end
 
-  defp format_date(date), do: Calendar.strftime(date, "%d %b %Y")
-
-  # A date inside its month's group: the weekday and the day of the month.
-  defp short_date(date), do: Calendar.strftime(date, "%a %-d")
+  # A date inside its month's group: the month and year are the group heading, so a
+  # chip names only the weekday and the day of the month instead of `Wording.short_date/1`.
+  defp weekday_day(date), do: Calendar.strftime(date, "%a %-d")
 
   # The kind of message a finding's severity draws.
   defp severity_status(:error), do: "error"

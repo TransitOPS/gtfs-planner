@@ -466,10 +466,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
     cond do
       moved?(before_weekly, after_weekly, "end_date") ->
-        "end date moved to " <> format_date(after_weekly["end_date"])
+        "end date moved to " <> iso_short_date(after_weekly["end_date"])
 
       moved?(before_weekly, after_weekly, "start_date") ->
-        "start date moved to " <> format_date(after_weekly["start_date"])
+        "start date moved to " <> iso_short_date(after_weekly["start_date"])
 
       weekdays_changed?(before_weekly, after_weekly) ->
         "days of service changed"
@@ -498,9 +498,11 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     Enum.any?(@weekday_fields, &(Map.get(before, &1) != Map.get(after_snapshot, &1)))
   end
 
-  defp format_date(iso_date) do
+  # Stored weekly dates are ISO strings; a value that does not parse keeps its raw
+  # text. Only the date text itself is the canonical `Wording.short_date/1`.
+  defp iso_short_date(iso_date) do
     case Date.from_iso8601(iso_date) do
-      {:ok, date} -> Calendar.strftime(date, "%b %-d")
+      {:ok, date} -> Wording.short_date(date)
       {:error, _reason} -> iso_date
     end
   end
