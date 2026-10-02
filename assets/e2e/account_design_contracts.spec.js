@@ -129,12 +129,13 @@ async function waitForLiveView(page) {
 // rounded up (`#fact-created` carries the seed run's account-created date). The
 // widths are asserted after pinning so a mask whose box stops being fixed fails
 // here instead of flaking the reviewed screenshot.
+// Full timestamps include the year; reserve room for the canonical display.
 const PINNED_MASK_WIDTHS = [
-  ["#resume-list .tabular-nums.text-muted", 112],
-  ["#check-time", 112],
-  ["#export-meta", 176],
+  ["#resume-list .tabular-nums.text-muted", 160],
+  ["#check-time", 160],
+  ["#export-meta", 224],
   ["#editing-now span", 152],
-  ["#export-line", 128],
+  ["#export-line", 176],
   ["#fact-created", 104],
 ];
 

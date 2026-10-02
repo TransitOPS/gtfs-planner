@@ -1271,7 +1271,7 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert Enum.map(LazyHTML.query(doc, "th"), &LazyHTML.attribute(&1, "aria-sort")) ==
                [["ascending"], ["none"]]
 
-      glyphs = LazyHTML.query(doc, "th span")
+      glyphs = LazyHTML.query(doc, "th span[aria-hidden='true']")
       assert LazyHTML.attribute(glyphs, "aria-hidden") == ["true", "true"]
 
       assert Enum.map(glyphs, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) == ["▲", "↕"]

@@ -1,14 +1,16 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutePathEncodingTest do
   @moduledoc """
-  The production links for route, run and stop IDs that carry reserved
-  characters (EV-21).
+  The production links for GTFS IDs that carry reserved characters, and the
+  Runs page's handling of encoded query values (EV-21).
 
   GTFS identifiers are free text. A hand-built path can therefore name a
   different page than the record it meant: a `/` in an ID becomes another path
   segment, and `URI.encode_www_form/1` in a path segment turns a space into `+`,
   which the router reads back as a literal `+`. These tests assert the exact
   address a rendered production link carries, so an unencoded or www-form-encoded
-  segment fails here rather than in a person's browser.
+  segment fails here rather than in a person's browser. Run IDs have a narrower
+  letters, digits and hyphens format: valid encoded IDs select the run, while an
+  invalid reserved-character value is discarded when the page rebuilds its URL.
 
   The panel case runs the page, the conversation session and the turn task as
   separate processes, so the Req.Test plug and the SQL sandbox are shared
@@ -32,7 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePathEncodingTest do
 
   @slash_route_id "10/A"
   @space_route_id "10 A"
-  @run_id "A&B"
+  @run_id "A-B"
 
   # The test environment routes `GtfsPlanner.Agents.Model` through this plug, so
   # every scripted response replaces only the OpenRouter HTTP boundary.
@@ -126,24 +128,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePathEncodingTest do
       requested = assert_patch(view)
       assert requested =~ "direction=9"
 
-      canonical =
-        "/gtfs/#{version.id}/routes/10%2FA/schedules/paste?" <>
-          URI.encode_query([
-            {"direction", "0"},
-            {"pattern", pattern.pattern.id},
-            {"service_id", calendar}
-          ])
+      canonical = view |> assert_patch() |> URI.parse()
 
-      assert assert_patch(view) == canonical
+      assert canonical.path == "/gtfs/#{version.id}/routes/10%2FA/schedules/paste"
+
+      assert URI.decode_query(canonical.query) == %{
+               "direction" => "0",
+               "pattern" => pattern.pattern.id,
+               "service_id" => calendar
+             }
     end
   end
 
-  describe "a run ID with an ampersand" do
-    setup do
-      %{user: user_fixture()}
-    end
-
-    test "a run named A&B round-trips through the Runs URL", %{conn: conn, user: user} do
+  describe "encoded run query values" do
+    setup %{conn: conn} do
+      user = user_fixture()
       w = runs_version_fixture()
       [first | _rest] = w.blocks["101"]
 
@@ -161,22 +160,50 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePathEncodingTest do
 
       conn = log_in_user(conn, user, organization: w.organization)
 
+      %{conn: conn, world: w}
+    end
+
+    test "an encoded valid run ID round-trips through the Runs URL", %{conn: conn, world: w} do
       {:ok, view, _html} =
-        live(conn, "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&run=A%26B")
+        live(conn, "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&run=%41%2DB")
 
       # The URL opened this run, so the address and the screen agree on the run
-      # named "A&B" before any patch is made.
+      # named "A-B" before any patch is made.
       assert has_element?(view, "#run-drawer")
       assert text(view, "#run-drawer-title") == "Run #{@run_id}"
 
-      # A patch that rebuilds the whole path keeps the run encoded, rather than
-      # splitting it into a second query key at the raw "&".
+      # Rebuilding the path preserves the decoded run and the selected panel.
       view |> element("#runs-tab-uncovered") |> render_click()
 
-      assert_patch(
-        view,
-        "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&panel=uncovered&run=A%26B"
-      )
+      patched = view |> assert_patch() |> URI.parse()
+
+      assert patched.path == "/gtfs/#{w.version.id}/runs"
+
+      assert URI.decode_query(patched.query) == %{
+               "day" => w.day_type_key,
+               "panel" => "uncovered",
+               "run" => @run_id
+             }
+    end
+
+    test "an encoded invalid run ID is dropped when the Runs URL is rebuilt", %{
+      conn: conn,
+      world: w
+    } do
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&run=A%26B")
+
+      refute has_element?(view, "#run-drawer")
+
+      view |> element("#runs-tab-uncovered") |> render_click()
+      patched = view |> assert_patch() |> URI.parse()
+
+      assert patched.path == "/gtfs/#{w.version.id}/runs"
+
+      assert URI.decode_query(patched.query) == %{
+               "day" => w.day_type_key,
+               "panel" => "uncovered"
+             }
     end
   end
 

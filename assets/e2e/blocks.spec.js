@@ -517,7 +517,10 @@ test.describe("Blocks workspace 1440x1000", () => {
     await expect(page.locator("#blocks-pager")).toContainText(
       `Showing 1–${BLOCKS} of ${BLOCKS} blocks`,
     );
-    await expect(page).toHaveURL(/sort=out&dir=desc/);
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get("sort") === "out" &&
+      url.searchParams.get("dir") === "desc",
+    );
 
     tour.sort = {
       defaultFirst: before[0].block,

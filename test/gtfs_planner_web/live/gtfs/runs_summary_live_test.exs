@@ -264,15 +264,23 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
       world = two_runs(context)
       [first | _] = world.blocks["101"]
 
-      # A third block with one 45-minute trip, left unassigned, so the tile's own
-      # figure is exactly 2700 s. Under an hour, the duration reads "45 min"; the
-      # minutes-in copies this step replaced read "0 h 45 min".
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(world.organization.id, world.version.id, %{
+          stop_id: "G1_STOP",
+          stop_lat: world.garage.lat,
+          stop_lon: world.garage.lon
+        })
+
+      # Uncovered work includes garage travel. This trip starts and ends at the
+      # garage's coordinates, so its block is exactly 2700 s with no deadhead.
+      # Under an hour, the duration reads "45 min" rather than "0 h 45 min".
       blocked_trip_fixture(world.organization.id, world.version.id, first.route_id, %{
         trip_id: "G1",
         service_id: "WK",
         block_id: "103",
-        first_stop: "BAY_A",
-        last_stop: "BAY_A",
+        first_stop: stop.stop_id,
+        last_stop: stop.stop_id,
+        first_arrival: "14:00:00",
         first_departure: "14:00:00",
         last_arrival: "14:45:00"
       })
