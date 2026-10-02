@@ -341,6 +341,52 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
       assert view |> element("#runs-helper-notice") |> render() =~ @missing_notice
       refute has_element?(view, "#runs-suggest-drawer-overlay[data-open='true']")
     end
+
+    test "a forged non-numeric, zero or negative entry refuses and the page survives", context do
+      {view, _pid} = prepared_view(context, "uncovered_only")
+
+      render_click(view, "agent_review_prepared", %{"entry" => "abc"})
+      assert view |> element("#runs-helper-notice") |> render() =~ @missing_notice
+
+      render_click(view, "agent_review_prepared", %{"entry" => "0"})
+      assert view |> element("#runs-helper-notice") |> render() =~ @missing_notice
+
+      render_click(view, "agent_review_prepared", %{"entry" => "-1"})
+      assert view |> element("#runs-helper-notice") |> render() =~ @missing_notice
+
+      # The page answered all three without restarting, so nothing on it was lost.
+      refute assigns(view).suggest_open
+      assert has_element?(view, "#agent-review-prepared-2")
+    end
+  end
+
+  describe "keeping the configuration summary current" do
+    test "closing the drawer clears the summary and a native reopen starts without it",
+         context do
+      cover_one_segment(context.world)
+      {view, _pid} = prepared_view(context, "uncovered_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#runs-helper-scope-details")
+
+      render_click(view, "close_suggest", %{})
+      refute has_element?(view, "#runs-helper-scope-details")
+
+      view |> element("#runs-suggest") |> render_click()
+      assert has_element?(view, "#runs-suggest-drawer-overlay[data-open='true']")
+      refute has_element?(view, "#runs-helper-scope-details")
+    end
+
+    test "a completed preview clears the summary", context do
+      cover_one_segment(context.world)
+      {view, _pid} = prepared_view(context, "uncovered_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#runs-helper-scope-details")
+
+      view |> element("#runs-preview") |> render_click()
+
+      assert has_element?(view, "#runs-suggestion")
+      refute has_element?(view, "#runs-helper-scope-details")
+    end
   end
 
   describe "the native effects after the handoff" do

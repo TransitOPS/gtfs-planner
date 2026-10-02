@@ -74,13 +74,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # and they say why: a disabled control with no reason is a dead end.
   @preview_locked_message "Apply or discard the suggestion first."
 
-  alias GtfsPlanner.Agents
-  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
-alias GtfsPlanner.Gtfs.OperationsAssistance
+  alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Values
   alias GtfsPlannerWeb.AgentPanel
+  alias GtfsPlannerWeb.Gtfs.OperationsHelper
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
@@ -424,12 +423,15 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
        socket
        |> assign(:suggest_open, true)
        |> assign(:suggest_notice, nil)
-       |> assign(:suggest_scope, default_scope(socket.assigns))}
+       |> assign(:suggest_scope, default_scope(socket.assigns))
+       |> assign(:helper_review, nil)}
     end
   end
 
+  # The configuration summary describes the drawer's scope, so it closes with
+  # the drawer and a native reopen, which re-derives the scope, starts without it.
   def handle_event("close_suggest", _params, socket) do
-    {:noreply, assign(socket, :suggest_open, false)}
+    {:noreply, socket |> assign(:suggest_open, false) |> assign(:helper_review, nil)}
   end
 
   def handle_event("select_scope", %{"value" => value}, socket) do
@@ -519,6 +521,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
      |> assign(:apply_state, :idle)
      |> assign(:rebuild_confirm, false)
      |> assign(:suggest_notice, nil)
+     |> assign(:helper_review, nil)
      |> stream_run_rows()
      # The discarded proposal leaves the frozen copy with it, so the panel stops
      # describing a proposal the page no longer holds.
@@ -877,6 +880,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
          socket
          |> assign(:plan, plan)
          |> assign(:suggest_open, false)
+         |> assign(:helper_review, nil)
          |> assign(:apply_state, :idle)
          |> assign(:rebuild_confirm, false)
          |> assign(:suggest_notice, nil)
@@ -922,7 +926,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
   defp do_apply(socket) do
     %{plan: plan} = socket.assigns
 
-    socket = assign(socket, :apply_state, :pending)
+    socket = socket |> assign(:apply_state, :pending) |> assign(:helper_review, nil)
 
     case Gtfs.apply_run_plan(AuditContext.from_assigns(socket.assigns), plan) do
       {:ok, %{undo: undo_moves}} when undo_moves != [] ->
@@ -988,33 +992,13 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
   # panel is then answering from nothing, which its own unavailable state states,
   # rather than from half a day.
   defp publish_helper_context(socket) do
-    case helper_payload(socket) do
-      {:ok, payload} ->
-        case OperationsAssistance.context(helper_identity(socket), payload) do
-          {:ok, context} ->
-            socket
-            |> AgentPanel.set_context(context)
-            |> assign(:helper_notice, nil)
-
-          {:error, _refused} ->
-            drop_helper_context(socket)
-        end
-
-      :error ->
-        drop_helper_context(socket)
-    end
+    OperationsHelper.publish_context(
+      socket,
+      "runs",
+      helper_payload(socket),
+      @helper_unavailable_notice
+    )
   end
-
-  # A page with no loaded day type has nothing to freeze. The copy is dropped
-  # rather than left describing the day that was on screen a moment ago, so the
-  # panel cannot answer about a day this page no longer shows.
-  defp drop_helper_context(socket) do
-    socket
-    |> AgentPanel.set_context(Scope.context(helper_identity(socket)))
-    |> assign(:helper_notice, @helper_unavailable_notice)
-  end
-
-  defp helper_identity(%{assigns: %{current_gtfs_version: version}}), do: {:version, version.id}
 
   # The day's own copy, with the current proposal attached when one has been
   # completed. The proposal is this page's own successful native result, which is
@@ -1053,81 +1037,17 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
   #    This is what refuses a configuration prepared for another day or another
   #    copy of this one.
   defp review_prepared_suggestion(socket, entry_id) do
+    notices = %{missing: @helper_missing_notice, section: @helper_section_notice}
+
     with :ok <- helper_native_state(socket),
-         {:ok, id} <- read_entry_id(entry_id),
-         {:ok, command} <- prepared_command(socket, id),
+         {:ok, command} <-
+           OperationsHelper.prepared_command(socket, entry_id, "runs", @helper_scopes, notices),
          :ok <- helper_draft_state(socket, command) do
       open_helper_suggestion(socket, command)
     else
       {:error, notice} -> assign(socket, :helper_notice, notice)
     end
   end
-
-  # `phx-value-entry` carries the entry number, so it arrives as the string the
-  # DOM holds. A session addresses its entries by number, so the string is read
-  # as the number it names and anything else never reaches the session.
-  defp read_entry_id(entry_id) when is_binary(entry_id) do
-    case Integer.parse(entry_id) do
-      {id, ""} when id > 0 -> {:ok, id}
-      _other -> :error
-    end
-  end
-
-  defp read_entry_id(entry_id) when is_integer(entry_id) and entry_id > 0, do: {:ok, entry_id}
-  defp read_entry_id(_entry_id), do: :error
-
-  defp prepared_command(socket, entry_id) do
-    with {:ok, %{command: {:operations_suggestion, command}}} <-
-           Agents.prepared(
-             socket.assigns.agent_session,
-             socket.assigns.agent_conversation_id,
-             entry_id
-           ),
-         {:ok, command} <- read_helper_command(command) do
-      {:ok, command}
-    else
-      _refused -> {:error, @helper_missing_notice}
-    end
-  end
-
-  # The command is a map this page's own pack wrote. Everything in it is checked
-  # for shape before it is used, because a value that arrives as an unexpected
-  # term is a refusal rather than a crash on the page.
-  defp read_helper_command(%{
-         section: "runs",
-         day_key: day_key,
-         source_digest: source_digest,
-         selection_digest: selection_digest,
-         mode: mode
-       })
-       when is_binary(day_key) and is_binary(source_digest) and is_binary(selection_digest) do
-    case helper_scope(mode) do
-      nil ->
-        :error
-
-      scope ->
-        {:ok,
-         %{
-           day_key: day_key,
-           source_digest: source_digest,
-           selection_digest: selection_digest,
-           mode: scope
-         }}
-    end
-  end
-
-  defp read_helper_command(%{section: section}) when section != "runs",
-    do: {:error, @helper_section_notice}
-
-  defp read_helper_command(_command), do: :error
-
-  # The scope travels through the session as the string the tool schema accepted
-  # and this page addresses it as the atom `Runs.Cutter` takes, so the two are
-  # matched by name rather than by identity. Anything else is no scope at all.
-  defp helper_scope(value) when is_binary(value),
-    do: Enum.find(@helper_scopes, &(to_string(&1) == value))
-
-  defp helper_scope(value), do: if(value in @helper_scopes, do: value)
 
   defp helper_native_state(%{assigns: %{plan: plan}}) when not is_nil(plan),
     do: {:error, @helper_preview_notice}
@@ -1219,19 +1139,7 @@ alias GtfsPlanner.Gtfs.OperationsAssistance
   # trips the day's own read left out of the projection. They are named by kind
   # and count, because the copy holds opaque refs rather than the rows, and a
   # count is what a reader can act on.
-  defp helper_exclusions(payload) do
-    payload
-    |> Map.get("exclusions", [])
-    |> Enum.frequencies_by(& &1["kind"])
-    |> Enum.map(fn {kind, count} -> {helper_exclusion_label(kind), count} end)
-    |> Enum.sort()
-  end
-
-  defp helper_exclusion_label("frequency_trip"), do: "repeating trips"
-  defp helper_exclusion_label("unplottable"), do: "trips with no plottable times"
-  defp helper_exclusion_label("outside_scope"), do: "rows outside the selected scope"
-  defp helper_exclusion_label(kind) when is_binary(kind), do: kind
-  defp helper_exclusion_label(_kind), do: "other rows"
+  defp helper_exclusions(payload), do: OperationsHelper.exclusions(payload)
 
   # A pending apply is ignored, not queued and not re-run. The button is disabled
   # while one is in flight, so this guard only catches what a disabled button

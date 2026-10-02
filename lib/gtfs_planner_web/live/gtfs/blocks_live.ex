@@ -107,6 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
+  alias GtfsPlannerWeb.Gtfs.OperationsHelper
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
@@ -445,6 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @helper_missing_notice "That configuration is no longer available. Open the Suggest blocks drawer and ask again."
   @helper_busy_notice "A suggestion is already being built. Wait for it to finish, then review the configuration."
   @helper_preview_notice "Discard the current suggestion first. It was built from this day, and only one suggestion can be on the page."
+  @helper_connection_notice "Save or discard the connection choice first. Opening the Suggest blocks drawer would close it."
   @helper_no_day_notice "Load a service day first. The helper reads the day this page has loaded."
   @helper_unavailable_notice "The helper could not read this service day, so it has no evidence to work from. Your blocks are unchanged."
 
@@ -1222,8 +1224,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     case review_prepared_suggestion(socket, id) do
       # An opened configuration patches the drawer into the URL; a refusal is a
       # panel-only answer that leaves the page and every draft where they were.
-      {:open, socket} -> patch(socket, %{drawer: "suggest"})
-      {:refused, socket} -> {:noreply, socket}
+      # The same clears as the native `open_drawer "suggest"` path, so no trip,
+      # gap or block drawer stays addressed under the suggest drawer.
+      {:open, socket} ->
+        patch(socket, %{trip: nil, gap: nil, block: nil, drawer: "suggest", pair: nil})
+
+      {:refused, socket} ->
+        {:noreply, socket}
     end
   end
 
@@ -2028,6 +2035,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:replace, @no_replace)
         |> assign(:applied, nil)
         |> assign_derived(day)
+        # Every authoritative reload republishes the frozen copy: the first load,
+        # a day-type change, a retry and each save that re-reads the day it
+        # wrote (an apply, block rules, driving times, a connection undo, a bulk
+        # save). Without it the panel keeps answering from the day before.
+        |> publish_helper_context()
 
       {:error, {:unknown_day_type, day_types}} ->
         socket
@@ -2036,6 +2048,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:load_state, :unknown)
         |> assign_empty_derived()
         |> assign(:day_types, day_types)
+        |> publish_helper_context()
 
       {:error, _reason} ->
         # A database outage keeps whatever is already on screen; only the callout
@@ -4409,10 +4422,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # would silently become a rebuild of the whole service day (AC-7, PM-3). The
   # pending scope is consumed exactly once, so a later resolve — a closed and
   # reopened drawer, a day change — is derived again from the page.
+  #
+  # The configuration summary lives exactly as long as the scope it describes: a
+  # drawer resolved without a pending prepared scope - closed, reopened natively,
+  # another drawer, a day change - re-derives its scope, so the summary goes.
   defp resolve_suggest(socket, :suggest) do
     case socket.assigns[:helper_suggest_scope] do
       nil ->
-        assign(socket, :suggest, %{@empty_suggest | scope: suggest_scope(socket)})
+        socket
+        |> assign(:suggest, %{@empty_suggest | scope: suggest_scope(socket)})
+        |> assign(:helper_review, nil)
 
       scope ->
         socket
@@ -4421,7 +4440,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  defp resolve_suggest(socket, _drawer), do: assign(socket, :suggest, @empty_suggest)
+  defp resolve_suggest(socket, _drawer),
+    do: socket |> assign(:suggest, @empty_suggest) |> assign(:helper_review, nil)
 
   defp suggest_scope(%{assigns: %{selected_blocks: [_ | _]}}), do: :selected
   defp suggest_scope(%{assigns: %{suggest_pool_count: 0}}), do: :replace_all
@@ -4509,30 +4529,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp publish_helper_context(socket), do: socket
 
   defp select_blocks_helper(socket) do
-    case helper_payload(socket) do
-      {:ok, payload} ->
-        case OperationsAssistance.context(helper_identity(socket), payload) do
-          {:ok, context} ->
-            socket
-            |> AgentPanel.select_pack("blocks", context)
-            |> assign(:helper_notice, nil)
-
-          {:error, _refused} ->
-            drop_helper_context(socket)
-        end
-
-      :error ->
-        drop_helper_context(socket)
-    end
-  end
-
-  # A page with no loaded day type has nothing to freeze. The copy is dropped
-  # rather than left describing the day that was on screen a moment ago, so the
-  # panel cannot answer about a day this page no longer shows.
-  defp drop_helper_context(socket) do
-    socket
-    |> AgentPanel.select_pack("blocks", Scope.context(helper_identity(socket)))
-    |> assign(:helper_notice, @helper_unavailable_notice)
+    OperationsHelper.publish_context(
+      socket,
+      "blocks",
+      helper_payload(socket),
+      @helper_unavailable_notice
+    )
   end
 
   defp helper_identity(%{assigns: %{current_gtfs_version: version}}), do: {:version, version.id}
@@ -4623,71 +4625,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   defp open_helper_entry(socket, entry_id) do
-    with {:ok, id} <- read_entry_id(entry_id),
-         {:ok, command} <- prepared_command(socket, id) do
-      open_helper_suggestion(socket, command)
-    else
+    notices = %{missing: @helper_missing_notice, section: @helper_section_notice}
+
+    case OperationsHelper.prepared_command(socket, entry_id, "blocks", @scopes, notices) do
+      {:ok, command} -> open_helper_suggestion(socket, command)
       {:error, notice} -> {:refused, assign(socket, :helper_notice, notice)}
     end
   end
 
-  # `phx-value-entry` carries the entry number, so it arrives as the string the
-  # DOM holds. A session addresses its entries by number, so the string is read
-  # as the number it names and anything else never reaches the session.
-  defp read_entry_id(entry_id) when is_binary(entry_id) do
-    case Integer.parse(entry_id) do
-      {id, ""} when id > 0 -> {:ok, id}
-      _other -> :error
-    end
-  end
-
-  defp read_entry_id(entry_id) when is_integer(entry_id) and entry_id > 0, do: {:ok, entry_id}
-  defp read_entry_id(_entry_id), do: :error
-
-  defp prepared_command(socket, entry_id) do
-    with {:ok, %{command: {:operations_suggestion, command}}} <-
-           Agents.prepared(
-             socket.assigns.agent_session,
-             socket.assigns.agent_conversation_id,
-             entry_id
-           ),
-         {:ok, command} <- read_helper_command(command) do
-      {:ok, command}
-    else
-      _refused -> {:error, @helper_missing_notice}
-    end
-  end
-
-  # The command is a map this page's own pack wrote. Everything in it is checked
-  # for shape before it is used, because a value that arrives as an unexpected
-  # term is a refusal rather than a crash on the page.
-  defp read_helper_command(%{
-         section: "blocks",
-         day_key: day_key,
-         source_digest: source_digest,
-         selection_digest: selection_digest,
-         mode: mode
-       })
-       when is_binary(day_key) and is_binary(source_digest) and is_binary(selection_digest) do
-    if suggest_scope?(mode),
-      do:
-        {:ok,
-         %{
-           day_key: day_key,
-           source_digest: source_digest,
-           selection_digest: selection_digest,
-           mode: suggest_scope_name(mode)
-         }},
-      else: :error
-  end
-
-  defp read_helper_command(%{section: section}) when section != "blocks",
-    do: {:error, @helper_section_notice}
-
-  defp read_helper_command(_command), do: :error
-
-  defp open_helper_suggestion(%{assigns: %{day_type: nil}}, _command),
-    do: {:error, @helper_no_day_notice}
+  defp open_helper_suggestion(%{assigns: %{day_type: nil}} = socket, _command),
+    do: {:refused, assign(socket, :helper_notice, @helper_no_day_notice)}
 
   defp open_helper_suggestion(socket, command) do
     with {:ok, fresh} <- reload_helper_day(socket),
@@ -4708,7 +4655,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp helper_native_state(%{assigns: %{plan_preview: plan}}) when not is_nil(plan),
     do: {:error, @helper_preview_notice}
 
-  defp helper_native_state(_socket), do: :ok
+  # An unsaved connection choice is the native draft guard every other drawer
+  # opening honours: opening the Suggest blocks drawer closes the gap it belongs
+  # to and resets the choice to the saved one. The native path asks to discard
+  # first; the handoff refuses instead and keeps the choice on screen.
+  defp helper_native_state(socket) do
+    if connection_dirty?(socket.assigns), do: {:error, @helper_connection_notice}, else: :ok
+  end
 
   # The fresh read is scoped to this page's own organization and version and to
   # the day type the command names, so a command for another version's day is
@@ -4788,19 +4741,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # unplottable trips inside the scope, and the rows a narrower selection left
   # out. They are named by kind and count, because the copy holds opaque refs
   # rather than the rows, and a count is what a reader can act on.
-  defp helper_exclusions(payload) do
-    payload
-    |> Map.get("exclusions", [])
-    |> Enum.frequencies_by(& &1["kind"])
-    |> Enum.map(fn {kind, count} -> {helper_exclusion_label(kind), count} end)
-    |> Enum.sort()
-  end
-
-  defp helper_exclusion_label("frequency_trip"), do: "repeating trips"
-  defp helper_exclusion_label("unplottable"), do: "trips with no plottable times"
-  defp helper_exclusion_label("outside_scope"), do: "rows outside the selected scope"
-  defp helper_exclusion_label(kind) when is_binary(kind), do: kind
-  defp helper_exclusion_label(_kind), do: "other rows"
+  defp helper_exclusions(payload), do: OperationsHelper.exclusions(payload)
 
   # The result is one of the context's own answers, and each is handled where it
   # belongs: a plan is stored and the drawer closes, a too-large scope keeps the
@@ -4819,6 +4760,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign_runs_touched(plan)
       |> put_suggest(%{@empty_suggest | scope: socket.assigns.suggest.scope})
       |> assign(:open_drawer, nil)
+      # The configuration became a preview, so its summary has done its job.
+      |> assign(:helper_review, nil)
       |> assign(:timeline_key, nil)
       |> show_preview(plan)
       |> assign_page_rows()
@@ -4941,6 +4884,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     socket =
       socket
+      # A successful apply clears the block selection: those blocks were
+      # rebuilt, so a selection of them describes work that is already done.
+      # It is cleared before the reload so the copy the reload publishes freezes
+      # the selection the page shows afterwards.
+      |> assign(:block_selection, MapSet.new())
+      |> assign(:helper_review, nil)
       |> load_day()
       |> assign(:apply, @empty_apply)
       |> assign(:replace, @no_replace)
@@ -4950,10 +4899,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           "#{moves} #{Wording.noun(moves, "trip")} changed block across #{days}. " <>
             "Each trip's change history lists its previous block."
       })
-      # A successful apply clears the block selection: those blocks were
-      # rebuilt, so a selection of them describes work that is already done.
-      |> assign(:block_selection, MapSet.new())
-      |> assign(:selected_blocks, [])
       # The reloaded day is streamed again, so the rows are the applied plan's and
       # carry no "Changed · not saved" marker: the change is saved now.
       |> assign_page_rows_if_loaded()
@@ -6411,6 +6356,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp drop_preview(socket) do
     socket
     |> assign(:plan_preview, nil)
+    |> assign(:helper_review, nil)
     |> assign(:runs_touched, 0)
     |> assign(:preview_day, nil)
     |> assign(:suggestion, @empty_suggestion)

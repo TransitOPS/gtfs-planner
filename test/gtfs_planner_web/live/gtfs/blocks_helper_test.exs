@@ -45,6 +45,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
   @stale_notice "prepared from a different day or selection"
   @preview_notice "Discard the current suggestion first"
   @missing_notice "no longer available"
+  @connection_notice "Save or discard the connection choice first"
+  @unavailable_notice "could not read this service day"
 
   # The ceiling for `render_async/2`: it returns as soon as the page's async task
   # has finished, so the value only bounds a failure.
@@ -531,6 +533,150 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
       assert view |> element("#blocks-helper-notice") |> render() =~ @missing_notice
       refute has_element?(view, "#suggest-drawer-overlay[data-open='true']")
     end
+
+    test "a forged non-numeric, zero or negative entry refuses and the page survives", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+
+      render_click(view, "agent_review_prepared", %{"entry" => "abc"})
+      assert view |> element("#blocks-helper-notice") |> render() =~ @missing_notice
+
+      render_click(view, "agent_review_prepared", %{"entry" => "0"})
+      assert view |> element("#blocks-helper-notice") |> render() =~ @missing_notice
+
+      render_click(view, "agent_review_prepared", %{"entry" => "-1"})
+      assert view |> element("#blocks-helper-notice") |> render() =~ @missing_notice
+
+      # The page answered all three without restarting, so nothing on it was lost.
+      assert assigns(view).open_drawer == nil
+      assert has_element?(view, "#agent-review-prepared-2")
+    end
+
+    test "an unsaved connection choice refuses and keeps the gap drawer and the choice",
+         context do
+      garage!(context)
+      {first, second} = same_stop_pair!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      render_patch(view, gap_path(context, first, second))
+
+      view
+      |> element("#connection-form")
+      |> render_change(%{
+        "connection" => %{"choice" => "must_reboard"},
+        "_target" => ["connection-choice-reboard"]
+      })
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert view |> element("#blocks-helper-notice") |> render() =~ @connection_notice
+      assert has_element?(view, "#connection-choice-reboard[checked]")
+      assert assigns(view).state.gap != nil
+      assert assigns(view).state.drawer == nil
+      refute has_element?(view, "#suggest-drawer-overlay[data-open='true']")
+    end
+
+    test "a clean gap drawer gives way to the suggest drawer the native way", context do
+      garage!(context)
+      {first, second} = same_stop_pair!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      render_patch(view, gap_path(context, first, second))
+      assert assigns(view).state.gap != nil
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#suggest-drawer-overlay[data-open='true']")
+      state = assigns(view).state
+      assert {state.trip, state.gap, state.block, state.pair} == {nil, nil, nil, nil}
+    end
+  end
+
+  describe "keeping the frozen copy and the review current" do
+    test "after Apply the copy is the reloaded day and a new configuration opens", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      render_click(view, "preview_suggestion", %{})
+      assert render_async(view, @async_timeout) =~ "Apply suggestion"
+      render_click(view, "apply_suggestion", %{})
+      _ = render_async(view, @async_timeout)
+      assert has_element?(view, "[data-role='suggestion-applied']")
+
+      {:ok, fresh} =
+        Gtfs.load_blocking_day(context.organization.id, context.version.id, nil)
+
+      {:ok, expected} =
+        OperationsAssistance.block_day(fresh, %{selected_block_ids: [], selected_trip_ids: []})
+
+      snapshot = helper_snapshot(context, assigns(view))
+      assert snapshot.payload["source_digest"] == expected["source_digest"]
+      assert snapshot.payload["plan"] == nil
+
+      {view, _pid} = prepare_stop({view, assigns(view).agent_session}, context, "replace_all")
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#blocks-helper-notice")
+      assert has_element?(view, "#suggest-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#blocks-helper-scope-details", "Rebuild")
+    end
+
+    test "closing the drawer clears the configuration summary", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#blocks-helper-scope-details")
+
+      render_click(view, "close_drawer", %{})
+
+      refute has_element?(view, "#blocks-helper-scope-details")
+    end
+
+    test "a completed preview clears the configuration summary", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#blocks-helper-scope-details")
+
+      render_click(view, "preview_suggestion", %{})
+      assert render_async(view, @async_timeout) =~ "Apply suggestion"
+
+      refute has_element?(view, "#blocks-helper-scope-details")
+    end
+
+    test "a selection change republishes the copy and clears the summary", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#blocks-helper-scope-details")
+
+      view |> element("[data-role='select-block'][data-block='101']") |> render_click()
+
+      refute has_element?(view, "#blocks-helper-scope-details")
+    end
+
+    test "a day too large to admit renders the page with the unavailable notice", context do
+      garage!(context)
+      oversized_day!(context)
+
+      {:ok, view, _html} = live(context.conn, blocks_path(context.version.id))
+
+      assert assigns(view).load_state == :loaded
+      view |> element("#agent-helper-open") |> render_click()
+
+      assert view |> element("#blocks-helper-notice") |> render() =~ @unavailable_notice
+      assert helper_snapshot(context, assigns(view)) == nil
+    end
   end
 
   describe "the native effects after the handoff" do
@@ -632,6 +778,43 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
   ## Helpers
 
   defp blocks_path(version_id), do: "/gtfs/#{version_id}/blocks"
+
+  defp gap_path(context, first, second),
+    do:
+      blocks_path(context.version.id) <> "?" <> URI.encode_query(gap: "#{first.id}|#{second.id}")
+
+  # Two consecutive trips of one block meeting at one stop, which is the pair the
+  # gap drawer's connection editor is offered for.
+  defp same_stop_pair!(context) do
+    first =
+      trip!(context, %{trip_id: "6101", block_id: "101", first: "06:00:00", last: "06:35:00"})
+
+    second =
+      trip!(context, %{
+        trip_id: "6102",
+        block_id: "101",
+        first_stop: "AB_VALLEY",
+        last_stop: "AB_RS_A",
+        first: "06:43:00",
+        last: "07:18:00"
+      })
+
+    {first, second}
+  end
+
+  # Enough unassigned trips that the day's copy exceeds the shared owner's
+  # 65,536-byte cap on a whole resource context.
+  defp oversized_day!(context) do
+    for index <- 1..400 do
+      minute = rem(index, 60) |> Integer.to_string() |> String.pad_leading(2, "0")
+
+      trip!(context, %{
+        trip_id: "bulk_#{index}",
+        first: "10:#{minute}:00",
+        last: "11:#{minute}:00"
+      })
+    end
+  end
 
   defp trip!(context, attrs) do
     attrs = Map.new(attrs)
