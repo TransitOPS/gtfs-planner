@@ -92,10 +92,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
   defp coord(value), do: Decimal.new(value)
 
-  # The `gap=` deep link carries both trip UUIDs in one parameter, after the
-  # parameters the page had.
+  # The `gap=` deep link carries both trip UUIDs in one parameter; the expected
+  # URL lists the query keys in the order the verified route sorts them.
   defp gap_url(base, from_id, to_id, extra \\ []) do
-    base <> "?" <> URI.encode_query([{"gap", "#{from_id}|#{to_id}"}] ++ extra)
+    query = Enum.sort_by([{"gap", "#{from_id}|#{to_id}"}] ++ extra, &elem(&1, 0))
+    base <> "?" <> URI.encode_query(query)
   end
 
   defp doc(view), do: view |> render() |> LazyHTML.from_fragment()
@@ -818,7 +819,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       |> render_click()
 
       # The URL keeps the block, so the trip drawer knows where it came from.
-      assert_patch(view, base <> "?trip=a&block=101")
+      assert_patch(view, base <> "?block=101&trip=a")
       assert has_element?(view, "#trip-drawer", "Trip a")
       assert has_element?(view, "#trip-back-to-block", "Back to block 101")
       refute has_element?(view, "#block-drawer")

@@ -112,7 +112,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       {:noreply,
        socket
        |> push_event("gtfs_version_selected", %{version_id: version_id})
-       |> push_navigate(to: feed_details_path(version_id))}
+       |> push_navigate(to: ~p"/gtfs/#{version_id}/settings/feed-details")}
     else
       {:noreply, socket}
     end
@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: feed_details_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/feed-details")}
     else
       {:noreply, socket}
     end
@@ -239,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
          socket
          |> close_editor()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -275,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="feed-details-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -745,7 +745,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           Phone numbers and websites riders use are set for each agency. These details describe the
           dataset itself.
         </p>
-        <.aside_link id="feed-details-manage-agencies" navigate={agencies_path(@gtfs_version_id)}>
+        <.aside_link
+          id="feed-details-manage-agencies"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/settings/agencies"}
+        >
           Manage agencies
         </.aside_link>
       </section>
@@ -756,7 +759,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           These details are included when this version is exported. Trip planners see them after
           you export the version and share the feed.
         </p>
-        <.aside_link id="feed-details-go-to-export" navigate={export_path(@gtfs_version_id)}>
+        <.aside_link id="feed-details-go-to-export" navigate={~p"/gtfs/#{@gtfs_version_id}/export"}>
           Go to export
         </.aside_link>
       </section>
@@ -907,9 +910,4 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   # The display helper returns nil for a value the version does not carry, so
   # `summary_value/1` is the one place that words it "Not set".
   defp language(code), do: LanguageCodes.label(code)
-
-  defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
-  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 end

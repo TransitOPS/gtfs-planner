@@ -1859,13 +1859,24 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     filters = filters_from_params(params)
 
     socket
-    |> assign(:fleet_query, URI.parse(uri).query)
+    |> assign(:fleet_query, fleet_query(uri))
     |> assign(:fleet_filters, filters)
     |> assign(:filters_form, filters_form(filters))
     |> assign(:filters_active?, filters_active?(filters))
     |> assign(:bulk_error, nil)
     |> assign(:selected_ids, MapSet.new())
     |> load_fleet()
+  end
+
+  # The current filters as the query map the verified route encodes, so a
+  # version switch rebuilds the URL from the parameters rather than re-encoding
+  # a query string that is already encoded.
+  defp fleet_query(uri) do
+    case URI.parse(uri).query do
+      nil -> nil
+      "" -> nil
+      query -> Plug.Conn.Query.decode(query)
+    end
   end
 
   # A file that finished uploading is parsed and previewed immediately, so the
@@ -2058,10 +2069,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   end
 
   defp fleet_url(socket, query) do
-    case URI.encode_query(query) do
-      "" -> fleet_path(socket.assigns.current_gtfs_version.id, nil)
-      encoded -> fleet_path(socket.assigns.current_gtfs_version.id, encoded)
-    end
+    fleet_path(socket.assigns.current_gtfs_version.id, query)
   end
 
   # --- vehicle drawer state --------------------------------------------------
@@ -2528,12 +2536,14 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp bulk_field_noun(_field), do: "type"
 
   # The Fleet query string carries its filters, so a version switch keeps it in
-  # the URL instead of dropping the operator's current view.
+  # the URL instead of dropping the operator's current view. The query reaches
+  # the verified route as the filter map, never as an already-encoded string,
+  # which `~p` would encode a second time.
   defp fleet_path(version_id, query) when query in [nil, ""] do
-    "/gtfs/#{version_id}/settings/fleet"
+    ~p"/gtfs/#{version_id}/settings/fleet"
   end
 
   defp fleet_path(version_id, query) do
-    "/gtfs/#{version_id}/settings/fleet?#{query}"
+    ~p"/gtfs/#{version_id}/settings/fleet?#{query}"
   end
 end

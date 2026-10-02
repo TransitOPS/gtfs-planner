@@ -706,7 +706,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp version_route_path(version_id, route_id) do
     if route_id,
       do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
-      else: "/gtfs/#{version_id}/routes"
+      else: ~p"/gtfs/#{version_id}/routes"
   end
 
   # The context read goes through the same facade chain as the current route's

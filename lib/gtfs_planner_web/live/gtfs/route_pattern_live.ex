@@ -416,7 +416,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     {:noreply,
      socket
      |> assign(:grouping, nil)
-     |> push_patch(to: grouping_lists_path(socket))}
+     |> push_patch(to: patterns_path(socket))}
   end
 
   # --- details ---------------------------------------------------------------
@@ -2662,7 +2662,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          # would keep counting the trips that have just been grouped. Reading the
          # screen here is what makes the done message agree with the numbers.
          |> load_screen()
-         |> push_patch(to: grouping_lists_path(socket))}
+         |> push_patch(to: patterns_path(socket))}
 
       # A stale review writes nothing by construction; re-reading it keeps the
       # operator's choices where their groups still exist.
@@ -2734,10 +2734,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # is matched by its quoted id attribute rather than as a `#id` selector.
   defp id_selector(id),
     do: ~s([id="#{String.replace(id, ~r/["\\]/, "\\\\\\0")}"])
-
-  defp grouping_lists_path(socket),
-    do:
-      ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
 
   defp grouped_message(%{trips_linked: linked}) do
     "Grouped #{linked} #{if linked == 1, do: "trip", else: "trips"} into patterns"

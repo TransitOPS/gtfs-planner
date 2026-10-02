@@ -1760,15 +1760,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
-  # the reader needs and an empty day type stays at `/blocks`.
+  # the reader needs and an empty day type stays at `/blocks`: the verified route
+  # drops the `?` when the parameter list is empty.
   #
   # `drawer` carries the page's own drawers, including the Suggest blocks drawer
   # that `rebuild_selected` opens.
   defp blocks_path(state) do
-    case path_params(state) do
-      [] -> "/gtfs/#{state.version_id}/blocks"
-      params -> "/gtfs/#{state.version_id}/blocks?" <> URI.encode_query(params)
-    end
+    ~p"/gtfs/#{state.version_id}/blocks?#{path_params(state)}"
   end
 
   defp path_params(state) do

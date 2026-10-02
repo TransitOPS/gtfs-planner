@@ -770,10 +770,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       conn = editor_conn(context)
       weekday = first_day_key(context)
 
-      base =
-        blocks_path(version.id) <>
-          "?day=#{weekday}&panel=pool&route=#{context.route.route_id}&status=problems" <>
-          "&sort=hours&dir=desc&scale=zoom&page=3&pool_page=2"
+      # The verified route sorts query keys in the test environment, so both the
+      # mount URL and the expected patch list them in that order.
+      params =
+        "day=#{weekday}&dir=desc&page=3&panel=pool&pool_page=2" <>
+          "&route=#{context.route.route_id}&scale=zoom&sort=hours&status=problems"
+
+      base = blocks_path(version.id) <> "?" <> params
 
       {:ok, view, _html} = live(conn, base)
 
@@ -790,7 +793,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       view |> element("#blocks-review-checks") |> render_click()
       view |> element("[data-role='blocks-finding-block']") |> render_click()
 
-      assert_patch(view, base <> "&block=101")
+      assert_patch(view, blocks_path(version.id) <> "?block=101&" <> params)
     end
 
     test "an unknown route falls back to all routes", %{version: version} = context do

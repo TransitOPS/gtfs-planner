@@ -625,7 +625,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="fares-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -710,7 +710,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
                 <.zone_inventory
                   inventory={@inventory}
                   filter={@filter}
-                  patch_base={zones_path(@current_gtfs_version.id)}
+                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
                 />
                 <.stop_search q={@q} />
               </div>
@@ -768,7 +768,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
                   filter={@filter}
                   q={@q}
                   view={@view}
-                  patch_base={zones_path(@current_gtfs_version.id)}
+                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
                   selection={@selection}
                   matching_count={MapSet.size(@matching_ids)}
                 />
@@ -783,15 +783,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
                 rule_count={length(@rule_groups)}
                 zones={@inventory.zones}
                 fares={@fares}
-                import_path={import_path(@current_gtfs_version.id)}
+                import_path={~p"/gtfs/#{@current_gtfs_version.id}/import"}
               />
             </div>
             <div :if={@live_action == :checks} id="fare-checks-panel">
               <.checks_tab
                 checks={@checks}
-                patch_base={zones_path(@current_gtfs_version.id)}
+                patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares"}
                 version_name={@current_gtfs_version.name}
-                export_path={export_path(@current_gtfs_version.id)}
+                export_path={~p"/gtfs/#{@current_gtfs_version.id}/export"}
               />
             </div>
           <% end %>
@@ -874,7 +874,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # query is assembled by `URI.encode_query/1`, so a zone ID with a space or a
   # reserved character survives the round trip.
   defp zones_url(socket, query) do
-    path = zones_path(socket.assigns.current_gtfs_version.id)
+    path = ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares"
     query = stop_filter_query(socket.assigns.filter) ++ query
 
     case query do
@@ -1318,11 +1318,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     end
   end
 
-  # A zone filter is its own URL state, so the saved zone is patched as a whole
-  # query and encoded by `URI.encode_query/1` rather than appended to the filter
-  # that was current (CR-7).
+  # A zone filter is its own URL state, so the saved zone is patched as its own
+  # query key on the verified route rather than appended to the filter that was
+  # current (CR-7).
   defp zone_filter_url(socket, zone_id) do
-    zones_path(socket.assigns.current_gtfs_version.id) <> "?" <> URI.encode_query(zone: zone_id)
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares?#{[zone: zone_id]}"
   end
 
   # The inventory entry of a zone filter's exact ID, byte-for-byte.
@@ -1426,7 +1426,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         |> assign(:undo, nil)
         |> assign(:notice, @zone_deleted_message)
         |> assign(:map_snapshot_after_load, true)
-        |> push_patch(to: zones_path(socket.assigns.current_gtfs_version.id))
+        |> push_patch(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings/fares")
 
       # Another editor changed the zone since the dialog opened. Nothing was
       # written: the dialog stays open on the freshly read entry, states the
@@ -2072,13 +2072,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp checks_tone(%{unassigned_count: unassigned}) when unassigned > 0, do: :warning
   defp checks_tone(_checks), do: :ok
 
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
-  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
-
-  defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"
-
-  defp fares_path(version_id, :rules), do: "/gtfs/#{version_id}/settings/fares/rules"
-  defp fares_path(version_id, :checks), do: "/gtfs/#{version_id}/settings/fares/checks"
-  defp fares_path(version_id, _zones), do: zones_path(version_id)
+  defp fares_path(version_id, :rules), do: ~p"/gtfs/#{version_id}/settings/fares/rules"
+  defp fares_path(version_id, :checks), do: ~p"/gtfs/#{version_id}/settings/fares/checks"
+  defp fares_path(version_id, _zones), do: ~p"/gtfs/#{version_id}/settings/fares"
 end

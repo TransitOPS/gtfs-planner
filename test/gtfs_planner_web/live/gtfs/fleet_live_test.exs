@@ -513,7 +513,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
 
       render_hook(view, "switch_gtfs_version", %{"version" => to_string(other_version.id)})
 
-      assert_redirect(view, fleet_url(other_version, query))
+      assert_redirect(view, fleet_url(other_version, "q=river&type=#{vehicle_type.id}"))
     end
 
     test "staging, foreign and absent selections neither navigate nor report a selection", %{

@@ -159,7 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
            :error,
            "That settings section doesn’t exist. Choose one from the list below."
          )
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -209,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     >
       <div id="settings-page">
         <%= if @section_key do %>
-          <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+          <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
             Settings
           </.back_link>
           <div class="mt-2">
@@ -253,7 +253,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
         <p class="mt-3 text-[15px]">
           Pathways Studio organizations don’t have version or fleet settings. Organization settings, such as the name and users, are limited to organization admins.
         </p>
-        <.button id="settings-empty-action" class="mt-6 min-h-11" navigate={stops_path(@version_id)}>
+        <.button
+          id="settings-empty-action"
+          class="mt-6 min-h-11"
+          navigate={~p"/gtfs/#{@version_id}/stops"}
+        >
           Open stops & stations
         </.button>
       </div>
@@ -464,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       key: key,
       title: feature.title,
       summary: feature.summary,
-      path: section_path(version_id, slug),
+      path: ~p"/gtfs/#{version_id}/settings/#{slug}",
       status: :coming_soon
     }
   end
@@ -474,7 +478,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       key: page.key,
       title: page.title,
       summary: page.summary,
-      path: section_path(version_id, page.slug),
+      path: ~p"/gtfs/#{version_id}/settings/#{page.slug}",
       status: :active
     }
   end
@@ -483,14 +487,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
   defp version_target(socket, version_id) do
     case socket.assigns.section_slug do
-      nil -> settings_path(version_id)
-      slug -> section_path(version_id, slug)
+      nil -> ~p"/gtfs/#{version_id}/settings"
+      slug -> ~p"/gtfs/#{version_id}/settings/#{slug}"
     end
   end
-
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
-  defp stops_path(version_id), do: "/gtfs/#{version_id}/stops"
-
-  defp section_path(version_id, slug), do: "/gtfs/#{version_id}/settings/#{slug}"
 end

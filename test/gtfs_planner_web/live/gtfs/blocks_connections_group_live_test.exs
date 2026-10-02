@@ -85,8 +85,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksConnectionsGroupLiveTest do
     log_in_user(context.conn, context.user, organization: context.organization)
   end
 
+  # The verified route sorts query keys in the test environment, so the expected
+  # URL lists them in the same order.
   defp connections_url(version_id, params) do
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(params)
+    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(Enum.sort_by(params, &elem(&1, 0)))
   end
 
   defp mount_connections(context, params) do

@@ -324,7 +324,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         {:noreply,
          socket
          |> put_flash(:info, "Duplicated as #{copy_id}.")
-         |> push_navigate(to: detail_path(socket, copy_id))}
+         |> push_navigate(
+           to:
+             ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: copy_id]}"
+         )}
 
       {:error, reason} ->
         {:noreply,
@@ -354,7 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
             {:noreply,
              socket
              |> put_flash(:info, "Deleted #{socket.assigns.service_id}.")
-             |> push_navigate(to: list_path(socket))}
+             |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars")}
 
           {:ok, result} ->
             {:noreply, after_write(socket, command, result)}
@@ -800,7 +803,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         {:noreply,
          socket
          |> put_flash(:info, "Created #{service_id}.")
-         |> push_navigate(to: detail_path(socket, service_id))}
+         |> push_navigate(
+           to:
+             ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: service_id]}"
+         )}
 
       {:error, reason} ->
         {:noreply, reject_write(socket, params, reason, :create)}
@@ -889,7 +895,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp after_write(socket, _command, %{action: :deleted}) do
     socket
     |> put_flash(:info, "Deleted #{socket.assigns.service_id}.")
-    |> push_navigate(to: list_path(socket))
+    |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars")
   end
 
   defp after_write(socket, command, result) do
@@ -1249,7 +1255,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(organization_id, version_id) do
-      path = version_list_path(socket, version_id)
+      path = ~p"/gtfs/#{version_id}/calendars"
 
       if socket.assigns.dirty? do
         {:noreply, assign(socket, pending_navigation: path)}
@@ -1506,18 +1512,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp empty_periods,
     do: %{periods: [], breaks: [], holidays: [], extra_days: [], removed_days: []}
 
-  ## Paths
-
-  defp list_path(socket), do: list_path_for(socket.assigns.current_gtfs_version.id)
-
-  defp list_path_for(version_id), do: "/gtfs/#{version_id}/calendars"
-
-  defp detail_path(socket, service_id) do
-    list_path(socket) <> "/show?service_id=" <> URI.encode_www_form(service_id)
-  end
-
-  defp version_list_path(_socket, version_id), do: "/gtfs/#{version_id}/calendars"
-
   defp page_title(:new), do: "Create calendar"
   defp page_title(_action), do: "Calendar"
 
@@ -1544,7 +1538,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         class="ds-page"
       >
         <Editor.editor_head
-          list_path={list_path_for(@current_gtfs_version.id)}
+          list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
           crumb={crumb(assigns)}
           heading={heading(assigns)}
           badge={if @show?, do: Editor.status(@source)}
@@ -1609,7 +1603,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               <.button
                 id="calendar-back-to-list"
                 class="min-h-11"
-                navigate={list_path_for(@current_gtfs_version.id)}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               >
                 Back to calendars
               </.button>
@@ -1687,7 +1681,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                   See the routes that use it
                 </a>
                 <.link
-                  navigate={list_path_for(@current_gtfs_version.id)}
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
                   class="inline-flex min-h-11 items-center font-[650] underline underline-offset-2"
                 >
                   Open Calendars
@@ -1997,7 +1991,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 dirty?={@dirty?}
                 pending?={@pending?}
                 note={save_note(assigns)}
-                list_path={list_path_for(@current_gtfs_version.id)}
+                list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               />
             </.form>
           </section>
@@ -2039,7 +2033,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 periods={@periods}
                 active_dates={@source.active_dates}
                 today={@today}
-                list_path={list_path_for(@current_gtfs_version.id)}
+                list_path={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
               />
 
               <div id="calendar-change-panel" class="grid gap-4 rounded-control bg-canvas p-4">

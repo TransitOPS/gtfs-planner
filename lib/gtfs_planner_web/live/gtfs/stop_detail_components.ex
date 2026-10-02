@@ -1311,15 +1311,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   defp diagram_path(gtfs_version_id, stop),
     do: ~p"/gtfs/#{gtfs_version_id}/stops/#{stop.stop_id}/diagram"
 
-  # Every Fares link is built here, so the zone travels as its own query key
-  # through `URI.encode_query/1` and `filter=unassigned` stays a different key
-  # from `zone`. No zone ID reaches a DOM ID.
+  # Every Fares link is built here, so the zone travels as its own query key on
+  # the verified route and `filter=unassigned` stays a different key from
+  # `zone`. No zone ID reaches a DOM ID.
   defp fares_zone_path(gtfs_version_id, nil) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"filter" => "unassigned"})
+    ~p"/gtfs/#{gtfs_version_id}/settings/fares?#{[filter: "unassigned"]}"
   end
 
   defp fares_zone_path(gtfs_version_id, zone_id) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"zone" => zone_id})
+    ~p"/gtfs/#{gtfs_version_id}/settings/fares?#{[zone: zone_id]}"
   end
 
   # The zone as "name · ID", which is how the workspace names a zone; an

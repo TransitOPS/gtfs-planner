@@ -73,7 +73,6 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RosterOperatorsComponents
   alias GtfsPlannerWeb.Gtfs.RostersComponents
-  alias Plug.Conn.Query
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents, only: [tods_review_current?: 2]
 
@@ -2464,10 +2463,8 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLive do
         {"dir", not_the_default(dir, "asc")}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Query.encode()
 
-    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters"
-    if query == "", do: base, else: base <> "?" <> query
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/rosters?#{query}"
   end
 
   # The value unless it is the default, so the default never appears in the URL.

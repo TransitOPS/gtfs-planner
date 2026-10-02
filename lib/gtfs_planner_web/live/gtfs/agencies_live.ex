@@ -194,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       {:noreply,
        socket
        |> push_event("gtfs_version_selected", %{version_id: version_id})
-       |> push_navigate(to: agencies_path(version_id))}
+       |> push_navigate(to: ~p"/gtfs/#{version_id}/settings/agencies")}
     else
       {:noreply, socket}
     end
@@ -209,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: agencies_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/agencies")}
     else
       {:noreply, socket}
     end
@@ -317,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_agency()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -500,7 +500,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_timezone()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -533,7 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="agencies-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -1136,7 +1136,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         <%= if @health.agency_count == 0 do %>
           <h2 class="text-base font-bold leading-snug text-strong">Already have a GTFS feed?</h2>
           <p class="mt-2 text-sm text-default">Importing a feed brings its agencies with it.</p>
-          <.aside_link id="agencies-review-import" navigate={import_path(@version_id)}>
+          <.aside_link id="agencies-review-import" navigate={~p"/gtfs/#{@version_id}/import"}>
             Review an import
           </.aside_link>
         <% else %>
@@ -1147,7 +1147,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
             An agency identifies the service riders use. The organization publishing your dataset
             can be different.
           </p>
-          <.aside_link id="agencies-view-feed-details" navigate={feed_details_path(@version_id)}>
+          <.aside_link
+            id="agencies-view-feed-details"
+            navigate={~p"/gtfs/#{@version_id}/settings/feed-details"}
+          >
             View feed details
           </.aside_link>
         <% end %>
@@ -2201,7 +2204,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
         socket
         |> close_agency()
         |> put_flash(:error, "This version is no longer available.")
-        |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))
+        |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")
     end
   end
 
@@ -2443,7 +2446,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
          socket
          |> close_timezone()
          |> put_flash(:error, "This version is no longer available.")
-         |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
+         |> push_navigate(to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/settings")}
     end
   end
 
@@ -2514,10 +2517,4 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     |> Enum.reject(&(is_nil(&1) or String.trim(&1) == ""))
     |> Enum.join(" · ")
   end
-
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-  defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
-  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
-
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 end

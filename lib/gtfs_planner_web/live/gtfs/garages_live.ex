@@ -439,7 +439,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="garages-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -1213,8 +1213,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   defp garage_coordinates(garage) do
     "#{Decimal.to_string(garage.lat)}, #{Decimal.to_string(garage.lon)}"
   end
-
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
 
   defp conflict_title(1), do: "Operations export is blocked: 1 garage ID matches a stop"
   defp conflict_title(count), do: "Operations export is blocked: #{count} garage IDs match stops"

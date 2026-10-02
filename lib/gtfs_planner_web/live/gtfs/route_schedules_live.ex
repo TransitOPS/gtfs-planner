@@ -4421,7 +4421,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp schedule_blocks_path(version_id, query) do
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(query)
+    ~p"/gtfs/#{version_id}/blocks?#{query}"
   end
 
   # --- presentation helpers --------------------------------------------------

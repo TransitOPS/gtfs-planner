@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
          version_id
        ) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
-      {:noreply, push_navigate(socket, to: section_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/export-defaults")}
     else
       {:noreply, socket}
     end
@@ -136,7 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
            socket.assigns.current_organization.id,
            version_id
          ) do
-      {:noreply, push_navigate(socket, to: section_path(version_id))}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/export-defaults")}
     else
       {:noreply, socket}
     end
@@ -155,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="export-defaults-page" class="ds-page">
-        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
           Settings
         </.back_link>
 
@@ -495,8 +495,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     """
   end
 
-  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
-
   # The switch's consequence in the reference's words: what a full export writes
   # with flex on, and what riders lose with it off.
   defp switch_consequence(true) do
@@ -700,6 +698,4 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
     count = length(cant)
     " #{count} #{if(count == 1, do: "trip", else: "trips")} can't be estimated."
   end
-
-  defp section_path(version_id), do: "/gtfs/#{version_id}/settings/export-defaults"
 end

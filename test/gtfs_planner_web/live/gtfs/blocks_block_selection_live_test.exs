@@ -278,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockSelectionLiveTest do
       assert_patch(view, base <> "?sort=hours")
 
       view |> element("button[phx-click='sort'][phx-value-key='hours']") |> render_click()
-      assert_patch(view, base <> "?sort=hours&dir=desc")
+      assert_patch(view, base <> "?dir=desc&sort=hours")
       assert block_count(view) == "1 block selected"
       assert has_element?(view, "[data-role='select-block'][data-block='101'][checked]")
 

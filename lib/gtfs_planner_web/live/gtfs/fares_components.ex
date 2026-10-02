@@ -1336,7 +1336,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
       <.checks_tab
         checks={@checks}
-        patch_base={zones_path(@current_gtfs_version.id)}
+        patch_base={~p"/gtfs/\#{@current_gtfs_version.id}/settings/fares"}
         version_name={@current_gtfs_version.name}
         export_path={~p"/gtfs/\#{@current_gtfs_version.id}/export"}
       />

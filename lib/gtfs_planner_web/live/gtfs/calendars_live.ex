@@ -2451,10 +2451,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp calendars_path(assigns, query, version_id \\ nil) do
     version_id = version_id || assigns.current_gtfs_version.id
 
-    case URI.encode_query(query) do
-      "" -> "/gtfs/#{version_id}/calendars"
-      encoded -> "/gtfs/#{version_id}/calendars?#{encoded}"
-    end
+    ~p"/gtfs/#{version_id}/calendars?#{query}"
   end
 
   # A value equal to its default is left out of the URL, unlike Values.put_present/3's test.
@@ -2748,7 +2745,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             </.button>
             <.button
               id="calendars-create"
-              navigate={create_path(assigns)}
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
               variant="secondary"
               class="min-h-11"
             >
@@ -2944,7 +2941,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 Calendars say which days each service runs, such as Weekday, Saturday, and Sunday &amp;
                 holidays. Create your first calendar to start.
                 <:action>
-                  <.button id="calendars-create" navigate={create_path(assigns)} class="min-h-11">
+                  <.button
+                    id="calendars-create"
+                    navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars/new"}
+                    class="min-h-11"
+                  >
                     <.icon name="hero-plus" class="size-4" /> Create calendar
                   </.button>
                 </:action>
@@ -4010,7 +4011,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 <div class="min-w-0 py-2.5">
                   <.link
                     :if={is_nil(summary.coverage_error)}
-                    navigate={detail_path(@version_id, summary)}
+                    navigate={
+                      ~p"/gtfs/#{@version_id}/calendars/show?#{[service_id: summary.service_id]}"
+                    }
                     data-calendar-link={summary.service_id}
                     class="calendar-name"
                   >
@@ -4091,13 +4094,5 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       class={["size-3.5", @state == "none" && "text-muted"]}
     />
     """
-  end
-
-  defp create_path(assigns) do
-    "/gtfs/#{assigns.current_gtfs_version.id}/calendars/new"
-  end
-
-  defp detail_path(version_id, summary) do
-    "/gtfs/#{version_id}/calendars/show?service_id=" <> URI.encode_www_form(summary.service_id)
   end
 end

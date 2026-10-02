@@ -59,6 +59,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
 
+  use GtfsPlannerWeb, :verified_routes
+
   @entries :agent_entries
   @composer "agent-composer-input"
   @open_button "agent-helper-open"
@@ -357,22 +359,20 @@ defmodule GtfsPlannerWeb.AgentPanel do
     end
   end
 
-  defp resolve_path(:calendar_show, id, socket) when is_binary(id), do: calendar_path(socket, id)
-  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
+  # A calendar link is the verified route the calendar components use, so the
+  # version comes from this panel's own assigns and an imported service ID is
+  # percent-encoded rather than able to escape the query parameter.
+  defp resolve_path(:calendar_show, id, socket) when is_binary(id) do
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: id]}"
+  end
+
+  defp resolve_path(:calendars_index, _id, socket),
+    do: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars"
 
   defp resolve_path(:route_schedules, id, socket) when is_binary(id),
     do: route_schedules_path(socket, id)
 
   defp resolve_path(_kind, _id, _socket), do: nil
-
-  # The paths are built the way the calendar components build them: the version
-  # comes from this panel's own assigns and the service ID is percent-encoded, so
-  # an imported ID can never escape the query parameter.
-  defp calendar_path(socket, service_id) do
-    calendar_base(socket) <> "/show?service_id=" <> URI.encode_www_form(service_id)
-  end
-
-  defp calendars_path(socket), do: calendar_base(socket)
 
   # A route reference is the route's own Schedules page in this version, built the
   # way the route components build it: the version comes from this panel's own
@@ -383,9 +383,6 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
     "/gtfs/" <> version_id <> "/routes/" <> URI.encode_www_form(route_id) <> "/schedules"
   end
-
-  defp calendar_base(socket),
-    do: "/gtfs/" <> socket.assigns.current_gtfs_version.id <> "/calendars"
 
   ## Session bookkeeping
 

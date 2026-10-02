@@ -456,7 +456,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersFilterLiveTest do
 
       # The same header again reverses it.
       view |> element("#rosters-grid thead th button[phx-value-key='paid']") |> render_click()
-      assert_patched(view, rosters_url(world, "?filter=open&sort=paid&dir=desc"))
+      assert_patched(view, rosters_url(world, "?dir=desc&filter=open&sort=paid"))
 
       # A different header starts ascending again, and the filter is still there.
       view |> element("#rosters-grid thead th button[phx-value-key='operator']") |> render_click()

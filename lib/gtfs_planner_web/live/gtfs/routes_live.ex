@@ -1251,7 +1251,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                   id="new-route-agency-settings"
                   variant="secondary"
                   class="min-h-11"
-                  navigate={agencies_path(@version.id)}
+                  navigate={~p"/gtfs/#{@version.id}/settings/agencies"}
                 >
                   Open Settings › Agencies
                 </.button>
@@ -1889,8 +1889,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       true -> nil
     end
   end
-
-  defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 
   # A failed save is the only state that earns the view-level banner; validation
   # on change marks its own fields and must not shout about a save never

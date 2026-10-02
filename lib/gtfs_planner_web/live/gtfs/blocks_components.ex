@@ -3821,7 +3821,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     params =
       [{"gap", gap}] ++ if(is_binary(day), do: [{"day", day}], else: [])
 
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(params)
+    ~p"/gtfs/#{version_id}/blocks?#{params}"
   end
 
   @doc """
@@ -5102,8 +5102,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # pair's own `gap=` deep link kept so the drawer the editor came from is still
   # the one they land on.
   defp connection_day_path(version_id, day_key, from, to) do
-    "/gtfs/#{version_id}/blocks?" <>
-      URI.encode_query([{"day", day_key}, {"gap", "#{from.id}|#{to.id}"}])
+    ~p"/gtfs/#{version_id}/blocks?#{[day: day_key, gap: "#{from.id}|#{to.id}"]}"
   end
 
   defp record_note([], _to), do: nil
@@ -6113,8 +6112,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # assigning trips to blocks is the one step that creates the first connection.
   defp connections_timeline_path(version_id, state) do
     case state.day do
-      nil -> "/gtfs/#{version_id}/blocks"
-      day -> "/gtfs/#{version_id}/blocks?" <> URI.encode_query(day: day)
+      nil -> ~p"/gtfs/#{version_id}/blocks"
+      day -> ~p"/gtfs/#{version_id}/blocks?#{[day: day]}"
     end
   end
 
@@ -8013,7 +8012,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # A service-day link's URL state: the two parameters the page reads, so following
   # it opens the trip's drawer again on the day it names.
   defp day_type_trip_path(version_id, day_key, trip_id) do
-    "/gtfs/#{version_id}/blocks?" <> URI.encode_query([{"day", day_key}, {"trip", trip_id}])
+    ~p"/gtfs/#{version_id}/blocks?#{[day: day_key, trip: trip_id]}"
   end
 
   @doc """

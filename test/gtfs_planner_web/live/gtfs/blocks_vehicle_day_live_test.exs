@@ -343,7 +343,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
         # The `gap=` parameter's own separator is percent-encoded inside the
         # query string, so the patch carries `%7C` rather than a bare `|`.
         blocks_path(context.version.id) <>
-          "?gap=#{trips.first.id}%7C#{trips.second.id}&block=101"
+          "?block=101&gap=#{trips.first.id}%7C#{trips.second.id}"
       )
 
       assert has_element?(view, "#gap-drawer", "Back to block 101")
@@ -365,7 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       |> element("#block-day [data-role='block-inspect'][phx-value-trip='6101']")
       |> render_click()
 
-      assert_patch(view, blocks_path(context.version.id) <> "?trip=6101&block=101")
+      assert_patch(view, blocks_path(context.version.id) <> "?block=101&trip=6101")
       assert has_element?(view, "#trip-drawer", "Back to block 101")
 
       {:ok, view, _html} =
@@ -380,7 +380,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
         # The `gap=` parameter's own separator is percent-encoded inside the
         # query string, so the patch carries `%7C` rather than a bare `|`.
         blocks_path(context.version.id) <>
-          "?gap=#{trips.first.id}%7C#{trips.second.id}&block=101"
+          "?block=101&gap=#{trips.first.id}%7C#{trips.second.id}"
       )
     end
 

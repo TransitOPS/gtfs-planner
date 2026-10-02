@@ -217,7 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
 
       view |> element("button[phx-value-key='garage']") |> render_click()
 
-      assert_patch(view, blocks_path(context.version.id) <> "?sort=garage&dir=desc")
+      assert_patch(view, blocks_path(context.version.id) <> "?dir=desc&sort=garage")
       assert row_blocks(view) == ["301", "302", "303"]
 
       # Time out sorts by the platform start: 303 leaves last, so it leads the
@@ -230,7 +230,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
 
       view |> element("button[phx-value-key='out']") |> render_click()
 
-      assert_patch(view, blocks_path(context.version.id) <> "?sort=out&dir=desc")
+      assert_patch(view, blocks_path(context.version.id) <> "?dir=desc&sort=out")
       assert row_blocks(view) == ["303", "302", "301"]
     end
   end
