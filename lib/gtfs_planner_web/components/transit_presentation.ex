@@ -8,6 +8,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   use Phoenix.Component
 
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Values
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
@@ -294,26 +295,21 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   defp pathway_metrics(pathway, mode) do
     []
     |> maybe_add(
-      mode == 2 && present?(Map.get(pathway, :stair_count)),
+      mode == 2 && Values.present?(Map.get(pathway, :stair_count)),
       %{value: to_string(Map.get(pathway, :stair_count)), unit: "stairs"}
     )
     |> maybe_add(
-      present?(Map.get(pathway, :length)),
+      Values.present?(Map.get(pathway, :length)),
       %{value: decimal_string(Map.get(pathway, :length)), unit: "m"}
     )
     |> maybe_add(
-      present?(Map.get(pathway, :traversal_time)),
+      Values.present?(Map.get(pathway, :traversal_time)),
       %{value: to_string(Map.get(pathway, :traversal_time)), unit: "sec"}
     )
   end
 
   defp maybe_add(metrics, true, metric), do: metrics ++ [metric]
   defp maybe_add(metrics, false, _metric), do: metrics
-  defp present?(value) when is_integer(value), do: true
-  defp present?(value) when is_float(value), do: true
-  defp present?(%Decimal{}), do: true
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_), do: false
   defp decimal_string(%Decimal{} = value), do: Decimal.to_string(value, :normal)
   defp decimal_string(value), do: to_string(value)
 

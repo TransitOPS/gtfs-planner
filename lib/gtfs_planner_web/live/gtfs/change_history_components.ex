@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.TransitPresentation
   alias GtfsPlannerWeb.Home.ChangeLinks
 
@@ -767,7 +768,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
   defp natural_key(entry) do
     [Map.get(entry, :entity_external_id), Map.get(entry, :entity_id), Map.get(entry, :id)]
-    |> Enum.find(&present_key?/1)
+    |> Enum.find(&Values.present?/1)
     |> case do
       nil -> "Unknown"
       key -> to_string(key)
@@ -780,16 +781,12 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       Map.get(preview.log, :entity_external_id),
       Map.get(preview, :entity_id)
     ]
-    |> Enum.find(&present_key?/1)
+    |> Enum.find(&Values.present?/1)
     |> case do
       nil -> "Unknown"
       key -> to_string(key)
     end
   end
-
-  defp present_key?(nil), do: false
-  defp present_key?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present_key?(_value), do: true
 
   @field_labels %{
     "stop" => %{

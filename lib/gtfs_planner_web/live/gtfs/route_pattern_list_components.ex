@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
@@ -1180,10 +1181,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
     assigns =
       assigns
-      |> assign(:value, if(blank?(pattern_headsign), do: "No headsign", else: pattern_headsign))
+      |> assign(
+        :value,
+        if(Values.blank?(pattern_headsign), do: "No headsign", else: pattern_headsign)
+      )
       |> assign(
         :value_class,
-        if(blank?(pattern_headsign), do: "italic text-muted", else: "text-strong")
+        if(Values.blank?(pattern_headsign), do: "italic text-muted", else: "text-strong")
       )
 
     ~H"""
@@ -1495,7 +1499,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       |> assign(:owner_name, pattern_name(owner_pattern))
       |> assign(
         :when_it_runs,
-        if(blank?(owner_pattern.route_pattern_time_desc),
+        if(Values.blank?(owner_pattern.route_pattern_time_desc),
           do: "Not set",
           else: owner_pattern.route_pattern_time_desc
         )
@@ -1644,13 +1648,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   @doc "The name a pattern goes by in lists: its name, or its ID when it has none."
   def pattern_name(pattern) do
-    if blank?(pattern.route_pattern_name),
+    if Values.blank?(pattern.route_pattern_name),
       do: pattern.route_pattern_id,
       else: pattern.route_pattern_name
   end
 
   defp service_description(pattern) do
-    if blank?(pattern.route_pattern_time_desc),
+    if Values.blank?(pattern.route_pattern_time_desc),
       do: "No service description",
       else: pattern.route_pattern_time_desc
   end
@@ -1662,8 +1666,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   defp label_note(%{role: :child, id: id}),
     do: "Under #{id}; its own name isn’t exported"
-
-  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
 
   defp build_failed_body(pending) when pending > 0 do
     "#{plural(pending, "trip is", "trips are")} still not in a pattern. Their times are unchanged. " <>

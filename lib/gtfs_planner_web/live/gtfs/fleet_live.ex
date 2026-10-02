@@ -76,6 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
 
   @vehicle_type_form_id "vehicle-type-form"
@@ -2032,23 +2033,16 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     %{
       type: assignment_value(filters["type"]),
       garage: assignment_value(filters["garage"]),
-      q: present(filters["q"])
+      q: Values.presence(filters["q"])
     }
   end
 
+  # The drawer's "none" sentinel is its own value; blank handling follows Values.presence/1.
   defp assignment_value("none"), do: :none
-  defp assignment_value(""), do: nil
-  defp assignment_value(value), do: value
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      _trimmed -> value
-    end
-  end
+  defp assignment_value(value), do: Values.presence(value)
 
   defp filters_active?(filters) do
-    Enum.any?(~w(type garage), &(filters[&1] != "")) or present(filters["q"]) != nil
+    Enum.any?(~w(type garage), &(filters[&1] != "")) or Values.presence(filters["q"]) != nil
   end
 
   defp filter_query_params(params) do
@@ -2206,6 +2200,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   # The blank prompt is “Not assigned”, which clears the assignment; every other
   # value reaches the context unchanged so its ownership check decides.
+  # Named exception: a forged non-binary must not clear an assignment, so only nil/"" become nil.
   defp bulk_target(value) when value in [nil, ""], do: nil
   defp bulk_target(value), do: value
 

@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     only: [constraint_chip: 1, form_error_summary: 1, message: 1, sort_header: 1]
 
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -400,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp route_display_name(%{route_id: route_id} = route) do
     parts =
       [Map.get(route, :route_short_name), Map.get(route, :route_long_name)]
-      |> Enum.map(&blank_to_nil/1)
+      |> Enum.map(&Values.presence/1)
       |> Enum.reject(&is_nil/1)
 
     case parts do
@@ -974,7 +975,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
     assigns =
       assign(assigns,
         route: route,
-        route_name: blank_to_nil(Map.get(route, :route_long_name))
+        route_name: Values.presence(Map.get(route, :route_long_name))
       )
 
     ~H"""
@@ -1077,18 +1078,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   end
 
   defp route_short_name(route) when is_map(route),
-    do: blank_to_nil(Map.get(route, :route_short_name))
+    do: Values.presence(Map.get(route, :route_short_name))
 
   defp route_short_name(_route), do: nil
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   @doc """
   Writes a rule as one sentence: what it means for riders and for the trip planners
@@ -2775,12 +2767,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp live_field(%{action: :validate} = form, name) do
     field = form[name]
 
-    if blank?(field.value), do: %{field | errors: []}, else: field
+    if Values.blank?(field.value), do: %{field | errors: []}, else: field
   end
 
   defp live_field(form, name), do: form[name]
-
-  defp blank?(value), do: value in [nil, ""] or (is_binary(value) and String.trim(value) == "")
 
   # The draft's type and minimum time as the changeset would read them, so the
   # readout and the preview answer the operator's keystrokes rather than the
@@ -2800,7 +2790,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
 
   defp draft_field(editor, key) do
     case editor.params[key] do
-      value when is_binary(value) -> blank_to_nil(value)
+      value when is_binary(value) -> Values.presence(value)
       _value -> nil
     end
   end
@@ -2906,7 +2896,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
   defp trip_option(trip) do
     base =
       [Map.get(trip, :time), Map.get(trip, :headsign), Map.get(trip, :service_id)]
-      |> Enum.map(&blank_to_nil/1)
+      |> Enum.map(&Values.presence/1)
       |> Enum.reject(&is_nil/1)
       |> case do
         [] -> trip.trip_id
@@ -2947,7 +2937,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransferComponents do
       "Central Station"
   """
   def stop_label(%{stop_name: name, stop_id: stop_id}) do
-    case blank_to_nil(name) do
+    case Values.presence(name) do
       nil -> stop_id
       name -> name
     end

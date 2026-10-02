@@ -42,6 +42,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
@@ -5992,8 +5993,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp combine_pair_signage(signage_a, signage_b) do
-    has_a? = non_blank_text?(signage_a)
-    has_b? = non_blank_text?(signage_b)
+    has_a? = Values.present?(signage_a)
+    has_b? = Values.present?(signage_b)
 
     cond do
       has_a? and has_b? ->
@@ -6009,9 +6010,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         nil
     end
   end
-
-  defp non_blank_text?(value) when is_binary(value), do: String.trim(value) != ""
-  defp non_blank_text?(_value), do: false
 
   defp pathway_pair_sort_key(pathway) do
     {pathway.from_stop_id, pathway.to_stop_id, pathway.pathway_id}
@@ -6064,9 +6062,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp parse_optional_decimal(%Decimal{} = val), do: val
   defp parse_optional_decimal(_), do: nil
 
-  defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
+  # Named exception: a platform selected from the station's stops carries imported stop_id
+  # bytes, so a padded ID must still test against the stored set and be written exactly.
+  defp chosen_stop_id(nil), do: nil
+  defp chosen_stop_id(""), do: nil
+  defp chosen_stop_id(value), do: value
 
   defp to_optional_string(nil), do: ""
   defp to_optional_string(value), do: to_string(value)
@@ -7093,7 +7093,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station = socket.assigns.station
 
     location_type = parse_int(params["location_type"] || "3")
-    selected_parent_platform = blank_to_nil(params["parent_platform"])
+    selected_parent_platform = chosen_stop_id(params["parent_platform"])
     platform_stop_ids = platform_stop_ids_for_station(organization_id, gtfs_version_id, station)
 
     parent_station =
@@ -7111,7 +7111,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       parent_station: parent_station,
       level_id: params["level_id"],
       wheelchair_boarding: parse_optional_int(params["wheelchair_boarding"]),
-      platform_code: blank_to_nil(params["platform_code"]),
+      platform_code: Values.presence(params["platform_code"]),
       stop_lat: params["stop_lat"],
       stop_lon: params["stop_lon"],
       diagram_coordinate: %{"x" => x, "y" => y}

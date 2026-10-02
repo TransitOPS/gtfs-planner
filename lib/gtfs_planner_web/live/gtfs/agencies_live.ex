@@ -102,6 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
 
@@ -759,20 +760,20 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
               id="agency-summary-phone"
               icon="hero-phone"
               label="Phone"
-              value={present(@agency.agency_phone)}
+              value={Values.presence(@agency.agency_phone)}
             />
             <.contact_row
               id="agency-summary-email"
               icon="hero-envelope"
               label="Email"
-              value={present(@agency.agency_email)}
+              value={Values.presence(@agency.agency_email)}
               kind={:email}
             />
             <.contact_row
               id="agency-summary-fare"
               icon="hero-ticket"
               label="Fare website"
-              value={present(@agency.agency_fare_url)}
+              value={Values.presence(@agency.agency_fare_url)}
               kind={:web}
             />
             <.contact_row
@@ -833,12 +834,14 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           <dt class="text-[13px] text-muted">Stored timezone</dt>
           <dd class="min-w-0 break-all">
             <code
-              :if={present(@agency.agency_timezone)}
+              :if={Values.presence(@agency.agency_timezone)}
               class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-strong"
             >
               {@agency.agency_timezone}
             </code>
-            <span :if={is_nil(present(@agency.agency_timezone))} class="text-muted">Not set</span>
+            <span :if={is_nil(Values.presence(@agency.agency_timezone))} class="text-muted">
+              Not set
+            </span>
           </dd>
           <dt class="text-[13px] text-muted">GTFS file</dt>
           <dd class="text-[13px] text-muted">
@@ -965,8 +968,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                 </td>
                 <td data-label="Rider contact" class="px-5 py-1.5 max-md:mt-1 max-md:block max-md:p-0">
                   <.contact_lines
-                    phone={present(row.agency.agency_phone)}
-                    email={present(row.agency.agency_email)}
+                    phone={Values.presence(row.agency.agency_phone)}
+                    email={Values.presence(row.agency.agency_email)}
                   />
                 </td>
                 <td
@@ -1832,7 +1835,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     do: "The organizations that run your routes, as riders see them in trip planners."
 
   defp version_scope(version) do
-    "Applies to #{present(version.name) || "this version"} only. Each version keeps its own agencies."
+    "Applies to #{Values.presence(version.name) || "this version"} only. Each version keeps its own agencies."
   end
 
   # One agency is a summary rather than a list; the row is the same one the table
@@ -1850,15 +1853,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp edit_variant(health), do: if(resolved_zone?(health.zone), do: "primary", else: "secondary")
 
   defp zone_problem?(health), do: health.agency_count > 0 and unresolved_zone?(health.zone)
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp present(_value), do: nil
 
   # Links and fields take the design system's focus outline from the page scope;
   # a bare button does not, so the buttons this page draws itself carry it.

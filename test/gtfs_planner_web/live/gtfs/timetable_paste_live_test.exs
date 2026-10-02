@@ -14,6 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Calendar, as: GtfsCalendar
+  alias GtfsPlanner.Repo
 
   defp editor_scope(%{conn: conn}) do
     organization =
@@ -407,6 +409,60 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
 
       refute has_element?(view, "#paste-scope-pattern-field option", "Main")
       assert has_element?(view, "#paste-scope-drawer", "another inbound pattern")
+    end
+
+    test "a draft whose service_id keeps its import padding reloads its scope",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+
+      # GTFS import stores an ID's bytes as the file gives them, so a stored
+      # service_id can carry padding. The draft reload must look it up unchanged.
+      Repo.insert!(%GtfsCalendar{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        service_id: " RAW ",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-01-01],
+        end_date: ~D[2026-12-31]
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, paste.route, %{
+            "service_id" => paste.weekday,
+            "direction" => "0",
+            "pattern" => paste.main.pattern.id
+          })
+        )
+
+      open_drawer(view)
+
+      render_change(
+        view,
+        "scope_draft_change",
+        draft_params(%{
+          "service_id" => " RAW ",
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+
+      # The padded ID reloaded its own calendar, which has no trips. A trimmed
+      # "RAW" lookup would miss it and fall back to the one-trip Weekday calendar.
+      assert has_element?(
+               view,
+               "#paste-scope-pattern-field option[value='#{paste.main.pattern.id}']",
+               "Main · 0 trips"
+             )
     end
 
     test "using a schedule patches the URL, rebuilds the scope and closes the drawer",

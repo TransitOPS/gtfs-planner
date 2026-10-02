@@ -46,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
   on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
@@ -141,7 +142,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    day = blank_to_nil(params["day"])
+    day = Values.presence(params["day"])
     sort = sort_key(params["sort"])
     dir = sort_dir(params["dir"])
 
@@ -166,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:scale, scale_value(params["scale"]))
       |> assign(:view, view)
       |> assign(:panel, panel_value(params["panel"]))
-      |> assign(:run, blank_to_nil(params["run"]))
+      |> assign(:run, Values.presence(params["run"]))
       |> ensure_day_loaded()
 
     socket =
@@ -244,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   @impl true
   def handle_event("select_day", %{"day" => day}, socket) do
-    {:noreply, push_patch(socket, to: runs_path(socket, blank_to_nil(day)))}
+    {:noreply, push_patch(socket, to: runs_path(socket, Values.presence(day)))}
   end
 
   def handle_event("retry", _params, socket) do
@@ -1811,15 +1812,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       true -> :loaded
     end
   end
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   # `?day=` is dropped rather than rendered empty when no day type is selected,
   # `?day=` is dropped rather than rendered empty when no day type is selected,

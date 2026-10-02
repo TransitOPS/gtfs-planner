@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
@@ -1449,13 +1450,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp new_route_preview(form, agency_options) do
     new_route_preview_values(
-      trimmed_field(form[:route_short_name].value),
-      trimmed_field(form[:route_long_name].value),
-      trimmed_field(form[:route_type].value),
-      agency_name_for(agency_options, trimmed_field(form[:agency_id].value)),
-      trimmed_field(form[:route_id].value),
-      trimmed_field(form[:route_color].value),
-      trimmed_field(form[:route_text_color].value)
+      Values.presence(form[:route_short_name].value) || "",
+      Values.presence(form[:route_long_name].value) || "",
+      Values.presence(form[:route_type].value) || "",
+      agency_name_for(agency_options, Values.presence(form[:agency_id].value) || ""),
+      Values.presence(form[:route_id].value) || "",
+      Values.presence(form[:route_color].value) || "",
+      Values.presence(form[:route_text_color].value) || ""
     )
   end
 
@@ -1488,17 +1489,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       route: %{
         route_id: route_id,
         route_short_name: short,
-        route_color: blank_to(color, "FFFFFF"),
-        route_text_color: blank_to(text, "000000")
+        route_color: Values.presence(color) || "FFFFFF",
+        route_text_color: Values.presence(text) || "000000"
       }
     }
   end
-
-  defp blank_to(value, default), do: if(value == "", do: default, else: value)
-
-  defp trimmed_field(nil), do: ""
-  defp trimmed_field(value) when is_binary(value), do: String.trim(value)
-  defp trimmed_field(_value), do: ""
 
   defp mode_label_for(""), do: "Mode not chosen"
 

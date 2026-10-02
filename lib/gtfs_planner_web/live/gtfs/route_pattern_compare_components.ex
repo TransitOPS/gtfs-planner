@@ -51,6 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
 
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   attr :load_state, :atom, required: true, values: [:loading, :unavailable, :ready]
@@ -2680,7 +2681,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
     names =
       [route.route_short_name, route.route_long_name]
-      |> Enum.reject(&blank?/1)
+      |> Enum.reject(&Values.blank?/1)
       |> Enum.join(" ")
 
     "Route #{if(names == "", do: route.route_id, else: names)} · #{RoutePattern.direction_label(direction)}"
@@ -2759,7 +2760,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   defp picker_name(entry) do
-    if blank?(entry.name), do: entry.route_pattern_id, else: entry.name
+    if Values.blank?(entry.name), do: entry.route_pattern_id, else: entry.name
   end
 
   defp picker_needle(query), do: query |> to_string() |> String.trim() |> String.downcase()
@@ -2860,7 +2861,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   defp service_description(%{pattern: %{route_pattern_time_desc: description}}) do
-    if blank?(description), do: nil, else: description
+    if Values.blank?(description), do: nil, else: description
   end
 
   defp service_description(_side), do: nil
@@ -2868,7 +2869,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp pattern_name(nil), do: nil
 
   defp pattern_name(%{pattern: %{route_pattern_name: name, route_pattern_id: pattern_id}}) do
-    if blank?(name), do: pattern_id, else: name
+    if Values.blank?(name), do: pattern_id, else: name
   end
 
   # The badge already carries the short name, so the heading leads with the long
@@ -2922,7 +2923,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     ]
     |> Enum.reject(&(&1 == false))
     |> Enum.join(" · ")
-    |> blank_to_nil()
+    |> Values.presence()
   end
 
   defp used_calendars(nil, _calendars), do: []
@@ -2942,8 +2943,4 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
   defp plural(1, word), do: "1 #{word}"
   defp plural(count, word), do: "#{count} #{word}s"
-
-  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value), do: value
 end

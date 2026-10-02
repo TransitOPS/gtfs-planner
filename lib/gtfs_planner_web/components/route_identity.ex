@@ -10,6 +10,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   use Phoenix.Component
 
   alias GtfsPlanner.Color
+  alias GtfsPlanner.Values
 
   @hex_regex ~r/\A[0-9A-Fa-f]{6}\z/
 
@@ -232,15 +233,11 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     route_id = Map.get(route, :route_id)
 
     cond do
-      present?(short_name) -> short_name
-      present?(route_id) -> route_id
+      Values.present?(short_name) -> short_name
+      Values.present?(route_id) -> route_id
       true -> "Unknown route"
     end
   end
-
-  defp present?(nil), do: false
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_), do: false
 
   defp hex_to_rgb(<<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
     {String.to_integer(r, 16), String.to_integer(g, 16), String.to_integer(b, 16)}

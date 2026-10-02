@@ -11,6 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -1039,22 +1040,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   # A blank name falls back to the ID, so a row always has something to open.
   defp stop_display_name(%{stop_name: name, stop_id: stop_id}) do
-    case trimmed(name) do
+    case Values.presence(name) do
       nil -> stop_id
       name -> name
     end
   end
 
-  defp stop_description(%{stop_desc: desc}), do: trimmed(desc)
-
-  defp trimmed(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp trimmed(_value), do: nil
+  defp stop_description(%{stop_desc: desc}), do: Values.presence(desc)
 
   # Most rows are plain stops, so only a station or entrance names its type
   # where the Type column is hidden.

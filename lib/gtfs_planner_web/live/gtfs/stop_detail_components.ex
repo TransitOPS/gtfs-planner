@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
 
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.StationJournalComponents
 
   @pathways_shown 6
@@ -367,8 +368,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
           <.text_link id="stop-parent-link" navigate={@parent.navigate}>{@parent.name}</.text_link>
         </.fact_row>
         <.fact_row label="Description">
-          <span :if={present?(@stop.stop_desc)} id="stop-description">{@stop.stop_desc}</span>
-          <span :if={!present?(@stop.stop_desc)} id="stop-description" class="text-muted">
+          <span :if={Values.present?(@stop.stop_desc)} id="stop-description">{@stop.stop_desc}</span>
+          <span :if={!Values.present?(@stop.stop_desc)} id="stop-description" class="text-muted">
             No description.
           </span>
         </.fact_row>
@@ -379,11 +380,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
           <span id="stop-no-location" class="text-muted">No location recorded</span>
           <:hint>Coordinates come from the stops file in your feed.</:hint>
         </.fact_row>
-        <.fact_row :if={@stop.location_type != 1 and present?(@stop.level_id)} label="Level">
+        <.fact_row :if={@stop.location_type != 1 and Values.present?(@stop.level_id)} label="Level">
           <span id="stop-level">{@stop.level_id}</span>
         </.fact_row>
         <.fact_row
-          :if={@stop.location_type != 1 and present?(@stop.platform_code)}
+          :if={@stop.location_type != 1 and Values.present?(@stop.platform_code)}
           label="Platform code"
         >
           <span id="stop-platform-code">{@stop.platform_code}</span>
@@ -1105,7 +1106,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
         {"level_id", stop.level_id},
         {"platform_code", stop.platform_code}
       ]
-      |> Enum.reject(fn {name, value} -> name == "parent_station" and not present?(value) end)
+      |> Enum.reject(fn {name, value} ->
+        name == "parent_station" and not Values.present?(value)
+      end)
 
     assigns =
       assigns
@@ -1131,8 +1134,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
         <div :for={{name, value} <- @fields} class="min-w-0">
           <dt class="font-mono text-[12px] text-muted">{name}</dt>
           <dd class="break-words text-sm text-strong">
-            <span :if={present?(value)}>{value}</span>
-            <span :if={!present?(value)} class="text-muted">—</span>
+            <span :if={Values.present?(value)}>{value}</span>
+            <span :if={!Values.present?(value)} class="text-muted">—</span>
           </dd>
         </div>
       </dl>
@@ -1221,7 +1224,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
 
   defp declared_floor(%{level: level, diagram_filename: filename}, by_level, child_stops) do
     stops = if child_stops == :unavailable, do: nil, else: Map.get(by_level, level.level_id, [])
-    floor(level, if(present?(filename), do: :added, else: :missing), stops)
+    floor(level, if(Values.present?(filename), do: :added, else: :missing), stops)
   end
 
   defp floor(level, floorplan, stops) do
@@ -1278,7 +1281,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   end
 
   defp child_caption(child) do
-    [stop_kind(child), present?(child.platform_code) && "code #{child.platform_code}"]
+    [stop_kind(child), Values.present?(child.platform_code) && "code #{child.platform_code}"]
     |> Enum.filter(& &1)
     |> Enum.join(" · ")
   end
@@ -1287,7 +1290,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   defp floorplan_summary([]), do: nil
 
   defp floorplan_summary(levels) do
-    with_plan = Enum.count(levels, &present?(&1.diagram_filename))
+    with_plan = Enum.count(levels, &Values.present?(&1.diagram_filename))
 
     "#{with_plan} of #{plural(length(levels), "level")} #{if with_plan == 1, do: "has", else: "have"} a floorplan"
   end
@@ -1325,9 +1328,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailComponents do
   end
 
   defp fare_zone_label(%{zone_id: zone_id}), do: zone_id
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(value), do: not is_nil(value)
 
   defp plural(1, noun), do: "1 #{noun}"
   defp plural(count, noun), do: "#{count} #{noun}s"

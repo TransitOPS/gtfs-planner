@@ -55,6 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Values
 
   # The two kinds a first-time editor chooses between (AC-4). Wording is the
   # prototype's. Both the first-use question and the create drawer render them,
@@ -906,9 +907,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp contact_word(%FlexService{phone: phone, booking_url: url}) do
     cond do
-      present?(phone) and present?(url) -> "Online or call"
-      present?(url) -> "Online"
-      present?(phone) -> "Call"
+      Values.present?(phone) and Values.present?(url) -> "Online or call"
+      Values.present?(url) -> "Online"
+      Values.present?(phone) -> "Call"
       true -> "No contact"
     end
   end
@@ -959,8 +960,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp hour12(hours), do: rem(rem(hours, 24) + 11, 12) + 1
 
   defp meridiem(hours), do: if(rem(hours, 24) >= 12, do: "pm", else: "am")
-
-  defp present?(value), do: is_binary(value) and value != ""
 
   # --- the service page (AC-5) -------------------------------------------------
 
@@ -1511,19 +1510,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
         <div class="mt-3 flex flex-wrap gap-2">
           <span
-            :if={present?(@service.phone)}
+            :if={Values.present?(@service.phone)}
             class="inline-flex min-h-9 items-center gap-1.5 rounded-control border border-control px-3 text-sm font-[650] text-strong"
           >
             <.icon name="hero-phone" class="size-4" /> Call {@service.phone}
           </span>
           <span
-            :if={present?(@service.booking_url)}
+            :if={Values.present?(@service.booking_url)}
             class="inline-flex min-h-9 items-center gap-1.5 rounded-control border border-control px-3 text-sm font-[650] text-strong"
           >
             <.icon name="hero-link" class="size-4" /> Book online
           </span>
           <span
-            :if={present?(@service.info_url)}
+            :if={Values.present?(@service.info_url)}
             class="inline-flex min-h-9 items-center text-sm font-[650] text-action"
           >
             More information
@@ -3061,7 +3060,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp measure_summary(%FlexService{}), do: ", one for each stretch between stops"
 
   defp band_on?(%FlexService{band_start: start, band_end: finish}),
-    do: present?(start) or present?(finish)
+    do: Values.present?(start) or Values.present?(finish)
 
   defp band_note(%FlexService{band_start: start, band_end: finish})
        when is_binary(start) and is_binary(finish) do

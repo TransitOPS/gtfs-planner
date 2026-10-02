@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.RouteWorkspace
 
@@ -1248,7 +1249,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             class={time_input_class(@row.arrival_error, @arrival_edited?, @estimated?)}
           />
           <p
-            :if={@failed_preview? and blank_value?(@row.arrival) and blank_value?(@row.departure)}
+            :if={@failed_preview? and Values.blank?(@row.arrival) and Values.blank?(@row.departure)}
             class="mt-0.5 text-[12px] italic text-muted"
           >
             Not filled
@@ -2575,10 +2576,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp was_state({previous, _departure}, estimate) when previous == estimate, do: :same
   defp was_state({previous, _departure}, _estimate), do: {:changed, previous}
 
-  defp blank_value?(nil), do: true
-  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_value?(_value), do: false
-
   defp blank_note_text(1),
     do:
       "1 stop doesn’t have times yet. Fill it from the timepoints on either side, or type it. Every stop needs a time before you can save."
@@ -2763,10 +2760,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp map_stop_kind(row, false, blocked?) do
     cond do
-      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) and blocked? ->
+      Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure)) and
+          blocked? ->
         "blocked"
 
-      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) ->
+      Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure)) ->
         "blank"
 
       Map.get(row, :timepoint) == true ->
@@ -2987,11 +2985,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   # already refuse a half pair, so a blank row is only ever a stop between the
   # ends, and a timepoint is never one of them.
   defp blank_row?(row),
-    do: blank_time?(Map.get(row, :arrival)) and blank_time?(Map.get(row, :departure))
-
-  defp blank_time?(nil), do: true
-  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_time?(_value), do: false
+    do: Values.blank?(Map.get(row, :arrival)) and Values.blank?(Map.get(row, :departure))
 
   defp label_class, do: "text-[13px] font-[650] text-default"
 

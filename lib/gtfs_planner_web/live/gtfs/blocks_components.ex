@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
@@ -4422,7 +4423,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     # A block whose calendars disagree has no single garage to compare a choice
     # against, so the reader has not decided anything yet and the preview stays
     # out of the way until the picker holds a garage.
-    if change == [] or (undecided?(resolution) and blank_choice(garage) == nil) do
+    if change == [] or (undecided?(resolution) and Values.presence(garage) == nil) do
       []
     else
       services = block.trips |> Enum.map(& &1.service_id) |> MapSet.new()
@@ -4448,9 +4449,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         "Block #{block_id} runs the same #{shared} trips there. " <> change_sentence(change)
     }
   end
-
-  defp blank_choice(""), do: nil
-  defp blank_choice(value), do: value
 
   defp undecided?(%{conflict: conflict}), do: conflict not in [nil, []]
   defp undecided?(_resolution), do: false
@@ -4481,13 +4479,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp change_parts(garage, type, resolution, garages, types) do
     []
     |> then(
-      &if blank_choice(garage) != resolution.garage_id,
-        do: ["garage becomes #{garage_name(garages, blank_choice(garage))}" | &1],
+      &if Values.presence(garage) != resolution.garage_id,
+        do: ["garage becomes #{garage_name(garages, Values.presence(garage))}" | &1],
         else: &1
     )
     |> then(
-      &if blank_choice(type) != resolution.vehicle_type_id,
-        do: ["type becomes #{type_name(types, blank_choice(type))}" | &1],
+      &if Values.presence(type) != resolution.vehicle_type_id,
+        do: ["type becomes #{type_name(types, Values.presence(type))}" | &1],
         else: &1
     )
     |> Enum.reverse()

@@ -59,6 +59,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
 
@@ -585,12 +586,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Publisher name"
           hint="Apps may credit this name as your data’s source."
-          value={present(@feed_info.feed_publisher_name)}
+          value={Values.presence(@feed_info.feed_publisher_name)}
         />
         <:row
           label="Publisher website"
           hint="Where data users go to learn about the publisher."
-          value={present(@feed_info.feed_publisher_url)}
+          value={Values.presence(@feed_info.feed_publisher_url)}
           kind={:web}
         />
         <:row
@@ -625,7 +626,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Feed version"
           hint="Apps compare this label to spot new releases."
-          value={present(@feed_info.feed_version)}
+          value={Values.presence(@feed_info.feed_version)}
         />
       </.summary_card>
 
@@ -637,13 +638,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         <:row
           label="Contact email"
           hint="Where trip-planner teams send data questions."
-          value={present(@feed_info.feed_contact_email)}
+          value={Values.presence(@feed_info.feed_contact_email)}
           kind={:email}
         />
         <:row
           label="Contact website"
           hint="A support page or web form for data questions."
-          value={present(@feed_info.feed_contact_url)}
+          value={Values.presence(@feed_info.feed_contact_url)}
           kind={:web}
         />
       </.summary_card>
@@ -904,20 +905,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   end
 
   defp version_scope(version) do
-    "Applies to #{present(version.name) || "this version"} only. Each version keeps its own feed details."
+    "Applies to #{Values.presence(version.name) || "this version"} only. Each version keeps its own feed details."
   end
 
   # The display helpers return nil for a value the version does not carry, so
   # `summary_value/1` is the one place that words it "Not set".
-  defp present(nil), do: nil
-
-  defp present(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
   defp language(code), do: LanguageCodes.label(code)
 
   defp date(nil), do: nil

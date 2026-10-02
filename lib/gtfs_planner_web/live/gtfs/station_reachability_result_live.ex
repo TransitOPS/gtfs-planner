@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   alias GtfsPlanner.Reachability
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Legacy
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
   alias GtfsPlannerWeb.StationWorkspace
@@ -330,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             No walks were scored, and nothing in the station was changed. Run the check again from
             Reachability. If it fails again, contact support.
           </p>
-          <details :if={present?(@run.error_details)} class="mt-2">
+          <details :if={Values.present?(@run.error_details)} class="mt-2">
             <summary class="flex min-h-11 cursor-pointer items-center font-semibold hover:underline">
               Technical details
             </summary>
@@ -869,8 +870,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             <span class="w-5 shrink-0 text-right tabular-nums text-muted">{num}</span>
             <span class="min-w-0 break-words">
               <span class="font-semibold text-strong">{direction_label(step.direction)}</span>
-              <span :if={present?(step.name)}><span class="text-muted">·</span> {step.name}</span>
-              <span :if={step.name_derived? and present?(step.name)} class="text-[13px] text-muted">
+              <span :if={Values.present?(step.name)}>
+                <span class="text-muted">·</span> {step.name}
+              </span>
+              <span
+                :if={step.name_derived? and Values.present?(step.name)}
+                class="text-[13px] text-muted"
+              >
                 (name inferred)
               </span>
               <span :if={step.distance_meters > 0} class="tabular-nums text-muted">
@@ -970,7 +976,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
               {diagnostic_text(diag)}
             </th>
             <td class="px-4 py-3 text-strong max-md:block max-md:pt-1 sm:px-6">
-              <%= if present?(diag["entity_id"]) do %>
+              <%= if Values.present?(diag["entity_id"]) do %>
                 {entity_label(diag["entity_type"])}
                 <span class="break-all font-mono text-[13px] text-muted">{diag["entity_id"]}</span>
               <% else %>
@@ -1194,7 +1200,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
        envelope["result_schema_version"] && "version #{envelope["result_schema_version"]}"},
       {"Run time", envelope["duration_ms"] && "#{envelope["duration_ms"]} ms"}
     ]
-    |> Enum.filter(fn {_label, value} -> present?(value) end)
+    |> Enum.filter(fn {_label, value} -> Values.present?(value) end)
   end
 
   # ── Section building ───────────────────────────────────────────────────────
@@ -1424,9 +1430,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp format_meters(meters) when is_integer(meters), do: "#{meters}m"
   defp format_meters(meters) when is_float(meters), do: "#{Float.round(meters, 1)}m"
   defp format_meters(meters), do: "#{meters}m"
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 
   # The router's own message covers a code this page has no sentence for.
   defp diagnostic_text(%{"code" => code} = diagnostic) do

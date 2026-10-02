@@ -30,6 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimingFill
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
@@ -4031,8 +4032,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
        %{
          route_pattern_name: name,
          direction_id: direction_id,
-         headsign: blank_to_nil(params["headsign"]),
-         route_pattern_time_desc: blank_to_nil(params["time_desc"]),
+         headsign: Values.presence(params["headsign"]),
+         route_pattern_time_desc: Values.presence(params["time_desc"]),
          route_pattern_typicality: typicality,
          route_pattern_sort_order: order
        }}
@@ -4783,7 +4784,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       first = hd(blanks)
 
       field =
-        if blank_time?(first.arrival),
+        if Values.blank?(first.arrival),
           do: "timing-arrival-#{first.position}",
           else: "timing-departure-#{first.position}"
 
@@ -4795,19 +4796,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp failed_on_blank?(rows) do
     Enum.any?(rows, fn row ->
-      (Map.get(row, :arrival_error) && blank_time?(Map.get(row, :arrival))) ||
-        (Map.get(row, :departure_error) && blank_time?(Map.get(row, :departure)))
+      (Map.get(row, :arrival_error) && Values.blank?(Map.get(row, :arrival))) ||
+        (Map.get(row, :departure_error) && Values.blank?(Map.get(row, :departure)))
     end)
   end
 
   defp blank_row?(row),
-    do: blank_time?(Map.get(row, :arrival)) or blank_time?(Map.get(row, :departure))
+    do: Values.blank?(Map.get(row, :arrival)) or Values.blank?(Map.get(row, :departure))
 
   defp blank_stop?(row), do: blank_row?(row)
-
-  defp blank_time?(nil), do: true
-  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_time?(_value), do: false
 
   defp invalid_text_row?(row) do
     invalid_text?(row.arrival) or invalid_text?(row.departure)
@@ -5130,7 +5127,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp edited_value(row, :timepoint), do: if(row.timepoint, do: 1, else: 0)
   defp edited_value(row, :pickup), do: String.to_integer(row.pickup)
   defp edited_value(row, :drop_off), do: String.to_integer(row.drop_off)
-  defp edited_value(row, :headsign), do: blank_to_nil(row.stop_headsign)
+  defp edited_value(row, :headsign), do: Values.presence(row.stop_headsign)
 
   defp stored_value(stored, :timepoint), do: Map.get(stored, :timepoint)
   defp stored_value(stored, :pickup), do: Map.get(stored, :pickup_type)
@@ -5140,7 +5137,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp changed_headsign(socket, attrs) do
     headsign = Map.get(socket.assigns.timing_headsign_edits, socket.assigns.selected_timing_id)
 
-    if is_binary(headsign), do: Map.put(attrs, :headsign, blank_to_nil(headsign)), else: attrs
+    if is_binary(headsign), do: Map.put(attrs, :headsign, Values.presence(headsign)), else: attrs
   end
 
   defp review_timing(socket, attrs, confirm? \\ false) do
@@ -6153,15 +6150,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       [] -> "The change could not be saved. Check the form and try again."
     end
   end
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   defp patterns_path(socket) do
     ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"

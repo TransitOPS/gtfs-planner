@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   @badge_tones %{
@@ -226,8 +227,8 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   @spec route_title(map()) :: String.t()
   def route_title(route) do
     cond do
-      present?(route.route_long_name) -> route.route_long_name
-      present?(route.route_short_name) -> "Route #{route.route_short_name}"
+      Values.present?(route.route_long_name) -> route.route_long_name
+      Values.present?(route.route_short_name) -> "Route #{route.route_short_name}"
       true -> "Route #{route.route_id}"
     end
   end
@@ -237,7 +238,7 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   """
   @spec route_label(map()) :: String.t()
   def route_label(route) do
-    if present?(route.route_short_name),
+    if Values.present?(route.route_short_name),
       do: "Route #{route.route_short_name}",
       else: "Route #{route.route_id}"
   end
@@ -365,7 +366,4 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
       )
     ]
   end
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 end

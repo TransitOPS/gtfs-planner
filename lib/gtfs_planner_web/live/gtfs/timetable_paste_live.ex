@@ -1619,6 +1619,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp layout_param(:stops_in_rows), do: "stops_in_rows"
   defp layout_param(_layout), do: "auto"
 
+  # A non-text paste counts as no paste, which canonical trimming would treat as present.
   defp blank_paste_text?(text) when is_binary(text), do: String.trim(text) == ""
   defp blank_paste_text?(_text), do: true
 
@@ -2057,8 +2058,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     version_id = socket.assigns.current_gtfs_version.id
 
     scope_params = %{
-      service_id: present(draft["service_id"]),
-      direction: present(draft["direction"])
+      service_id: exact_id_param(draft["service_id"]),
+      direction: exact_id_param(draft["direction"])
     }
 
     case Gtfs.prepare_timetable_paste(
@@ -2085,17 +2086,18 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp schedule_query(params) do
     %{}
-    |> put_param("service_id", present(params["service_id"] || params[:service_id]))
+    |> put_param("service_id", exact_id_param(params["service_id"] || params[:service_id]))
     |> put_param("direction", schedule_direction(params["direction"] || params[:direction]))
-    |> put_param("pattern", present(params["pattern"] || params[:pattern]))
+    |> put_param("pattern", exact_id_param(params["pattern"] || params[:pattern]))
   end
 
   defp schedule_direction(direction) when direction in ["0", "1"], do: direction
   defp schedule_direction(_direction), do: nil
 
-  defp present(nil), do: nil
-  defp present(""), do: nil
-  defp present(value), do: value
+  # Named exception: the scope lookup compares exact service_id bytes, so only a non-binary
+  # or "" becomes nil; canonical trimming would make a stored " RAW " unmatchable.
+  defp exact_id_param(value) when is_binary(value) and value != "", do: value
+  defp exact_id_param(_value), do: nil
 
   defp close_scope_drawer(socket) do
     socket

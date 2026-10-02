@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Components.RouteIdentity
 
   # The reference offers the three modes this version uses most as one-click
@@ -363,7 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
             <strong class="font-[650]">
               Route {@short_warning.route[:route_id]}
             </strong>
-            <%= if present_name?(@short_warning.route[:route_short_name]) do %>
+            <%= if Values.present?(@short_warning.route[:route_short_name]) do %>
               already uses the number “{@short_warning.route[:route_short_name]}”. Riders may mix
               them up. You can still save.
             <% else %>
@@ -1111,9 +1112,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       ids -> Enum.join(ids, " ")
     end
   end
-
-  defp present_name?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present_name?(_value), do: false
 
   # The saved color a similar-color advisory names; the candidate projection
   # stores it already normalized, so the label is the stored value verbatim.

@@ -63,6 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.Blocking.Connections
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
+  alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
@@ -432,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("select_day", %{"day" => day}, socket) do
-    patch(socket, %{day: blank_to_nil(day), trip: nil, page: 1, pool_page: 1},
+    patch(socket, %{day: Values.presence(day), trip: nil, page: 1, pool_page: 1},
       clear_selection: true,
       clear_block_selection: true,
       clear_command: true
@@ -446,7 +447,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("filter", params, socket) do
     status = if params["status"] == "problems", do: :problems, else: :all
-    route = blank_to_nil(params["route"])
+    route = Values.presence(params["route"])
 
     # A route filter keeps only the selected trips that run on that route.
     # The selection is not in the URL, so it is pruned before the patch and both
@@ -498,8 +499,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("filter_connections", params, socket) do
     patch(socket, %{
       setting: connection_setting(params["setting"]),
-      cq: blank_to_nil(params["cq"]),
-      route: blank_to_nil(params["route"]),
+      cq: Values.presence(params["cq"]),
+      route: Values.presence(params["route"]),
       group: nil,
       gpage: 1
     })
@@ -535,7 +536,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     socket
     |> assign(:bulk_choice, nil)
     |> assign(:bulk_review, nil)
-    |> patch(%{group: blank_to_nil(group)})
+    |> patch(%{group: Values.presence(group)})
   end
 
   def handle_event("open_group", _params, socket), do: {:noreply, socket}
@@ -955,7 +956,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           gap: nil,
           block: nil,
           drawer: key,
-          pair: blank_to_nil(params["pair"])
+          pair: Values.presence(params["pair"])
         })
     end
   end
@@ -977,7 +978,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       gap: nil,
       block: nil,
       drawer: "block_rules",
-      pair: blank_to_nil(params["pair"])
+      pair: Values.presence(params["pair"])
     })
   end
 
@@ -1527,7 +1528,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       :continue ->
         patch(
           socket,
-          %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
+          %{trip: Values.presence(trip_id), gap: nil, block: Values.presence(params["block"])},
           close_drawer: true
         )
     end
@@ -1547,7 +1548,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           %{
             gap: gap_param(params["from"], params["to"]),
             trip: nil,
-            block: blank_to_nil(params["block"])
+            block: Values.presence(params["block"])
           },
           close_drawer: true
         )
@@ -1562,7 +1563,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       :continue ->
         patch(
           socket,
-          %{block: blank_to_nil(block_id), trip: nil, gap: nil},
+          %{block: Values.presence(block_id), trip: nil, gap: nil},
           close_drawer: true
         )
     end
@@ -1687,10 +1688,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp parse_state(params, version) do
     %{
       version_id: to_string(version.id),
-      day: blank_to_nil(params["day"]),
+      day: Values.presence(params["day"]),
       panel: if(params["panel"] == "pool", do: :pool, else: :blocks),
       view: view(params["view"]),
-      route: blank_to_nil(params["route"]),
+      route: Values.presence(params["route"]),
       status: if(params["status"] == "problems", do: :problems, else: :all),
       sort: sort(params["sort"]),
       dir: if(params["dir"] == "desc", do: :desc, else: :asc),
@@ -1702,14 +1703,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # `cq` rather than the timeline's own find, so the two views can each be
       # linked with the page in the state it was left in.
       setting: connection_setting(params["setting"]),
-      cq: blank_to_nil(params["cq"]),
-      group: blank_to_nil(params["group"]),
+      cq: Values.presence(params["cq"]),
+      group: Values.presence(params["group"]),
       gpage: page_number(params["gpage"]),
-      trip: blank_to_nil(params["trip"]),
-      gap: blank_to_nil(params["gap"]),
-      block: blank_to_nil(params["block"]),
-      drawer: blank_to_nil(params["drawer"]),
-      pair: blank_to_nil(params["pair"])
+      trip: Values.presence(params["trip"]),
+      gap: Values.presence(params["gap"]),
+      block: Values.presence(params["block"]),
+      drawer: Values.presence(params["drawer"]),
+      pair: Values.presence(params["pair"])
     }
   end
 
@@ -1755,7 +1756,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # UUIDs hold no `|`, so the separator cannot be ambiguous; anything else closes
   # the drawer rather than opening a half pair.
   defp gap_param(from, to) do
-    case {blank_to_nil(from), blank_to_nil(to)} do
+    case {Values.presence(from), Values.presence(to)} do
       {nil, _to} -> nil
       {_from, nil} -> nil
       {from, to} -> from <> "|" <> to
@@ -1805,15 +1806,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp page_param(1), do: nil
   defp page_param(page), do: Integer.to_string(page)
-
-  defp blank_to_nil(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   defp ensure_day_loaded(socket) do
     cond do
@@ -4401,7 +4393,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the listed value, or a blank for a pair the version cannot measure.
   defp driving_times_rows(assigns) do
     state = assigns.driving_times
-    highlight = blank_to_nil(assigns.state.pair)
+    highlight = Values.presence(assigns.state.pair)
 
     state.pairs
     |> Enum.with_index()

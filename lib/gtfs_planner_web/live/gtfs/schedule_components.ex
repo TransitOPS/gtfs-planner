@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Values
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
 
   # The problems notice names three problems and counts the rest, so a block with
@@ -2551,14 +2552,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                   </span>
                 </td>
                 <td class={[td_class(), "whitespace-nowrap text-left text-sm tabular-nums"]}>
-                  <%= if present?(row.block_id) do %>
+                  <%= if Values.present?(row.block_id) do %>
                     {row.block_id}
                   <% else %>
                     <span class="text-muted">—</span>
                   <% end %>
                 </td>
                 <td class={[td_class(), "whitespace-nowrap text-left text-sm"]}>
-                  <%= if present?(row.trip_short_name) do %>
+                  <%= if Values.present?(row.trip_short_name) do %>
                     <span class="tabular-nums text-default">{row.trip_short_name}</span>
                   <% else %>
                     <span
@@ -2710,9 +2711,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp stop_count(1), do: "1 stop"
   defp stop_count(count), do: "#{count} stops"
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(_value), do: false
 
   defp hour_label(hour), do: hour |> Integer.to_string() |> String.pad_leading(2, "0")
 
