@@ -4076,13 +4076,16 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
 
+  `parent_station_id` is a row handle resolved inside the organization/version
+  scope; a row outside it raises `Ecto.NoResultsError`.
+
   ## Examples
 
       iex> list_pathways_for_station(org_id, version_id, parent_id)
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)

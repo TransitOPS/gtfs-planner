@@ -1564,18 +1564,32 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       level_fixture(org.id, version.id, %{level_id: "L_SHARED", level_index: 0.0})
-      local_station = station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL")
+
+      local_station =
+        station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL", "L_SHARED")
 
       foreign_org = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign_org.id)
 
       foreign_station =
-        station_with_platform(foreign_org, foreign_version, "STATION_SHARED", "PLATFORM_FOREIGN")
+        station_with_platform(
+          foreign_org,
+          foreign_version,
+          "STATION_SHARED",
+          "PLATFORM_FOREIGN",
+          "L_SHARED"
+        )
 
       sibling_version = gtfs_version_fixture(org.id)
 
       sibling_station =
-        station_with_platform(org, sibling_version, "STATION_SHARED", "PLATFORM_SIBLING")
+        station_with_platform(
+          org,
+          sibling_version,
+          "STATION_SHARED",
+          "PLATFORM_SIBLING",
+          "L_SHARED"
+        )
 
       assert_raise Ecto.NoResultsError, fn ->
         Gtfs.list_child_stops_for_parent(org.id, version.id, foreign_station.id)
@@ -1891,20 +1905,34 @@ defmodule GtfsPlanner.GtfsTest do
       gtfs_version: version
     } do
       local_level = level_fixture(org.id, version.id, %{level_id: "L_SHARED", level_index: 0.0})
-      local_station = station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL")
+
+      local_station =
+        station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL", "L_SHARED")
 
       foreign_org = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign_org.id)
       level_fixture(foreign_org.id, foreign_version.id, %{level_id: "L_SHARED", level_index: 0.0})
 
       foreign_station =
-        station_with_platform(foreign_org, foreign_version, "STATION_SHARED", "PLATFORM_FOREIGN")
+        station_with_platform(
+          foreign_org,
+          foreign_version,
+          "STATION_SHARED",
+          "PLATFORM_FOREIGN",
+          "L_SHARED"
+        )
 
       sibling_version = gtfs_version_fixture(org.id)
       level_fixture(org.id, sibling_version.id, %{level_id: "L_SHARED", level_index: 0.0})
 
       sibling_station =
-        station_with_platform(org, sibling_version, "STATION_SHARED", "PLATFORM_SIBLING")
+        station_with_platform(
+          org,
+          sibling_version,
+          "STATION_SHARED",
+          "PLATFORM_SIBLING",
+          "L_SHARED"
+        )
 
       assert_raise Ecto.NoResultsError, fn ->
         Gtfs.list_levels_for_station(org.id, version.id, foreign_station.id)
@@ -2473,6 +2501,24 @@ defmodule GtfsPlanner.GtfsTest do
 
       assert Enum.any?(result, fn listed_pathway -> listed_pathway.id == pathway.id end)
     end
+
+    test "refuses a station row whose scope does not own the feed ID", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      %{local: local, foreign: foreign, sibling: sibling} = pathway_scopes(org, version)
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_pathways_for_station(org.id, version.id, foreign.station.id)
+      end
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_pathways_for_station(org.id, version.id, sibling.station.id)
+      end
+
+      assert [%{pathway_id: "PATHWAY_LOCAL"}] =
+               Gtfs.list_pathways_for_station(org.id, version.id, local.station.id)
+    end
   end
 
   describe "list_pathways_for_level/4" do
@@ -2519,6 +2565,29 @@ defmodule GtfsPlanner.GtfsTest do
       assert listed_pathway.from_on_active_level == true
       assert listed_pathway.to_on_active_level == false
       assert listed_pathway.is_cross_level == true
+    end
+
+    test "returns no pathways for a station or level row outside the scope", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      %{local: local, foreign: foreign, sibling: sibling} = pathway_scopes(org, version)
+
+      for other <- [foreign, sibling] do
+        assert Gtfs.list_pathways_for_level(org.id, version.id, local.level.id, other.station.id) ==
+                 []
+
+        assert Gtfs.list_pathways_for_level(org.id, version.id, other.level.id, local.station.id) ==
+                 []
+      end
+
+      assert [%{pathway_id: "PATHWAY_LOCAL"}] =
+               Gtfs.list_pathways_for_level(
+                 org.id,
+                 version.id,
+                 local.level.id,
+                 local.station.id
+               )
     end
   end
 
@@ -2734,6 +2803,40 @@ defmodule GtfsPlanner.GtfsTest do
       assert listed.is_cross_level == false
       assert listed.from_on_active_level == true
       assert listed.to_on_active_level == true
+    end
+
+    test "returns no pathways for a station or level row outside the scope", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      %{local: local, foreign: foreign, sibling: sibling} = pathway_scopes(org, version)
+
+      for other <- [foreign, sibling] do
+        assert Gtfs.list_pathways_for_stop_on_level(
+                 org.id,
+                 version.id,
+                 local.level.id,
+                 other.station.id,
+                 "PLATFORM_A"
+               ) == []
+
+        assert Gtfs.list_pathways_for_stop_on_level(
+                 org.id,
+                 version.id,
+                 other.level.id,
+                 local.station.id,
+                 "PLATFORM_A"
+               ) == []
+      end
+
+      assert [%{pathway_id: "PATHWAY_LOCAL"}] =
+               Gtfs.list_pathways_for_stop_on_level(
+                 org.id,
+                 version.id,
+                 local.level.id,
+                 local.station.id,
+                 "PLATFORM_A"
+               )
     end
   end
 
@@ -5635,6 +5738,83 @@ defmodule GtfsPlanner.GtfsTest do
       assert sources == [:cross_level, :direct, :direct]
     end
 
+    test "ranks cross-level anchors by level indexes of its own scope", %{
+      organization: org,
+      gtfs_version: version,
+      station: station,
+      active_level: active_level,
+      other_level: other_level,
+      stop_level: stop_level
+    } do
+      far_level = level_fixture(org.id, version.id, %{level_id: "L_INFER_FAR", level_index: 3.0})
+
+      # Another organization repeats the active level's ID with a different index.
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+
+      level_fixture(foreign_org.id, foreign_version.id, %{
+        level_id: active_level.level_id,
+        level_index: 10.0
+      })
+
+      for {stop_id, x, y, lat, lon} <- [
+            {"INFER_RANK_DIRECT_A", 40.0, 60.0, "40.7000", "-74.0100"},
+            {"INFER_RANK_DIRECT_B", 50.0, 50.0, "40.7100", "-74.0050"}
+          ] do
+        stop_fixture(org.id, version.id, %{
+          stop_id: stop_id,
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: x, y: y},
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon)
+        })
+      end
+
+      target_stop =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "INFER_RANK_TARGET",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: active_level.level_id,
+          diagram_coordinate: %{x: 60.0, y: 40.0},
+          stop_lat: nil,
+          stop_lon: nil
+        })
+
+      [near_pathway, far_pathway] =
+        for {partner_id, level, pathway_id, lat, lon} <- [
+              {"INFER_RANK_NEAR", other_level, "INFER_RANK_NEAR_ELEVATOR", "40.7200", "-74.0000"},
+              {"INFER_RANK_FAR", far_level, "INFER_RANK_FAR_ELEVATOR", "40.7300", "-73.9900"}
+            ] do
+          partner =
+            stop_fixture(org.id, version.id, %{
+              stop_id: partner_id,
+              location_type: 0,
+              parent_station: station.stop_id,
+              level_id: level.level_id,
+              stop_lat: Decimal.new(lat),
+              stop_lon: Decimal.new(lon)
+            })
+
+          pathway_fixture(org.id, version.id, target_stop.stop_id, partner.stop_id, %{
+            pathway_id: pathway_id,
+            pathway_mode: 5
+          })
+        end
+
+      assert {:ok, %{excluded_anchors: excluded}} =
+               Gtfs.infer_level_alignment(stop_level, 1000, 800)
+
+      # The nearer level wins the tie-break; the foreign index does not flip it.
+      assert [%{reason: :lost_tie_break, pathway_id: lost_pathway_id}] =
+               Enum.filter(excluded, &(&1.source == :cross_level))
+
+      assert lost_pathway_id == far_pathway.id
+      refute lost_pathway_id == near_pathway.id
+    end
+
     test "returns {:error, :insufficient_anchors} when fewer than three usable anchors exist", %{
       organization: org,
       gtfs_version: version,
@@ -6387,7 +6567,13 @@ defmodule GtfsPlanner.GtfsTest do
   # A station and one of its platform children, both carrying the given feed IDs.
   # The `list_child_stops_for_parent/3` and `list_levels_for_station/3` scope
   # cases need the same feed ID to exist in several scopes at once.
-  defp station_with_platform(organization, gtfs_version, station_stop_id, platform_stop_id) do
+  defp station_with_platform(
+         organization,
+         gtfs_version,
+         station_stop_id,
+         platform_stop_id,
+         level_id
+       ) do
     station =
       stop_fixture(organization.id, gtfs_version.id, %{
         stop_id: station_stop_id,
@@ -6397,10 +6583,52 @@ defmodule GtfsPlanner.GtfsTest do
     stop_fixture(organization.id, gtfs_version.id, %{
       stop_id: platform_stop_id,
       parent_station: station_stop_id,
-      level_id: "L_SHARED"
+      level_id: level_id
     })
 
     station
+  end
+
+  # The same station, level, platform and pathway feed IDs in the given scope
+  # and in a foreign organization and a sibling version, so a row handle from
+  # one scope resolves to feed IDs that also exist in the others. Pathway IDs
+  # differ per scope to show which scope a result came from.
+  defp pathway_scopes(organization, gtfs_version) do
+    foreign_organization = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_organization.id)
+    sibling_version = gtfs_version_fixture(organization.id)
+
+    %{
+      local: station_with_pathway(organization, gtfs_version, "PATHWAY_LOCAL"),
+      foreign: station_with_pathway(foreign_organization, foreign_version, "PATHWAY_FOREIGN"),
+      sibling: station_with_pathway(organization, sibling_version, "PATHWAY_SIBLING")
+    }
+  end
+
+  defp station_with_pathway(organization, gtfs_version, pathway_id) do
+    level =
+      level_fixture(organization.id, gtfs_version.id, %{level_id: "L_SHARED", level_index: 0.0})
+
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: "STATION_SHARED",
+        location_type: 1
+      })
+
+    for stop_id <- ["PLATFORM_A", "PLATFORM_B"] do
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: stop_id,
+        parent_station: "STATION_SHARED",
+        level_id: "L_SHARED"
+      })
+    end
+
+    pathway_fixture(organization.id, gtfs_version.id, "PLATFORM_A", "PLATFORM_B", %{
+      pathway_id: pathway_id,
+      pathway_mode: 1
+    })
+
+    %{station: station, level: level}
   end
 
   defp station_editing_status_count(organization_id, gtfs_version_id, station_id) do
