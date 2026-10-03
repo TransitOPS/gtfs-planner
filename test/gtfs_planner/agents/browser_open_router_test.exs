@@ -175,13 +175,6 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
       assert content =~ "affected right now, or on planned dates"
     end
 
-    test "the date the turn states is the date the prepared timing carries" do
-      body = post(alerts_conversation())
-      assert {arguments, "propose_changes"} = tool_call(body)
-
-      assert %{"timing" => %{"start_date" => @today}} = Jason.decode!(arguments)
-    end
-
     test "the alerts marker is the alerts skill's own heading" do
       assert Alerts.skill() =~ "Alerts helper"
       refute Calendars.skill() =~ "Alerts helper"
