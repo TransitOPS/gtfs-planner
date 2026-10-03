@@ -801,6 +801,15 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
       Repo.delete_all(from(ag in Agency, where: ag.organization_id in ^organization_ids))
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id in ^organization_ids))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
+
+      # `organizations_active_gtfs_version_owner_fkey` refuses a delete of the
+      # version an organization has selected, so the pointer is cleared the way an
+      # editor would clear it before the version itself goes.
+      Repo.update_all(
+        from(o in Organization, where: o.id in ^organization_ids),
+        set: [active_gtfs_version_id: nil]
+      )
+
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
