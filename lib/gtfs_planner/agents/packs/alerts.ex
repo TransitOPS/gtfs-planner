@@ -386,7 +386,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     unknown_ids =
       for {kind, referenced} <- Listing.referenced_ids(proposed),
           id <- referenced -- Map.fetch!(stored, kind),
-          not Map.has_key?(Map.fetch!(labels, kind), canonical_id(id)),
+          not Map.has_key?(Map.fetch!(labels, kind), id),
           do: {kind, id}
 
     unknown_ids ++ unknown_mode(context, alert, proposed)
@@ -399,15 +399,6 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     if is_nil(mode) or mode == stored or mode in Alerts.route_types(context),
       do: [],
       else: [{:route_type, mode}]
-  end
-
-  # Labels are keyed by the row's canonical UUID, so an upper-case spelling of
-  # a real row is still that row.
-  defp canonical_id(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, uuid} -> uuid
-      :error -> id
-    end
   end
 
   defp unknown_message(unknown) do

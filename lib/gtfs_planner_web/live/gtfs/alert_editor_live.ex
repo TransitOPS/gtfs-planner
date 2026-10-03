@@ -64,7 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   answer with identities, not with what an editor typed. Each combobox is a
   `LiveSelect` whose options come from `Alerts.search_stops/3` scoped to the
   alert's own version, and every identity that reaches a handler is re-read
-  through `Alerts.stops_by_id/2` before it is stored: a UUID of another version
+  through `Alerts.stops_by_id/2` before it is stored: a stop ID of another version
   is simply not there, so a forged event saves nothing (R1, R7, CR-4).
 
   Search text and stored identity are separate values, which is the whole of
@@ -683,8 +683,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # two selects are fields of the autosave form, so one change carries both ends;
   # a half pair stores nothing and waits for the other end.
   #
-  # The slice is taken from one route's own stop order, so a pair of UUIDs from
-  # another version, or two stops no chosen route serves together, resolves
+  # The slice is taken from one route's own stop order, so a pair of stop IDs
+  # from another version, or two stops no chosen route serves together, resolves
   # nothing at all.
   def handle_event("autosave", %{"stretch" => %{"from" => from, "to" => to}}, socket)
       when is_binary(from) and is_binary(to) do
@@ -2037,8 +2037,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  defp trip_params(trips),
-    do: Enum.map(trips, &%{"trip_id" => &1.trip_id, "service_date" => &1.service_date})
+  # The frequency instance travels with its trip, so rewriting the list for one
+  # toggled departure cannot drop another departure's `start_time`.
+  defp trip_params(trips) do
+    Enum.map(trips, fn trip ->
+      %{
+        "trip_id" => trip.trip_id,
+        "service_date" => trip.service_date,
+        "start_time" => trip.start_time
+      }
+    end)
+  end
 
   # -- Timing answers ----------------------------------------------------
 
@@ -3388,7 +3397,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp preview(socket, alert) do
     audit = audit_context(socket)
     referenced = Listing.referenced_ids(alert)
-    routes = Alerts.routes_for(audit, [alert])
+    routes = audit |> Alerts.routes_for([alert]) |> Map.get(alert.id, %{})
 
     %{
       alert: alert,

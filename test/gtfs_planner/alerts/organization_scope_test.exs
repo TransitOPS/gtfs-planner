@@ -209,7 +209,8 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
 
       stop = stop_fixture(context.organization.id, context.spring.id, %{stop_id: "s_1"})
 
-      alert = delay_about(context, context.spring, "Spring detour", route.id, "2026-10-01", nil)
+      alert =
+        delay_about(context, context.spring, "Spring detour", route.route_id, "2026-10-01", nil)
 
       %{route: route, stop: stop, alert: alert}
     end
@@ -267,14 +268,14 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  context.fall.id,
                  %{
                    "shape" => "routes",
-                   "route_ids" => [new_route.id]
+                   "route_ids" => [new_route.route_id]
                  }
                )
 
       assert retargeted.source_gtfs_version_id == context.fall.id
       assert retargeted.timezone == "Asia/Tokyo"
       assert retargeted.revision == context.alert.revision + 1
-      assert retargeted.scope.route_ids == [new_route.id]
+      assert retargeted.scope.route_ids == ["r_9"]
 
       assert [%{"gtfs_id" => "r_9"}] = retargeted.target_reference["selectors"]["routes"]
       assert retargeted.target_reference["selectors"]["unresolved_routes"] == []
@@ -290,7 +291,10 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  context.alert.id,
                  context.alert.revision,
                  context.fall.id,
-                 %{"shape" => "stop_all_routes", "stop_ids" => [context.stop.id, foreign_stop.id]}
+                 %{
+                   "shape" => "stop_all_routes",
+                   "stop_ids" => [context.stop.stop_id, foreign_stop.stop_id]
+                 }
                )
 
       # The alert being retargeted still holds a route of the version it was
@@ -334,7 +338,7 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  context.fall.id,
                  %{
                    "shape" => "routes",
-                   "route_ids" => [new_route.id]
+                   "route_ids" => [new_route.route_id]
                  }
                )
 

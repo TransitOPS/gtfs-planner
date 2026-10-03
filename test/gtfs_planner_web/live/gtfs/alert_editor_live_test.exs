@@ -311,7 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "stop_closed",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [shared.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [shared.stop_id]}
         })
 
       # The alert names the stop but not the other route, so the shared question
@@ -325,8 +325,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           "situation" => "stop_closed",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [chosen.id, other.id],
-            "stop_ids" => [shared.id]
+            "route_ids" => [chosen.route_id, other.route_id],
+            "stop_ids" => [shared.stop_id]
           }
         })
 

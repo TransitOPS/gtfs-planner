@@ -127,22 +127,24 @@ defmodule GtfsPlanner.AlertsTest do
         "urgency" => "now",
         "scope" => %{
           "shape" => "route_stops",
-          "route_ids" => [route.id],
-          "stop_ids" => [stop.id],
-          "trips" => [%{"trip_id" => trip.id, "service_date" => "2026-10-05"}]
+          "route_ids" => [route.route_id],
+          "stop_ids" => [stop.stop_id],
+          "trips" => [%{"trip_id" => trip.trip_id, "service_date" => "2026-10-05"}]
         }
       }
 
       assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
-      assert alert.scope.route_ids == [route.id]
-      assert alert.scope.stop_ids == [stop.id]
+      assert alert.scope.route_ids == ["r_1"]
+      assert alert.scope.stop_ids == ["s_1"]
+      assert [%{trip_id: trip_id}] = alert.scope.trips
+      assert trip_id == trip.trip_id
     end
 
     test "refuses a stop of another version and inserts nothing", context do
       other_version = gtfs_version_fixture(context.organization.id)
       stop = stop_fixture(context.organization.id, other_version.id)
 
-      attrs = %{"urgency" => "now", "scope" => %{"stop_ids" => [stop.id]}}
+      attrs = %{"urgency" => "now", "scope" => %{"stop_ids" => [stop.stop_id]}}
 
       assert {:error, %Ecto.Changeset{} = changeset} = Alerts.create_alert(context.audit, attrs)
       assert %{scope: ["Choose stops from this version."]} = nested_errors(changeset)
@@ -287,7 +289,7 @@ defmodule GtfsPlanner.AlertsTest do
 
       alert = alert_fixture(context.audit)
 
-      attrs = weekly_delay_attrs(route.id)
+      attrs = weekly_delay_attrs(route.route_id)
 
       assert {:ok, saved} = Alerts.save_draft(context.audit, alert.id, 1, attrs)
 
@@ -311,12 +313,13 @@ defmodule GtfsPlanner.AlertsTest do
       stored = Repo.get!(Alert, alert.id)
 
       for {scope, message} <- [
-            {%{"stop_ids" => [foreign_stop.id]}, "Choose stops from this version."},
-            {%{"route_ids" => [foreign_route.id]}, "Choose routes from this version."},
+            {%{"stop_ids" => [foreign_stop.stop_id]}, "Choose stops from this version."},
+            {%{"route_ids" => [foreign_route.route_id]}, "Choose routes from this version."},
             {%{"route_ids" => ["12"]}, "Choose routes from this version."},
             {%{"route_ids" => [Ecto.UUID.generate()]}, "Choose routes from this version."},
-            {%{"stretch_from_stop_id" => foreign_stop.id}, "Choose stops from this version."},
-            {%{"route_stop_pairs" => [%{"route_id" => "x", "stop_id" => foreign_stop.id}]},
+            {%{"stretch_from_stop_id" => foreign_stop.stop_id},
+             "Choose stops from this version."},
+            {%{"route_stop_pairs" => [%{"route_id" => "x", "stop_id" => foreign_stop.stop_id}]},
              "Choose routes from this version."},
             {%{"trips" => [%{"trip_id" => Ecto.UUID.generate(), "service_date" => "2026-10-05"}]},
              "Choose departures from this version."}
@@ -353,13 +356,13 @@ defmodule GtfsPlanner.AlertsTest do
 
     test "keeps a target the version has since lost and still saves other answers", context do
       %{route: route} = version_targets(context)
-      alert = alert_fixture(context.audit, %{"scope" => %{"route_ids" => [route.id]}})
+      alert = alert_fixture(context.audit, %{"scope" => %{"route_ids" => [route.route_id]}})
       Repo.delete!(route)
 
       assert {:ok, saved} =
                Alerts.save_draft(context.audit, alert.id, 1, %{"situation" => "delay"})
 
-      assert saved.scope.route_ids == [route.id]
+      assert saved.scope.route_ids == ["r_1"]
     end
 
     test "refuses a deactivated member", context do

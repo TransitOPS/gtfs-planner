@@ -245,7 +245,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
       alert =
         alert_fixture(context.audit, %{
           complete_attrs(context)
-          | "scope" => %{"shape" => "routes", "route_ids" => [context.route.id, dropped.id]}
+          | "scope" => %{
+              "shape" => "routes",
+              "route_ids" => [context.route.route_id, dropped.route_id]
+            }
         })
 
       # The source version drops the named route, and a later scope change
@@ -256,7 +259,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
         Alerts.save_draft(context.audit, alert.id, alert.revision, %{
           "scope" => %{
             "shape" => "routes",
-            "route_ids" => [context.route.id, dropped.id, later.id]
+            "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
           }
         })
 
@@ -329,7 +332,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
       "urgency" => "now",
       "situation" => "delay",
       "cause" => "construction",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]},
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]},
       "timing" => %{
         "start_date" => "2026-10-05",
         "start_time" => "08:00:00",

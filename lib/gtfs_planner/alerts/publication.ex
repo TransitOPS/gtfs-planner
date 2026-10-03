@@ -441,7 +441,7 @@ defmodule GtfsPlanner.Alerts.Publication do
     Enum.map(entries, fn entry ->
       %{
         trip_id: entry["gtfs_id"],
-        start_date: entry["service_date"] && Date.from_iso8601(entry["service_date"]),
+        start_date: decode_date(entry["service_date"]),
         start_time: entry["start_time"]
       }
     end)
@@ -572,7 +572,7 @@ defmodule GtfsPlanner.Alerts.Publication do
     Enum.map(trips, fn trip ->
       %{
         trip_id: fetch!(trip, :trip_id),
-        start_date: decode_date(fetch(trip, :start_date)),
+        start_date: decode_date(fetch!(trip, :start_date)),
         start_time: fetch(trip, :start_time) |> ok()
       }
     end)
@@ -582,7 +582,12 @@ defmodule GtfsPlanner.Alerts.Publication do
 
   defp decode_date(%Date{} = date), do: date
 
-  defp decode_date(value) when is_binary(value), do: Date.from_iso8601(value)
+  defp decode_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date
+      {:error, _reason} -> nil
+    end
+  end
 
   defp decode_date(_value), do: nil
 

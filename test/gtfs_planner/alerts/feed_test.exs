@@ -18,6 +18,7 @@ defmodule GtfsPlanner.Alerts.FeedTest do
   use ExUnit.Case, async: true
 
   alias GtfsPlanner.Alerts.Feed
+  alias GtfsPlanner.Alerts.Publication
 
   # A fixed header timestamp. Every expectation below is relative to it, and no
   # case reads a clock: `generated_at` is the only time input the module has.
@@ -484,6 +485,90 @@ defmodule GtfsPlanner.Alerts.FeedTest do
       assert first.json == second.json
       assert first.included == second.included
     end
+  end
+
+  describe "a private capture reaches the wire" do
+    # Feed IDs are exact strings: this one reads as a UUID and is not lower case.
+    @uuid_like "ABCDEF00-0000-0000-0000-000000000000"
+
+    test "UUID-looking feed IDs and every frequency instance keep their exact text" do
+      capture = %{
+        "selectors" => %{
+          "shape" => "trips",
+          "trips" => [
+            capture_trip(@uuid_like, "2026-10-05", "08:00:00"),
+            capture_trip(@uuid_like, "2026-10-05", "25:15:00"),
+            capture_trip("T-9", "2026-10-06", nil)
+          ]
+        }
+      }
+
+      assert {:ok, scope} = Publication.scope_from_reference(capture)
+
+      assert scope.trips == [
+               %{trip_id: @uuid_like, start_date: ~D[2026-10-05], start_time: "08:00:00"},
+               %{trip_id: @uuid_like, start_date: ~D[2026-10-05], start_time: "25:15:00"},
+               %{trip_id: "T-9", start_date: ~D[2026-10-06], start_time: nil}
+             ]
+
+      assert {:ok, encoded} = Feed.encode([snapshot(scope: scope)], @generated_at)
+      assert %TransitRealtime.FeedMessage{entity: [entity]} = decode(encoded.pb)
+
+      assert Enum.map(entity.alert.informed_entity, & &1.trip) == [
+               %TransitRealtime.TripDescriptor{
+                 trip_id: @uuid_like,
+                 start_date: "20261005",
+                 start_time: "08:00:00"
+               },
+               %TransitRealtime.TripDescriptor{
+                 trip_id: @uuid_like,
+                 start_date: "20261005",
+                 start_time: "25:15:00"
+               },
+               %TransitRealtime.TripDescriptor{
+                 trip_id: "T-9",
+                 start_date: "20261006",
+                 start_time: nil
+               }
+             ]
+    end
+
+    test "route, stop and pair captures encode the feed IDs they hold" do
+      capture = %{
+        "selectors" => %{
+          "shape" => "route_stops",
+          "route_stops" => [
+            %{
+              "route_id" => @uuid_like,
+              "route_gtfs_id" => @uuid_like,
+              "stop_id" => "stop-a",
+              "stop_gtfs_id" => "stop-a",
+              "resolved" => true
+            }
+          ]
+        }
+      }
+
+      assert {:ok, scope} = Publication.scope_from_reference(capture)
+      assert scope.route_stops == [%{route_id: @uuid_like, stop_id: "stop-a"}]
+
+      assert {:ok, encoded} = Feed.encode([snapshot(scope: scope)], @generated_at)
+      assert %TransitRealtime.FeedMessage{entity: [entity]} = decode(encoded.pb)
+
+      assert entity.alert.informed_entity == [
+               %TransitRealtime.EntitySelector{route_id: @uuid_like, stop_id: "stop-a"}
+             ]
+    end
+  end
+
+  defp capture_trip(trip_id, service_date, start_time) do
+    %{
+      "id" => trip_id,
+      "gtfs_id" => trip_id,
+      "service_date" => service_date,
+      "start_time" => start_time,
+      "resolved" => true
+    }
   end
 
   # The generated structs are the independent read of the bytes: `decode/1`

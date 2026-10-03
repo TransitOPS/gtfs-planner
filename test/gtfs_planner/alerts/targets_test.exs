@@ -21,6 +21,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Alerts.ScopeAnswer
+  alias GtfsPlanner.Alerts.ScopeAnswer.TripTarget
   alias GtfsPlanner.Gtfs.AuditContext
 
   # The first Monday of October 2026: the fixture calendar runs Monday to Friday.
@@ -57,7 +59,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       assert [option] = Alerts.search_stops(context.audit, "S1")
 
-      assert option.id == mine.id
+      assert option.id == mine.stop_id
       assert option.stop_id == "S1"
       assert option.label == "Main St"
     end
@@ -73,13 +75,13 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       depot = stop_fixture(context.organization.id, context.version.id, stop_attrs("D9", "Depot"))
 
       assert [option] = Alerts.search_stops(context.audit, "central")
-      assert option.id == central.id
+      assert option.id == central.stop_id
 
       assert [option] = Alerts.search_stops(context.audit, "d9")
-      assert option.id == depot.id
+      assert option.id == depot.stop_id
 
       assert [option] = Alerts.search_stops(context.audit, "P7")
-      assert option.id == central.id
+      assert option.id == central.stop_id
     end
 
     test "lists the stops of a preferred route first", context do
@@ -97,14 +99,14 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       # Without a preference the stops read by name, so Birch St leads.
       assert [first, second] = Alerts.search_stops(context.audit, "St")
 
-      assert first.id == elsewhere.id
-      assert second.id == on_twelve.id
+      assert first.id == elsewhere.stop_id
+      assert second.id == on_twelve.stop_id
 
       assert [first, second] =
-               Alerts.search_stops(context.audit, "St", prefer_route_ids: [twelve.id])
+               Alerts.search_stops(context.audit, "St", prefer_route_ids: [twelve.route_id])
 
-      assert first.id == on_twelve.id
-      assert second.id == elsewhere.id
+      assert first.id == on_twelve.stop_id
+      assert second.id == elsewhere.stop_id
     end
 
     test "lists the preferred route's stops first even when more than 25 stops match",
@@ -125,10 +127,10 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       serve(context, route, on_route, "08:00:00", 1)
 
-      options = Alerts.search_stops(context.audit, "Hwy", prefer_route_ids: [route.id])
+      options = Alerts.search_stops(context.audit, "Hwy", prefer_route_ids: [route.route_id])
 
       assert length(options) == 25
-      assert hd(options).id == on_route.id
+      assert hd(options).id == on_route.stop_id
     end
 
     test "still returns twenty-five options when the alert already names some", context do
@@ -145,11 +147,11 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       options =
         Alerts.search_stops(context.audit, "Broadway",
-          exclude_stop_ids: Enum.map(excluded, & &1.id)
+          exclude_stop_ids: Enum.map(excluded, & &1.stop_id)
         )
 
       assert length(options) == 25
-      assert Enum.all?(excluded, fn stop -> stop.id not in Enum.map(options, & &1.id) end)
+      assert Enum.all?(excluded, fn stop -> stop.stop_id not in Enum.map(options, & &1.id) end)
     end
 
     test "omits the stops the alert already names", context do
@@ -160,9 +162,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         stop_fixture(context.organization.id, context.version.id, stop_attrs("A2", "Birch St"))
 
       assert [option] =
-               Alerts.search_stops(context.audit, "St", exclude_stop_ids: [affected.id])
+               Alerts.search_stops(context.audit, "St", exclude_stop_ids: [affected.stop_id])
 
-      assert option.id == other.id
+      assert option.id == other.stop_id
     end
 
     test "never offers an entrance or a station's interior stop", context do
@@ -177,7 +179,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         )
 
       assert [option] = Alerts.search_stops(context.audit, "Platform")
-      assert option.id == stop.id
+      assert option.id == stop.stop_id
     end
 
     test "returns at most twenty-five options", context do
@@ -208,7 +210,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         stop_fixture(context.organization.id, context.version.id, stop_attrs("P1", "50% St"))
 
       assert [option] = Alerts.search_stops(context.audit, "50%")
-      assert option.id == percent.id
+      assert option.id == percent.stop_id
     end
 
     test "a member without the editor role reads no stops", context do
@@ -237,14 +239,14 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         )
 
       assert [option] = Alerts.search_routes(context.audit, "12")
-      assert option.id == by_number.id
+      assert option.id == by_number.route_id
       assert option.label == "12"
 
       assert [option] = Alerts.search_routes(context.audit, "Harbour")
-      assert option.id == by_name.id
+      assert option.id == by_name.route_id
 
       assert [option] = Alerts.search_routes(context.audit, "r44")
-      assert option.id == by_name.id
+      assert option.id == by_name.route_id
     end
 
     test "a route of another version is not offered", context do
@@ -324,9 +326,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         }
       )
 
-      assert [a, b, c] = Alerts.route_stops(context.audit, route.id)
+      assert [a, b, c] = Alerts.route_stops(context.audit, route.route_id)
 
-      assert [a.id, b.id, c.id] == [first.id, middle.id, last.id]
+      assert [a.id, b.id, c.id] == [first.stop_id, middle.stop_id, last.stop_id]
       assert a.label == "Depot"
     end
 
@@ -358,14 +360,14 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       sequence(context, short_turn, [stops["A"], stops["B"]])
       sequence(context, inbound, [stops["D"], stops["C"], stops["B"], stops["A"], stops["E"]])
 
-      assert Enum.map(Alerts.route_stops(context.audit, route.id), & &1.stop_id) ==
+      assert Enum.map(Alerts.route_stops(context.audit, route.route_id), & &1.stop_id) ==
                ["A", "B", "C", "D", "E"]
     end
 
     test "a route with no trips has no stops", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
-      assert Alerts.route_stops(context.audit, route.id) == []
+      assert Alerts.route_stops(context.audit, route.route_id) == []
     end
 
     test "a route of another version has no stops here", context do
@@ -393,11 +395,11 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         %{stop_sequence: 1}
       )
 
-      assert Alerts.route_stops(context.audit, their_route.id) == []
+      assert Alerts.route_stops(context.audit, their_route.route_id) == []
 
       serve(context, route, stop, "08:00:00", 1)
 
-      assert [_only] = Alerts.route_stops(context.audit, route.id)
+      assert [_only] = Alerts.route_stops(context.audit, route.route_id)
     end
   end
 
@@ -416,9 +418,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       serve(context, five, shared, "08:10:00", 1)
 
       # Routes order by short name as text, so "12" precedes "5".
-      assert [first, second] = Alerts.routes_at_stops(context.audit, [shared.id])
+      assert [first, second] = Alerts.routes_at_stops(context.audit, [shared.stop_id])
 
-      assert [first.id, second.id] == [twelve.id, five.id]
+      assert [first.id, second.id] == [twelve.route_id, five.route_id]
     end
 
     test "a stop of another version finds no routes", context do
@@ -433,7 +435,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       serve(%{context | audit: audit}, their_route, their_stop, "08:00:00", 1)
 
-      assert Alerts.routes_at_stops(context.audit, [their_stop.id]) == []
+      assert Alerts.routes_at_stops(context.audit, [their_stop.stop_id]) == []
       assert Alerts.routes_at_stops(context.audit, []) == []
     end
   end
@@ -450,12 +452,12 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       other = serving_trip(context, route, "t_0745", "weekday", 1, "Uptown", "07:45:00")
 
-      assert [first, second] = Alerts.departures_on(context.audit, route.id, 0, @monday)
+      assert [first, second] = Alerts.departures_on(context.audit, route.route_id, 0, @monday)
 
-      assert [first.trip_id, second.trip_id] == [early.id, late.id]
+      assert [first.trip_id, second.trip_id] == [early.trip_id, late.trip_id]
       assert first.label == "8:15 AM to Depot"
       assert first.first_departure_seconds == 8 * 3_600 + 15 * 60
-      assert other.id not in [first.trip_id, second.trip_id]
+      assert other.trip_id not in [first.trip_id, second.trip_id]
     end
 
     test "a trip that does not run on the date is not offered", context do
@@ -479,11 +481,11 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       weekday = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
       weekend = serving_trip(context, route, "t_1015", "weekend", 0, "Depot", "10:15:00")
 
-      assert [only] = Alerts.departures_on(context.audit, route.id, nil, @monday)
-      assert only.trip_id == weekday.id
+      assert [only] = Alerts.departures_on(context.audit, route.route_id, nil, @monday)
+      assert only.trip_id == weekday.trip_id
 
-      assert [only] = Alerts.departures_on(context.audit, route.id, nil, @saturday)
-      assert only.trip_id == weekend.id
+      assert [only] = Alerts.departures_on(context.audit, route.route_id, nil, @saturday)
+      assert only.trip_id == weekend.trip_id
     end
 
     test "a calendar_dates removal on the date excludes the trip", context do
@@ -494,7 +496,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       trip = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
 
-      assert [_only] = Alerts.departures_on(context.audit, route.id, 0, @monday)
+      assert [_only] = Alerts.departures_on(context.audit, route.route_id, 0, @monday)
 
       calendar_date_fixture(context.organization.id, context.version.id, %{
         service_id: "weekday",
@@ -502,7 +504,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         exception_type: 2
       })
 
-      assert Alerts.departures_on(context.audit, route.id, 0, @monday) == []
+      assert Alerts.departures_on(context.audit, route.route_id, 0, @monday) == []
       # The trip is still in the version: a service exception removes it from
       # this date's choices, it does not delete anything.
       assert Repo.get(GtfsPlanner.Gtfs.Trip, trip.id)
@@ -516,7 +518,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       trip = serving_trip(context, route, "t_0815", "special", 0, "Depot", "08:15:00")
 
-      assert Alerts.departures_on(context.audit, route.id, 0, @monday) == []
+      assert Alerts.departures_on(context.audit, route.route_id, 0, @monday) == []
 
       calendar_date_fixture(context.organization.id, context.version.id, %{
         service_id: "special",
@@ -524,8 +526,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         exception_type: 1
       })
 
-      assert [only] = Alerts.departures_on(context.audit, route.id, 0, @monday)
-      assert only.trip_id == trip.id
+      assert [only] = Alerts.departures_on(context.audit, route.route_id, 0, @monday)
+      assert only.trip_id == trip.trip_id
     end
 
     test "a departure past midnight says it is the next day", context do
@@ -537,9 +539,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       night = serving_trip(context, route, "t_night", "nightly", 0, "Downtown", "24:40:00")
 
-      assert [only] = Alerts.departures_on(context.audit, route.id, 0, @monday)
+      assert [only] = Alerts.departures_on(context.audit, route.route_id, 0, @monday)
 
-      assert only.trip_id == night.id
+      assert only.trip_id == night.trip_id
       assert only.label == "12:40 AM (next day) to Downtown"
       assert only.first_departure_seconds == 24 * 3_600 + 40 * 60
     end
@@ -564,7 +566,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         "08:15:00"
       )
 
-      assert Alerts.departures_on(context.audit, their_route.id, 0, @monday) == []
+      assert Alerts.departures_on(context.audit, their_route.route_id, 0, @monday) == []
     end
 
     test "a trip whose calendar cannot be read does not hide the route's other departures",
@@ -588,8 +590,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       good = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
       _bad = serving_trip(context, route, "t_0900", "broken", 0, "Depot", "09:00:00")
 
-      assert [only] = Alerts.departures_on(context.audit, route.id, 0, @monday)
-      assert only.trip_id == good.id
+      assert [only] = Alerts.departures_on(context.audit, route.route_id, 0, @monday)
+      assert only.trip_id == good.trip_id
     end
 
     test "a trip with no readable first stop time is not offered", context do
@@ -608,7 +610,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
           trip_attrs("t_none", "weekday")
         )
 
-      assert Alerts.departures_on(context.audit, route.id, 0, @monday) == []
+      assert Alerts.departures_on(context.audit, route.route_id, 0, @monday) == []
     end
   end
 
@@ -668,7 +670,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       pattern(context, route, 0, "Retired", 0, active: false)
       pattern(context, route, 1, nil, 1)
 
-      assert Alerts.route_directions(context.audit, [route.id]) == [
+      assert Alerts.route_directions(context.audit, [route.route_id]) == [
                %{direction_id: 0, label: "Lincoln City"},
                %{direction_id: 1, label: "Direction 1"}
              ]
@@ -691,7 +693,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         0
       )
 
-      assert Alerts.route_directions(context.audit, [route.id]) == [
+      assert Alerts.route_directions(context.audit, [route.route_id]) == [
                %{direction_id: 1, label: "Direction 1"}
              ]
     end
@@ -704,11 +706,17 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       other = sibling_version(context)
 
-      their_stop =
-        stop_fixture(context.organization.id, other.gtfs_version_id, stop_attrs("S1", "Central"))
+      _their_stop =
+        stop_fixture(
+          context.organization.id,
+          other.gtfs_version_id,
+          stop_attrs("S1", "Central Elsewhere")
+        )
 
-      assert %{} = stops = Alerts.stops_by_id(context.audit, [stop.id, their_stop.id])
-      assert Map.keys(stops) == [stop.id]
+      # Both versions hold stop "S1"; only this version's row answers.
+      assert %{} = stops = Alerts.stops_by_id(context.audit, [stop.stop_id])
+      assert Map.keys(stops) == ["S1"]
+      assert stops["S1"].label == "Central"
     end
 
     test "a member without the editor role reads an empty map, not a list", context do
@@ -719,7 +727,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       organization_membership_fixture(viewer, context.organization, [])
       audit = audit_context(context.organization, context.version, viewer)
 
-      assert Alerts.stops_by_id(audit, [stop.id]) == %{}
+      assert Alerts.stops_by_id(audit, [stop.stop_id]) == %{}
     end
   end
 
@@ -735,14 +743,14 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       trip = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
 
-      alert = cancellation(context, route.id, stop.id, trip.id)
+      alert = cancellation(context, route.route_id, stop.stop_id, trip.trip_id)
 
       assert %{routes: routes, stops: stops, trips: trips} =
                Alerts.labels_for(context.audit, alert)
 
-      assert routes == %{route.id => "12"}
-      assert stops == %{stop.id => "Central"}
-      assert trips == %{trip.id => "8:15 AM to Depot"}
+      assert routes == %{"r12" => "12"}
+      assert stops == %{"S1" => "Central"}
+      assert trips == %{"t_0815" => "8:15 AM to Depot"}
     end
 
     test "a stop deleted from the version has no label and is reported missing", context do
@@ -756,7 +764,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       trip = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
 
-      alert = cancellation(context, route.id, stop.id, trip.id)
+      alert = cancellation(context, route.route_id, stop.stop_id, trip.trip_id)
 
       delete!(GtfsPlanner.Gtfs.Stop, stop.id)
 
@@ -765,8 +773,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       # The same reading the list row uses: the identity is still named, and the
       # list flags it rather than the message inventing a name for it.
-      assert %{stops: missing} = Listing.missing_target_ids([alert])
-      assert MapSet.member?(missing, stop.id)
+      assert %{stops: missing} = Map.fetch!(Listing.missing_target_ids([alert]), alert.id)
+      assert MapSet.member?(missing, "S1")
     end
 
     test "a member without the editor role reads no labels", context do
@@ -775,7 +783,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       stop =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
 
-      alert = cancellation(context, route.id, stop.id, nil)
+      alert = cancellation(context, route.route_id, stop.stop_id, nil)
 
       viewer = user_fixture()
       organization_membership_fixture(viewer, context.organization, [])
@@ -783,6 +791,166 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       audit = audit_context(context.organization, context.version, viewer)
 
       assert Alerts.labels_for(audit, alert) == %{routes: %{}, stops: %{}, trips: %{}}
+    end
+  end
+
+  describe "exact feed IDs" do
+    # Feed IDs that read as UUIDs and are not lower case: nothing may normalize them.
+    @route_id "ABCDEF00-0000-0000-0000-000000000000"
+    @stop_id "FEDCBA00-0000-0000-0000-000000000001"
+    @trip_id "AAAAAAAA-0000-0000-0000-000000000002"
+
+    test "a UUID-looking ID keeps its case through the answer, the capture and the labels",
+         context do
+      route =
+        route_fixture(context.organization.id, context.version.id, route_attrs(@route_id, "7"))
+
+      stop =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs(@stop_id, "Elm"))
+
+      _trip =
+        trip_fixture(
+          context.organization.id,
+          context.version.id,
+          route.route_id,
+          trip_attrs(@trip_id, "weekday")
+        )
+
+      alert = cancellation(context, @route_id, stop.stop_id, @trip_id)
+
+      assert alert.scope.route_ids == [@route_id]
+      assert alert.scope.stop_ids == [@stop_id]
+      assert [%{trip_id: @trip_id}] = alert.scope.trips
+
+      selectors = alert.target_reference["selectors"]
+
+      assert [%{"id" => @route_id, "gtfs_id" => @route_id, "label" => "7"}] = selectors["routes"]
+      assert [%{"id" => @stop_id, "gtfs_id" => @stop_id, "label" => "Elm"}] = selectors["stops"]
+      assert [%{"id" => @trip_id, "gtfs_id" => @trip_id, "resolved" => true}] = selectors["trips"]
+      assert selectors["unresolved_routes"] == [] and selectors["unresolved_stops"] == []
+
+      assert %{routes: %{@route_id => "7"}, stops: %{@stop_id => "Elm"}, trips: trips} =
+               Alerts.labels_for(context.audit, alert)
+
+      assert Map.keys(trips) == [@trip_id]
+
+      assert %{routes: no_routes, stops: no_stops, trips: no_trips} =
+               Map.fetch!(Listing.missing_target_ids([alert]), alert.id)
+
+      assert Enum.all?([no_routes, no_stops, no_trips], &(MapSet.size(&1) == 0))
+    end
+
+    test "a differently cased spelling is another target and is refused", context do
+      route_fixture(context.organization.id, context.version.id, route_attrs(@route_id, "7"))
+      stop_fixture(context.organization.id, context.version.id, stop_attrs(@stop_id, "Elm"))
+
+      assert Alerts.stops_by_id(context.audit, [String.downcase(@stop_id)]) == %{}
+      assert Map.keys(Alerts.stops_by_id(context.audit, [@stop_id])) == [@stop_id]
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Alerts.create_alert(context.audit, %{
+                 "scope" => %{"shape" => "routes", "route_ids" => [String.downcase(@route_id)]}
+               })
+
+      assert %{scope: ["Choose routes from this version."]} =
+               Ecto.Changeset.traverse_errors(changeset, fn {message, _opts} -> message end)
+    end
+
+    test "the selection digest ignores order and tells apart case and frequency instances" do
+      trip = %TripTarget{trip_id: "T-100", service_date: ~D[2026-10-05], start_time: "08:00:00"}
+      answer = %ScopeAnswer{route_ids: ["b", @route_id], trips: [trip]}
+
+      assert ScopeAnswer.digest(answer) ==
+               ScopeAnswer.digest(%{answer | route_ids: [@route_id, "b"]})
+
+      refute ScopeAnswer.digest(answer) ==
+               ScopeAnswer.digest(%{answer | route_ids: ["b", String.downcase(@route_id)]})
+
+      refute ScopeAnswer.digest(answer) ==
+               ScopeAnswer.digest(%{answer | trips: [%{trip | start_time: "25:15:00"}]})
+    end
+
+    test "every frequency instance of a trip is its own target and keeps its start time",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      trip_fixture(
+        context.organization.id,
+        context.version.id,
+        route.route_id,
+        trip_attrs("T-100", "weekday")
+      )
+
+      alert =
+        alert_fixture(context.audit, %{
+          "urgency" => "now",
+          "situation" => "cancelled_trips",
+          "scope" => %{
+            "shape" => "trips",
+            "route_ids" => ["r12"],
+            "trips" => [
+              %{"trip_id" => "T-100", "service_date" => "2026-10-05", "start_time" => "8:00:00"},
+              %{"trip_id" => "T-100", "service_date" => "2026-10-05", "start_time" => "25:15:00"},
+              %{"trip_id" => "T-100", "service_date" => "2026-10-06"}
+            ]
+          }
+        })
+
+      assert Enum.map(alert.scope.trips, &{&1.trip_id, &1.service_date, &1.start_time}) == [
+               {"T-100", ~D[2026-10-05], "08:00:00"},
+               {"T-100", ~D[2026-10-05], "25:15:00"},
+               {"T-100", ~D[2026-10-06], nil}
+             ]
+
+      assert Enum.map(
+               alert.target_reference["selectors"]["trips"],
+               &{&1["service_date"], &1["start_time"]}
+             ) == [
+               {"2026-10-05", "08:00:00"},
+               {"2026-10-05", "25:15:00"},
+               {"2026-10-06", nil}
+             ]
+
+      # A save that selects nothing new keeps the answer and its capture as they were.
+      saved =
+        save!(context.audit, alert, %{"message" => %{"header" => "Trips will not run"}})
+
+      assert saved.scope == alert.scope
+      assert saved.target_reference == alert.target_reference
+
+      assert {:error, %Ecto.Changeset{valid?: false}} =
+               Alerts.save_draft(context.audit, saved.id, saved.revision, %{
+                 "scope" => %{
+                   "trips" => [
+                     %{
+                       "trip_id" => "T-100",
+                       "service_date" => "2026-10-05",
+                       "start_time" => "8am"
+                     }
+                   ]
+                 }
+               })
+    end
+
+    test "a feed ID missing from one version does not flag another version's alert", context do
+      other = sibling_version(context)
+      other_audit = audit_context(context.organization, other.version, context.actor)
+
+      mine = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      route_fixture(context.organization.id, other.gtfs_version_id, route_attrs("R1", "1"))
+
+      here =
+        alert_fixture(context.audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
+
+      there =
+        alert_fixture(other_audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
+
+      Repo.delete!(mine)
+
+      missing = Listing.missing_target_ids([here, there])
+
+      assert MapSet.to_list(missing[here.id].routes) == ["R1"]
+      assert MapSet.to_list(missing[there.id].routes) == []
     end
   end
 

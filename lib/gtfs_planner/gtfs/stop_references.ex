@@ -35,6 +35,14 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     collides or becomes `(new, new)`.
   * `:refuse` — replace is refused while any row of this kind exists.
 
+  ## Not a stop reference
+
+  An organization's alerts name stops by feed ID inside `service_alerts.scope`
+  and its capture. They are retained external references and appear in neither
+  `all/0` nor `catalog/0`: replacing, renaming or deleting a stop never rewrites
+  an alert, and an alert whose stop is gone keeps the original ID and reads as
+  needing attention until an editor repairs it.
+
   ## Matching
 
   `via: :fk_uuid` entries match the stop's `stops.id` UUID. `via: :string`

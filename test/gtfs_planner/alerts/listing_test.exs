@@ -257,10 +257,10 @@ defmodule GtfsPlanner.Alerts.ListingTest do
   end
 
   describe "list_alerts/2 needs attention" do
-    test "a stop deleted from the version is flagged and the scope still holds its UUID",
+    test "a stop deleted from the version is flagged and the scope still holds its feed ID",
          context do
       stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
-      _alert = stop_closure(context, stop.id)
+      _alert = stop_closure(context, stop.stop_id)
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
@@ -269,12 +269,12 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
-      assert row.alert.scope.stop_ids == [stop.id]
+      assert row.alert.scope.stop_ids == ["s_1"]
     end
 
     test "a route deleted from the version is flagged", context do
       route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
-      _alert = route_delay(context, route.id)
+      _alert = route_delay(context, route.route_id)
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
@@ -283,19 +283,19 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == true
-      assert row.alert.scope.route_ids == [route.id]
+      assert row.alert.scope.route_ids == ["r_1"]
     end
 
     test "a stop that now belongs to another version does not satisfy an alert's target",
          context do
       stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
-      _alert = stop_closure(context, stop.id)
+      _alert = stop_closure(context, stop.stop_id)
 
       assert {:ok, %{current: [row]}} = Alerts.list_alerts(context.audit, @now_utc)
       assert row.needs_attention? == false
 
-      # The row keeps its UUID and moves to a sibling version of the same
-      # organization, so the alert's identity resolves nowhere in its own version.
+      # The row moves to a sibling version of the same organization, so the
+      # alert's feed ID resolves nowhere in its own version.
       other_version = gtfs_version_fixture(context.organization.id)
 
       {1, _rows} =
@@ -312,7 +312,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
       trip = trip_fixture(context.organization.id, context.version.id, route.id)
 
-      _alert = cancellation(context, route.id, trip.id)
+      _alert = cancellation(context, route.route_id, trip.trip_id)
 
       assert {:ok, tabs} = Alerts.list_alerts(context.audit, @now_utc)
       assert [row] = tabs.current

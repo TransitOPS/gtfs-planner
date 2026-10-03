@@ -230,10 +230,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       assert wording == %{"message" => %{"header" => "Route 12 detour"}}
 
       # A changed selection would be validated against a version this alert no
-      # longer has, so it is refused rather than checked against nothing.
+      # longer has, so it is refused rather than checked against nothing. The
+      # selected version also holds R12, so the change has to name another route:
+      # feed IDs compare by value, and R12 again would be the stored selection.
       selection =
         Jason.encode!(%{
-          "scope" => %{"shape" => "routes", "route_ids" => [context.selected_route.id]}
+          "scope" => %{"shape" => "routes", "route_ids" => ["R99"]}
         })
 
       assert Dispatch.call(AlertsPack, scope, "propose_changes", selection) ==
@@ -341,7 +343,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
         "situation" => "detour",
         "scope" => %{
           "shape" => "routes",
-          "route_ids" => [context.source_route.id]
+          "route_ids" => [context.source_route.route_id]
         },
         "message" => %{"header" => "Route 12 detour"}
       })

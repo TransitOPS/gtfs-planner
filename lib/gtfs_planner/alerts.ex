@@ -289,16 +289,16 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Returns the stop rows the given row UUIDs name, keyed by that UUID.
+  Returns the stop options the given feed IDs name, keyed by that feed ID.
 
   A pick in the editor's stop combobox is an identity that arrived from a
-  widget, so it is re-read here before it is stored: a UUID of another version,
+  widget, so it is re-read here before it is stored: an ID of another version,
   another organization or a stop this version no longer holds is absent from the
   result, and the caller stores nothing for it. A stop the editor could not
-  have searched for cannot be stored by naming its UUID (R1, CR-4).
+  have searched for cannot be stored by naming its ID (R1, CR-4).
   """
   @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{
-          optional(Ecto.UUID.t()) => Targets.stop_option()
+          optional(String.t()) => Targets.stop_option()
         }
   def stops_by_id(%AuditContext{} = audit_context, ids) do
     with_lookup(audit_context, fn -> Targets.stops_by_id(audit_context, ids) end)
@@ -307,7 +307,7 @@ defmodule GtfsPlanner.Alerts do
   @doc """
   Lists the stops the version's route serves, in the order its trips serve them.
   """
-  @spec route_stops(AuditContext.t(), Ecto.UUID.t()) :: [Targets.stop_option()]
+  @spec route_stops(AuditContext.t(), String.t()) :: [Targets.stop_option()]
   def route_stops(%AuditContext{} = audit_context, route_id) do
     with_options(audit_context, fn -> Targets.route_stops(audit_context, route_id) end)
   end
@@ -315,7 +315,7 @@ defmodule GtfsPlanner.Alerts do
   @doc """
   Lists the version's routes that serve any of the given stops.
   """
-  @spec routes_at_stops(AuditContext.t(), [Ecto.UUID.t()]) :: [Targets.route_option()]
+  @spec routes_at_stops(AuditContext.t(), [String.t()]) :: [Targets.route_option()]
   def routes_at_stops(%AuditContext{} = audit_context, stop_ids) do
     with_options(audit_context, fn -> Targets.routes_at_stops(audit_context, stop_ids) end)
   end
@@ -327,7 +327,7 @@ defmodule GtfsPlanner.Alerts do
   included, so a cancellation step cannot offer a departure the trip does not
   run.
   """
-  @spec departures_on(AuditContext.t(), Ecto.UUID.t(), 0 | 1 | nil, Date.t()) :: [
+  @spec departures_on(AuditContext.t(), String.t(), 0 | 1 | nil, Date.t()) :: [
           Targets.departure()
         ]
   def departures_on(%AuditContext{} = audit_context, route_id, direction_id, %Date{} = date) do
@@ -347,7 +347,7 @@ defmodule GtfsPlanner.Alerts do
   @doc """
   Lists the directions the given routes run, in the reader's words.
 
-  The ids are row UUIDs from this context's version, the same identities the
+  The ids are route feed IDs from this context's version, the same identities the
   scope answer stores, so the direction question offers directions of the routes
   the alert already names and nothing else (R1, CR-4).
   """
@@ -358,7 +358,7 @@ defmodule GtfsPlanner.Alerts do
 
   @doc """
   Returns the labels of the routes, stops and trips the alert's scope names,
-  keyed by the same row UUIDs the alert stored.
+  keyed by the same feed IDs the alert stored.
 
   The labels are read from the alert's *own* source version rather than the
   version the editor has selected, so a listing that spans several versions shows
@@ -368,9 +368,9 @@ defmodule GtfsPlanner.Alerts do
   and the Needs attention badge says why the live rows are absent (CR-5).
   """
   @spec labels_for(AuditContext.t(), Alert.t()) :: %{
-          routes: %{optional(Ecto.UUID.t()) => String.t()},
-          stops: %{optional(Ecto.UUID.t()) => String.t()},
-          trips: %{optional(Ecto.UUID.t()) => String.t()}
+          routes: %{optional(String.t()) => String.t()},
+          stops: %{optional(String.t()) => String.t()},
+          trips: %{optional(String.t()) => String.t()}
         }
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
     case Authorization.authorize_editor(audit_context) do
@@ -380,17 +380,22 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Returns the route rows for a list of alerts, keyed by the row UUIDs they stored.
+  Returns the route rows for a list of alerts, keyed by alert id and then by the
+  route feed IDs the alert stored.
 
   The list page reads this so each affected route renders as its own identity
   badge rather than as a word an editor has to recognize. The IDs come from the
   whole page at once and are read from each alert's own source version, so a page
   spanning several versions costs one query per version rather than one per row.
-  It is the same scoped read `labels_for/2` performs, so a route that no longer
-  exists is simply absent from both and the row's Needs attention badge explains
-  why (R8, CR-5).
+  The result is keyed by alert because two source versions can carry the same
+  route feed ID, and a flat map would let one alert read the other's row. It is
+  the same scoped read `labels_for/2` performs, so a route that no longer exists
+  is simply absent from both and the row's Needs attention badge explains why
+  (R8, CR-5).
   """
-  @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{optional(Ecto.UUID.t()) => map()}
+  @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{
+          optional(Ecto.UUID.t()) => %{optional(String.t()) => map()}
+        }
   def routes_for(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
     case Authorization.authorize_editor(audit_context) do
       :ok ->
@@ -419,8 +424,9 @@ defmodule GtfsPlanner.Alerts do
   # spanning several versions costs one query per version rather than one per row.
   defp routes_for_version(audit_context, {version_id, version_alerts}) do
     ids = Enum.flat_map(version_alerts, &Listing.referenced_ids(&1).routes)
+    routes = Targets.routes_by_id(source_context(audit_context, version_id), ids)
 
-    Targets.routes_by_id(source_context(audit_context, version_id), ids)
+    Map.new(version_alerts, fn alert -> {alert.id, routes} end)
   end
 
   # A target lookup takes no lock and writes nothing, so it authorizes rather
@@ -710,7 +716,7 @@ defmodule GtfsPlanner.Alerts do
     source =
       from(route in GtfsPlanner.Gtfs.Route,
         where: route.organization_id == ^alert.organization_id,
-        where: route.gtf_version_id == ^alert.source_gtfs_version_id,
+        where: route.gtfs_version_id == ^alert.source_gtfs_version_id,
         where: route.route_type == ^mode,
         order_by: [asc: route.route_id],
         select: route.route_id

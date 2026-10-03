@@ -5,13 +5,13 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   Every query here is constrained by the context's `organization_id` *and*
   `gtfs_version_id`, and every id that arrives from stored answers or from a
-  caller is a row UUID of that version. A stop, route or trip of a sibling
-  version that happens to carry the same GTFS identifier is therefore a
-  different row and cannot satisfy a lookup: an alert is about the schedule in
-  the version it was written against, never about the version the editor happens
-  to be looking at now.
+  caller is the exact GTFS feed ID of a route, stop or trip, compared byte for
+  byte and never cast to a UUID. The same feed ID in a sibling version or
+  another organization is a different row and cannot satisfy a lookup: an alert
+  is about the schedule it is read against, never about the version the editor
+  happens to be looking at now.
 
-  Options carry a row `id` and a rider-facing `label`; the LiveView builds the
+  Options carry the feed `id` and a rider-facing `label`; the LiveView builds the
   `%{label:, value:}` pair LiveSelect needs. Searches match a case-insensitive
   substring of the operator's text and return at most 25 options: a transit
   agency has far more rows than one pick list can show, and narrowing the query
@@ -70,7 +70,7 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   @typedoc "A selectable stop, shaped for a pick list."
   @type stop_option :: %{
-          id: Ecto.UUID.t(),
+          id: String.t(),
           label: String.t(),
           stop_id: String.t(),
           stop_name: String.t() | nil,
@@ -79,7 +79,7 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   @typedoc "A selectable route, shaped for a pick list."
   @type route_option :: %{
-          id: Ecto.UUID.t(),
+          id: String.t(),
           label: String.t(),
           route_id: String.t(),
           short_name: String.t() | nil,
@@ -89,7 +89,7 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   @typedoc "A dated departure the operator may cancel."
   @type departure :: %{
-          trip_id: Ecto.UUID.t(),
+          trip_id: String.t(),
           label: String.t(),
           first_departure_seconds: non_neg_integer()
         }
@@ -146,8 +146,10 @@ defmodule GtfsPlanner.Alerts.Targets do
         []
 
       pattern ->
-        excluded = opts |> Keyword.get(:exclude_stop_ids, []) |> uuids() |> Enum.take(@max_ids)
-        prefer = opts |> Keyword.get(:prefer_route_ids, []) |> uuids() |> Enum.take(@max_ids)
+        excluded =
+          opts |> Keyword.get(:exclude_stop_ids, []) |> exact_ids() |> Enum.take(@max_ids)
+
+        prefer = opts |> Keyword.get(:prefer_route_ids, []) |> exact_ids() |> Enum.take(@max_ids)
         preferred = preferred_stop_ids(audit_context, prefer)
 
         # The preference is part of the ordering rather than a re-sort of the
@@ -157,7 +159,7 @@ defmodule GtfsPlanner.Alerts.Targets do
           where: s.organization_id == ^audit_context.organization_id,
           where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
           where: is_nil(s.location_type) or s.location_type in [0, 1],
-          where: s.id not in ^excluded,
+          where: s.stop_id not in ^excluded,
           where:
             ilike(s.stop_name, ^pattern) or ilike(s.stop_id, ^pattern) or
               ilike(s.platform_code, ^pattern),
@@ -220,7 +222,7 @@ defmodule GtfsPlanner.Alerts.Targets do
       from(s in Stop,
         where: s.organization_id == ^audit_context.organization_id,
         where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
-        where: s.id in ^uuids(stop_ids),
+        where: s.stop_id in ^exact_ids(stop_ids),
         select: s.stop_id
       )
       |> Repo.all()
@@ -325,7 +327,7 @@ defmodule GtfsPlanner.Alerts.Targets do
       from(r in Route,
         where: r.organization_id == ^audit_context.organization_id,
         where: r.gtfs_version_id == ^audit_context.gtfs_version_id,
-        where: r.id in ^uuids(route_ids),
+        where: r.route_id in ^exact_ids(route_ids),
         select: r.route_id
       )
       |> Repo.all()
@@ -355,10 +357,11 @@ defmodule GtfsPlanner.Alerts.Targets do
   The capture is what an alert publishes and what it keeps when its source
   version disappears: the trusted GTFS wire IDs and labels of the routes, stops,
   pairs and trips the answer names, the agency identities a system-wide alert is
-  about, and the source version's own zone. Every read here is scoped to the
-  context's organization *and* its version, so an identity of another tenant or
-  of a sibling version is recorded as unresolved instead of being adopted
-  (R1, CR-5).
+  about, and the source version's own zone. An entry's `id` and `gtfs_id` are the
+  same feed ID, because the answer already stores the feed ID. Every read here
+  is scoped to the context's organization *and* its version, so an identity of
+  another tenant or of a sibling version is recorded as unresolved instead of
+  being adopted (R1, CR-5).
 
   An identity that does not resolve is recorded as such and never replaced by a
   guess, and `Alerts.Listing.missing_target_ids/1` reads exactly these entries
@@ -444,90 +447,63 @@ defmodule GtfsPlanner.Alerts.Targets do
   defp resolved_routes(_audit_context, nil), do: []
 
   defp resolved_routes(audit_context, ids) do
-    present =
-      route_rows(audit_context, ids)
-      |> Map.new(&{&1.id, &1})
+    present = audit_context |> route_rows(ids) |> Map.new(&{&1.route_id, &1})
 
     ids
-    |> uuids()
+    |> exact_ids()
     |> Enum.filter(&Map.has_key?(present, &1))
     |> Enum.map(fn id ->
       route = Map.fetch!(present, id)
 
-      %{"id" => route.id, "gtfs_id" => route.route_id, "label" => route_label(route)}
+      %{"id" => route.route_id, "gtfs_id" => route.route_id, "label" => route_label(route)}
     end)
   end
 
-  defp unresolved_routes(audit_context, ids), do: unresolved_reference(audit_context, Route, ids)
+  defp unresolved_routes(_audit_context, nil), do: []
+  defp unresolved_routes(audit_context, ids), do: unresolved(Route, audit_context, ids)
 
   defp resolved_stops(_audit_context, nil), do: []
 
   defp resolved_stops(audit_context, ids) do
-    present =
-      from(s in Stop,
-        where: s.organization_id == ^audit_context.organization_id,
-        where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
-        where: s.id in ^uuids(ids),
-        select: s
-      )
-      |> Repo.all()
-      |> Map.new(&{&1.id, &1})
+    present = audit_context |> stop_rows(ids) |> Map.new(&{&1.stop_id, &1})
 
     ids
-    |> uuids()
+    |> exact_ids()
     |> Enum.filter(&Map.has_key?(present, &1))
     |> Enum.map(fn id ->
       stop = Map.fetch!(present, id)
 
-      %{"id" => stop.id, "gtfs_id" => stop.stop_id, "label" => stop_label(stop)}
+      %{"id" => stop.stop_id, "gtfs_id" => stop.stop_id, "label" => stop_label(stop)}
     end)
   end
 
-  defp unresolved_stops(audit_context, ids), do: unresolved_reference(audit_context, Stop, ids)
-
-  # One existence query for every identity of one table at once, so a capture
-  # costs three queries rather than one per identity.
-  defp unresolved_reference(_audit_context, _schema, nil), do: []
-
-  defp unresolved_reference(audit_context, schema, ids) do
-    candidates = uuids(ids)
-
-    present =
-      from(row in schema,
-        where: row.organization_id == ^audit_context.organization_id,
-        where: row.gtfs_version_id == ^audit_context.gtfs_version_id,
-        where: row.id in ^candidates,
-        select: row.id
-      )
-      |> Repo.all()
-      |> MapSet.new()
-
-    # The answer's own spelling is what is recorded, so a Needs attention row
-    # names the identity the operator stored rather than a re-cast form of it.
-    Enum.reject(ids, &(canonical_uuid(&1) in present))
-  end
+  defp unresolved_stops(_audit_context, nil), do: []
+  defp unresolved_stops(audit_context, ids), do: unresolved(Stop, audit_context, ids)
 
   defp route_rows(audit_context, ids) do
     from(r in Route,
       where: r.organization_id == ^audit_context.organization_id,
       where: r.gtfs_version_id == ^audit_context.gtfs_version_id,
-      where: r.id in ^uuids(ids),
+      where: r.route_id in ^exact_ids(ids),
       select: r
     )
     |> Repo.all()
   end
 
-  # A pair keeps both of its row UUIDs whatever resolved, because the alert
+  # A pair keeps both of its feed IDs whatever resolved, because the alert
   # still names that pair; `resolved` says whether both ends still name rows.
   defp route_stop_entries(_audit_context, nil), do: []
 
   defp route_stop_entries(audit_context, pairs) do
-    routes = route_rows(audit_context, Enum.map(pairs, & &1.route_id)) |> Map.new(&{&1.id, &1})
-    stops = stop_rows(audit_context, Enum.map(pairs, & &1.stop_id)) |> Map.new(&{&1.id, &1})
+    routes =
+      audit_context |> route_rows(Enum.map(pairs, & &1.route_id)) |> Map.new(&{&1.route_id, &1})
+
+    stops =
+      audit_context |> stop_rows(Enum.map(pairs, & &1.stop_id)) |> Map.new(&{&1.stop_id, &1})
 
     Enum.map(pairs, fn pair ->
-      route = Map.get(routes, canonical_uuid(pair.route_id))
-      stop = Map.get(stops, canonical_uuid(pair.stop_id))
+      route = Map.get(routes, pair.route_id)
+      stop = Map.get(stops, pair.stop_id)
 
       %{
         "route_id" => pair.route_id,
@@ -545,13 +521,13 @@ defmodule GtfsPlanner.Alerts.Targets do
     from(s in Stop,
       where: s.organization_id == ^audit_context.organization_id,
       where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
-      where: s.id in ^uuids(ids),
+      where: s.stop_id in ^exact_ids(ids),
       select: s
     )
     |> Repo.all()
   end
 
-  # A trip entry keeps the row UUID the answer named even when the trip no longer
+  # A trip entry keeps the feed ID the answer named even when the trip no longer
   # resolves, so a deleted source row stays identifiable as the thing that
   # disappeared rather than becoming an absent entry.
   defp trip_entries(_audit_context, nil), do: []
@@ -561,14 +537,14 @@ defmodule GtfsPlanner.Alerts.Targets do
       from(t in Trip,
         where: t.organization_id == ^audit_context.organization_id,
         where: t.gtfs_version_id == ^audit_context.gtfs_version_id,
-        where: t.id in ^uuids(Enum.map(trips, & &1.trip_id)),
+        where: t.trip_id in ^exact_ids(Enum.map(trips, & &1.trip_id)),
         select: t
       )
       |> Repo.all()
-      |> Map.new(&{&1.id, &1})
+      |> Map.new(&{&1.trip_id, &1})
 
     Enum.map(trips, fn target ->
-      trip = Map.get(present, canonical_uuid(target.trip_id))
+      trip = Map.get(present, target.trip_id)
 
       %{
         "id" => target.trip_id,
@@ -614,7 +590,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   @doc """
   Returns the rider-facing labels of the routes, stops and trips an alert names.
 
-  The keys are the row UUIDs the alert's stored scope holds - the same
+  The keys are the feed IDs the alert's stored scope holds - the same
   identities `Alerts.Listing` reports as missing - so a list row and a review
   text read from one source and cannot disagree about which row an identity is.
 
@@ -624,9 +600,9 @@ defmodule GtfsPlanner.Alerts.Targets do
   identities, and the caller shows the flagged row beside them.
   """
   @spec labels_for(AuditContext.t(), Alert.t()) :: %{
-          routes: %{optional(Ecto.UUID.t()) => String.t()},
-          stops: %{optional(Ecto.UUID.t()) => String.t()},
-          trips: %{optional(Ecto.UUID.t()) => String.t()}
+          routes: %{optional(String.t()) => String.t()},
+          stops: %{optional(String.t()) => String.t()},
+          trips: %{optional(String.t()) => String.t()}
         }
   def labels_for(%AuditContext{gtfs_version_id: nil}, %Alert{} = _alert),
     do: %{routes: %{}, stops: %{}, trips: %{}}
@@ -642,7 +618,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   end
 
   @doc """
-  Returns the route rows the given row UUIDs name, keyed by that UUID.
+  Returns the route rows the given feed IDs name, keyed by that feed ID.
 
   A list row shows each affected route as its own identity badge, and
   `GtfsPlannerWeb.Components.RouteIdentity.route_badge/1` reads a route's own
@@ -651,50 +627,50 @@ defmodule GtfsPlanner.Alerts.Targets do
   from the result, which is exactly what `Alerts.Listing` flags as needing
   attention (R8).
   """
-  @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => Route.t()}
+  @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(String.t()) => Route.t()}
   def routes_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
 
   def routes_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
-    case uuids(ids) do
+    case exact_ids(ids) do
       [] ->
         %{}
 
-      route_uuids ->
+      route_ids ->
         from(r in Route,
           where: r.organization_id == ^o and r.gtfs_version_id == ^v,
-          where: r.id in ^route_uuids
+          where: r.route_id in ^route_ids
         )
         |> Repo.all()
-        |> Map.new(&{&1.id, &1})
+        |> Map.new(&{&1.route_id, &1})
     end
   end
 
   @doc """
-  Returns the stop rows the given row UUIDs name, keyed by that UUID.
+  Returns the stop options the given feed IDs name, keyed by that feed ID.
 
   An editor's stop pick is an identity that arrived from a combobox, so it is
-  re-read here before anything is stored: a UUID of another version, another
+  re-read here before anything is stored: an ID of another version, another
   organization or a stop this version no longer holds is simply absent from the
   result, and the caller saves nothing for it. This is the same scoped read
   `routes_by_id/2` performs for a route, and it is why a stop the editor could
-  not have chosen cannot be stored by naming its UUID (R1, CR-4).
+  not have chosen cannot be stored by naming its ID (R1, CR-4).
   """
-  @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => stop_option()}
+  @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{optional(String.t()) => stop_option()}
   def stops_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
 
   def stops_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
-    case uuids(ids) do
+    case exact_ids(ids) do
       [] ->
         %{}
 
-      stop_uuids ->
+      stop_ids ->
         from(s in Stop,
           where: s.organization_id == ^o and s.gtfs_version_id == ^v,
-          where: s.id in ^stop_uuids,
+          where: s.stop_id in ^stop_ids,
           where: is_nil(s.location_type) or s.location_type in [0, 1]
         )
         |> Repo.all()
-        |> Map.new(&{&1.id, stop_option(&1)})
+        |> Map.new(&{&1.stop_id, stop_option(&1)})
     end
   end
 
@@ -702,9 +678,9 @@ defmodule GtfsPlanner.Alerts.Targets do
   Returns the identities that name no row of the context's organization and
   version, per table.
 
-  `ids` maps `:routes`, `:stops` and `:trips` to the row UUIDs a write is about
-  to store. An identity that is not a UUID, or that names a row of another
-  version or organization, comes back in the same table's list; an empty list
+  `ids` maps `:routes`, `:stops` and `:trips` to the feed IDs a write is about
+  to store. An identity that is not a string, or that names no row of this
+  version and organization, comes back in the same table's list; an empty list
   reads nothing. This is the check `Alerts` applies before an answer is saved, so
   an identity the editor could not have chosen cannot be stored by naming it
   (R1, CR-4).
@@ -736,31 +712,30 @@ defmodule GtfsPlanner.Alerts.Targets do
   defp unresolved(_schema, _audit_context, []), do: []
 
   defp unresolved(schema, %AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
+    key = feed_key(schema)
+
     present =
       from(row in schema,
         where: row.organization_id == ^o and row.gtfs_version_id == ^v,
-        where: row.id in ^uuids(ids),
-        select: row.id
+        where: field(row, ^key) in ^exact_ids(ids),
+        select: field(row, ^key)
       )
       |> Repo.all()
       |> MapSet.new()
 
-    Enum.reject(ids, &(canonical_uuid(&1) in present))
+    Enum.reject(ids, &MapSet.member?(present, &1))
   end
 
-  # The form a row's `id` is read back in, or nil for an identity no row can have.
-  defp canonical_uuid(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, uuid} -> uuid
-      :error -> nil
-    end
-  end
+  # The column that holds the feed ID each alert target names.
+  defp feed_key(Route), do: :route_id
+  defp feed_key(Stop), do: :stop_id
+  defp feed_key(Trip), do: :trip_id
 
   # -- Options -------------------------------------------------------------
 
   defp route_option(route) do
     %{
-      id: route.id,
+      id: route.route_id,
       label: route_label(route),
       route_id: route.route_id,
       short_name: route.route_short_name,
@@ -771,7 +746,7 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   defp stop_option(stop) do
     %{
-      id: stop.id,
+      id: stop.stop_id,
       label: stop_label(stop),
       stop_id: stop.stop_id,
       stop_name: stop.stop_name,
@@ -794,12 +769,11 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   # -- Scoped reads --------------------------------------------------------
 
-  defp scoped_route(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id) do
-    case Gtfs.get_route_in_version(o, v, route_id) do
-      {:ok, route} -> route
-      {:error, :not_found} -> nil
-    end
-  end
+  defp scoped_route(%AuditContext{organization_id: o, gtfs_version_id: v}, route_id)
+       when is_binary(route_id),
+       do: Gtfs.get_route_by_route_id(o, v, route_id)
+
+  defp scoped_route(%AuditContext{}, _route_id), do: nil
 
   # The stops the route serves, in the order of one representative trip. A
   # `stop_sequence` is a position within its own trip, so sequences from different
@@ -928,7 +902,7 @@ defmodule GtfsPlanner.Alerts.Targets do
     case first_departure_seconds(audit_context, trip) do
       {:ok, seconds} ->
         %{
-          trip_id: trip.id,
+          trip_id: trip.trip_id,
           label: departure_label(seconds, trip.trip_headsign),
           first_departure_seconds: seconds
         }
@@ -978,19 +952,19 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   # -- Labels for a stored alert -------------------------------------------
 
-  # An identity that cannot be parsed can never name a row, so it is simply
-  # absent from the labels - the same reading `Alerts.Listing` gives it. Each
-  # table is read once for every identity at once, so labelling an alert does
-  # not grow with the number of rows it names.
+  # An identity that names no row of the version is simply absent from the
+  # labels - the same reading `Alerts.Listing` gives it. Each table is read once
+  # for every identity at once, so labelling an alert does not grow with the
+  # number of rows it names.
   defp route_labels(_audit_context, []), do: %{}
 
   defp route_labels(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     from(r in Route,
       where: r.organization_id == ^o and r.gtfs_version_id == ^v,
-      where: r.id in ^uuids(ids)
+      where: r.route_id in ^exact_ids(ids)
     )
     |> Repo.all()
-    |> Map.new(&{&1.id, route_label(&1)})
+    |> Map.new(&{&1.route_id, route_label(&1)})
   end
 
   defp stop_labels(_audit_context, []), do: %{}
@@ -998,10 +972,10 @@ defmodule GtfsPlanner.Alerts.Targets do
   defp stop_labels(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     from(s in Stop,
       where: s.organization_id == ^o and s.gtfs_version_id == ^v,
-      where: s.id in ^uuids(ids)
+      where: s.stop_id in ^exact_ids(ids)
     )
     |> Repo.all()
-    |> Map.new(&{&1.id, stop_label(&1)})
+    |> Map.new(&{&1.stop_id, stop_label(&1)})
   end
 
   defp trip_labels(_audit_context, []), do: %{}
@@ -1010,7 +984,7 @@ defmodule GtfsPlanner.Alerts.Targets do
     from(t in Trip,
       where: t.organization_id == ^audit_context.organization_id,
       where: t.gtfs_version_id == ^audit_context.gtfs_version_id,
-      where: t.id in ^uuids(ids)
+      where: t.trip_id in ^exact_ids(ids)
     )
     |> Repo.all()
     |> Map.new(fn trip ->
@@ -1020,7 +994,7 @@ defmodule GtfsPlanner.Alerts.Targets do
           :error -> present_name(List.wrap(trip.trip_headsign)) || trip.trip_id
         end
 
-      {trip.id, label}
+      {trip.trip_id, label}
     end)
   end
 
@@ -1044,15 +1018,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   # preferred.
   defp preferred_stop_ids(_audit_context, []), do: []
 
-  defp preferred_stop_ids(%AuditContext{organization_id: o, gtfs_version_id: v}, route_uuids) do
-    route_ids =
-      from(r in Route,
-        where: r.organization_id == ^o and r.gtfs_version_id == ^v,
-        where: r.id in ^route_uuids,
-        select: r.route_id
-      )
-      |> Repo.all()
-
+  defp preferred_stop_ids(%AuditContext{organization_id: o, gtfs_version_id: v}, route_ids) do
     from(st in StopTime,
       join: t in Trip,
       on: t.trip_id == st.trip_id,
@@ -1065,18 +1031,9 @@ defmodule GtfsPlanner.Alerts.Targets do
     |> Repo.all()
   end
 
-  # An identity that is not a row UUID is dropped before it can reach a query,
-  # which is what keeps a forged or malformed id from becoming a database error.
-  defp uuids(ids) when is_list(ids) do
-    ids
-    |> Enum.filter(&is_binary/1)
-    |> Enum.flat_map(fn id ->
-      case Ecto.UUID.cast(id) do
-        {:ok, uuid} -> [uuid]
-        :error -> []
-      end
-    end)
-  end
-
-  defp uuids(_ids), do: []
+  # A feed ID is an exact string. A value that is not a string can never name a
+  # row, so it is dropped before it can reach a query, which is what keeps a
+  # forged or malformed id from becoming a database error.
+  defp exact_ids(ids) when is_list(ids), do: ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
+  defp exact_ids(_ids), do: []
 end

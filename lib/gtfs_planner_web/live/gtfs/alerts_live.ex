@@ -198,7 +198,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       # Walking the stored identities keeps the alert's own order and drops an
       # identity the version no longer has, which is the one the row's Needs
       # attention badge names.
-      routes: Enum.flat_map(referenced.routes, &(Map.get(routes, &1, []) |> List.wrap())),
+      routes:
+        Enum.flat_map(
+          referenced.routes,
+          &(routes |> Map.get(alert.id, %{}) |> Map.get(&1, []) |> List.wrap())
+        ),
       # Only an alert that said it is about the whole system, or about a place on
       # every route, reads "All routes". A draft that has not reached the routes
       # question, or whose routes were all deselected, names nothing yet.

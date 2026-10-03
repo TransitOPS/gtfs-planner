@@ -125,7 +125,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
             "urgency" => "now",
             "situation" => "stop_closed",
             "cause" => "construction",
-            "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [stop.id]},
+            "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [stop.stop_id]},
             "message" => message()
           },
           now_timing(context)
@@ -183,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
             "urgency" => "now",
             "situation" => "stop_closed",
             "cause" => "construction",
-            "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [stop.id, stop.id]},
+            "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [stop.stop_id, stop.stop_id]},
             "message" => message()
           },
           now_timing(context)
@@ -219,9 +219,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
             "cause" => "construction",
             "scope" => %{
               "shape" => "route_stops",
-              "route_ids" => [chosen.id],
-              "stop_ids" => [stop.id],
-              "route_stop_pairs" => [%{"route_id" => paired.id, "stop_id" => stop.id}]
+              "route_ids" => [chosen.route_id],
+              "stop_ids" => [stop.stop_id],
+              "route_stop_pairs" => [%{"route_id" => paired.route_id, "stop_id" => stop.stop_id}]
             },
             "message" => message()
           },
@@ -234,6 +234,36 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       # route the editor chose.
       assert has_element?(view, "#alert-row-#{alert.id}", "11")
       assert has_element?(view, "#alert-row-#{alert.id}", "22")
+    end
+
+    test "a route ID two source versions share shows each alert its own route", context do
+      other = gtfs_version_fixture(context.organization.id)
+
+      agency_fixture(context.organization.id, other.id, %{agency_timezone: "America/Los_Angeles"})
+
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "r_1",
+        route_short_name: "XT"
+      })
+
+      route_fixture(context.organization.id, other.id, %{route_id: "r_1", route_short_name: "LK"})
+
+      {:ok, here} =
+        save(context.audit, route_delay("r_1"), now_timing(context))
+
+      {:ok, there} =
+        save(
+          audit_context(context.organization, other, context.actor),
+          route_delay("r_1"),
+          now_timing(context)
+        )
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#alert-row-#{here.id}", "XT")
+      refute has_element?(view, "#alert-row-#{here.id}", "LK")
+      assert has_element?(view, "#alert-row-#{there.id}", "LK")
+      refute has_element?(view, "#alert-row-#{there.id}", "XT")
     end
 
     test "a draft with no route answer does not read All routes", context do
@@ -369,6 +399,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     }
 
     save(context.audit, attrs, now_timing(context))
+  end
+
+  defp route_delay(route_id) do
+    %{
+      "urgency" => "now",
+      "situation" => "delay",
+      "cause" => "weather",
+      "scope" => %{"shape" => "routes", "route_ids" => [route_id]},
+      "message" => message()
+    }
   end
 
   # A draft that has answered one question and no more, so the read model reads

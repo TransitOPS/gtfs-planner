@@ -10,11 +10,13 @@ defmodule GtfsPlanner.Alerts.Listing do
   fall into Past on its own: it stays Current until an operator ends it (R8).
 
   `needs_attention?` is also derived at read time and never blocks or narrows the
-  alert. A route, stop or trip the alert names is a row UUID of the version being
-  edited, so deleting that row from the version must not silently rewrite who the
-  alert is about; the scope keeps the UUID and the list row is flagged instead
-  (R8). Existence is checked with one `id in` query per table for every listed
-  alert at once, so the cost does not grow with the number of rows.
+  alert. A route, stop or trip the alert names is an exact GTFS feed ID, so
+  deleting that entity from the version must not silently rewrite who the alert
+  is about; the scope keeps the feed ID and the list row is flagged instead (R8).
+  Existence is checked per alert against that alert's own source version, with
+  one query per table and version for every listed alert at once, so the cost
+  does not grow with the number of rows and a feed ID that is missing from one
+  version never flags an alert of another.
 
   `check_in_due?` compares the stored `check_in_at` with the alert's own local
   time. An organization holds alerts written against several versions, and each
@@ -74,7 +76,10 @@ defmodule GtfsPlanner.Alerts.Listing do
       Map.new(
         alerts |> Enum.group_by(&tab(&1, NaiveDateTime.to_date(Map.fetch!(local, &1.id)))),
         fn {tab, tab_alerts} ->
-          {tab, tab_alerts |> order(tab) |> Enum.map(&row(&1, Map.fetch!(local, &1.id), missing))}
+          {tab,
+           tab_alerts
+           |> order(tab)
+           |> Enum.map(&row(&1, Map.fetch!(local, &1.id), Map.fetch!(missing, &1.id)))}
         end
       )
 
@@ -124,80 +129,64 @@ defmodule GtfsPlanner.Alerts.Listing do
   end
 
   @doc """
-  Returns the target identities that no longer resolve, per table.
+  Returns the target identities that no longer resolve, per alert and table.
 
   Each alert is checked against the version it was written against, so an alert
   of a sibling version is never satisfied by a row that happens to carry the same
-  GTFS identifier. An alert whose source version has been deleted has no version
+  GTFS identifier, and a feed ID missing from one version never marks another
+  alert missing. An alert whose source version has been deleted has no version
   that could still resolve an identity, so every identity it names is reported:
   the alert is about rows that no longer exist anywhere, which is exactly what
   Needs attention means. Its stored `target_reference` still carries the wire IDs
   and labels it was accepted with, so nothing is guessed and the message keeps
   naming what it named (CR-5).
-
-  A UUID that cannot be parsed can never name a row, so it is reported as
-  missing rather than left to reach a query.
   """
   @spec missing_target_ids([Alert.t()]) :: %{
-          routes: MapSet.t(String.t()),
-          stops: MapSet.t(String.t()),
-          trips: MapSet.t(String.t())
+          optional(Ecto.UUID.t()) => %{
+            routes: MapSet.t(String.t()),
+            stops: MapSet.t(String.t()),
+            trips: MapSet.t(String.t())
+          }
         }
   def missing_target_ids(alerts) do
-    by_version =
+    missing_by_version =
       alerts
+      |> Enum.reject(&is_nil(&1.source_gtfs_version_id))
       |> Enum.group_by(& &1.source_gtfs_version_id)
+      |> Map.new(fn {version_id, version_alerts} ->
+        referenced =
+          Enum.reduce(
+            version_alerts,
+            empty_referenced(),
+            &merge_referenced(&2, referenced_ids(&1))
+          )
 
-    # A version that no longer exists cannot resolve anything, so an alert left
-    # without one reports every identity it names.
-    {referenced, orphaned} =
-      Enum.reduce(by_version, {empty_referenced(), empty_referenced()}, fn
-        {nil, version_alerts}, {referenced, orphaned} ->
-          ids =
-            Enum.reduce(
-              version_alerts,
-              empty_referenced(),
-              &merge_referenced(&2, referenced_ids(&1))
-            )
-
-          {referenced, merge_referenced(orphaned, ids)}
-
-        {_version_id, version_alerts}, {referenced, orphaned} ->
-          ids =
-            Enum.reduce(
-              version_alerts,
-              empty_referenced(),
-              &merge_referenced(&2, referenced_ids(&1))
-            )
-
-          {merge_referenced(referenced, ids), orphaned}
+        {version_id,
+         %{
+           routes: missing_ids(Route, version_id, referenced.routes),
+           stops: missing_ids(Stop, version_id, referenced.stops),
+           trips: missing_ids(Trip, version_id, referenced.trips)
+         }}
       end)
 
-    missing =
-      by_version
-      |> Enum.filter(fn {version_id, _alerts} -> not is_nil(version_id) end)
-      |> Enum.reduce(empty_sets(), fn {version_id, _alerts}, acc ->
-        merge_sets(acc, %{
-          routes: missing_ids(Route, version_id, referenced.routes),
-          stops: missing_ids(Stop, version_id, referenced.stops),
-          trips: missing_ids(Trip, version_id, referenced.trips)
-        })
-      end)
+    Map.new(alerts, fn alert ->
+      {alert.id, missing_for(alert, Map.get(missing_by_version, alert.source_gtfs_version_id))}
+    end)
+  end
 
-    %{
-      routes: MapSet.union(missing.routes, MapSet.new(orphaned.routes)),
-      stops: MapSet.union(missing.stops, MapSet.new(orphaned.stops)),
-      trips: MapSet.union(missing.trips, MapSet.new(orphaned.trips))
-    }
+  # A source version that is gone cannot resolve anything, so everything the
+  # alert names is missing.
+  defp missing_for(alert, nil) do
+    Map.new(referenced_ids(alert), fn {table, ids} -> {table, MapSet.new(ids)} end)
+  end
+
+  defp missing_for(alert, version_missing) do
+    Map.new(referenced_ids(alert), fn {table, ids} ->
+      {table, MapSet.intersection(MapSet.new(ids), Map.fetch!(version_missing, table))}
+    end)
   end
 
   defp empty_referenced, do: %{routes: [], stops: [], trips: []}
-
-  defp empty_sets, do: %{routes: MapSet.new(), stops: MapSet.new(), trips: MapSet.new()}
-
-  defp merge_sets(left, right) do
-    Map.new(left, fn {table, ids} -> {table, MapSet.union(ids, Map.fetch!(right, table))} end)
-  end
 
   @doc """
   Returns the tab an alert belongs to on the agency's civil date `today`.
@@ -222,15 +211,13 @@ defmodule GtfsPlanner.Alerts.Listing do
   defp row(%Alert{} = alert, local_now, missing) do
     %{
       alert: alert,
-      needs_attention?: needs_attention?(alert, missing),
+      needs_attention?: needs_attention?(missing),
       check_in_due?: check_in_due?(alert, local_now)
     }
   end
 
-  defp needs_attention?(%Alert{} = alert, missing) do
-    Enum.any?(referenced_ids(alert), fn {table, ids} ->
-      Enum.any?(ids, &MapSet.member?(missing[table], &1))
-    end)
+  defp needs_attention?(missing) do
+    Enum.any?(missing, fn {_table, ids} -> MapSet.size(ids) > 0 end)
   end
 
   # A nil `check_in_at` is an alert with nothing to check back on. Otherwise the
@@ -279,7 +266,7 @@ defmodule GtfsPlanner.Alerts.Listing do
   # -- Referenced target identities ---------------------------------------
 
   @doc """
-  Returns every route, stop and trip row UUID the alert's scope names.
+  Returns every route, stop and trip feed ID the alert's scope names.
 
   The identities are wherever the operator entered them: a single value, a
   stretch end, a boarding alternative, a route and stop pair and a cancelled
@@ -329,21 +316,22 @@ defmodule GtfsPlanner.Alerts.Listing do
 
   defp scope_trips(_scope), do: []
 
-  # One existence query per table for every referenced identity at once. An
-  # unparseable identity is simply absent from the result, which is exactly what
-  # it is.
+  # One existence query per table for every referenced identity at once. A feed
+  # ID is compared exactly, so an identity the version lacks is simply absent
+  # from the result, which is exactly what it is.
   defp missing_ids(schema, gtfs_version_id, referenced) do
     referenced = MapSet.new(referenced)
+    key = feed_key(schema)
 
-    case Enum.filter(referenced, &match?({:ok, _uuid}, Ecto.UUID.cast(&1))) do
+    case MapSet.to_list(referenced) do
       [] ->
         referenced
 
       candidates ->
         present =
           from(t in schema,
-            where: t.gtfs_version_id == ^gtfs_version_id and t.id in ^candidates,
-            select: t.id
+            where: t.gtfs_version_id == ^gtfs_version_id and field(t, ^key) in ^candidates,
+            select: field(t, ^key)
           )
           |> Repo.all()
           |> MapSet.new()
@@ -351,4 +339,8 @@ defmodule GtfsPlanner.Alerts.Listing do
         MapSet.difference(referenced, present)
     end
   end
+
+  defp feed_key(Route), do: :route_id
+  defp feed_key(Stop), do: :stop_id
+  defp feed_key(Trip), do: :trip_id
 end

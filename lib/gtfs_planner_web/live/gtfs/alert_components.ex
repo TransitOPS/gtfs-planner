@@ -990,7 +990,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   """
   attr :id, :string, default: "alert-routes"
   attr :options, :list, required: true, doc: "`Alerts.search_routes/2` options"
-  attr :selected, :list, required: true, doc: "row UUIDs the alert already names"
+  attr :selected, :list, required: true, doc: "route feed IDs the alert already names"
   attr :query, :string, default: ""
   attr :error, :string, default: nil
   attr :allow_system?, :boolean, default: true
@@ -1161,7 +1161,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     required: true,
     doc: "`Alerts.route_stops/2` options for the chosen routes"
 
-  attr :selected, :list, required: true, doc: "row UUIDs the alert already skips"
+  attr :selected, :list, required: true, doc: "stop feed IDs the alert already skips"
 
   attr :stretch, :map,
     default: %{},

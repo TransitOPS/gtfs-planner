@@ -143,7 +143,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "delay",
-          "scope" => %{"shape" => "routes", "route_ids" => [route.id]}
+          "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]}
         })
 
       {:ok, view, _html} =
@@ -167,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert is_nil(saved.scope.direction_id)
-      assert saved.scope.route_ids == [route.id]
+      assert saved.scope.route_ids == [route.route_id]
     end
   end
 
@@ -263,27 +263,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       # would carry the same text under the field's name.
       render_keyup(view, "search_routes", %{"route_query" => "R"})
 
-      assert has_element?(view, "#alert-route-#{coast.id}", "Coast")
-      assert has_element?(view, "#alert-route-#{hospital.id}", "Hospital")
+      assert has_element?(view, "#alert-route-#{coast.route_id}", "Coast")
+      assert has_element?(view, "#alert-route-#{hospital.route_id}", "Hospital")
 
-      view |> element("#alert-route-#{coast.id}") |> render_click()
-
-      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.route_ids == [coast.id]
-
-      view |> element("#alert-route-#{hospital.id}") |> render_click()
+      view |> element("#alert-route-#{coast.route_id}") |> render_click()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.route_ids == [coast.id, hospital.id]
+      assert saved.scope.route_ids == [coast.route_id]
 
-      assert has_element?(view, "#alert-route-#{coast.id}[aria-pressed='true']")
+      view |> element("#alert-route-#{hospital.route_id}") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.scope.route_ids == [coast.route_id, hospital.route_id]
+
+      assert has_element?(view, "#alert-route-#{coast.route_id}[aria-pressed='true']")
 
       view |> element("#alert-routes-continue") |> render_click()
 
       assert has_element?(view, "#alert-question-title", "Which direction is affected?")
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.route_ids == [coast.id, hospital.id]
+      assert saved.scope.route_ids == [coast.route_id, hospital.route_id]
       assert saved.scope.shape == :routes
     end
 

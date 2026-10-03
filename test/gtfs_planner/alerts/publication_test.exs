@@ -269,7 +269,10 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
 
       alert =
         complete_alert(context.audit, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [context.route.id, dropped.id]}
+          "scope" => %{
+            "shape" => "routes",
+            "route_ids" => [context.route.route_id, dropped.route_id]
+          }
         })
 
       # The source version no longer holds the dropped route, but the capture is
@@ -280,7 +283,7 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
         Alerts.save_draft(context.audit, alert.id, alert.revision, %{
           "scope" => %{
             "shape" => "routes",
-            "route_ids" => [context.route.id, dropped.id, later.id]
+            "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
           }
         })
 
@@ -541,6 +544,76 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
     end
   end
 
+  describe "accepted scope shapes" do
+    test "cancelled trips keep each frequency instance and encode as dated descriptors",
+         context do
+      uuid_like = "ABCDEF00-0000-0000-0000-000000000000"
+
+      trip_fixture(context.organization.id, context.version.id, context.route.route_id, %{
+        trip_id: uuid_like
+      })
+
+      alert =
+        complete_alert(context.audit, %{
+          "situation" => "cancelled_trips",
+          "scope" => %{
+            "shape" => "trips",
+            "route_ids" => [context.route.route_id],
+            "trips" => [
+              %{
+                "trip_id" => uuid_like,
+                "service_date" => "2026-10-05",
+                "start_time" => "8:00:00"
+              },
+              %{
+                "trip_id" => uuid_like,
+                "service_date" => "2026-10-05",
+                "start_time" => "25:15:00"
+              }
+            ]
+          }
+        })
+
+      assert {:ok, %{publication: :pending}} = save_review(context, alert, %{}, publish?: true)
+
+      snapshot = stored(publication_for(alert))
+
+      assert snapshot.scope.trips == [
+               %{trip_id: uuid_like, start_date: ~D[2026-10-05], start_time: "08:00:00"},
+               %{trip_id: uuid_like, start_date: ~D[2026-10-05], start_time: "25:15:00"}
+             ]
+
+      assert {:ok, %{pb: pb}} = Feed.encode([snapshot], @header_now)
+
+      assert %TransitRealtime.FeedMessage{entity: [entity]} =
+               Protobuf.decode(pb, TransitRealtime.FeedMessage)
+
+      assert Enum.map(entity.alert.informed_entity, &{&1.trip.trip_id, &1.trip.start_time}) == [
+               {uuid_like, "08:00:00"},
+               {uuid_like, "25:15:00"}
+             ]
+    end
+
+    test "a mode expands to the explicit feed IDs of the source version's routes", context do
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "r_2",
+        route_type: 3
+      })
+
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "r_rail",
+        route_type: 2
+      })
+
+      alert =
+        complete_alert(context.audit, %{"scope" => %{"shape" => "routes", "mode_route_type" => 3}})
+
+      assert {:ok, %{publication: :pending}} = save_review(context, alert, %{}, publish?: true)
+
+      assert stored(publication_for(alert)).scope.routes == ["r_1", "r_2"]
+    end
+  end
+
   # -- Fixtures -------------------------------------------------------------
 
   # A complete, privately authored alert about the version's own route.
@@ -558,7 +631,7 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
 
     scope =
       if route,
-        do: %{"shape" => "routes", "route_ids" => [route.id]},
+        do: %{"shape" => "routes", "route_ids" => [route.route_id]},
         else: %{"shape" => "routes", "route_ids" => [nil]}
 
     merged =

@@ -187,8 +187,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.revision == alert.revision + 1
       assert saved.situation == :detour
-      assert saved.scope.route_ids == [context.route.id]
-      assert saved.scope.stop_ids == [context.skipped.id]
+      assert saved.scope.route_ids == [context.route.route_id]
+      assert saved.scope.stop_ids == [context.skipped.stop_id]
       assert saved.message.header == @header
       assert saved.message.description == @description
 
@@ -446,8 +446,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
             "situation" => "detour",
             "scope" => %{
               "shape" => "route_stops",
-              "route_ids" => [context.route.id],
-              "stop_ids" => [context.skipped.id]
+              "route_ids" => [context.route.route_id],
+              "stop_ids" => [context.skipped.stop_id]
             },
             "message" => %{"header" => @header, "description" => @description}
           },
@@ -488,8 +488,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       "situation" => "detour",
       "scope" => %{
         "shape" => "route_stops",
-        "route_ids" => [context.route.id],
-        "stop_ids" => [context.skipped.id]
+        "route_ids" => [context.route.route_id],
+        "stop_ids" => [context.skipped.stop_id]
       },
       "cause" => "accident"
     })

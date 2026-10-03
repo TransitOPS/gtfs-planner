@@ -183,7 +183,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       last =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S20", "NE 20th St"))
 
-      alert = detour(context, route.id, first.id, last.id)
+      alert = detour(context, route.route_id, first.stop_id, last.stop_id)
 
       assert Message.facts(alert, labels(context, alert)) == %{
                "route" => "12",
@@ -253,7 +253,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       other =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S12", "NE 12th St"))
 
-      alert = moved_stop(context, stop.id, other.id)
+      alert = moved_stop(context, stop.stop_id, other.stop_id)
 
       facts = Message.facts(alert, labels(context, alert))
 
@@ -295,7 +295,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       last =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S20", "NE 20th St"))
 
-      alert = detour(context, route.id, first.id, last.id)
+      alert = detour(context, route.route_id, first.stop_id, last.stop_id)
 
       delete!(GtfsPlanner.Gtfs.Stop, last.id)
 
@@ -582,7 +582,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
   end
 
   defp route_id(context, route_id) do
-    route_fixture(context.organization.id, context.version.id, route_attrs(route_id, route_id)).id
+    route_fixture(context.organization.id, context.version.id, route_attrs(route_id, route_id)).route_id
   end
 
   # The stops the detour cases read, named the way riders know them.
@@ -591,7 +591,7 @@ defmodule GtfsPlanner.Alerts.MessageTest do
   defp stop_id(context, stop_id) do
     name = Map.get(@stop_names, stop_id, stop_id)
 
-    stop_fixture(context.organization.id, context.version.id, stop_attrs(stop_id, name)).id
+    stop_fixture(context.organization.id, context.version.id, stop_attrs(stop_id, name)).stop_id
   end
 
   # A planned weekly detour with a confirmed end, the shape the detour script
@@ -679,8 +679,8 @@ defmodule GtfsPlanner.Alerts.MessageTest do
       "cause" => "construction",
       "scope" => %{
         "shape" => "trips",
-        "route_ids" => [route.id],
-        "trips" => Enum.map(service_dates, &%{"trip_id" => trip.id, "service_date" => &1})
+        "route_ids" => [route.route_id],
+        "trips" => Enum.map(service_dates, &%{"trip_id" => trip.trip_id, "service_date" => &1})
       }
     })
   end
