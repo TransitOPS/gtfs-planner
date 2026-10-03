@@ -262,8 +262,21 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 
 row() { printf '%-4s %-5s %-6s %-8s %-7s %-8s %-7s %-6s %-6s %s\n' "$@"; }
 
-args='' # the caller's arguments, so a reproduction runs the same files
-[ $# -eq 0 ] || args=$(printf ' %q' "$@")
+# The caller's arguments, so a reproduction runs the same files. --seed and
+# --max-cases are left out because the reproduce line states the values used.
+args=''
+skip_next=''
+for arg in "$@"; do
+  if [ -n "$skip_next" ]; then
+    skip_next=''
+    continue
+  fi
+  case $arg in
+    --seed | --max-cases) skip_next=1 ;;
+    --seed=* | --max-cases=*) ;;
+    *) args+=$(printf ' %q' "$arg") ;;
+  esac
+done
 
 # Setup is the partition's wall time (launch to its last output) minus ExUnit's
 # own "Finished in", so it covers BEAM start, migrations and everything else
