@@ -3571,13 +3571,17 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns child stops for a parent station, preloading level association.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_child_stops_for_parent(org_id, version_id, parent_id)
       [%Stop{level: %Level{}}, ...]
   """
   def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -3633,13 +3637,17 @@ defmodule GtfsPlanner.Gtfs do
   Returns the list of levels for a specific station with stop counts.
   Uses a hybrid approach: combines levels from child stops with levels from stop_levels table.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
       [%{level: %Level{}, stop_count: 5}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -5089,6 +5097,23 @@ defmodule GtfsPlanner.Gtfs do
       :gtfs_catalog_read_adapter,
       @default_catalog_read_adapter
     )
+  end
+
+  # Station readers take a row handle, so the handle is only a translation input
+  # after ownership is proven. A row outside the scope raises the same
+  # not-found error an absent row would.
+  defp get_scoped_station!(organization_id, gtfs_version_id, station_id) do
+    case get_stop_by_id(organization_id, gtfs_version_id, station_id) do
+      nil ->
+        raise Ecto.NoResultsError,
+          queryable: Stop,
+          query:
+            "station #{inspect(station_id)} not found in organization #{inspect(organization_id)} " <>
+              "and gtfs version #{inspect(gtfs_version_id)}"
+
+      station ->
+        station
+    end
   end
 
   defp paginate(query, nil, _per_page), do: paginate(query, 1, 25)

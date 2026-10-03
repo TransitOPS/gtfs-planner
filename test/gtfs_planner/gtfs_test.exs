@@ -1558,6 +1558,38 @@ defmodule GtfsPlanner.GtfsTest do
       assert platform.stop_id in result_stop_ids
       assert boarding_area.stop_id in result_stop_ids
     end
+
+    test "refuses a station row whose scope does not own the feed ID", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      level_fixture(org.id, version.id, %{level_id: "L_SHARED", level_index: 0.0})
+      local_station = station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL")
+
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+
+      foreign_station =
+        station_with_platform(foreign_org, foreign_version, "STATION_SHARED", "PLATFORM_FOREIGN")
+
+      sibling_version = gtfs_version_fixture(org.id)
+
+      sibling_station =
+        station_with_platform(org, sibling_version, "STATION_SHARED", "PLATFORM_SIBLING")
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_child_stops_for_parent(org.id, version.id, foreign_station.id)
+      end
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_child_stops_for_parent(org.id, version.id, sibling_station.id)
+      end
+
+      # The local station still reads its own child: the duplicate feed IDs in
+      # the other organization and sibling version stay out of this result.
+      assert [%{stop_id: "PLATFORM_LOCAL"}] =
+               Gtfs.list_child_stops_for_parent(org.id, version.id, local_station.id)
+    end
   end
 
   describe "list_station_scope_stop_ids/3" do
@@ -1852,6 +1884,42 @@ defmodule GtfsPlanner.GtfsTest do
       assert Enum.any?(result, fn %{level: listed_level, stop_count: stop_count} ->
                listed_level.id == level.id and stop_count == 2
              end)
+    end
+
+    test "refuses a station row whose scope does not own the feed ID", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      local_level = level_fixture(org.id, version.id, %{level_id: "L_SHARED", level_index: 0.0})
+      local_station = station_with_platform(org, version, "STATION_SHARED", "PLATFORM_LOCAL")
+
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+      level_fixture(foreign_org.id, foreign_version.id, %{level_id: "L_SHARED", level_index: 0.0})
+
+      foreign_station =
+        station_with_platform(foreign_org, foreign_version, "STATION_SHARED", "PLATFORM_FOREIGN")
+
+      sibling_version = gtfs_version_fixture(org.id)
+      level_fixture(org.id, sibling_version.id, %{level_id: "L_SHARED", level_index: 0.0})
+
+      sibling_station =
+        station_with_platform(org, sibling_version, "STATION_SHARED", "PLATFORM_SIBLING")
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_levels_for_station(org.id, version.id, foreign_station.id)
+      end
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Gtfs.list_levels_for_station(org.id, version.id, sibling_station.id)
+      end
+
+      # The local station still lists its own level only; the duplicate feed IDs
+      # elsewhere contribute no level row.
+      assert [%{level: %{id: level_id}, stop_count: 1}] =
+               Gtfs.list_levels_for_station(org.id, version.id, local_station.id)
+
+      assert level_id == local_level.id
     end
   end
 
@@ -6314,6 +6382,25 @@ defmodule GtfsPlanner.GtfsTest do
                  800
                )
     end
+  end
+
+  # A station and one of its platform children, both carrying the given feed IDs.
+  # The `list_child_stops_for_parent/3` and `list_levels_for_station/3` scope
+  # cases need the same feed ID to exist in several scopes at once.
+  defp station_with_platform(organization, gtfs_version, station_stop_id, platform_stop_id) do
+    station =
+      stop_fixture(organization.id, gtfs_version.id, %{
+        stop_id: station_stop_id,
+        location_type: 1
+      })
+
+    stop_fixture(organization.id, gtfs_version.id, %{
+      stop_id: platform_stop_id,
+      parent_station: station_stop_id,
+      level_id: "L_SHARED"
+    })
+
+    station
   end
 
   defp station_editing_status_count(organization_id, gtfs_version_id, station_id) do

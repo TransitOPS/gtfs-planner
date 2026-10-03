@@ -387,7 +387,11 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
                %{}
              )
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "FAILED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "FAILED"
+           ) == nil
 
     assert {:error, %Ecto.Changeset{}} =
              Stations.update_level(invalid_audit, level.id, %{level_id: "FAILED"}, 1)
@@ -419,7 +423,12 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert {:error, :forbidden} =
              Stations.remove_level_from_station(scope.audit, level.id, attached.lock_version)
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "DENIED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "DENIED"
+           ) == nil
+
     assert Repo.get!(Level, level.id).level_name == level.level_name
     assert Repo.get!(StopLevel, attached.id)
   end
