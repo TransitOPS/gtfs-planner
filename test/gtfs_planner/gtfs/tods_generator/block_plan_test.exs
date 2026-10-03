@@ -391,6 +391,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       assert preview.counts.preserved_blocks == 3
       assert preview.blocks == []
       assert preview.exclusions == []
+
+      # The move extends stored block `"201"` instead of creating one, so the
+      # created blocks are none and the presentation is the three preserved ones:
+      # `counts` numbers the same two sets the two lists hold.
+      assert preview.counts.new_blocks == 0
+      assert preview.counts.blocks == length(preview.blocks) + length(preview.preserved_block_ids)
     end
 
     test "a new block whose attribute rows disagree is refused as a unit" do

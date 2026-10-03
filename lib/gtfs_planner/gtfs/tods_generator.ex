@@ -344,8 +344,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     }
   end
 
+  # A move is an addition the save writes even when it lands in a block the
+  # version already has and needs no new block, run or line, so `new_assignments`
+  # is one of the terms rather than being implied by `new_blocks`.
   defp additions?(counts) do
-    counts.new_blocks + counts.new_runs + counts.new_lines > 0
+    counts.new_blocks + counts.new_assignments + counts.new_runs + counts.new_lines > 0
   end
 
   # --- source ----------------------------------------------------------------

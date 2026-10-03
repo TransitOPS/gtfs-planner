@@ -538,12 +538,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   # because resolving it by read order would put a garage in the preview nobody
   # chose.
   defp new_blocks(memberships, assignments, source, normalized_input) do
-    existing = MapSet.new(source.used_block_ids)
-
     assignments
-    |> Map.values()
-    |> Enum.uniq()
-    |> Enum.reject(&MapSet.member?(existing, &1))
+    |> created_block_ids(source)
     |> Enum.sort_by(&Summary.natural_key/1)
     |> Enum.map(fn block_id ->
       days = Map.fetch!(memberships, block_id)
@@ -559,6 +555,19 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         day_type_keys: day_type_keys(days)
       }
     end)
+  end
+
+  # The blocks the run created: the IDs its accepted new moves landed in that the
+  # database did not already hold, so a move onto a stored block is not a new
+  # block. `new_blocks/4` builds one row per ID and `counts/4` numbers them, so
+  # the preview's list and its figures read one rule.
+  defp created_block_ids(assignments, source) do
+    existing = MapSet.new(source.used_block_ids)
+
+    assignments
+    |> Map.values()
+    |> Enum.uniq()
+    |> Enum.reject(&MapSet.member?(existing, &1))
   end
 
   defp garage(%{garage_source: :none}, %{"garage_id" => garage_id}), do: garage_id
@@ -618,20 +627,22 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     )
   end
 
-  # `blocks` is the blocks the candidate presents: the new ones `new_blocks/4`
-  # emits plus the ones it preserved, so it is exactly `new_blocks +
-  # preserved_blocks` and reconciles with the `blocks` list and
-  # `preserved_block_ids/2`. A block a refused move was destined for is not
-  # presented, so it is counted in `rejected_blocks` alone — while a preserved
-  # block that lost a new move is in `preserved_blocks` as well, because the two
-  # figures answer different questions and are not a partition of one another.
+  # `blocks` is the blocks the candidate presents, read off the same two sets as
+  # `new_blocks/4`: the ones it created — `created_block_ids/2`, so a move that
+  # landed in a stored block is not one of them — plus the ones it preserved. It
+  # is therefore exactly `new_blocks + preserved_blocks` and reconciles with the
+  # `blocks` list and `preserved_block_ids/2`. A block a refused move was destined
+  # for is not presented, so it is counted in `rejected_blocks` alone — while a
+  # preserved block that lost a new move is in `preserved_blocks` as well, because
+  # the two figures answer different questions and are not a partition of one
+  # another.
   defp counts(memberships, assignments, refused, source) do
-    new_ids = MapSet.new(Map.values(assignments))
+    created = created_block_ids(assignments, source)
     preserved = preserved_block_ids(memberships, source)
 
     %{
-      blocks: MapSet.size(new_ids) + length(preserved),
-      new_blocks: MapSet.size(new_ids),
+      blocks: length(created) + length(preserved),
+      new_blocks: length(created),
       new_assignments: map_size(assignments),
       preserved_blocks: length(preserved),
       rejected_blocks: map_size(refused)

@@ -37,6 +37,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
 
   import Ecto.Query
 
+  import GtfsPlanner.RunsFixtures, only: [trip_run_fixture: 3]
   import GtfsPlanner.TodsGeneratorFixtures
 
   alias GtfsPlanner.Gtfs
@@ -291,6 +292,36 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
       assert preview.no_work? == true
     end
 
+    test "a plan whose only addition is a move into a stored block is still available to save" do
+      # The version the case above describes — every run stored, every run-day held —
+      # with one trip the planner left without a block although it already has a run,
+      # and a stored block "201" the generator chains it onto. The generation's only
+      # work is that one move: it creates no block, and the crew and roster stages
+      # add no run, line or slot. `counts.new_blocks` is therefore zero and the plan
+      # is still one to save, because the move is what a save writes.
+      world =
+        roster_world_fixture(extra_trips: [chained_trip()])
+
+      block_trips = generator_block_fixture(world)
+
+      stored_runs_fixture(world, Map.put(stored_runs(), "gen-chain", "2"))
+      store_trip_runs(world, block_trips, "5")
+
+      assert {:ok, first} = roster_preview(world)
+      hold_every_run_day(world, first)
+
+      assert {:ok, preview} = roster_preview(world)
+
+      assert preview.assignments == %{trip_uuid(world, "gen-chain") => "201"}
+      assert preview.counts.new_assignments == 1
+      assert preview.counts.new_blocks == 0
+      assert preview.counts.new_runs == 0
+      assert preview.counts.new_lines == 0
+      assert preview.hard_errors == []
+      assert preview.no_work? == false
+      assert preview.save_available? == true
+    end
+
     test "a preserved line's rest finding is disclosed" do
       world =
         crew_world_fixture(block: :overnight)
@@ -384,10 +415,30 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
   # second, which is what the export dates a day earlier.
   defp early_trip, do: {"early-a", "WK", "RIV", "RIV", "00:05:00", "01:00:00"}
 
+  # One weekday trip timed to chain onto the stored block "201"
+  # `generator_block_fixture/1` writes: it leaves `RIV` after that block's own last
+  # arrival, so the generator extends the block rather than opening one.
+  defp chained_trip, do: {"gen-chain", "WK", "RIV", "RIV", "15:40:00", "16:10:00"}
+
   defp new_line(world) do
     assert {:ok, line} = Gtfs.create_roster_line(world.audit)
     line
   end
+
+  # Stores a run for trips a case wrote after the world was built, on every day type
+  # the version derives: a trip whose run is already stored adds no run delta, which
+  # is what leaves a block move as a plan's only addition.
+  defp store_trip_runs(world, trips, run_id) do
+    for trip <- trips, day_type <- day_types(world) do
+      trip_run_fixture(world.organization.id, world.version.id, %{
+        trip: trip.id,
+        day_type_key: day_type.key,
+        run_id: run_id
+      })
+    end
+  end
+
+  defp trip_uuid(world, trip_id), do: Map.fetch!(world.trip_ids, trip_id)
 
   # One stored run per block of the fixture's own schedule: the four runs a planner
   # would have cut and saved, so the version has no uncovered work left.
