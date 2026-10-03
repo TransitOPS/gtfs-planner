@@ -223,6 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             data-role="alert-check-in-due"
           />
         </div>
+        <.attention_notes notes={@row.attention_notes} />
       </td>
       <td class="px-3 py-3 align-top">
         <.all_routes_badge :if={@row.system?} />
@@ -269,6 +270,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         <.status_badge :if={@row.needs_attention?} status="warning" label="Needs attention" />
         <.status_badge :if={@row.check_in_due?} status="info" label="Check-in due" />
       </div>
+      <.attention_notes notes={@row.attention_notes} />
       <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
         <.all_routes_badge :if={@row.system?} />
         <RouteIdentity.route_badge :for={route <- @row.routes} route={route} />
@@ -281,6 +283,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       </p>
       <p class="mt-0.5 text-[13px] text-muted">{@row.last_change}</p>
     </li>
+    """
+  end
+
+  # The targets behind a Needs attention badge, in the feed IDs the alert keeps, so a
+  # reader can tell what the active schedule lacks without opening the alert. The
+  # badge carries the status; these lines are its detail.
+  attr :notes, :list, required: true, doc: "the sentences `alerts_live.ex` derived"
+
+  defp attention_notes(assigns) do
+    ~H"""
+    <ul
+      :if={@notes != []}
+      data-role="alert-target-notes"
+      class="mt-1.5 space-y-0.5 text-[13px] text-muted"
+    >
+      <li :for={note <- @notes} class="[overflow-wrap:anywhere]">{note}</li>
+    </ul>
     """
   end
 

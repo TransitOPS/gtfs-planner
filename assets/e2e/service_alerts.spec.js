@@ -294,6 +294,229 @@ test.describe("alerts list", () => {
     }
   });
 });
+// The active schedule workspace. /alerts names the organization's active schedule,
+// separate from the version menu in the header, and lets an editor choose it. Each
+// state has its own seeded organization and editor (test/support/browser_seed.exs),
+// so a journey that changes the selection cannot move another journey's schedule.
+const IDENTITY_PASSWORD = "IdentityTest123!";
+const IDENTITY = {
+  email: "identity-workspace@gtfs-planner.test",
+  password: IDENTITY_PASSWORD,
+};
+const IDENTITY_LEGACY = {
+  email: "identity-legacy@gtfs-planner.test",
+  password: IDENTITY_PASSWORD,
+};
+const IDENTITY_EMPTY = {
+  email: "identity-empty@gtfs-planner.test",
+  password: IDENTITY_PASSWORD,
+};
+
+async function openWorkspace(page, account) {
+  await logIn(page, account);
+  await gotoLive(page, "/alerts");
+  await page.waitForSelector("#alerts-active, #alerts-no-active", { timeout: 15000 });
+  await waitForLiveConnected(page);
+}
+
+// The form sits behind the "Change schedule" disclosure while a schedule is active,
+// because choosing another one is rare next to reading the list.
+async function openScheduleForm(page) {
+  const more = page.locator("#alerts-active-more");
+
+  if ((await more.count()) && !(await more.evaluate((el) => el.open))) {
+    await page.locator("#alerts-active-toggle").click();
+  }
+
+  await expect(page.locator("#alerts-active-schedule-version")).toBeVisible();
+}
+
+async function chooseSchedule(page, name) {
+  await openScheduleForm(page);
+  await page.locator("#alerts-active-schedule-version").selectOption({ label: name });
+  await page.locator("#alerts-active-schedule-submit").click();
+}
+
+function workspaceCapture(page, testInfo, state, viewport) {
+  return page.screenshot({
+    path: capturePath(testInfo, `identity-workspace-${state}-${viewport.label}.png`),
+    fullPage: true,
+    animations: "disabled",
+  });
+}
+
+test.describe("GTFS identity workspace", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("an organization with no active schedule lists and creates nothing until one is chosen @identity-workspace", async ({
+    page,
+  }, testInfo) => {
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      await openWorkspace(page, IDENTITY_LEGACY);
+
+      await expect(page.locator("#alerts-no-active")).toBeVisible();
+      await expect(page.locator("#alerts-no-active")).toContainText("No active schedule");
+      await expect(page.locator("#alerts-list")).toHaveCount(0);
+      await expect(page.locator("#alerts-tabs")).toHaveCount(0);
+      await expect(page.locator("#create-alert")).toHaveCount(0);
+      await expect(page.locator("#create-alert-first-use")).toHaveCount(0);
+      await expect(page.locator("#alerts-active-schedule-version")).toBeVisible();
+
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "no-active", viewport);
+    }
+
+    // The choice works from the keyboard alone: pick the schedule, Tab to the
+    // button, Enter. Focus then lands on the new active schedule's name.
+    const select = page.locator("#alerts-active-schedule-version");
+    await select.focus();
+    await select.selectOption({ label: "Identity Legacy Schedule" });
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#alerts-active-schedule-submit")).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#alerts-no-active")).toHaveCount(0);
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Legacy Schedule");
+    await expect(page.locator("#alerts-active-name")).toBeFocused();
+    await expect(page.locator("#alerts-first-use")).toBeVisible();
+    await expect(page.locator("#create-alert-first-use")).toBeVisible();
+
+    // The choice is persisted, not page state.
+    await reloadLive(page);
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Legacy Schedule");
+    await expect(page.locator("#alerts-no-active")).toHaveCount(0);
+  });
+
+  test("an organization with no published schedule offers no choice and no create @identity-workspace", async ({
+    page,
+  }, testInfo) => {
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      await openWorkspace(page, IDENTITY_EMPTY);
+
+      await expect(page.locator("#alerts-no-active")).toContainText("no published schedule");
+      await expect(page.locator("#alerts-active-schedule")).toHaveCount(0);
+      await expect(page.locator("#alerts-list")).toHaveCount(0);
+      await expect(page.locator("#create-alert")).toHaveCount(0);
+      await expect(page.locator("#create-alert-first-use")).toHaveCount(0);
+
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "no-choices", viewport);
+    }
+  });
+
+  test("the active schedule, not the header's version, decides the targets @identity-workspace", async ({
+    page,
+    browser,
+  }, testInfo) => {
+    const attention = page.locator("[data-role='alert-needs-attention']");
+    const route12Row = page.locator("#alerts tr", { hasText: "Route 12 delays" });
+    const annexRow = page.locator("#alerts tr", { hasText: "Annex stop closed" });
+
+    await page.setViewportSize(DESKTOP);
+    await openWorkspace(page, IDENTITY);
+
+    // The header shows the newest published schedule; the page names the active one.
+    await expect(page.locator("#gtfs-version-trigger")).toHaveAttribute(
+      "aria-label",
+      "Version, Identity Second Schedule",
+    );
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Active Schedule");
+    await expect(page.locator("#alerts-tab-current")).toHaveAttribute("data-count", "3");
+    await expect(attention).toHaveCount(0);
+    await expect(route12Row).toContainText("12");
+
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "ready", viewport);
+
+      await openScheduleForm(page);
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "choosing", viewport);
+      await page.locator("#alerts-active-toggle").click();
+      await expect(page.locator("#alerts-active-schedule-version")).toBeHidden();
+    }
+
+    // Changing the header's version navigates; it never selects the active schedule.
+    await page.setViewportSize(DESKTOP);
+    await page.locator("#gtfs-version-trigger").click();
+    await Promise.all([
+      page.waitForEvent("load"),
+      page
+        .locator("#gtfs-version-panel [data-version-option]")
+        .filter({ hasText: "Identity Empty Schedule" })
+        .click(),
+    ]);
+    await waitForLiveConnected(page);
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Active Schedule");
+    await expect(attention).toHaveCount(0);
+
+    // Choosing the second schedule moves the labels and the attention state together.
+    await chooseSchedule(page, "Identity Second Schedule");
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Second Schedule");
+    await expect(route12Row).toContainText("12X");
+    await expect(annexRow.locator("[data-role='alert-needs-attention']")).toBeVisible();
+    await expect(annexRow.locator("[data-role='alert-target-notes']")).toContainText(
+      "Stop ID_ANNEX is not in the active schedule",
+    );
+    await expect(attention).toHaveCount(1);
+    await expect(page.locator("#alerts-tab-current")).toHaveAttribute("data-count", "3");
+
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "attention", viewport);
+    }
+    await page.setViewportSize(DESKTOP);
+
+    // Another editor's committed change reaches this page without a reload, and
+    // the rows, labels and attention state follow it together.
+    const other = await browser.newContext({ viewport: DESKTOP });
+    const otherPage = await other.newPage();
+    await openWorkspace(otherPage, IDENTITY);
+    await chooseSchedule(otherPage, "Identity Empty Schedule");
+    await expect(otherPage.locator("#alerts-active-name")).toHaveText("Identity Empty Schedule");
+    await other.close();
+
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Empty Schedule");
+    await expect(attention).toHaveCount(2);
+    await expect(page.locator("#alerts-tab-current")).toHaveAttribute("data-count", "3");
+
+    // A forged choice is refused: the selection stays, the error names the problem
+    // and keyboard focus returns to the control it describes.
+    await openScheduleForm(page);
+    await page.locator("#alerts-active-schedule-version").evaluate((select) => {
+      const forged = document.createElement("option");
+      forged.value = "00000000-0000-4000-8000-000000000000";
+      forged.textContent = "Forged schedule";
+      select.appendChild(forged);
+      select.value = forged.value;
+    });
+    await page.locator("#alerts-active-schedule-submit").click();
+
+    await expect(page.locator("#alerts-active-schedule-version-error")).toContainText(
+      "not available",
+    );
+    await expect(page.locator("#alerts-active-schedule-version")).toBeFocused();
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Empty Schedule");
+
+    for (const viewport of [DESKTOP, NARROW]) {
+      await page.setViewportSize(viewport);
+      expect(await fitsViewport(page)).toBe(true);
+      await workspaceCapture(page, testInfo, "refused", viewport);
+    }
+    await page.setViewportSize(DESKTOP);
+
+    // Choosing the original schedule again clears the error and the attention flags.
+    await chooseSchedule(page, "Identity Active Schedule");
+    await expect(page.locator("#alerts-active-name")).toHaveText("Identity Active Schedule");
+    await expect(page.locator("#alerts-active-schedule-version-error")).toHaveCount(0);
+    await expect(attention).toHaveCount(0);
+  });
+});
+
 // The editor shell, as spec 30's step 14 renders it: the frame, the URL state,
 // creation on the first answer and the version check (AC-15, R1). Nothing here
 // looks for a publication state or action, because saving an alert never

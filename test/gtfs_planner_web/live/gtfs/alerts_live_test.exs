@@ -8,6 +8,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
   civil time, so the fixtures here answer `now` against the agency's date
   rather than a fixed date: an alert meant to be Current covers the agency's
   today, which is what `Alerts.Listing` groups on.
+
+  The "active schedule" cases drive the real form, the real
+  `Versions.set_active_schedule/3` and the organization's PubSub topic. A change
+  the page was not told about is made by updating the pointer directly, because
+  the broadcast is only a hint and the commands read the database.
   """
 
   use GtfsPlannerWeb.ConnCase, async: true
@@ -22,10 +27,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Alerts.Publication
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   # The words this package must never show on an alerts surface: the publication
   # states and actions of the prototype's earlier revision, which package 30
@@ -338,6 +346,296 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     end
   end
 
+  describe "the active schedule" do
+    setup :editor_conn
+
+    test "names the active schedule and never the version the header shows", context do
+      # The newest published version is the one the header shows for this reader.
+      _header = gtfs_version_fixture(context.organization.id, %{name: "Header version"})
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#gtfs-version-trigger[aria-label='Version, Header version']")
+      assert has_element?(view, "#alerts-active-name", context.version.name)
+      refute has_element?(view, "#alerts-active-name", "Header version")
+
+      assert has_element?(
+               view,
+               "#alerts-active-schedule-version option[selected][value='#{context.version.id}']"
+             )
+    end
+
+    test "offers no selection when the active schedule is the only published one", context do
+      Repo.delete_all(
+        from(v in GtfsPlanner.Versions.GtfsVersion,
+          where: v.organization_id == ^context.organization.id and v.id != ^context.version.id
+        )
+      )
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#alerts-active-name", context.version.name)
+      refute has_element?(view, "#alerts-active-schedule")
+    end
+
+    test "choosing another schedule moves the labels, the attention state and the token",
+         context do
+      other = second_schedule(context, "Spring service")
+
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "r_1",
+        route_short_name: "XT"
+      })
+
+      route_fixture(context.organization.id, other.id, %{route_id: "r_1", route_short_name: "LK"})
+      stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+
+      {:ok, by_route} = save(context.audit, route_delay("r_1"), now_timing(context))
+      {:ok, by_stop} = save(context.audit, stop_closed("s_1"), now_timing(context))
+
+      # An accepted public snapshot, to show the selection does not touch it.
+      accepted = accepted_snapshot!(by_route, context.actor)
+
+      {:ok, %{token: before_token}} = Versions.active_schedule(context.audit)
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#alert-row-#{by_route.id}", "XT")
+      refute has_element?(view, "#alert-row-#{by_stop.id} [data-role='alert-needs-attention']")
+      refute has_element?(view, "[data-role='alert-target-notes']")
+
+      view |> element("#alerts-active-toggle") |> render_click()
+      assert has_element?(view, "#alerts-active-more[open]")
+
+      view
+      |> form("#alerts-active-schedule", active_schedule: %{version_id: other.id})
+      |> render_submit()
+
+      assert has_element?(view, "#alerts-active-name", "Spring service")
+      refute has_element?(view, "#alerts-active-more[open]")
+      assert has_element?(view, "#alert-row-#{by_route.id}", "LK")
+      refute has_element?(view, "#alert-row-#{by_route.id}", "XT")
+
+      # The stop is only in the previous schedule, so the alert that names it needs
+      # attention and the row spells out the feed ID it kept.
+      assert has_element?(
+               view,
+               "#alert-row-#{by_stop.id} [data-role='alert-needs-attention']",
+               "Needs attention"
+             )
+
+      assert has_element?(
+               view,
+               "#alert-row-#{by_stop.id} [data-role='alert-target-notes']",
+               "Stop s_1 is not in the active schedule"
+             )
+
+      assert has_element?(
+               view,
+               "#alerts-active-schedule-version option[selected][value='#{other.id}']"
+             )
+
+      assert_push_event(view, "focus_scoped_target", %{id: "alerts-active-name"})
+
+      # One selection change moved the pointer once, and the accepted snapshot is the
+      # row it was before.
+      assert {:ok, %{version: %{id: other_id}, token: after_token}} =
+               Versions.active_schedule(context.audit)
+
+      assert other_id == other.id
+      assert after_token.revision == before_token.revision + 1
+      assert Repo.get!(Publication, accepted.id) == accepted
+    end
+
+    test "a change committed elsewhere reloads the rows, counts and labels together", context do
+      other = second_schedule(context, "Spring service")
+      stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+      {:ok, by_stop} = save(context.audit, stop_closed("s_1"), now_timing(context))
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      refute has_element?(view, "[data-role='alert-needs-attention']")
+      refute has_element?(view, "#alerts-active-more[open]")
+
+      # An editor who is choosing keeps the form open through someone else's change.
+      view |> element("#alerts-active-toggle") |> render_click()
+      assert has_element?(view, "#alerts-active-more[open]")
+
+      {:ok, _active} = switch_schedule(context, other)
+
+      assert has_element?(view, "#alerts-active-more[open]")
+      assert has_element?(view, "#alerts-active-name", "Spring service")
+      assert has_element?(view, "#alert-row-#{by_stop.id} [data-role='alert-needs-attention']")
+      assert has_element?(view, "#alerts-tab-current[data-count='1']")
+    end
+
+    test "a notification that is not newer than the page's token reloads nothing", context do
+      other = second_schedule(context, "Spring service")
+      {:ok, view, _html} = live(context.conn, alerts_path())
+      {:ok, %{token: held}} = Versions.active_schedule(context.audit)
+
+      # Move the selection without the broadcast the commands send, so only a
+      # reload can show it.
+      move_without_notice(context, other, held.revision + 1)
+
+      send(view.pid, {:active_schedule_changed, held})
+      assert has_element?(view, "#alerts-active-name", context.version.name)
+
+      send(
+        view.pid,
+        {:active_schedule_changed, %{version_id: other.id, revision: held.revision + 1}}
+      )
+
+      assert has_element?(view, "#alerts-active-name", "Spring service")
+    end
+
+    test "a submit built on a change the page missed is refused and keeps the choice",
+         context do
+      chosen = second_schedule(context, "Spring service")
+      current = second_schedule(context, "Summer service")
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      # The broadcast is only a hint: the commands read the database.
+      move_without_notice(context, current, 99)
+
+      view
+      |> form("#alerts-active-schedule", active_schedule: %{version_id: chosen.id})
+      |> render_submit()
+
+      assert has_element?(view, "#alerts-active-schedule-version[aria-invalid='true']")
+
+      assert has_element?(view, "#alerts-active-more[open]")
+
+      assert has_element?(
+               view,
+               "#alerts-active-schedule-version-error",
+               "changed since you opened"
+             )
+
+      assert has_element?(view, "#alerts-active-name", "Summer service")
+
+      assert has_element?(
+               view,
+               "#alerts-active-schedule-version option[selected][value='#{chosen.id}']"
+             )
+
+      assert_push_event(view, "focus_form_error", %{form_id: "alerts-active-schedule"})
+
+      assert {:ok, %{version: %{id: current_id}, token: %{revision: 99}}} =
+               Versions.active_schedule(context.audit)
+
+      assert current_id == current.id
+    end
+
+    test "forged selections are refused and leave the selection alone", context do
+      {:ok, %{token: before_token}} = Versions.active_schedule(context.audit)
+
+      foreign_org = organization_fixture()
+      foreign = gtfs_version_fixture(foreign_org.id, %{name: "Foreign schedule"})
+
+      {:ok, staging} =
+        Versions.create_staging_gtfs_version(context.organization.id, %{name: "Staging"})
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      for forged <- [foreign.id, staging.id, Ecto.UUID.generate(), "not-a-uuid", ""] do
+        render_hook(view, "set_active_schedule", %{"active_schedule" => %{"version_id" => forged}})
+
+        assert has_element?(view, "#alerts-active-schedule-version-error"),
+               "expected a refusal for #{inspect(forged)}"
+
+        assert has_element?(view, "#alerts-active-name", context.version.name)
+        assert {:ok, %{token: ^before_token}} = Versions.active_schedule(context.audit)
+      end
+
+      render_hook(view, "set_active_schedule", %{"unexpected" => "shape"})
+
+      assert has_element?(view, "#alerts-active-schedule-version-error")
+      assert {:ok, %{token: ^before_token}} = Versions.active_schedule(context.audit)
+    end
+
+    test "a choice by an editor whose role was revoked is refused and the page is unavailable",
+         context do
+      other = second_schedule(context, "Spring service")
+      {:ok, %{token: before_token}} = Versions.active_schedule(context.audit)
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      Repo.update_all(
+        from(m in GtfsPlanner.Accounts.UserOrgMembership, where: m.user_id == ^context.actor.id),
+        set: [roles: []]
+      )
+
+      render_hook(view, "set_active_schedule", %{"active_schedule" => %{"version_id" => other.id}})
+
+      assert has_element?(view, "#alerts-unavailable")
+      refute has_element?(view, "#alerts-active-schedule")
+      refute has_element?(view, "#alerts-list")
+      refute has_element?(view, "#create-alert")
+
+      # The refused choice moved nothing.
+      organization = Repo.get!(Organization, context.organization.id)
+      assert organization.active_gtfs_version_id == before_token.version_id
+      assert organization.active_gtfs_version_revision == before_token.revision
+    end
+
+    test "an organization with no active schedule can choose one from the published ones",
+         context do
+      other = second_schedule(context, "Spring service")
+      clear_pointer(context)
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#alerts-no-active", "No active schedule")
+
+      assert has_element?(
+               view,
+               "#alerts-active-schedule-version option[value='']",
+               "Choose a schedule"
+             )
+
+      refute has_element?(view, "#alerts-list")
+      refute has_element?(view, "#create-alert")
+      refute has_element?(view, "#create-alert-first-use")
+
+      view
+      |> form("#alerts-active-schedule", active_schedule: %{version_id: other.id})
+      |> render_submit()
+
+      refute has_element?(view, "#alerts-no-active")
+      assert has_element?(view, "#alerts-active-name", "Spring service")
+      assert has_element?(view, "#create-alert-first-use")
+      assert {:ok, %{version: %{id: chosen}}} = Versions.active_schedule(context.audit)
+      assert chosen == other.id
+    end
+
+    test "an organization with no published schedule offers no selection and no create" do
+      organization = organization_fixture()
+      actor = editor_fixture(organization)
+
+      delete_versions!(
+        from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^organization.id)
+      )
+
+      {:ok, _staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      conn = log_in_user(build_conn(), actor, organization: organization)
+      {:ok, view, _html} = live(conn, alerts_path())
+
+      assert has_element?(view, "#alerts-no-active", "no published schedule")
+      refute has_element?(view, "#alerts-active-schedule")
+      refute has_element?(view, "#alerts-list")
+      refute has_element?(view, "#create-alert")
+      refute has_element?(view, "#create-alert-first-use")
+
+      # With no published schedule there is nothing to submit against.
+      render_hook(view, "set_active_schedule", %{
+        "active_schedule" => %{"version_id" => Ecto.UUID.generate()}
+      })
+
+      assert has_element?(view, "#alerts-no-active")
+    end
+  end
+
   describe "empty states" do
     setup :editor_conn
 
@@ -469,6 +767,63 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
              )
 
     {:ok, saved}
+  end
+
+  # A second published schedule in the organization, with the agency zone the
+  # fixture's schedule has so an alert written against either reads the same day.
+  defp second_schedule(context, name) do
+    other = gtfs_version_fixture(context.organization.id, %{name: name})
+    agency_fixture(context.organization.id, other.id, %{agency_timezone: "America/Los_Angeles"})
+    other
+  end
+
+  defp switch_schedule(context, version) do
+    scope = %{actor_id: context.actor.id, organization_id: context.organization.id}
+    {:ok, %{token: token}} = Versions.active_schedule(scope)
+    Versions.set_active_schedule(scope, version.id, token)
+  end
+
+  # A selection the page was not told about: no broadcast leaves this update.
+  defp move_without_notice(context, version, revision) do
+    Repo.update_all(
+      from(o in Organization, where: o.id == ^context.organization.id),
+      set: [active_gtfs_version_id: version.id, active_gtfs_version_revision: revision]
+    )
+  end
+
+  # The legacy state a published schedule can sit in with no pointer.
+  defp clear_pointer(context) do
+    Repo.update_all(
+      from(o in Organization, where: o.id == ^context.organization.id),
+      set: [active_gtfs_version_id: nil]
+    )
+  end
+
+  defp stop_closed(stop_id) do
+    %{
+      "urgency" => "now",
+      "situation" => "stop_closed",
+      "cause" => "construction",
+      "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [stop_id]},
+      "message" => message()
+    }
+  end
+
+  # The public intent an accepted alert holds, written directly because only the
+  # row's survival matters here, not how it was produced.
+  defp accepted_snapshot!(alert, actor) do
+    Repo.insert!(%Publication{
+      organization_id: alert.organization_id,
+      alert_id: alert.id,
+      desired_revision: alert.revision,
+      desired_snapshot: %{"accepted_revision" => alert.revision},
+      confirmed_revision: alert.revision,
+      confirmed_snapshot: %{"accepted_revision" => alert.revision},
+      requested_by_id: actor.id,
+      requested_at: DateTime.utc_now(),
+      last_published_at: DateTime.utc_now(),
+      withdrawal: :none
+    })
   end
 
   defp message do
