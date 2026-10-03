@@ -617,7 +617,8 @@ defmodule GtfsPlanner.Organizations do
   defp insert_organization_with_default_version(attrs) do
     with {:ok, org} <- insert_organization(attrs),
          {:ok, _version} <- Versions.create_default_version(org.id) do
-      org
+      # The default version became the active schedule, which the inserted struct lacks.
+      Repo.get!(Organization, org.id)
     else
       {:error, changeset} -> Repo.rollback(changeset)
     end

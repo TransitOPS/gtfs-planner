@@ -550,7 +550,7 @@ defmodule GtfsPlanner.Gtfs.RouteLifecycleConcurrencyTest do
         where: m.organization_id == ^fixture.organization.id or m.user_id == ^fixture.actor.id
     )
 
-    Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^fixture.organization.id)
+    delete_versions!(from v in GtfsVersion, where: v.organization_id == ^fixture.organization.id)
     Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
     Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
   end

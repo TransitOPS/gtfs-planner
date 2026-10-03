@@ -15,6 +15,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
   use ExUnit.Case
 
   import Ecto.Query
+  import GtfsPlanner.OrganizationsFixtures, only: [delete_versions!: 1]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.AccountsFixtures
@@ -184,7 +185,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.ScopeLockTest do
 
       Repo.delete_all(from(z in FareZone, where: z.organization_id == ^organization_id))
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
       Repo.delete!(fixture.actor)
 

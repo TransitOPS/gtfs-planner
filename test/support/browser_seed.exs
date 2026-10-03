@@ -2961,7 +2961,7 @@ case Accounts.register_first_admin(%{
         alias: "account-no-version"
       })
 
-    Repo.delete_all(
+    GtfsPlanner.OrganizationsFixtures.delete_versions!(
       from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^no_version_org.id)
     )
 
@@ -12395,7 +12395,7 @@ case Accounts.register_first_admin(%{
     # one the editor resolves. Deleting it leaves the fixture version seeded
     # below as this organization's only published version, so the editor and its
     # questions read the alert-authoring schedule.
-    Repo.delete_all(
+    GtfsPlanner.OrganizationsFixtures.delete_versions!(
       from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^alerts_org.id)
     )
 

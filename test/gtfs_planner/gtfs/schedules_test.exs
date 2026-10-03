@@ -1703,7 +1703,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
   defp cleanup_committed_lock_scope(scope) do
     unboxed(fn ->
       Repo.delete_all(from(r in Route, where: r.organization_id == ^scope.organization.id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization.id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^scope.organization.id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization.id))
       :ok
     end)
@@ -1975,7 +1975,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
       Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
       Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id == ^scope.actor.id))
     end)

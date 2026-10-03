@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangeApplyTest do
   use GtfsPlanner.DataCase
 
   import Ecto.Query
+  import GtfsPlanner.OrganizationsFixtures, only: [delete_versions!: 1]
   import GtfsPlanner.ScheduleEditingFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -529,7 +530,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangeApplyTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 

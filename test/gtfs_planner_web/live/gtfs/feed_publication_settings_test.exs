@@ -209,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationSettingsTest do
     test "works with no GTFS version at all", context do
       # A fresh organization is created with a published version, so the
       # versionless state this case is about is built by removing it.
-      Repo.delete_all(
+      delete_versions!(
         from(v in Versions.GtfsVersion, where: v.organization_id == ^context.organization.id)
       )
 

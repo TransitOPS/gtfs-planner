@@ -574,7 +574,7 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
           where: m.organization_id == ^fixture.organization.id or m.user_id == ^fixture.actor.id
       )
 
-      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      delete_versions!(from v in GtfsVersion, where: v.id == ^fixture.version.id)
       Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
       :ok

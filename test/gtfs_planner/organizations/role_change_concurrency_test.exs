@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Organizations.RoleChangeConcurrencyTest do
   defp cleanup(scope) do
     user_ids = Enum.map(scope.users, & &1.id)
     Repo.delete_all(from(m in UserOrgMembership, where: m.id in ^scope.membership_ids))
-    Repo.delete_all(from(v in GtfsVersion, where: v.id in ^scope.version_ids))
+    delete_versions!(from(v in GtfsVersion, where: v.id in ^scope.version_ids))
     Repo.delete_all(from(u in User, where: u.id in ^user_ids))
     Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization.id))
   end

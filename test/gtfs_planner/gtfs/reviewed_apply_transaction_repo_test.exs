@@ -383,7 +383,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
       from(membership in UserOrgMembership, where: membership.organization_id == ^organization_id)
     )
 
-    Repo.delete_all(
+    delete_versions!(
       from(version in GtfsVersion, where: version.organization_id == ^organization_id)
     )
 

@@ -9,12 +9,18 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.{Failure, Result, Run}
   alias GtfsPlanner.Gtfs.ImportRuns
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
+
+  import GtfsPlanner.ConcurrencyHelpers,
+    only: [await_blocker: 3, backend_pid: 0, delete_committed_scope!: 1, unboxed: 1]
 
   import GtfsPlanner.OrganizationsFixtures
 
@@ -48,6 +54,43 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
 
   defp make_failure(opts \\ []) do
     Failure.from_error(:unknown, opts)
+  end
+
+  defp publishable_result do
+    %Result{
+      counts: %{routes: 1},
+      unrecognized_files: [],
+      topic: "import:selection",
+      archive_warnings: [],
+      extensions: :not_present
+    }
+  end
+
+  defp claimed_run(org) do
+    {:ok, %{run: run}} = ImportRuns.create_pending_target(org.id, actor(org), %{name: "Feed"})
+    {:ok, _run, _version, token} = ImportRuns.claim_import(org.id, run.id, run.lease_token)
+    {run, token}
+  end
+
+  defp selection(org) do
+    org = Repo.get!(Organization, org.id)
+    {org.active_gtfs_version_id, org.active_gtfs_version_revision}
+  end
+
+  defp bare_organization do
+    {:ok, org} =
+      %Organization{}
+      |> Organization.changeset(%{
+        alias: "bare-#{System.unique_integer([:positive])}",
+        name: "Bare"
+      })
+      |> Repo.insert()
+
+    org
+  end
+
+  defp subscribe(org) do
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Versions.active_schedule_topic(org.id))
   end
 
   describe "create_pending_target/3" do
@@ -669,6 +712,154 @@ defmodule GtfsPlanner.Gtfs.ImportRunsTest do
         "cleaning" ->
           assert final_version.publication_status == "importing"
       end
+    end
+  end
+
+  describe "publication and the active schedule" do
+    test "the first imported version becomes the active schedule when its run publishes" do
+      org = bare_organization()
+      subscribe(org)
+
+      {run, token} = claimed_run(org)
+      assert selection(org) == {nil, 0}
+
+      assert {:ok, _run, version} =
+               ImportRuns.publish_import(org.id, run.id, token, publishable_result())
+
+      assert selection(org) == {version.id, 1}
+      version_id = version.id
+      assert_receive {:active_schedule_changed, %{version_id: ^version_id, revision: 1}}
+    end
+
+    test "a later import leaves the active schedule and announces nothing" do
+      org = organization_fixture()
+      before_import = selection(org)
+      subscribe(org)
+
+      {run, token} = claimed_run(org)
+
+      assert {:ok, _run, _version} =
+               ImportRuns.publish_import(org.id, run.id, token, publishable_result())
+
+      assert selection(org) == before_import
+      refute_receive {:active_schedule_changed, _token}, 50
+    end
+
+    test "a failed or interrupted import selects nothing" do
+      org = bare_organization()
+
+      {failed, failed_token} = claimed_run(org)
+
+      {:ok, _run, _version} =
+        ImportRuns.fail_import(
+          org.id,
+          failed.id,
+          failed_token,
+          make_failure(phase: :phase_2, outcome: :failed)
+        )
+
+      {:ok, %{run: pending}} =
+        ImportRuns.create_pending_target(org.id, actor(org), %{name: "Next"})
+
+      set_run_lease_expiry(pending, expired_past())
+      ImportRuns.reconcile_expired(org.id)
+
+      assert selection(org) == {nil, 0}
+    end
+
+    test "retrying a failed publication selects the first usable version" do
+      org = bare_organization()
+      subscribe(org)
+      {run, token} = claimed_run(org)
+
+      {:ok, _run} =
+        ImportRuns.record_publication_failure(
+          org.id,
+          run.id,
+          token,
+          publishable_result(),
+          :database_error
+        )
+
+      assert selection(org) == {nil, 0}
+
+      assert {:ok, _run, version} = ImportRuns.retry_publication(org.id, run.id, actor(org))
+
+      assert selection(org) == {version.id, 1}
+      version_id = version.id
+      assert_receive {:active_schedule_changed, %{version_id: ^version_id, revision: 1}}
+    end
+
+    test "an actor revoked before the publish leaves the version unpublished and unselected" do
+      org = bare_organization()
+      {run, token} = claimed_run(org)
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: actor(org).id))
+
+      assert {:error, :forbidden} =
+               ImportRuns.publish_import(org.id, run.id, token, publishable_result())
+
+      assert Repo.get!(GtfsVersion, run.gtfs_version_id).publication_status == "importing"
+      assert selection(org) == {nil, 0}
+    end
+
+    test "publishing takes the organization before the actor's membership, so a membership command cannot deadlock it" do
+      %{org: org, run: run, token: token, admin: admin} =
+        unboxed(fn ->
+          org = bare_organization()
+          {run, token} = claimed_run(org)
+          admin = user_fixture()
+          organization_membership_fixture(admin, org, ["pathways_studio_admin"])
+          %{org: org, run: run, token: token, admin: admin}
+        end)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([org.id]) end) end)
+      parent = self()
+
+      # A membership command holds the organization and then needs the actor's row.
+      command =
+        Task.async(fn ->
+          unboxed(fn ->
+            Repo.transaction(fn ->
+              Authorization.lock_member_admin!(admin, org.id)
+              send(parent, {:holding, backend_pid()})
+
+              receive do
+                :release -> :ok
+              after
+                10_000 -> raise "member update was not released"
+              end
+
+              Repo.update_all(
+                from(m in UserOrgMembership,
+                  where: m.user_id == ^run.actor_id and m.organization_id == ^org.id
+                ),
+                set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+              )
+
+              :held
+            end)
+          end)
+        end)
+
+      assert_receive {:holding, command_backend}, 10_000
+
+      publish =
+        Task.async(fn ->
+          unboxed(fn ->
+            send(parent, {:publishing, backend_pid()})
+            ImportRuns.publish_import(org.id, run.id, token, publishable_result())
+          end)
+        end)
+
+      assert_receive {:publishing, publish_backend}, 10_000
+      deadline = System.monotonic_time(:millisecond) + 10_000
+      assert :ok == unboxed(fn -> await_blocker(publish_backend, command_backend, deadline) end)
+
+      send(command.pid, :release)
+
+      assert {:ok, :held} = Task.await(command, 15_000)
+      assert {:error, :forbidden} = Task.await(publish, 15_000)
+      assert unboxed(fn -> selection(org) end) == {nil, 0}
     end
   end
 

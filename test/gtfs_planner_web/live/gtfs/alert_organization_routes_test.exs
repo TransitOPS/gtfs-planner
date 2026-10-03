@@ -48,7 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       # versionless organization this suite is about must be built explicitly:
       # removing it is what makes AssignOrganization assign a nil
       # `current_gtfs_version`, which is the state the contract names.
-      Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^organization.id)
+      delete_versions!(from v in GtfsVersion, where: v.organization_id == ^organization.id)
 
       %{
         organization: organization,

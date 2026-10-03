@@ -586,7 +586,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.ConcurrencyTest do
       Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
 
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
