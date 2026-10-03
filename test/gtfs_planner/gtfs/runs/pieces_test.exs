@@ -61,7 +61,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       block = block([incoming, outgoing], context)
 
       %{pieces: pieces, boundaries: [boundary]} =
-        Pieces.derive([block], %{incoming.id => "A", outgoing.id => "B"})
+        Pieces.derive([block], %{incoming.trip_id => "A", outgoing.trip_id => "B"})
 
       assert [a, b] = pieces
 
@@ -73,7 +73,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       assert boundary.at_secs == 7 * 3600 + 54 * 60
       assert boundary.stop == @market
       assert {boundary.from_run, boundary.to_run} == {"A", "B"}
-      assert {boundary.from_trip_id, boundary.to_trip_id} == {incoming.id, outgoing.id}
+      assert {boundary.from_trip_id, boundary.to_trip_id} == {incoming.trip_id, outgoing.trip_id}
 
       # The drive is in the incoming piece's gaps: the vehicle is at Valley
       # College when 6104 ends and can only be at Market Square at 07:54 if
@@ -94,7 +94,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       block = block([incoming, outgoing], context)
 
       %{pieces: [a, b], boundaries: [boundary]} =
-        Pieces.derive([block], %{incoming.id => "A", outgoing.id => "B"})
+        Pieces.derive([block], %{incoming.trip_id => "A", outgoing.trip_id => "B"})
 
       assert boundary.side == :origin
       assert boundary.at_secs == 7 * 3600 + 40 * 60
@@ -116,7 +116,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       block = block([first, second], context)
 
       %{pieces: pieces, boundaries: [boundary]} =
-        Pieces.derive([block], %{first.id => "A", second.id => "B"})
+        Pieces.derive([block], %{first.trip_id => "A", second.trip_id => "B"})
 
       assert boundary.side == :same
       assert boundary.at_relief?
@@ -136,7 +136,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       block = block([first, second], context(marked: []))
 
       %{pieces: [a, b], boundaries: [boundary]} =
-        Pieces.derive([block], %{first.id => "A", second.id => "B"})
+        Pieces.derive([block], %{first.trip_id => "A", second.trip_id => "B"})
 
       refute boundary.at_relief?
       assert boundary.side == nil
@@ -155,7 +155,9 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
 
       context = context(marked: ["MS"], entered: %{{{:stop, "VC"}, {:stop, "MS"}} => 20})
       block = block([first, second], context)
-      %{boundaries: [boundary]} = Pieces.derive([block], %{first.id => "A", second.id => "B"})
+
+      %{boundaries: [boundary]} =
+        Pieces.derive([block], %{first.trip_id => "A", second.trip_id => "B"})
 
       assert %{feasible?: false} = Enum.find(block.movements.gaps, &(&1.index == 0))
       refute boundary.at_relief?
@@ -172,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       block = block([first, second], context(garage: nil))
 
       %{pieces: [piece], boundaries: []} =
-        Pieces.derive([block], %{first.id => "A", second.id => "A"})
+        Pieces.derive([block], %{first.trip_id => "A", second.trip_id => "A"})
 
       assert piece.start_kind == :block_start
       assert piece.start_secs == 5 * 3600
@@ -190,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       first = trip("a", "101", 6 * 3600, 7 * 3600, @bay_a, @bay_a)
 
       block = block([first], context())
-      %{pieces: [piece]} = Pieces.derive([block], %{first.id => "A"})
+      %{pieces: [piece]} = Pieces.derive([block], %{first.trip_id => "A"})
 
       assert piece.start_kind == :block_start
       assert piece.start_secs == block.movements.pull_out.start_secs
@@ -211,7 +213,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
 
       context = context(pull_out_buffer_minutes: 20)
       block = block([first], context)
-      %{pieces: [piece]} = Pieces.derive([block], %{first.id => "A"})
+      %{pieces: [piece]} = Pieces.derive([block], %{first.trip_id => "A"})
 
       # 00:05 departure behind a 20-minute pull-out starts at −900, which is
       # fifteen minutes before the service day opens, and is carried through
@@ -225,7 +227,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       last = trip("b", "101", 24 * 3600 + 50 * 60, 25 * 3600 + 10 * 60, @bay_a, @bay_a)
 
       block = block([first, last], context(garage: nil))
-      %{pieces: [piece]} = Pieces.derive([block], %{first.id => "A", last.id => "A"})
+      %{pieces: [piece]} = Pieces.derive([block], %{first.trip_id => "A", last.trip_id => "A"})
 
       # 25:10 is 91,000 seconds of service-day arithmetic only if the day were
       # measured from one; it is 25 h 10 m, so 90,600, and it is kept as it is
@@ -247,7 +249,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       [a1, b2, a3] = trips
 
       %{pieces: pieces, boundaries: boundaries} =
-        Pieces.derive([block], %{a1.id => "A", b2.id => "B", a3.id => "A"})
+        Pieces.derive([block], %{a1.trip_id => "A", b2.trip_id => "B", a3.trip_id => "A"})
 
       assert Enum.map(pieces, & &1.run_id) == ["A", "B", "A"]
       assert length(boundaries) == 2
@@ -268,7 +270,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       [a1, b2, a3] = trips
 
       %{pieces: [first, middle, last]} =
-        Pieces.derive([block], %{a1.id => "A", b2.id => "B", a3.id => "A"})
+        Pieces.derive([block], %{a1.trip_id => "A", b2.trip_id => "B", a3.trip_id => "A"})
 
       # A, B and C: the layover at the marked station is a `:same` window, so the
       # incoming piece of each change holds the gap and the last piece holds none.
@@ -290,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       [a1, _b2, c3] = trips
 
       %{pieces: pieces, uncovered: uncovered, boundaries: boundaries} =
-        Pieces.derive([block], %{a1.id => "A", c3.id => "A"})
+        Pieces.derive([block], %{a1.trip_id => "A", c3.trip_id => "A"})
 
       # The middle trip is unassigned, so it is uncovered work and is not part of
       # any run: it comes back in its own list, not among the pieces.
@@ -315,7 +317,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       [a1, b2, c3] = trips
 
       %{uncovered: [segment]} =
-        Pieces.derive([block], %{a1.id => "A", b2.id => nil, c3.id => nil})
+        Pieces.derive([block], %{a1.trip_id => "A", b2.trip_id => nil, c3.trip_id => nil})
 
       assert Enum.map(segment.trips, & &1.trip_id) == ["b", "c"]
       assert [%{index: 1}] = segment.gaps
@@ -351,10 +353,10 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
 
       %{pieces: pieces, uncovered: uncovered, boundaries: boundaries} =
         Pieces.derive([block], %{
-          first.id => "A",
-          frequency.id => "B",
-          unplottable.id => "B",
-          last.id => "A"
+          first.trip_id => "A",
+          frequency.trip_id => "B",
+          unplottable.trip_id => "B",
+          last.trip_id => "A"
         })
 
       # Neither row is a sequence trip, so neither is in a piece, and the two
@@ -371,7 +373,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
 
       block = block([frequency, unplottable], context(marked: ["RIV"]))
 
-      assert Pieces.derive([block], %{frequency.id => "A", unplottable.id => "A"}) ==
+      assert Pieces.derive([block], %{frequency.trip_id => "A", unplottable.trip_id => "A"}) ==
                %{pieces: [], uncovered: [], boundaries: []}
     end
   end
@@ -397,7 +399,12 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       ]
 
       %{pieces: pieces, boundaries: boundaries} =
-        Pieces.derive(blocks, %{a1.id => "A", b2.id => "B", c3.id => "A", d4.id => "B"})
+        Pieces.derive(blocks, %{
+          a1.trip_id => "A",
+          b2.trip_id => "B",
+          c3.trip_id => "A",
+          d4.trip_id => "B"
+        })
 
       assert Enum.map(pieces, & &1.block_id) == ["101", "101", "102", "102"]
       assert Enum.map(boundaries, & &1.block_id) == ["101", "102"]

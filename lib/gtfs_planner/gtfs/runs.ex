@@ -67,7 +67,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   @type runs_day :: %{
           day: Blocking.day(),
           crew: crew(),
-          assignments: %{Ecto.UUID.t() => String.t()},
+          assignments: %{String.t() => String.t()},
           derived: Day.derived(),
           orphans: %{count: non_neg_integer()},
           relief_ready?: boolean(),
@@ -138,7 +138,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   defp build_runs_day(organization_id, gtfs_version_id, day) do
     key = day.day_type.key
     blocks = block_inputs(day)
-    sequence_ids = MapSet.new(Enum.flat_map(blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
+    sequence_ids = sequence_trip_ids(blocks)
     rows = day_type_rows(organization_id, gtfs_version_id, key)
     version_rows = version_rows(organization_id, gtfs_version_id)
 
@@ -168,6 +168,14 @@ defmodule GtfsPlanner.Gtfs.Runs do
           crew: crew
         })
     }
+  end
+
+  # The GTFS trip IDs of the day's sequence trips: the identity an assignment
+  # row stores. The day is loaded inside one organization and version, so these
+  # IDs are unique among its trips, and a row of another scope holding the same
+  # ID is excluded by its own owner keys rather than by anything here.
+  defp sequence_trip_ids(blocks) do
+    MapSet.new(Enum.flat_map(blocks, &Enum.map(&1.trips, fn trip -> trip.trip_id end)))
   end
 
   # The day's own inputs, in the shape `Runs.Day.derive/4` and `Runs.Cutter` take.
@@ -289,8 +297,9 @@ defmodule GtfsPlanner.Gtfs.Runs do
   @doc """
   Writes manual run moves, checking every trip's expected run and returning an undo.
 
-  A move is `%{trip_id:, from:, to:}` where `to` is a run ID, `nil` to unassign,
-  or `:new` to create a run. Every `:new` in one call resolves to the **same**
+  A move is `%{trip_id:, from:, to:}` where `trip_id` is the trip's GTFS
+  `trip_id` in the audited organization and version, `to` is a run ID, `nil` to
+  unassign, or `:new` to create a run. Every `:new` in one call resolves to the **same**
   new run: an operator dragging three trips onto "new run" means one run, not
   three, and three calls to `next_run_id/1` would give three.
 
@@ -314,7 +323,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
              :forbidden
              | :not_found
              | :stale_moves
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | {:invalid_run_id, term()}}
   def apply_moves(%AuditContext{} = audit, day_type_key, moves) do
     Repo.transaction(fn ->
@@ -336,10 +345,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   defp write_moves(organization_id, gtfs_version_id, day, moves) do
     key = day.day_type.key
-
-    sequence_ids =
-      MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
-
+    sequence_ids = sequence_trip_ids(day.blocks)
     current = current_runs(organization_id, gtfs_version_id, key, moves)
 
     with :ok <- check_trips(moves, sequence_ids),
@@ -674,13 +680,10 @@ defmodule GtfsPlanner.Gtfs.Runs do
   end
 
   defp delete_orphans(organization_id, gtfs_version_id, day) do
-    sequence_ids =
-      MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
-
     case orphan_row_ids(
            day_type_rows(organization_id, gtfs_version_id, day.day_type.key),
            version_rows(organization_id, gtfs_version_id),
-           sequence_ids,
+           sequence_trip_ids(day.blocks),
            day.day_types
          ) do
       # A count, not `:ok`: the `@spec` answers `{:ok, non_neg_integer()}`, and a
@@ -791,7 +794,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
              :forbidden
              | :not_found
              | :stale_plan
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | :write_failed}
   def apply_run_plan(%AuditContext{} = audit, plan) do
     Repo.transaction(fn ->
@@ -815,10 +818,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
     runs_day = build_runs_day(organization_id, gtfs_version_id, day)
 
     if runs_day.fingerprint == plan.fingerprint do
-      sequence_ids =
-        MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
-
-      case check_trips(plan.moves, sequence_ids) do
+      case check_trips(plan.moves, sequence_trip_ids(day.blocks)) do
         # The bare reason is rolled back, not the `{:error, reason}` tuple:
         # rolling that back hands the caller `{:error, {:error, reason}}`.
         {:error, reason} -> Repo.rollback(reason)
@@ -903,12 +903,11 @@ defmodule GtfsPlanner.Gtfs.Runs do
   because a run is scoped to its day type — the same ID on a Saturday is a
   different run from the weekday one, and the pair is the run's identity.
 
-  **The trips are named by UUID, not by GTFS trip ID.** `trip_runs.trip_id` is
-  the `belongs_to :trip` key, so it holds `Trip.id`. A caller holding GTFS
-  strings — the page's own `trip_id` — has to resolve them first; passing them
-  straight here is a cast error rather than a wrong answer, so the mistake
-  cannot be silent. The Blocks preview holds `Trip` structs, so it already has
-  what this wants.
+  **The trips are named by GTFS trip ID**, the value `trip_runs.trip_id` stores,
+  and are matched inside the given organization and version only: a sibling
+  version or another organization holding the same trip ID neither contributes
+  to the count nor is refused. A caller holding `Trip` rows passes their
+  `trip_id`, not their `id`.
 
   The answer is a plain number, not `{:ok, n}`: there is no failure to report.
   An empty list, and a trip held by no run, both count 0, and another
@@ -924,7 +923,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   It opens no transaction. It is a single statement, so it is already atomic,
   and a transaction would add nothing but a savepoint.
   """
-  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: non_neg_integer()
+  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: non_neg_integer()
   def count_runs_for_trips(organization_id, gtfs_version_id, trip_ids) do
     if trip_ids == [] do
       0

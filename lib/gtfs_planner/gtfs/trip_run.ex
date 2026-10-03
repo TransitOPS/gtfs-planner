@@ -6,10 +6,15 @@ defmodule GtfsPlanner.Gtfs.TripRun do
   Pieces, work time and run types are derived from these rows and the day's blocks,
   so a run exists only while its rows do.
 
-  Rows are keyed by `(organization_id, gtfs_version_id, day_type_key, trip_id)`.
-  `day_type_key`, `trip_id`, `organization_id` and `gtfs_version_id` are set on the
-  struct by the caller and are never cast from submitted parameters; `run_id` is the
-  only cast field, because it is the only one a user can name.
+  Rows are keyed by `(organization_id, gtfs_version_id, day_type_key, trip_id)`,
+  where `trip_id` is the trip's GTFS `trip_id` within that organization and
+  version, not the `trips.id` row UUID. A sibling version or another organization
+  may hold the same trip ID, so every reader and writer scopes by both owner keys;
+  the composite foreign key to `trips` keeps an assignment attached to its own
+  scope's trip and follows a trip ID rename. `day_type_key`, `trip_id`,
+  `organization_id` and `gtfs_version_id` are set on the struct by the caller and
+  are never cast from submitted parameters; `run_id` is the only cast field,
+  because it is the only one a user can name.
   """
 
   use Ecto.Schema
@@ -38,8 +43,7 @@ defmodule GtfsPlanner.Gtfs.TripRun do
   schema "trip_runs" do
     field :day_type_key, :string
     field :run_id, :string
-
-    belongs_to :trip, GtfsPlanner.Gtfs.Trip
+    field :trip_id, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
       foreign_key: :organization_id
@@ -53,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.TripRun do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
-          trip_id: Ecto.UUID.t(),
+          trip_id: String.t(),
           day_type_key: String.t(),
           run_id: String.t(),
           inserted_at: DateTime.t(),

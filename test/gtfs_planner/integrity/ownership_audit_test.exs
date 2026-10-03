@@ -71,7 +71,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     route = route_fixture(org.id, version.id)
     route_pattern_fixture(org.id, version.id, %{route_id: route.route_id})
     trip = trip_fixture(org.id, version.id, route.route_id)
-    insert_trip_run!(org.id, version.id, trip.id, "R1")
+    insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
     insert_roster_day!(insert_roster_line!(org.id, version.id, insert_operator!(org.id).id))
 
     report = OwnershipAudit.run()
@@ -257,22 +257,31 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
              relationship("route_patterns.label_pattern_id→route_patterns")
   end
 
-  test "trip assignments report version ownership and UUID trip scope independently" do
+  test "trip assignments report version ownership and scoped trip ID independently" do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     other_version = gtfs_version_fixture(org.id)
     foreign_org = organization_fixture()
     foreign_version = gtfs_version_fixture(foreign_org.id)
+    route = route_fixture(org.id, version.id)
     other_route = route_fixture(org.id, other_version.id)
     foreign_route = route_fixture(foreign_org.id, foreign_version.id)
     other_trip = trip_fixture(org.id, other_version.id, other_route.route_id)
     foreign_trip = trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id)
 
+    # A local trip whose ID also exists in a sibling version and another
+    # organization has a parent of its own, so the copies hide nothing and add
+    # nothing.
+    local_trip = trip_fixture(org.id, version.id, route.route_id, %{trip_id: "SHARED"})
+    trip_fixture(org.id, other_version.id, other_route.route_id, %{trip_id: "SHARED"})
+    trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id, %{trip_id: "SHARED"})
+    insert_trip_run!(org.id, version.id, local_trip.trip_id, "R0")
+
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
 
-    wrong_trip_id = insert_trip_run!(org.id, version.id, other_trip.id, "R1")
-    wrong_owner_id = insert_trip_run!(org.id, foreign_version.id, foreign_trip.id, "R2")
+    wrong_trip_id = insert_trip_run!(org.id, version.id, other_trip.trip_id, "R1")
+    wrong_owner_id = insert_trip_run!(org.id, foreign_version.id, foreign_trip.trip_id, "R2")
     before = fingerprint("trip_runs")
     report = OwnershipAudit.run()
 
@@ -282,7 +291,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     assert version_link.kind == :version_owner
     assert version_link.anomalies == 1
     assert version_link.samples == [wrong_owner_id]
-    assert trip_link.kind == :containment
+    assert trip_link.kind == :scoped_containment
     assert trip_link.anomalies == 2
     assert Enum.sort(trip_link.samples) == Enum.sort([wrong_trip_id, wrong_owner_id])
     assert fingerprint("trip_runs") == before

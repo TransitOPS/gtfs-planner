@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSuggestLiveTest do
     {:ok, day} = Gtfs.load_runs(w.organization.id, w.version.id, w.day_type_key)
     [segment | _rest] = day.derived.uncovered
 
-    moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
+    moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.trip_id, from: nil, to: :new} end)
 
     {:ok, _result} =
       Gtfs.apply_run_moves(w.audit, w.day_type_key, moves)

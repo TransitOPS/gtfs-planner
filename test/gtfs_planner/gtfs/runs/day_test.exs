@@ -93,7 +93,7 @@ defmodule GtfsPlanner.Gtfs.Runs.DayTest do
   defp solo_block(block_id, departure, arrival, run) do
     [trip] = trips(block_id, [{departure, arrival, @bay_a, @bay_a}])
     {block, [^trip]} = block(block_id, [trip], context())
-    {block, if(run, do: %{trip.id => run}, else: %{})}
+    {block, if(run, do: %{trip.trip_id => run}, else: %{})}
   end
 
   defp trips(block_id, specs) do
@@ -284,7 +284,7 @@ defmodule GtfsPlanner.Gtfs.Runs.DayTest do
         ])
 
       {block, [first, second]} = block("101", trips, context())
-      assignments = %{first.id => "R1", second.id => "R2"}
+      assignments = %{first.trip_id => "R1", second.trip_id => "R2"}
 
       day = Day.derive([block], assignments, context(), @crew)
 

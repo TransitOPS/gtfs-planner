@@ -80,7 +80,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
       Repo.insert!(%TripRun{
         organization_id: w.organization.id,
         gtfs_version_id: w.version.id,
-        trip_id: trip.id,
+        trip_id: trip.trip_id,
         day_type_key: w.day_type_key,
         run_id: "9001",
         inserted_at: now,

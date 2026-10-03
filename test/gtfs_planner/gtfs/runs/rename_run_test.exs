@@ -96,12 +96,12 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
                  "3006"
                )
 
-      moved = Enum.sort(world.blocks["101"] |> Enum.map(& &1.id))
+      moved = Enum.sort(world.blocks["101"] |> Enum.map(& &1.trip_id))
       assert rows_for(world, "3006") == moved
       assert rows_for(world, "1006") == []
 
       # The other run in the same day type did not move.
-      assert rows_for(world, "2006") == Enum.sort(world.blocks["102"] |> Enum.map(& &1.id))
+      assert rows_for(world, "2006") == Enum.sort(world.blocks["102"] |> Enum.map(& &1.trip_id))
 
       # The undo is one move per trip, from the new ID back to the old.
       assert undo == Enum.map(moved, &%{trip_id: &1, from: "3006", to: "1006"})
@@ -159,7 +159,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
       # Somebody else moves one of the renamed trips after the undo was handed out.
       {:ok, _} =
         Gtfs.apply_run_moves(world.audit, world.day_type_key, [
-          %{trip_id: moved_trip.id, from: "3006", to: "4006"}
+          %{trip_id: moved_trip.trip_id, from: "3006", to: "4006"}
         ])
 
       after_their_write = all_rows(world)
@@ -370,7 +370,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
           )
         )
 
-      assert saturday_rows == [{saturday.id, "1006"}]
+      assert saturday_rows == [{saturday.trip_id, "1006"}]
     end
 
     test "an ID used only on Saturday is free on Weekday", %{
@@ -401,7 +401,7 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
                  "5000"
                )
 
-      assert rows_for(world, "5000") == Enum.sort(world.blocks["102"] |> Enum.map(& &1.id))
+      assert rows_for(world, "5000") == Enum.sort(world.blocks["102"] |> Enum.map(& &1.trip_id))
       assert rows_for(world, "2006") == []
     end
   end

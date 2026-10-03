@@ -5318,7 +5318,8 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Writes manual run moves and returns an undo.
 
-  Each move is `%{trip_id:, from:, to:}`, where `to` is a run ID, `nil` to
+  Each move is `%{trip_id:, from:, to:}`, where `trip_id` is the trip's GTFS
+  `trip_id` in the audited organization and version, `to` is a run ID, `nil` to
   unassign the trip, or `:new` to create a run. Every `:new` in one call creates
   **one** run, returned as `new_run_id`.
 
@@ -5332,7 +5333,7 @@ defmodule GtfsPlanner.Gtfs do
   @spec apply_run_moves(
           AuditContext.t(),
           String.t(),
-          [%{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil | :new}]
+          [%{trip_id: String.t(), from: String.t() | nil, to: String.t() | nil | :new}]
         ) ::
           {:ok,
            %{
@@ -5344,7 +5345,7 @@ defmodule GtfsPlanner.Gtfs do
              :forbidden
              | :not_found
              | :stale_moves
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | {:invalid_run_id, term()}}
   def apply_run_moves(%AuditContext{} = audit, day_type_key, moves) do
     Runs.apply_moves(audit, day_type_key, moves)
@@ -5435,7 +5436,7 @@ defmodule GtfsPlanner.Gtfs do
              :forbidden
              | :not_found
              | :stale_plan
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | :write_failed}
   def apply_run_plan(%AuditContext{} = audit, plan) do
     Runs.apply_run_plan(audit, plan)
@@ -5473,10 +5474,11 @@ defmodule GtfsPlanner.Gtfs do
   list counts 0, as do trips held by no run, and rows belonging to another
   organization or version.
 
-  The trips are named by **UUID** (`Trip.id`), not by GTFS trip ID, because
-  that is what `trip_runs.trip_id` stores.
+  The trips are named by their GTFS `trip_id` (not `Trip.id`), which is what
+  `trip_runs.trip_id` stores, and are matched inside the given organization and
+  version only.
   """
-  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: non_neg_integer()
+  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: non_neg_integer()
   def count_runs_for_trips(organization_id, gtfs_version_id, trip_ids) do
     Runs.count_runs_for_trips(organization_id, gtfs_version_id, trip_ids)
   end

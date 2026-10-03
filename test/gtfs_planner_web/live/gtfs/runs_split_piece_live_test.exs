@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
     # In PIECE order, not sorted: "the trips after the first handover" is about
     # sequence, and sorting first would make `List.first` the alphabetically
     # first ID and quietly compare the wrong two trips.
-    {piece, Enum.map(piece.trips, & &1.id)}
+    {piece, Enum.map(piece.trips, & &1.trip_id)}
   end
 
   defp sorted(ids), do: Enum.sort(ids)
@@ -363,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
       {:ok, day} = Gtfs.load_runs(w.organization.id, w.version.id, w.day_type_key)
       run = Enum.find(day.derived.runs, &(&1.run_id == "2001"))
       assert [piece] = run.pieces
-      assert sorted(Enum.map(piece.trips, & &1.id)) == sorted(trips)
+      assert sorted(Enum.map(piece.trips, & &1.trip_id)) == sorted(trips)
     end
   end
 

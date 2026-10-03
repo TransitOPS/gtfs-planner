@@ -115,13 +115,13 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterPropertyTest do
 
   defp assert_every_trip_assigned_once(blocks, assignments, where) do
     for block <- blocks, trip <- block.trips do
-      assert Map.has_key?(assignments, trip.id),
+      assert Map.has_key?(assignments, trip.trip_id),
              "#{where} left trip #{trip.trip_id} of block #{block.block_id} unassigned"
     end
 
     # Nothing is assigned that is not a trip of this day, and no trip carries
     # two run IDs (a map makes that impossible, so this is about extra keys).
-    known = MapSet.new(for block <- blocks, trip <- block.trips, do: trip.id)
+    known = MapSet.new(for block <- blocks, trip <- block.trips, do: trip.trip_id)
 
     for trip_id <- Map.keys(assignments) do
       assert MapSet.member?(known, trip_id), "#{where} assigned unknown trip #{trip_id}"
@@ -238,7 +238,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterPropertyTest do
 
     assigned
     |> Enum.with_index(1)
-    |> Map.new(fn {trip, n} -> {trip.id, "900#{n}"} end)
+    |> Map.new(fn {trip, n} -> {trip.trip_id, "900#{n}"} end)
   end
 
   defp existing_assignments(_world, :replace_all), do: %{}

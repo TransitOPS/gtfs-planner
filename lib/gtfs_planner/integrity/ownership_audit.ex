@@ -37,7 +37,6 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
      "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas→flex_services", "flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries.station_id→stops", "journal_entries", "station_id", "stops"},
-    {"trip_runs.trip_id→trips", "trip_runs", "trip_id", "trips"},
     {"roster_line_days.roster_line_id→roster_lines", "roster_line_days", "roster_line_id",
      "roster_lines"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
@@ -57,7 +56,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"timed_patterns→route_patterns", "timed_patterns", "route_pattern_id", "route_patterns",
      "route_pattern_id"},
     {"route_patterns.label_pattern_id→route_patterns", "route_patterns", "label_pattern_id",
-     "route_patterns", "route_pattern_id"}
+     "route_patterns", "route_pattern_id"},
+    {"trip_runs.trip_id→trips", "trip_runs", "trip_id", "trips", "trip_id"}
   ]
 
   @organization_containment [

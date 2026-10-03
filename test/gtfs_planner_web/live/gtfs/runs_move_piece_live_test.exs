@@ -243,7 +243,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
 
       source_before = trip_ids(w, "1001")
       target_before = trip_ids(w, "1002")
-      piece_trips = piece.trips |> Enum.map(& &1.id) |> Enum.sort()
+      piece_trips = piece.trips |> Enum.map(& &1.trip_id) |> Enum.sort()
 
       submit_piece(view, 1, "1002")
 
@@ -254,6 +254,49 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       # re-reading the set that stayed.
       assert trip_ids(w, "1001") == source_before -- piece_trips
       assert length(trip_ids(w, "1001")) == 1
+    end
+
+    test "a move and its Undo store GTFS trip IDs and leave other organizations' rows alone",
+         ctx do
+      w = two_run_world(ctx)
+
+      # Another organization repeats every trip ID of the fixture (a through f)
+      # with its own assignments.
+      theirs = runs_version_fixture()
+
+      for trip <- theirs.blocks["101"] ++ theirs.blocks["102"] do
+        trip_run_fixture(theirs.organization.id, theirs.version.id, %{
+          trip: trip,
+          day_type_key: theirs.day_type_key,
+          run_id: "1001"
+        })
+      end
+
+      theirs_rows = fn ->
+        Repo.all(
+          from(row in TripRun,
+            where: row.organization_id == ^theirs.organization.id,
+            select: {row.trip_id, row.run_id},
+            order_by: [asc: row.trip_id]
+          )
+        )
+      end
+
+      before_theirs = theirs_rows.()
+      view = open(ctx, w, "run=1001")
+
+      submit_piece(view, 1, "1002")
+
+      # Run 1001 held trip a (block 101) and trip f (block 102); run 1002 held b.
+      assert trip_ids(w, "1001") == ["f"]
+      assert trip_ids(w, "1002") == ["a", "b"]
+      assert theirs_rows.() == before_theirs
+
+      view |> element("#runs-undo") |> render_click()
+
+      assert trip_ids(w, "1001") == ["a", "f"]
+      assert trip_ids(w, "1002") == ["b"]
+      assert theirs_rows.() == before_theirs
     end
 
     test "the drawer shows the destination run", ctx do
@@ -295,7 +338,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       {:ok, day} = Gtfs.load_runs(w.organization.id, w.version.id, w.day_type_key)
       [run | _] = day.derived.runs
       [piece | _] = run.pieces
-      piece_trips = piece.trips |> Enum.map(& &1.id) |> Enum.sort()
+      piece_trips = piece.trips |> Enum.map(& &1.trip_id) |> Enum.sort()
       source_before = trip_ids(w, "1001")
 
       submit_piece(view, 1, "__new")
@@ -356,7 +399,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       {:ok, day} = Gtfs.load_runs(w.organization.id, w.version.id, w.day_type_key)
       [run | _] = day.derived.runs
       [piece | _] = run.pieces
-      piece_trips = piece.trips |> Enum.map(& &1.id) |> Enum.sort()
+      piece_trips = piece.trips |> Enum.map(& &1.trip_id) |> Enum.sort()
       source_before = trip_ids(w, "1001")
       target_before = trip_ids(w, "1002")
 
@@ -402,7 +445,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
 
       {:ok, _} =
         Gtfs.apply_run_moves(w.audit, w.day_type_key, [
-          %{trip_id: trip.id, from: "1002", to: "1003"}
+          %{trip_id: trip.trip_id, from: "1002", to: "1003"}
         ])
 
       view |> element("#runs-undo") |> render_click()
@@ -467,7 +510,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
 
       {:ok, _} =
         Gtfs.apply_run_moves(w.audit, w.day_type_key, [
-          %{trip_id: trip.id, from: "1001", to: "1002"}
+          %{trip_id: trip.trip_id, from: "1001", to: "1002"}
         ])
 
       # Taken AFTER the colleague's move: the question is whether the PAGE wrote

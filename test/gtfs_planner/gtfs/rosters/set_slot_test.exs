@@ -363,7 +363,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.SetSlotTest do
         where:
           t.organization_id == ^world.organization.id and
             t.gtfs_version_id == ^world.version.id and
-            t.day_type_key == ^world.day_type_key and t.trip_id == ^trip.id
+            t.day_type_key == ^world.day_type_key and t.trip_id == ^trip.trip_id
       )
     )
 
