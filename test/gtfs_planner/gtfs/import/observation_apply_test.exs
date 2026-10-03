@@ -1094,6 +1094,14 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationApplyTest do
     Repo.delete_all(from(d in ChangeDecision, where: d.change_run_id in subquery(runs(org_id))))
     Repo.delete_all(from(r in ChangeRun, where: r.organization_id == ^org_id))
     Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id == ^org_id))
+    # #756 gave `organizations` a composite foreign key onto `gtfs_versions` for
+    # the active-schedule selection, so the organization must give that
+    # reference up before its own version rows can go.
+    Repo.update_all(
+      from(o in Organization, where: o.id == ^org_id),
+      set: [active_gtfs_version_id: nil, active_gtfs_version_revision: 0]
+    )
+
     Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^org_id))
     Repo.delete_all(from(o in Organization, where: o.id == ^org_id))
     Repo.delete_all(from(u in User, where: u.id in ^user_ids))
