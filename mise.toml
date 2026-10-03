@@ -43,7 +43,7 @@ run = "npm run --prefix assets test"
 
 [tasks."test:elixir"]
 depends = ["elixir:deps"]
-run = "mix test"
+run = "bin/test-all"
 
 # Browser (Playwright/Chromium) E2E tasks
 [tasks."setup:browser"]

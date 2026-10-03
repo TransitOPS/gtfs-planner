@@ -69,6 +69,12 @@ if database_url do
   config :gtfs_planner, GtfsPlanner.Repo, url: database_url
 end
 
+# `bin/test-all` sets this per partition so each partition writes its own failures
+# manifest; unset, ExUnit keeps its default manifest under `_build`.
+if failures_manifest = System.get_env("GTFS_PLANNER_TEST_FAILURES_MANIFEST") do
+  config :ex_unit, failures_manifest_path: failures_manifest
+end
+
 # Use a deterministic final-validator adapter for browser journeys while ordinary
 # ExUnit cases retain process-owned Mox expectations. The QA launcher starts its
 # server with `BROWSER_E2E` so the stubs for external services stay in place, and

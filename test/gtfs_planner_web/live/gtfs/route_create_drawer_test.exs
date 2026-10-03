@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
   `ReviewedApplyTransaction.Repo` / `Repo`). No case injects a private assign or
   reaches past the LiveView to build a controller by hand.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

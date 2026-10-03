@@ -71,7 +71,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
       organization_id: context.organization.id,
       gtfs_version_id: context.gtfs_version.id,
       route_id: "12",
-      route_short_name: "12",
+      route_short_name: "12X",
       route_long_name: "  ",
       route_type: 3
     })
@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
 
     assert [item] = describe_groups(context, [group({:schedules, "12", "WKDY"}, [rows])])
 
-    assert item.title == "12"
+    assert item.title == "12X"
   end
 
   test "a calendar end-date change reads the moved date", context do

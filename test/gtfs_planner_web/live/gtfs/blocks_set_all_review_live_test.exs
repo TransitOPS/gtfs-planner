@@ -24,10 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSetAllReviewLiveTest do
 
   The focused gate command is deferred to branch review:
   `MIX_TEST_PARTITION=_seat11 gtimeout --signal=TERM --kill-after=10s 120s mix test test/gtfs_planner_web/live/gtfs/blocks_set_all_review_live_test.exs`.
-
-  `async: false` because these cases share the lane database.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
 

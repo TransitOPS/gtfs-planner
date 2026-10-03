@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
   # `Gtfs.Schedules` transaction -> audit -> reload through the read adapter.
   # Persisted rows are asserted with independent `Repo` queries, never from the
   # rendered HTML alone.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

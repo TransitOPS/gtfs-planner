@@ -31,7 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorsLiveTest do
   - An operator belongs to the organization: a submitted id from another tenant
     reaches nothing, and a malformed id is not a crash.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures

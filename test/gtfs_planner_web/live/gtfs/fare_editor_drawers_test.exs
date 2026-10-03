@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorDrawersTest do
   holds one `fare_products` row per rider type and payment method — eight rows,
   not one — so editing it has to leave eight rows behind.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]

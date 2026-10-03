@@ -372,11 +372,22 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
     setup %{world: world} do
       # 510 extra blocked trips, so the replace_all plan is more than 500 moves
       # and really is written in batches. Each is a trip plus its stop times.
+      #
+      # They all start and end at one stop. By default each endpoint gets a stop of
+      # its own, which is a thousand stops, and the day load's stop-path read
+      # joins them to `stop_times` while this transaction is still uncommitted and
+      # has no planner statistics. PostgreSQL then nested-loops about two million
+      # row pairs per read, which takes seconds when the machine is quiet and
+      # outlasts the 15 second transaction timeout when it is not.
+      stop = GtfsPlanner.GtfsFixtures.stop_fixture(world.organization.id, world.version.id)
+
       for index <- 1..510 do
         blocked_trip_fixture(world.organization.id, world.version.id, world.route.route_id, %{
           trip_id: "bulk_#{index}",
           service_id: "WK",
           block_id: "102",
+          first_stop: stop.stop_id,
+          last_stop: stop.stop_id,
           first_arrival: "14:00:00",
           first_departure: "14:00:00",
           last_arrival: "14:30:00",

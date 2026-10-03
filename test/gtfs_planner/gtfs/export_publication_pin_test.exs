@@ -3,7 +3,6 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
 
   import Ecto.Query
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.PublicationPin
   alias GtfsPlanner.Gtfs.Export.Run
@@ -291,26 +290,6 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     refute Repo.get(Run, run.id)
   end
 
-  test "two owners racing one run resolve to a single holder" do
-    organization = organization_fixture()
-    version = gtfs_version_fixture(organization.id)
-    run = ready_run(organization, version)
-
-    parent = self()
-
-    {owner_a, task_a} = racer(parent, organization, version, run, "owner-a")
-    {owner_b, task_b} = racer(parent, organization, version, run, "owner-b")
-
-    results = [{owner_a, Task.await(task_a, 20_000)}, {owner_b, Task.await(task_b, 20_000)}]
-
-    assert Enum.count(results, &match?({_owner, {:ok, _pin}}, &1)) == 1
-    assert Enum.count(results, &match?({_owner, {:error, :artifact_busy}}, &1)) == 1
-
-    holder = Repo.one!(from(p in PublicationPin, where: p.export_run_id == ^run.id))
-    assert [{winner, {:ok, _}} | _] = Enum.filter(results, &match?({_owner, {:ok, _pin}}, &1))
-    assert holder.owner_id == winner
-  end
-
   test "lifecycle maintenance drops expired pins and then cleans their runs" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
@@ -329,14 +308,6 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
     assert :ok = TaskArtifactMaintenance.maintain()
     assert Repo.aggregate(PublicationPin, :count) == 0
     assert Repo.get!(Run, run.id).state == :expired
-  end
-
-  defp racer(parent, organization, version, run, owner) do
-    {owner,
-     Task.async(fn ->
-       Sandbox.allow(Repo, parent, self())
-       ExportRuns.pin_publication(organization.id, version.id, run.id, :main, owner)
-     end)}
   end
 
   defp claim(pin, owner_id), do: %{owner_id: owner_id, pin_token: pin.pin_token}

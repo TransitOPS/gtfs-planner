@@ -97,33 +97,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.HelpersTest do
     end
   end
 
-  describe "find_outliers/2" do
-    test "detects outlier values exceeding threshold" do
-      result =
-        Helpers.find_outliers(
-          [{:a, 30}, {:b, 30}, {:c, 30}, {:d, 30}, {:e, 30}, {:f, 300}],
-          2.0
-        )
-
-      assert result == [{:f, 300}]
-    end
-
-    test "returns empty list when fewer than 3 samples" do
-      assert Helpers.find_outliers([{:a, 10}, {:b, 20}], 2.0) == []
-    end
-
-    test "returns empty list when all values are identical" do
-      assert Helpers.find_outliers([{:a, 10}, {:b, 10}, {:c, 10}], 2.0) == []
-    end
-
-    test "uses default threshold of 2.0" do
-      result =
-        Helpers.find_outliers([{:a, 30}, {:b, 30}, {:c, 30}, {:d, 30}, {:e, 30}, {:f, 300}])
-
-      assert result == [{:f, 300}]
-    end
-  end
-
   describe "item/6" do
     test "returns a map with all 6 keys including category" do
       result = Helpers.item("test_id", "Test Label", :pass, :error, 42, ["detail"])

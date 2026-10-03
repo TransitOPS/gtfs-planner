@@ -20,7 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
   so boardable-only membership, byte-exact IDs and the scope filters are visible
   from the rendered output.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

@@ -27,7 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
   #
   # The expectations below are the arithmetic above, so they would fail if the
   # drawer re-derived a figure of its own rather than printing `Blocking`'s.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
 

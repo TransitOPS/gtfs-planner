@@ -30,7 +30,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersPickLiveTest do
   - A submitted operator id is cast and looked up inside the caller's
     organization by the writer, never by this page.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

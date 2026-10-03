@@ -20,7 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
   #
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a plan.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   # The ceiling for `render_async/2`: it returns as soon as the page's async task
   # has finished, so the value only bounds a failure.

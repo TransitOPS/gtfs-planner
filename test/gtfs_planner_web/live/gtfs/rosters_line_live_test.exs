@@ -28,7 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLineLiveTest do
     the row.
   - A refusal is the writer's own answer, drawn where the planner is looking.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

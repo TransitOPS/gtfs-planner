@@ -1205,31 +1205,4 @@ defmodule GtfsPlanner.Gtfs.Import do
         failure(reason, :extensions, Map.merge(counts, ext_committed))
     end
   end
-
-  # Delegates to the strict field parser owned by CsvParser.
-  @doc """
-  Parses a single CSV line into a list of field values.
-
-  Handles quoted fields and escaped quotes per GTFS specification.
-
-  ## Parameters
-
-    - `line` - String containing a single CSV line
-
-  ## Returns
-
-    - `{:ok, fields}` - List of field values
-    - `{:error, reason}` - Parse error
-
-  ## Examples
-
-      iex> parse_csv_line("value1,value2,value3")
-      {:ok, ["value1", "value2", "value3"]}
-
-      iex> parse_csv_line(~s(value1,"quoted,value",value3))
-      {:ok, ["value1", "quoted,value", "value3"]}
-  """
-  def parse_csv_line(line) when is_binary(line) do
-    GtfsPlanner.Gtfs.Import.CsvParser.parse_line(line)
-  end
 end

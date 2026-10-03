@@ -11,7 +11,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
   # here substitutes an adapter, a context or a plan. `:plan_preview` is read from
   # the rendered LiveView's own assigns, the way the version switcher's tests read
   # theirs.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   # The ceiling for `render_async/2`: it returns as soon as the page's async task
   # has finished, so the value only bounds a failure.

@@ -33,7 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersGridLiveTest do
   Asserted on element IDs, `data-*` attributes and `LazyHTML`, never on raw
   HTML. Rows are created inside the SQL Sandbox transaction and rolled back.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Mox

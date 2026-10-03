@@ -20,7 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorWhereTest do
   version after the two writes the gaps are: the `CST → TOL` cell cleared and
   route 40 removed from `N_LOCAL`.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import GtfsPlanner.AccountsFixtures, only: [user_fixture: 1]

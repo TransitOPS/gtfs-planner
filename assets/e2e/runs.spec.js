@@ -45,31 +45,9 @@
 // journey undoes its own write, and the two that change the day come after
 // everything that reads it.
 //
-// Captures are written under `testInfo.outputPath` and copied to
-// `.specs/08-basic-runs/evidence/browser/`; the last journey writes
-// `qa-tour.md` from the measurements the earlier ones recorded. `.specs/` is
-// gitignored and lives in the primary checkout, so the captures and the tour
-// artifact are skipped (never failed) when that workspace is not linked.
+// Captures are written under `testInfo.outputPath`.
 import { test, expect } from "@playwright/test";
 import { bodyFitsViewport } from "./browser_helpers";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const SPEC_PACKAGE = resolve(__dirname, "..", "..", ".specs", "08-basic-runs");
-const EVIDENCE_DIR = resolve(SPEC_PACKAGE, "evidence", "browser");
-const REFERENCE_PROTOTYPE = resolve(
-  SPEC_PACKAGE,
-  "references",
-  "runs-prototype.html",
-);
 
 // The seeded editor, the same account `blocks_advanced.spec.js` uses.
 const EDITOR = {
@@ -92,19 +70,6 @@ const ROW_PX = 44;
 const BAR_PX = 28;
 
 const DESKTOP = { width: 1440, height: 1000 };
-
-// The states the reference renders that the journey mirrors.
-const REFERENCE_SCENARIOS = [
-  ["problems", "state=problems"],
-  ["zoom", "state=zoom"],
-  ["run", "state=run"],
-  ["preview-uncovered", "state=preview-uncovered"],
-  ["confirm-rebuild", "state=confirm-rebuild"],
-  ["crew-error", "state=crew-error"],
-];
-
-// Measurements the qa tour reports; each journey fills its own keys.
-const tour = {};
 
 async function logIn(page) {
   await page.goto("/users/log_in");
@@ -165,20 +130,13 @@ async function runFacts(page) {
   );
 }
 
-// Saves a capture under the test's own output directory, then copies it into the
-// spec package's browser-evidence folder when that folder is present.
+// Saves a capture under the test's own output directory.
 async function capture(page, testInfo, name, { fullPage = false } = {}) {
-  const outputPath = testInfo.outputPath(`${name}.png`);
-  mkdirSync(dirname(outputPath), { recursive: true });
-  await page.screenshot({ path: outputPath, fullPage, animations: "disabled" });
-  copyIntoEvidence(`${name}.png`, readFileSync(outputPath));
-}
-
-function copyIntoEvidence(name, contents) {
-  mkdirSync(EVIDENCE_DIR, { recursive: true });
-  const target = resolve(EVIDENCE_DIR, name);
-  writeFileSync(target, contents);
-  return target;
+  await page.screenshot({
+    path: testInfo.outputPath(`${name}.png`),
+    fullPage,
+    animations: "disabled",
+  });
 }
 
 // A drawer is a top-layer `<dialog>`; the shared component carries its open
@@ -240,13 +198,6 @@ test.describe("Runs page at 1440x1000", () => {
       expect(height).toBeCloseTo(BAR_PX, 0);
     }
 
-    tour.rows = {
-      runCount: rowHeights.length,
-      rowPx: rowHeights[0],
-      pieceBarCount: barHeights.length,
-      barPx: barHeights[0],
-    };
-
     await capture(page, testInfo, "runs-default-chart-1440");
   });
 
@@ -259,14 +210,6 @@ test.describe("Runs page at 1440x1000", () => {
     // track is the flexible column and the fact columns are fixed, so a chart
     // wider than the page would mean one of the two grew.
     expect(await bodyFitsViewport(page)).toBe(true);
-
-    const measured = await page.evaluate(() => ({
-      bodyScrollWidth: document.body.scrollWidth,
-      innerWidth: window.innerWidth,
-      documentScrollWidth: document.documentElement.scrollWidth,
-    }));
-
-    tour.viewport = { ...measured, fits: true };
 
     // And the same after Zoom in, which doubles the track and is the state most
     // likely to push a page wide: the scroll belongs to #runs-timeline-scroll,
@@ -354,17 +297,6 @@ test.describe("Runs page at 1440x1000", () => {
     const ordered = [...after.bodyLefts].sort((a, b) => a - b);
     expect(after.bodyLefts).toEqual(ordered);
 
-    tour.zoom = {
-      scrolledTo: after.scrollLeft,
-      scrollWidth: before.scrollWidth,
-      clientWidth: before.clientWidth,
-      headLefts: after.headLefts,
-      bodyLefts: after.bodyLefts,
-      runCell: before.runText,
-      statusCell: before.statusText,
-      factColumnsStuck: 7,
-    };
-
     await capture(page, testInfo, "runs-zoomed-chart-1440");
   });
 
@@ -411,13 +343,6 @@ test.describe("Runs page at 1440x1000", () => {
       return Number(h) * 60 + Number(m);
     });
     expect(descending).toEqual([...descending].sort((a, b) => b - a));
-
-    tour.sort = {
-      defaultOrder: before,
-      paidAscending: after,
-      paidDescending: await runIds(page),
-      signOnOrder: before,
-    };
 
     // Put the page back on sign-on for the journeys that follow.
     await page.locator("th.runs-meta-sign_on button").click();
@@ -479,15 +404,6 @@ test.describe("Runs page at 1440x1000", () => {
     };
     expect(toMinutes(pay.rowPaid)).toBe(Math.floor(pay.totalSecs / 60));
 
-    tour.pay = {
-      run: "2001",
-      pieces: pay.pieces,
-      paidLines: pay.paidLineSecs.length,
-      lineSecs: pay.allLineSecs,
-      totalSecs: pay.totalSecs,
-      rowPaid: pay.rowPaid,
-    };
-
     await capture(page, testInfo, "runs-run-drawer-1440");
   });
 
@@ -529,15 +445,6 @@ test.describe("Runs page at 1440x1000", () => {
       ).textContent.trim(),
     }));
     expect(afterSplit.row2001).not.toBe(afterSplit.row2007);
-
-    tour.split = {
-      run: "2001",
-      piece: 1,
-      handover: RELIEF_HANDOVER,
-      newRun: NEXT_RUN_ID,
-      toast: await toastText(page).textContent(),
-      undoOffered: true,
-    };
 
     // Undo is the same write reversed, and the day comes back: 2007 is gone
     // and 2001 is whole again.
@@ -586,14 +493,6 @@ test.describe("Runs page at 1440x1000", () => {
         })),
       );
     expect(metrics.length).toBeGreaterThan(0);
-
-    tour.preview = {
-      scope: "uncovered_only",
-      uncoveredBefore: UNCOVERED_TRIPS,
-      runsUnchanged: true,
-      changedLabels: await changedLabels.count(),
-      metrics,
-    };
 
     await capture(page, testInfo, "runs-suggest-preview-1440");
 
@@ -645,12 +544,6 @@ test.describe("Runs page at 1440x1000", () => {
       .locator("#runs-rebuild-confirm-summary")
       .textContent();
 
-    tour.rebuild = {
-      scope: "replace_all",
-      askedFirst: true,
-      summary: summary.trim(),
-    };
-
     await capture(page, testInfo, "runs-rebuild-confirm-1440");
 
     // "Keep current runs" writes nothing: the day is exactly as it was.
@@ -666,7 +559,6 @@ test.describe("Runs page at 1440x1000", () => {
     await page.reload();
     await expect(page.locator("#runs-timeline-body tr")).toHaveCount(before.length);
     expect([...(await runIds(page))].sort()).toEqual([...before].sort());
-    tour.rebuild.wroteNothing = true;
   });
 
   test("saving crew rules with 200 minutes of pull-out report shows the range error", async ({
@@ -711,191 +603,11 @@ test.describe("Runs page at 1440x1000", () => {
     await page.locator("#crew-rules-save").click();
     await expect(page.locator("#crew-report_pull_out_minutes-error")).toBeVisible();
 
-    tour.crewError = {
-      field: "report_pull_out_minutes",
-      entered: "200",
-      range: "0-30",
-      message: "Enter a whole number from 0 to 30.",
-      saved: false,
-    };
-
     await capture(page, testInfo, "runs-crew-error-1440");
 
     // Close without saving and confirm the day is untouched.
     await page.locator("#runs-crew-rules-drawer button", { hasText: "Cancel" }).click();
     await closeDrawer(page, "runs-crew-rules-drawer");
     expect([...(await runIds(page))].sort()).toEqual([...runsBefore].sort());
-  });
-});
-
-test.describe("reference prototype captures", () => {
-  test.skip(
-    () => !existsSync(REFERENCE_PROTOTYPE),
-    "reference prototype not present",
-  );
-  test.use({ viewport: DESKTOP });
-
-  test("the runs states beside production", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
-
-    const referenceUrl = pathToFileURL(REFERENCE_PROTOTYPE).href;
-
-    for (const [name, query] of REFERENCE_SCENARIOS) {
-      await page.goto(`${referenceUrl}?${query}`);
-      await page.waitForLoadState("load");
-      await expect(page.locator("body")).toBeVisible();
-
-      // Recorded for the side-by-side capture only: the prototype's own markup
-      // and pixels are not what this journey checks.
-      const bodyWidth = await page.evaluate(() => document.body.scrollWidth);
-      tour[`reference_${name.replaceAll("-", "_")}`] = {
-        state: query,
-        bodyWidth,
-        viewportWidth: DESKTOP.width,
-      };
-      await capture(page, testInfo, `reference-${name}-1440`);
-    }
-  });
-});
-
-// The tour is the capture artifact's own index: entrypoint, setup, scenarios,
-// expected outcomes and the automated coverage, with the numbers the journeys
-// measured. It is written last so it reports the whole run, and it is skipped
-// rather than failed when the gitignored `.specs/` workspace is not linked.
-test.describe("qa tour", () => {
-  test.skip(
-    () => !existsSync(SPEC_PACKAGE),
-    "spec package not present",
-  );
-  test.use({ viewport: DESKTOP });
-
-  test("writes qa-tour.md from the measured journey", async ({}, testInfo) => {
-    const value = (key) =>
-      tour[key] === undefined ? "(not measured)" : JSON.stringify(tour[key], null, 2);
-
-    const markdown = [
-      "# Runs browser QA tour",
-      "",
-      "Entrypoint: `/gtfs/<version>/runs` for the published **Browser Runs",
-      "Version** seeded by `test/support/browser_seed.exs` — eight weekday blocks",
-      "101-108 on the {WKDY} day type, six runs 2001-2006, block 105 uncovered,",
-      "relief points at Northgate and Southgate, and the default crew rules.",
-      "",
-      "## Setup",
-      "",
-      "```sh",
-      "bin/test-browser e2e/runs.spec.js",
-      "```",
-      "",
-      "Chromium at 1440x1000 against a local test Phoenix server on its own",
-      "port, one worker and no retries, against a disposable `pg_tmp` database",
-      "that is created, migrated, seeded and then discarded. The journeys are",
-      "serial and run in the order below: the measuring journeys read the day",
-      "the seed made, the split journey undoes its own write, and the two that",
-      "change the day come after everything that reads it.",
-      "",
-      "## Scenarios and expected outcomes",
-      "",
-      "| # | Scenario | Expected |",
-      "| --- | --- | --- |",
-      "| 1 | Duty-chart measurements | Six rows at 44 px, more than six piece bars at 28 px (2001 and 2002 have two pieces each) |",
-      "| 2 | No horizontal scroll | `document.body.scrollWidth <= innerWidth` at 1440x1000, and again after Zoom in |",
-      "| 3 | Zoom and sticky columns | After Zoom in the track scrolls; the Run and Status cells are where they started |",
-      "| 4 | Sort by Paid | The six runs reorder, in ascending `h:mm` order, and the second click reverses it |",
-      "| 5 | Drawer pay lines | The paid lines sum to `data-role=pay-total`, which equals the row's Paid cell |",
-      "| 6 | Split and Undo | 1 trip from block 101 moves to run 2007, and Undo returns the day to six runs |",
-      "| 7 | Uncovered preview and apply | Preview leaves the six runs unsaved; Apply drops the uncovered count from 2 to 0 |",
-      "| 8 | Rebuild confirm | Apply asks, and keeping the current runs leaves the day unchanged across a reload |",
-      "| 9 | Crew rules range error | 200 in Report before a pull-out shows `Enter a whole number from 0 to 30.` and does not save |",
-      "",
-      "## Captures",
-      "",
-      "Scenarios 1-9 above, plus the reference and production captures saved",
-      "beside this file.",
-      "",
-      "## Automated coverage of the same behaviour",
-      "",
-      "Each journey's behaviour is also covered headlessly by the ExUnit",
-      "LiveView tests; this journey is the visual and",
-      "measured counterpart.",
-      "",
-      "| Scenario | ExUnit evidence |",
-      "| --- | --- |",
-      "| Measurements and sticky columns | `runs_timeline_live_test.exs`, `runs_marks_live_test.exs` |",
-      "| Sort | `runs_list_live_test.exs` |",
-      "| Drawer pay lines | `runs_drawer_live_test.exs` |",
-      "| Split and Undo | `runs_split_piece_live_test.exs` |",
-      "| Uncovered preview and apply | `runs_suggest_live_test.exs`, `runs_apply_live_test.exs` |",
-      "| Rebuild confirm | `runs_apply_live_test.exs` |",
-      "| Crew rules range error | `runs_crew_rules_live_test.exs` |",
-      "",
-      "## Measured on this run",
-      "",
-      "### Row and bar sizes",
-      "",
-      "```json",
-      value("rows"),
-      "```",
-      "",
-      "### Viewport fit",
-      "",
-      "```json",
-      value("viewport"),
-      "```",
-      "",
-      "### Zoom and sticky columns",
-      "",
-      "```json",
-      value("zoom"),
-      "```",
-      "",
-      "### Sort order",
-      "",
-      "```json",
-      value("sort"),
-      "```",
-      "",
-      "### Run 2001 paid lines",
-      "",
-      "```json",
-      value("pay"),
-      "```",
-      "",
-      "### Split",
-      "",
-      "```json",
-      value("split"),
-      "```",
-      "",
-      "### Uncovered preview",
-      "",
-      "```json",
-      value("preview"),
-      "```",
-      "",
-      "### Rebuild confirmation",
-      "",
-      "```json",
-      value("rebuild"),
-      "```",
-      "",
-      "### Crew rules error",
-      "",
-      "```json",
-      value("crewError"),
-      "```",
-      "",
-      "A \"Measured on this run\" block reads `(not measured)` when its journey",
-      "did not run.",
-      "",
-    ].join("\n");
-
-    const target = copyIntoEvidence("qa-tour.md", markdown);
-    expect(target).toContain("qa-tour.md");
-    expect(existsSync(target)).toBe(true);
-
-    // The tour is written even when a journey did not measure, so the file on
-    // disk is the whole account of this run rather than a partial one.
-    expect(readFileSync(target, "utf8")).toContain("## Scenarios and expected outcomes");
   });
 });

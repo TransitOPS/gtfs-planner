@@ -19,7 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
   The focused command is deferred to branch review:
   `mix test test/gtfs_planner_web/live/gtfs/flex_live_create_test.exs`.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures

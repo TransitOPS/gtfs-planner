@@ -21,7 +21,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSlotLiveTest do
   A run can be held on a weekday by only one line, so each test builds only the
   lines it is about.
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Mox

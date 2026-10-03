@@ -9,7 +9,7 @@ defmodule GtfsPlanner.Gtfs.ImportRunsAuthorizationTest do
   stays as it was. Rows are created in the SQL sandbox and rolled back with it.
   """
 
-  use GtfsPlanner.DataCase, async: false
+  use GtfsPlanner.DataCase, async: true
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, Failure, Publication, Result, Run}

@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
   # then `Gtfs.update_route_operating_settings/3` → the route writer's own
   # transaction. The fixture rows and the rows the
   # saves write are created inside the SQL Sandbox transaction and rolled back.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures

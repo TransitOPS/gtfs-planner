@@ -3,7 +3,7 @@
 # authenticated router with the real Gtfs facade; linked trips' stop times are
 # re-selected with independent Repo queries after the review applies.
 defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest
