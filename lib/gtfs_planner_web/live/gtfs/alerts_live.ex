@@ -108,9 +108,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
      |> stream(:alerts_mobile, [])}
   end
 
+  # The disconnected render only shows the loading state. The workspace is read once, on
+  # the connected mount, instead of once for each of the two renders of a page load.
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, load_alerts(socket, tab(params))}
+    if connected?(socket) do
+      {:noreply, load_alerts(socket, tab(params))}
+    else
+      {:noreply, assign(socket, :tab, tab(params))}
+    end
   end
 
   @impl true
@@ -543,6 +549,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
             </.link>
           </:actions>
         </.header>
+
+        <%!-- The page's first paint, before the connected mount reads the workspace. --%>
+        <.skeleton
+          :if={@alerts_state == :loading}
+          id="alerts-loading"
+          role="status"
+          label="Loading alerts…"
+          class="mt-6"
+        >
+          <div class="overflow-clip rounded-card border border-subtle bg-white">
+            <div
+              :for={_row <- 1..4}
+              class="flex gap-4 border-b border-subtle px-5 py-3 last:border-b-0"
+            >
+              <div class="h-4 flex-[3] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 flex-[2] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 flex-[2] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 w-24 rounded-badge bg-navy-100/60"></div>
+            </div>
+          </div>
+        </.skeleton>
 
         <.message
           :if={@alerts_state == :organization_required}

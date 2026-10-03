@@ -636,6 +636,52 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     end
   end
 
+  describe "loading" do
+    setup :editor_conn
+
+    test "the first response shows the loading state and reads no alerts", context do
+      {:ok, _current} = current_delay(context)
+
+      {conn, reads} = alert_reads(context, fn -> get(context.conn, alerts_path()) end)
+
+      document = conn |> html_response(200) |> LazyHTML.from_document()
+
+      assert reads == 0
+      assert Enum.count(LazyHTML.query(document, "#alerts-loading[role='status']")) == 1
+      assert Enum.empty?(LazyHTML.query(document, "#alerts-list, #alerts-first-use"))
+    end
+
+    test "a page load reads the alerts once, and the list replaces the loading state",
+         context do
+      {:ok, current} = current_delay(context)
+
+      {{:ok, view, _html}, reads} =
+        alert_reads(context, fn -> live(context.conn, alerts_path()) end)
+
+      assert reads == 1
+      refute has_element?(view, "#alerts-loading")
+      assert has_element?(view, "#alert-row-#{current.id}")
+    end
+
+    test "an organization with no alerts leaves the loading state for the first-use panel",
+         context do
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      refute has_element?(view, "#alerts-loading")
+      assert has_element?(view, "#alerts-first-use")
+    end
+
+    test "an organization with no active schedule leaves the loading state for its panel",
+         context do
+      clear_pointer(context)
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      refute has_element?(view, "#alerts-loading")
+      assert has_element?(view, "#alerts-no-active")
+    end
+  end
+
   describe "empty states" do
     setup :editor_conn
 
@@ -708,6 +754,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
   end
 
   defp alerts_path, do: "/alerts"
+
+  # Runs `fun` and counts the statements that select this organization's alert rows,
+  # from any process: the list page reads them once for each workspace read.
+  defp alert_reads(context, fun) do
+    {:ok, count} = Agent.start_link(fn -> 0 end)
+    organization_id = Ecto.UUID.dump!(context.organization.id)
+    handler = {__MODULE__, make_ref()}
+
+    :telemetry.attach(
+      handler,
+      [:gtfs_planner, :repo, :query],
+      fn _event, _measurements, metadata, {count, organization_id} ->
+        if String.contains?(to_string(metadata[:query]), ~s(FROM "service_alerts")) and
+             organization_id in metadata[:params] do
+          Agent.update(count, &(&1 + 1))
+        end
+      end,
+      {count, organization_id}
+    )
+
+    try do
+      result = fun.()
+      {result, Agent.get(count, & &1)}
+    after
+      :telemetry.detach(handler)
+      Agent.stop(count)
+    end
+  end
 
   # The agency's own date, because the tabs are grouped on it rather than on
   # UTC's (CR-7).
