@@ -2351,6 +2351,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     if audited_default do
       audit_undo_default!(
+        pattern,
         audited_default.entity,
         audited_default.type,
         audited_default.restored,
@@ -2424,13 +2425,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   # The restored row keeps the exact shape of the save it reverses: the
-  # operation id top-level and the affected trip count (Domain rule 8).
-  defp audit_undo_default!(entity, type, restored, affected, operation_id, audit_context) do
-    audit!(audit_context, type, entity, "updated", %{
-      headsign: restored,
-      affected_trips: affected,
-      operation_id: operation_id
-    })
+  # operation id top-level and the affected trip count (Domain rule 8). A
+  # timing row also names its pattern, which Recent changes reads from the
+  # timing's external id.
+  defp audit_undo_default!(pattern, entity, type, restored, affected, operation_id, audit_context) do
+    attrs = %{headsign: restored, affected_trips: affected, operation_id: operation_id}
+
+    attrs =
+      if type == :timed_pattern, do: timing_audit_attrs(pattern, entity, attrs), else: attrs
+
+    audit!(audit_context, type, entity, "updated", attrs)
   end
 
   # The recorded values swap sides; both were normalized when the save wrote
