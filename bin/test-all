@@ -42,8 +42,10 @@ die() {
   exit 2
 }
 
-# The measurement step records the real default.
-partitions=${TEST_PARTITIONS:-3}
+# Four partitions finished the suite fastest on an 11-CPU machine: about 6 minutes
+# of wall time against 19 for one process, with max_cases below giving 6 each.
+# Two and three partitions were slower.
+partitions=${TEST_PARTITIONS:-4}
 only=${TEST_PARTITION_ONLY:-}
 
 case $partitions in '' | *[!0-9]* | 0*) die "TEST_PARTITIONS must be a positive integer, got '$partitions'" ;; esac
@@ -154,10 +156,15 @@ esac
 # Servers start one after another (about two seconds each). Starting them in
 # parallel would save that, at the cost of no longer knowing which partition's
 # start failed first.
+#
+# The servers run with the en_US.UTF-8 locale, the one the local test databases
+# have. pg_tmp takes the cluster's collation from LANG/LC_ALL when it creates
+# the server and defaults to C otherwise, which sorts differently and fails
+# tests that assert an ordering (measured: five tests, evidence/partition-timing.md).
 for i in $parts; do
   mkdir -p "$run/p$i/tmp"
   started="$started $i" # before the call, so an interrupt during it still stops the server
-  if ! u=$({ start_database --datadir "$run/p$i/pg" >&2 && echo "$GTFS_PLANNER_TEST_DATABASE_URL"; } 2>"$run/p$i/start.log") || [ -z "$u" ]; then
+  if ! u=$({ LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 start_database --datadir "$run/p$i/pg" >&2 && echo "$GTFS_PLANNER_TEST_DATABASE_URL"; } 2>"$run/p$i/start.log") || [ -z "$u" ]; then
     echo "bin/test-all: partition $i: could not start a database server:" >&2
     sed 's/^/  /' "$run/p$i/start.log" >&2
     exit 1
