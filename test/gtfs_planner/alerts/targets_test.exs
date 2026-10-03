@@ -719,6 +719,16 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert stops["S1"].label == "Central"
     end
 
+    test "an id PostgreSQL cannot store reads as no stop instead of raising", context do
+      stop =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
+
+      # A NUL byte and a non-UTF-8 binary are valid JSON-borne or forged values that
+      # a text column cannot hold; they are dropped, and the real stop still answers.
+      assert Map.keys(Alerts.stops_by_id(context.audit, [<<"S1", 0>>, <<255>>, stop.stop_id])) ==
+               ["S1"]
+    end
+
     test "a member without the editor role reads an empty map, not a list", context do
       stop =
         stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))

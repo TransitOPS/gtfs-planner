@@ -1373,9 +1373,16 @@ defmodule GtfsPlanner.Alerts.Targets do
     |> Repo.all()
   end
 
-  # A feed ID is an exact string. A value that is not a string can never name a
-  # row, so it is dropped before it can reach a query, which is what keeps a
-  # forged or malformed id from becoming a database error.
-  defp exact_ids(ids) when is_list(ids), do: ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
+  # A feed ID is an exact string. A value PostgreSQL cannot store as text (not a
+  # binary, not valid UTF-8, or holding a NUL byte) can never name a row, so it is
+  # dropped before it can reach a query, which is what keeps a forged or malformed
+  # id from becoming a database error.
+  defp exact_ids(ids) when is_list(ids) do
+    ids |> Enum.filter(&storable_id?/1) |> Enum.uniq()
+  end
+
   defp exact_ids(_ids), do: []
+
+  defp storable_id?(id),
+    do: is_binary(id) and String.valid?(id) and not String.contains?(id, <<0>>)
 end
