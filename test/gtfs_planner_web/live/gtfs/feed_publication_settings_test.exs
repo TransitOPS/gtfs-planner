@@ -149,7 +149,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationSettingsTest do
   end
 
   describe "what each product sees" do
-    test "a Pathways organization has this page and still hides its hidden surfaces", context do
+    test "a Pathways organization has this page and still hides its hidden surfaces", _context do
       pathways_organization = organization_fixture(%{product: :pathways})
       pathways_version = gtfs_version_fixture(pathways_organization.id)
       user = user_fixture()

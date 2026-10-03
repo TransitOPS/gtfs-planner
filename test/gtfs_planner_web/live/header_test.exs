@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.HeaderTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Header - Unauthenticated Users (Auth Layout)" do

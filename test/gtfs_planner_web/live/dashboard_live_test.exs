@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Home
   alias GtfsPlanner.Organizations
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
