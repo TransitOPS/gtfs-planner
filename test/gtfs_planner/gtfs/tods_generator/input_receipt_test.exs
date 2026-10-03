@@ -79,6 +79,54 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.InputReceiptTest do
       assert normalized == Jason.decode!(Jason.encode!(normalized))
     end
 
+    test "a feed with no active date defaults to no week instead of failing", context do
+      assert Input.first_active_week([]) == nil
+
+      # There is no week to default from, so the missing dates are field errors
+      # rather than a crash, and the two-arity call reaches the same answer.
+      missing = Input.changeset(%Input{}, %{})
+
+      assert missing.valid? == false
+      assert errors_on(missing)[:start_date] == ["can't be blank"]
+      assert errors_on(missing)[:end_date] == ["can't be blank"]
+      assert errors_on(missing)[:representative_week] == ["can't be blank"]
+
+      # A request that names its own range keeps every value it named, because
+      # an unserviceable feed only removes the default, not the range.
+      named =
+        Input.changeset(
+          %Input{},
+          %{
+            "start_date" => "2026-03-02",
+            "end_date" => "2026-03-08",
+            "representative_week" => "2026-03-02",
+            "garage_id" => context.garage.id
+          },
+          []
+        )
+
+      assert named.valid?
+      assert {:ok, _normalized} = Input.normalize(named)
+    end
+
+    test "an already populated input normalizes through the struct clause", context do
+      assert {:ok, normalized} =
+               Input.normalize(%Input{
+                 start_date: ~D[2026-03-02],
+                 end_date: ~D[2026-03-08],
+                 representative_week: ~D[2026-03-02],
+                 garage_id: context.garage.id
+               })
+
+      assert normalized == %{
+               "start_date" => "2026-03-02",
+               "end_date" => "2026-03-08",
+               "representative_week" => "2026-03-02",
+               "garage_id" => context.garage.id,
+               "terminal_relief?" => false
+             }
+    end
+
     test "an explicit date range is kept and terminal relief stays opt-in", context do
       assert {:ok, normalized} =
                %Input{}
@@ -155,6 +203,15 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.InputReceiptTest do
 
       assert errors_on(changeset)[:representative_week] ==
                ["must fall within the selected dates"]
+    end
+
+    test "a representative week without a range asks for the bounds, not a range verdict" do
+      changeset = Input.changeset(%Input{representative_week: ~D[2026-03-02]}, %{})
+
+      assert changeset.valid? == false
+      assert errors_on(changeset)[:start_date] == ["can't be blank"]
+      assert errors_on(changeset)[:end_date] == ["can't be blank"]
+      refute Map.has_key?(errors_on(changeset), :representative_week)
     end
 
     test "a malformed garage value names the garage and no other input fails" do

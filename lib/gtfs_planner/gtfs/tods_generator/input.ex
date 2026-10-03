@@ -44,7 +44,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Input do
   known, an input that names no dates defaults to the first active calendar
   week: the Monday of the week holding the first active date, through that
   week's Sunday, with that same Monday as the representative week. An input that
-  names dates always keeps its own values.
+  names dates always keeps its own values, and a feed with no active date has no
+  week to default to, so an input naming no dates is refused for its missing ones.
   """
   @spec changeset(t(), map(), [Date.t()]) :: Ecto.Changeset.t()
   def changeset(%__MODULE__{} = input, attrs, active_dates \\ []) do
@@ -63,11 +64,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Input do
   no active date has no week to default to.
   """
   @spec first_active_week([Date.t()]) :: {Date.t(), Date.t()} | nil
+  def first_active_week([]), do: nil
+
   def first_active_week(active_dates) do
-    with first when not is_nil(first) <- Enum.min(active_dates, Date) do
-      monday = Date.beginning_of_week(first, :monday)
-      {monday, Date.add(monday, 6)}
-    end
+    first = Enum.min(active_dates, Date)
+    monday = Date.beginning_of_week(first, :monday)
+    {monday, Date.add(monday, 6)}
   end
 
   @doc """
@@ -130,6 +132,10 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Input do
 
     cond do
       is_nil(week) ->
+        changeset
+
+      is_nil(Ecto.Changeset.get_field(changeset, :start_date)) or
+          is_nil(Ecto.Changeset.get_field(changeset, :end_date)) ->
         changeset
 
       Date.day_of_week(week) != 1 ->
