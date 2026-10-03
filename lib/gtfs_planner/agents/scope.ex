@@ -206,6 +206,18 @@ defmodule GtfsPlanner.Agents.Scope do
     end
   end
 
+  @doc """
+  The byte ceiling this module admits a whole resource context under.
+
+  This is the ceiling `with_source_snapshot/2` enforces at admission and
+  `authorized_context/1` re-checks at every boundary, so a host states this
+  number to the person instead of a copy of it that can drift from the limit
+  actually enforced here. Reading it changes nothing: the ceiling is not part of
+  the context, and `context_digest/1` does not read it.
+  """
+  @spec max_context_bytes() :: pos_integer()
+  def max_context_bytes, do: @max_context_bytes
+
   # The envelope is rebuilt here from the two admitted fields and the server's own
   # hash, so nothing a caller supplied survives inside it. Nothing inside
   # `payload` is filtered or renamed: a source's own `"digest"` field is content

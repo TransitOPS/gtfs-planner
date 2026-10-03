@@ -256,6 +256,35 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     end
   end
 
+  describe "max_context_bytes/0" do
+    test "reports 65,536 and that is the whole-context ceiling admission enforces" do
+      assert Scope.max_context_bytes() == 65_536
+
+      context = resources_fixture()
+      resources = Scope.context({:version, context.version.id})
+
+      # The limit is proven, not restated: a context of exactly the reported
+      # number of serialized bytes is admitted, and one byte more is refused. A
+      # copy of the number that drifted from the enforced ceiling fails here.
+      at_the_limit = snapshot_of_bytes(resources, Scope.max_context_bytes())
+
+      assert {:ok, admitted} = Scope.with_source_snapshot(resources, at_the_limit)
+      assert serialized_bytes(resources, admitted.source_snapshot) == Scope.max_context_bytes()
+
+      over_the_limit = snapshot_of_bytes(resources, Scope.max_context_bytes() + 1)
+
+      assert Scope.with_source_snapshot(resources, over_the_limit) == {:error, :too_large}
+
+      # The ceiling is a read, not a part of the context: it leaves the session
+      # key and the admitted bytes exactly as they were.
+      assert resources == Scope.context({:version, context.version.id})
+
+      assert byte_size(Scope.context_digest(%{context.scope | resource_context: admitted})) == 64
+
+      assert Scope.authorized_context(%{context.scope | resource_context: admitted}) == :ok
+    end
+  end
+
   describe "authorized_context/1" do
     test "returns :ok for the scope's own version identity" do
       context = resources_fixture()
@@ -370,6 +399,46 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
+
+  # A payload whose whole serialized context is exactly `target` bytes. The
+  # filler absorbs the difference, so the target is a byte count rather than
+  # whatever the module under test happens to produce.
+  defp snapshot_of_bytes(context, target) do
+    empty = %{"rows" => [%{"text" => ""}]}
+
+    envelope = %{
+      kind: "timetable",
+      payload: empty,
+      digest: server_digest("timetable", empty)
+    }
+
+    filler = target - serialized_bytes(context, envelope)
+
+    if filler < 0, do: raise("a #{target}-byte context cannot hold this envelope")
+
+    %{kind: "timetable", payload: %{"rows" => [%{"text" => String.duplicate("x", filler)}]}}
+  end
+
+  # The measurement `admit_snapshot/2` performs, written out here rather than
+  # read back from the module under test: one JSON object holding the tagged
+  # identity, the approval (absent, and so present as `null`) and the snapshot
+  # envelope with its digest.
+  defp serialized_bytes(context, snapshot) do
+    Jason.encode!(%{
+      "identity" => tagged_identity(context[:identity]),
+      "approved_extension" => nil,
+      "source_snapshot" => tagged_snapshot(snapshot)
+    })
+    |> byte_size()
+  end
+
+  defp tagged_identity({kind, id}), do: %{"kind" => Atom.to_string(kind), "id" => id}
+  defp tagged_identity(_other), do: nil
+
+  defp tagged_snapshot(%{kind: kind, payload: payload, digest: digest}),
+    do: %{"kind" => kind, "payload" => payload, "digest" => digest}
+
+  defp tagged_snapshot(_other), do: nil
 
   defp scope_fixture(user, organization) do
     version = gtfs_version_fixture(organization.id)
