@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.ReleaseComparison
+  alias GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext
   alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
@@ -149,6 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:comparison_inspected, nil)
      |> assign(:comparison_page, comparison_page_defaults())
      |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+     |> reset_comparison_context()
      |> configure_comparison_streams()
      |> stream(:comparison_differences, [])
      |> stream(:comparison_structural, [])
@@ -602,7 +604,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_event("narrow_comparison", _params, socket), do: {:noreply, socket}
 
   # Clearing the scope shows the whole comparison again. The full native result
-  # was never replaced, so this restores it without recomputing anything.
+  # was never replaced, so this restores it without recomputing anything - and
+  # re-attaches the complete copy, because the admitted context must describe
+  # what is on screen and the screen is the whole comparison again.
   @impl Phoenix.LiveView
   def handle_event("clear_comparison_scope", _params, socket) do
     case socket.assigns.comparison_result do
@@ -616,7 +620,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          |> assign(:comparison_scope, nil)
          |> assign(:comparison_scope_notice, nil)
          |> assign(:comparison_scope_form, comparison_scope_form(%{}))
-         |> stream_comparison(result.comparison)}
+         |> stream_comparison(result.comparison)
+         |> attach_comparison_context(result, :all)}
     end
   end
 
@@ -702,6 +707,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> assign(:comparison_view, result.comparison)
         |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
         |> stream_comparison(result.comparison)
+        # Only the complete comparison attaches on its own. A narrowed scope is
+        # the editor's explicit choice, so it attaches when they make it.
+        |> attach_comparison_context(result, :all)
       else
         socket
         |> assign(:comparison_status, :refused)
@@ -805,6 +813,39 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       "from" => Map.get(draft, "from"),
       "to" => Map.get(draft, "to")
     }
+  end
+
+  # -- assistant context -------------------------------------------------------
+
+  # Freezing is the shared AI04 seam's decision, not this page's: the page hands
+  # over the finished native result and reads back either an admitted context or
+  # the reason there is none.
+  #
+  # A refusal changes only what the helper may read. The native result, the
+  # streams and the drafted scope all stay exactly as they were, because the
+  # comparison was proved here and the byte ceiling limits the copy, not the
+  # finding.
+  defp attach_comparison_context(socket, result, selection) do
+    case AssistantContext.freeze(comparison_scope(socket).resource_context, result, selection) do
+      {:ok, context} ->
+        socket
+        |> assign(:comparison_context, context)
+        |> assign(:comparison_context_notice, nil)
+
+      {:error, reason} ->
+        socket
+        |> assign(:comparison_context, nil)
+        |> assign(:comparison_context_notice, reason)
+    end
+  end
+
+  # Replacing the comparison - a new selection, a close, a version change -
+  # releases the admitted copy together with the result it described, so a
+  # conversation can never answer from rows the page is no longer showing.
+  defp reset_comparison_context(socket) do
+    socket
+    |> assign(:comparison_context, nil)
+    |> assign(:comparison_context_notice, nil)
   end
 
   defp comparison_scope(socket) do
@@ -997,6 +1038,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> assign(:comparison_scope_notice, nil)
         |> assign(:comparison_inspected, nil)
         |> stream_comparison(view)
+        |> attach_comparison_context(result, selection)
 
       {:error, :invalid_scope} ->
         socket
@@ -1040,6 +1082,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:comparison_inspected, nil)
     |> assign(:comparison_page, comparison_page_defaults())
     |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+    |> reset_comparison_context()
     |> stream(:comparison_differences, [], reset: true)
     |> stream(:comparison_structural, [], reset: true)
     |> stream(:comparison_unresolved, [], reset: true)

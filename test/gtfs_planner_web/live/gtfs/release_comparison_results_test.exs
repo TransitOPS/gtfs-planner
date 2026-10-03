@@ -579,6 +579,116 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
     end
   end
 
+  describe "the assistant's frozen copy of the comparison" do
+    test "a completed comparison admits a full context, and an explicit narrowing replaces it",
+         context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, thursday_only_zip(true))
+
+      right =
+        publish_run!(
+          organization,
+          gtfs_version_fixture(organization.id),
+          thursday_only_zip(false)
+        )
+
+      view = compare!(view(context), left, right)
+
+      # Completion attaches the complete comparison on its own, and what it
+      # attaches is the shared snapshot contract's own envelope.
+      assigns = socket_assigns(view)
+
+      assert %{kind: "release_comparison", payload: payload, digest: digest} =
+               assigns.comparison_context.source_snapshot
+
+      assert byte_size(digest) == 64
+      assert payload["schema_version"] == 1
+      assert payload["selected_route_pairs"] == ["R1/R1"]
+
+      assert payload["selected_dates"] == [
+               "2026-11-23",
+               "2026-11-24",
+               "2026-11-25",
+               "2026-11-26",
+               "2026-11-27"
+             ]
+
+      assert payload["result_digest"] == payload["selected_digest"]
+      assert payload["scope"] == nil
+      assert assigns.comparison_context_notice == nil
+
+      # The narrowed copy is a different identity, taken only when the editor
+      # asks for it, and the complete result is still on the page underneath.
+      narrow!(view, ["R1/R1"], [@thursday])
+
+      narrowed_assigns = socket_assigns(view)
+      narrowed = narrowed_assigns.comparison_context.source_snapshot.payload
+
+      assert narrowed["scope"]["narrowed"] == true
+      assert narrowed["scope"]["dates"] == [@thursday]
+      assert narrowed["selected_digest"] != narrowed["result_digest"]
+      assert narrowed["result_digest"] == payload["result_digest"]
+      assert narrowed["selected_route_pairs"] == ["R1/R1"]
+      assert narrowed["selected_dates"] == [@thursday]
+
+      # Clearing the scope shows the whole comparison again, so the admitted copy
+      # goes back to describing the whole comparison rather than the stale subset.
+      render_click(view, "clear_comparison_scope")
+
+      cleared = socket_assigns(view).comparison_context.source_snapshot.payload
+      assert cleared["scope"] == nil
+      assert cleared["selected_digest"] == payload["selected_digest"]
+    end
+
+    test "a refused helper context leaves the native result exactly where it was", context do
+      %{organization: organization, version: version} = context
+
+      # A wide window over many dates is more rows than the shared byte ceiling
+      # admits, so the copy is refused while the comparison itself is not.
+      left = publish_run!(organization, version, full_week_zip())
+
+      right =
+        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+
+      view = compare!(view(context), left, right, @long_from, @long_to)
+      _ = version
+
+      assigns = socket_assigns(view)
+
+      case assigns.comparison_context do
+        nil ->
+          assert assigns.comparison_context_notice == :source_too_large
+
+        _admitted ->
+          assert assigns.comparison_context_notice == nil
+      end
+
+      # Whatever the helper may or may not read, the proved result is complete
+      # and inspectable on its own terms.
+      assert has_element?(view, "#comparison-results")
+      assert has_element?(view, "#comparison-totals")
+      assert has_element?(view, "#comparison-rows")
+      assert socket_assigns(view).comparison_result != nil
+    end
+
+    test "replacing the comparison releases the admitted copy with it", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+
+      right =
+        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+
+      view = compare!(view(context), left, right)
+      assert socket_assigns(view).comparison_context != nil
+
+      render_click(view, "close_comparison")
+      _ = :sys.get_state(view.pid)
+
+      assert socket_assigns(view).comparison_context == nil
+      assert socket_assigns(view).comparison_context_notice == nil
+    end
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp view(%{conn: conn, user: user, organization: organization, version: version}) do
@@ -610,6 +720,8 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
     assert has_element?(view, "#comparison-results")
     view
   end
+
+  defp socket_assigns(view), do: :sys.get_state(view.pid).socket.assigns
 
   defp narrow!(view, keys, dates) do
     render_submit(view, "narrow_comparison", %{
