@@ -97,7 +97,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   The place, skipped-stops, shared-stop and boarding-alternative questions
   answer with identities, not with what an editor typed. Each combobox is a
   `LiveSelect` whose options come from `Alerts.search_stops/3` scoped to the
-  alert's own version, and every identity that reaches a handler is re-read
+  active schedule, and every identity that reaches a handler is re-read
   through `Alerts.stops_by_id/2` before it is stored: a stop ID of another version
   is simply not there, so a forged event saves nothing (R1, R7, CR-4).
 
@@ -118,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   `cancelled_trips`, and `Recurrence.date_range/1` reads the alert's own
   service dates.
 
-  The list is `Alerts.departures_on/4` over the alert's own version, so it
+  The list is `Alerts.departures_on/4` over the active schedule, so it
   offers only the trips whose service is active on the date being listed, with
   the direction the alert stores narrowing it and a clock past 24:00 saying so.
   Every trip that reaches the row is one this list offered for that date and a
@@ -1790,6 +1790,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp repair_key(%{target_type: :stretch, selector: selector}),
     do: {:stretch, selector.stretch_from_stop_id, selector.stretch_to_stop_id}
 
+  defp repair_key(%{target_type: type, id: id}), do: {type, id}
+
   # The raw selection as the alert holds it, so the editor can find it in the feed.
   defp repair_label(%{target_type: :trip, id: id, selector: selector}) do
     [id, "on #{selector.service_date}", selector.start_time && "at #{selector.start_time}"]
@@ -1918,7 +1920,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         |> push_focus("alert-repair-error")
 
       {:error, :stale, current} ->
-        socket |> assign(:conflict, current) |> assign(:save_state, :error)
+        # Typed values that are still waiting keep their "Not saved" state and their
+        # Save as new alert; a repair alone has neither, only a newer row to load.
+        socket
+        |> assign(:conflict, current)
+        |> assign(
+          :save_state,
+          if(socket.assigns.pending_attrs, do: :error, else: socket.assigns.save_state)
+        )
 
       {:error, reason} ->
         refuse_write(socket, reason)
@@ -2669,7 +2678,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   # Whether the schedule really offers this trip on this date. Every offered
-  # departure is re-read from the alert's own version, so an identity from
+  # departure is re-read from the active schedule, so an identity from
   # another version, a trip that does not run that day, or a trip of a route the
   # alert does not name is absent from the answer and writes nothing (R1, CR-4).
   defp departure_offered?(socket, alert, trip_id, date) do
@@ -3655,7 +3664,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # own stop list for the skipped-stop question, the routes that share the stops
   # the alert names, the combobox fields, the cancelled departures and this
   # step's expanded occurrences. Every read goes through the audit context, so
-  # all of them are the alert's own version's (CR-4).
+  # all of them are the active schedule's (CR-4).
   defp prepare_questions(socket, alert) do
     socket
     |> reset_stop_fields()
@@ -3745,7 +3754,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # options when the editor is actually on them: the mode question offers the
   # version's route types and the direction question the directions the routes
   # the alert already names run. Both reads go through the audit context, so
-  # they are the alert's own version's (CR-4).
+  # they are the active schedule's (CR-4).
   defp question_options(_socket, nil, _step, _kind), do: []
 
   defp question_options(socket, _alert, :mode, :mode_route_types) do
@@ -3787,8 +3796,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # The two facts about the version and the saved answers that change the
   # sequence. Both reads go through the audit context, which is scoped to the
-  # version in the URL - which, after the check above, is the alert's own version
-  # (CR-4).
+  # organization's active schedule (CR-4).
   defp editor_flags(socket, nil) do
     %{multimodal?: length(Alerts.route_types(audit_context(socket))) > 1, shared_routes?: false}
   end
@@ -3808,7 +3816,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # lists (`shared_route_options/2`): answering "yes" stores route and stop
   # pairs, and counting those routes as named would drop the question the
   # moment it is answered, leaving no way to change the answer. Both reads are
-  # the alert's own version's.
+  # the active schedule's.
   defp shared_routes?(audit, alert) do
     answer = scope(alert)
     chosen = MapSet.new(answer.route_ids || [])
@@ -4089,7 +4097,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # The preview reads saved answers only: the header the editor wrote, the When
   # sentence `Recurrence.summary/1` derived, and the route rows
-  # `Alerts.routes_for/2` read from the alert's own version (CR-4).
+  # `Alerts.routes_for/2` read from the active schedule (CR-4).
   defp empty_preview do
     %{
       alert: nil,
@@ -4399,23 +4407,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             >
               <div class="min-w-0">
                 <.target_repair
-                  :if={@repair_items != []}
                   active_name={schedule_name(@active_schedule)}
                   items={@repair_items}
                   picker={@repair_picker}
                   blocked?={@target_blocked?}
                   error={@repair_error}
+                  notice={@repair_notice}
                 />
-
-                <.message
-                  :if={@repair_notice}
-                  id="alert-repair-done"
-                  kind="success"
-                  title="Targets updated."
-                  class="mb-4"
-                >
-                  The alert now names targets in {@repair_notice}.
-                </.message>
 
                 <.assistant_start
                   :if={is_nil(@alert)}
@@ -4480,26 +4478,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
               <div class="min-w-0">
                 <.progress steps={@steps} />
 
-                <.conflict_banner :if={@conflict} id="alert-conflict" />
+                <.conflict_banner
+                  :if={@conflict}
+                  id="alert-conflict"
+                  save_new?={not is_nil(@pending_attrs)}
+                />
 
                 <.target_repair
-                  :if={@repair_items != []}
                   active_name={schedule_name(@active_schedule)}
                   items={@repair_items}
                   picker={@repair_picker}
                   blocked?={@target_blocked?}
                   error={@repair_error}
+                  notice={@repair_notice}
                 />
-
-                <.message
-                  :if={@repair_notice}
-                  id="alert-repair-done"
-                  kind="success"
-                  title="Targets updated."
-                  class="mb-4"
-                >
-                  The alert now names targets in {@repair_notice}.
-                </.message>
 
                 <.form
                   for={@form}

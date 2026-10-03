@@ -542,6 +542,48 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       refute has_element?(view, "#alert-target-repair")
     end
 
+    test "a repair applied over a newer revision offers Load latest and keeps the staged change",
+         context do
+      {:ok, view, _html} = live(context.conn, edit_path(context.alert) <> "?step=message")
+
+      view |> element("#alert-repair-remove-0") |> render_click()
+
+      # Another editor saves the alert while the removal is staged.
+      assert {:ok, newer} =
+               Alerts.save_draft(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 %{"message" => %{"header" => "Annex closed for work"}},
+                 schedule_opts(context.audit)
+               )
+
+      view |> element("#alert-repair-apply") |> render_click()
+
+      # Nothing typed is waiting, so there is nothing to save as a new alert, and the
+      # save bar does not claim the alert is unsaved.
+      assert has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#conflict-load-latest")
+      refute has_element?(view, "#conflict-save-new")
+      refute has_element?(view, "#alert-save-status", "Not saved")
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.alert.id)
+      assert unchanged.scope.stop_ids == ["OLD_ANNEX"]
+      assert unchanged.revision == newer.revision
+
+      view |> element("#conflict-load-latest") |> render_click()
+
+      refute has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#alert-repair-0-staged", "Will be removed")
+      assert has_element?(view, "#message-header[value='Annex closed for work']")
+
+      view |> element("#alert-repair-apply") |> render_click()
+
+      assert {:ok, repaired} = Alerts.get_alert(context.audit, context.alert.id)
+      assert repaired.scope.stop_ids == []
+      assert repaired.revision == newer.revision + 1
+    end
+
     test "a refused apply keeps every staged change and names what still does not fit",
          context do
       second = stop_fixture(context.organization.id, context.version.id, %{stop_id: "OLD_DOCK"})
@@ -570,6 +612,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       view |> element("#alert-repair-apply") |> render_click()
 
       assert has_element?(view, "#alert-repair-error", "not applied")
+
+      # The focus push names this paragraph, and only a focusable element can take it.
+      assert has_element?(view, "#alert-repair-error[tabindex='-1']")
+      assert_push_event(view, "focus_scoped_target", %{id: "alert-repair-error"})
 
       assert has_element?(
                view,
@@ -854,6 +900,76 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       refute has_element?(view, "#alert-repair-option-0-OLD_CENTRAL")
     end
 
+    test "a later query in the same open picker replaces the one still pending", context do
+      stop_fixture(context.organization.id, context.version.id, %{
+        stop_id: "OLD_CENTRAL",
+        stop_name: "Central Station"
+      })
+
+      {:ok, view, _html} = live(context.conn, edit_path(context.alert) <> "?step=message")
+
+      view |> element("#alert-repair-replace-0") |> render_click()
+
+      Repo.checkout(fn ->
+        # Two queries, neither answered yet, and the picker was never closed.
+        search_replacements(view, 0, "Central")
+        search_replacements(view, 0, "Harbor")
+        assert [_central, _harbor] = pending_searches(view)
+      end)
+
+      render_async(view)
+
+      # Only the query on screen is shown, however the two answers arrive.
+      assert has_element?(view, "#alert-repair-option-0-NEW_HARBOR", "Harbor Station")
+      refute has_element?(view, "#alert-repair-option-0-OLD_CENTRAL")
+      assert has_element?(view, "#alert-repair-status", "1 in the active schedule")
+    end
+
+    test "an earlier query that ends without an answer says nothing once a later one is on screen",
+         context do
+      {:ok, view, _html} = live(context.conn, edit_path(context.alert) <> "?step=message")
+
+      view |> element("#alert-repair-replace-0") |> render_click()
+
+      Repo.checkout(fn ->
+        search_replacements(view, 0, "Central")
+        search_replacements(view, 0, "Harbor")
+        assert [{_key, central}, _harbor] = pending_searches(view)
+        end_search(view, central)
+        settle(view)
+
+        # The later query is still pending, and the earlier one's exit did not fail it.
+        assert has_element?(view, "#alert-repair-status", "Searching")
+        refute has_element?(view, "#alert-repair-search-error")
+      end)
+
+      render_async(view)
+
+      refute has_element?(view, "#alert-repair-search-error")
+      assert has_element?(view, "#alert-repair-option-0-NEW_HARBOR")
+    end
+
+    test "clearing the query drops the answer of the search it replaces", context do
+      stop_fixture(context.organization.id, context.version.id, %{
+        stop_id: "OLD_CENTRAL",
+        stop_name: "Central Station"
+      })
+
+      {:ok, view, _html} = live(context.conn, edit_path(context.alert) <> "?step=message")
+
+      view |> element("#alert-repair-replace-0") |> render_click()
+
+      Repo.checkout(fn ->
+        search_replacements(view, 0, "Central")
+        search_replacements(view, 0, "")
+      end)
+
+      render_async(view)
+
+      assert has_element?(view, "#alert-repair-status", "Search the active schedule")
+      refute has_element?(view, "#alert-repair-option-0-OLD_CENTRAL")
+    end
+
     test "a search that fails while it is the current one says so and can be tried again",
          context do
       second = stop_fixture(context.organization.id, context.version.id, %{stop_id: "OLD_B"})
@@ -889,6 +1005,76 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       refute has_element?(view, "#alert-repair-search-error")
       assert has_element?(view, "#alert-repair-option-1-NEW_HARBOR")
+    end
+  end
+
+  describe "selectors the active schedule holds but cannot honour" do
+    setup :editor_conn
+
+    test "a missing route is replaced, and a pair and a stretch no trip serves are removed",
+         context do
+      alert = served_route_alert(context)
+
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=message")
+
+      assert has_element?(view, "#alert-repair-0", "R2")
+      assert has_element?(view, "#alert-repair-0-note", "Route R2 is not in the active schedule")
+      assert has_element?(view, "#alert-repair-1", "SA on R1")
+      assert has_element?(view, "#alert-repair-1-note", "Route R1 does not serve stop SA")
+      assert has_element?(view, "#alert-repair-2", "SA to SB")
+      assert has_element?(view, "#alert-repair-2-note", "No trip runs from stop SA to stop SB")
+
+      # Only an ID can be replaced by a pick; a pair or a stretch can only be removed.
+      assert has_element?(view, "#alert-repair-replace-0")
+      refute has_element?(view, "#alert-repair-replace-1")
+      refute has_element?(view, "#alert-repair-replace-2")
+
+      view |> element("#alert-repair-replace-0") |> render_click()
+      search_replacements(view, 0, "Express")
+      render_async(view)
+      view |> element("#alert-repair-option-0-R3") |> render_click()
+
+      view |> element("#alert-repair-remove-1") |> render_click()
+      view |> element("#alert-repair-remove-2") |> render_click()
+      view |> element("#alert-repair-apply") |> render_click()
+
+      assert {:ok, repaired} = Alerts.get_alert(context.audit, alert.id)
+      assert repaired.scope.route_ids == ["R1", "R3"]
+      assert repaired.scope.stop_ids == ["SA", "SB"]
+      assert repaired.scope.route_stop_pairs == []
+      assert repaired.scope.stretch_from_stop_id == nil
+      assert repaired.scope.stretch_to_stop_id == nil
+      assert repaired.revision == alert.revision + 1
+
+      refute has_element?(view, "#alert-target-repair")
+      assert has_element?(view, "#alert-repair-done")
+    end
+
+    test "a dated trip that no longer runs and a trip the schedule lacks are removed",
+         context do
+      alert = dated_trip_alert(context)
+
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=message")
+
+      assert has_element?(view, "#alert-repair-0", "T1 on 2026-10-06")
+      assert has_element?(view, "#alert-repair-0-note", "Trip T1 does not run on 2026-10-06")
+      assert has_element?(view, "#alert-repair-1", "T9 on 2026-10-05")
+      assert has_element?(view, "#alert-repair-1-note", "Trip T9 is not in the active schedule")
+      refute has_element?(view, "#alert-repair-replace-0")
+      refute has_element?(view, "#alert-repair-replace-1")
+
+      view |> element("#alert-repair-remove-0") |> render_click()
+      view |> element("#alert-repair-remove-1") |> render_click()
+      view |> element("#alert-repair-apply") |> render_click()
+
+      # The trip that still runs on its date stays.
+      assert {:ok, repaired} = Alerts.get_alert(context.audit, alert.id)
+
+      assert Enum.map(repaired.scope.trips, &{&1.trip_id, &1.service_date}) == [
+               {"T1", ~D[2026-10-05]}
+             ]
+
+      refute has_element?(view, "#alert-target-repair")
     end
   end
 
@@ -1039,6 +1225,97 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       })
 
     %{alert: alert}
+  end
+
+  # A route that is gone, plus a pair and a stretch on a route whose trips stopped
+  # serving both stops after the alert was written. The pair and the stretch exist
+  # in the schedule but do not fit it, so they are reported as such, not as missing.
+  defp served_route_alert(context) do
+    organization_id = context.organization.id
+    version_id = context.version.id
+
+    for {route_id, name} <- [{"R1", "1"}, {"R2", "2"}, {"R3", "Express"}] do
+      route_fixture(organization_id, version_id, %{route_id: route_id, route_short_name: name})
+    end
+
+    for {stop_id, name} <- [{"SA", "Alpha"}, {"SB", "Beta"}] do
+      stop_fixture(organization_id, version_id, %{stop_id: stop_id, stop_name: name})
+    end
+
+    trip_fixture(organization_id, version_id, "R1", %{trip_id: "T1", service_id: "weekday"})
+
+    for {stop_id, sequence} <- [{"SA", 1}, {"SB", 2}] do
+      stop_time_fixture(organization_id, version_id, "T1", stop_id, %{stop_sequence: sequence})
+    end
+
+    alert =
+      alert_with(context, %{
+        "urgency" => "now",
+        "situation" => "detour",
+        "cause" => "construction",
+        "scope" => %{
+          "shape" => "route_stops",
+          "route_ids" => ["R1", "R2"],
+          "stop_ids" => ["SA", "SB"],
+          "route_stop_pairs" => [%{"route_id" => "R1", "stop_id" => "SA"}],
+          "stretch_from_stop_id" => "SA",
+          "stretch_to_stop_id" => "SB"
+        },
+        "message" => message()
+      })
+
+    Repo.delete!(
+      Repo.get_by!(GtfsPlanner.Gtfs.Route,
+        organization_id: organization_id,
+        gtfs_version_id: version_id,
+        route_id: "R2"
+      )
+    )
+
+    Repo.delete_all(GtfsPlanner.Gtfs.StopTime)
+
+    alert
+  end
+
+  # A trip on two dates and a trip that is later removed. A service exception then
+  # takes the second date away, so the trip exists but does not run that day.
+  defp dated_trip_alert(context) do
+    organization_id = context.organization.id
+    version_id = context.version.id
+
+    route_fixture(organization_id, version_id, %{route_id: "R1", route_short_name: "1"})
+    calendar_fixture(organization_id, version_id, %{service_id: "weekday"})
+    trip_fixture(organization_id, version_id, "R1", %{trip_id: "T1", service_id: "weekday"})
+
+    gone =
+      trip_fixture(organization_id, version_id, "R1", %{trip_id: "T9", service_id: "weekday"})
+
+    alert =
+      alert_with(context, %{
+        "urgency" => "now",
+        "situation" => "cancelled_trips",
+        "cause" => "maintenance",
+        "scope" => %{
+          "shape" => "trips",
+          "route_ids" => ["R1"],
+          "trips" => [
+            %{"trip_id" => "T1", "service_date" => "2026-10-06"},
+            %{"trip_id" => "T9", "service_date" => "2026-10-05"},
+            %{"trip_id" => "T1", "service_date" => "2026-10-05"}
+          ]
+        },
+        "message" => message()
+      })
+
+    Repo.delete!(gone)
+
+    calendar_date_fixture(organization_id, version_id, %{
+      service_id: "weekday",
+      date: ~D[2026-10-06],
+      exception_type: 2
+    })
+
+    alert
   end
 
   defp session_scope(context),

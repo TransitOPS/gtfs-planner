@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   step the editor is on cannot come from two different sequences (INV-2). The
   Rider preview shows saved answers only: the header the editor wrote, the When
   summary `Alerts.Recurrence.summary/1` derived, and the labels
-  `Alerts.labels_for/2` read from the alert's own version (CR-4).
+  `Alerts.labels_for/2` read from the active schedule (CR-4).
 
   The bottom bar carries the save state in the reader's words - `Saving…`,
   `Saved`, `Not saved.` - and offers the actions that state allows: Retry for a
@@ -35,7 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   import GtfsPlannerWeb.CoreComponents,
     only: [button: 1, callout: 1, icon: 1, input: 1, segmented_control: 1, status_badge: 1]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -115,6 +115,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   def target_note(%{reason: :start_time_not_a_departure, id: id, selector: selector}),
     do: "Trip #{id} has no departure at #{selector.start_time}"
 
+  # A diagnostic `Alerts.Targets` adds later still reads as a sentence, so a display-only
+  # note can never stop the list or the editor from rendering.
+  def target_note(%{target_type: type, id: id}),
+    do: "#{target_type_label(type)} #{id} needs attention"
+
   @doc "The noun a diagnostic's target type reads as in a sentence or on a button."
   @spec target_type_label(atom()) :: String.t()
   def target_type_label(:route), do: "Route"
@@ -122,6 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   def target_type_label(:trip), do: "Trip"
   def target_type_label(:route_stop_pair), do: "Stop on route"
   def target_type_label(:stretch), do: "Stretch"
+  def target_type_label(_other), do: "Target"
 
   # -- Editor frame -------------------------------------------------------
 
@@ -569,7 +575,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   It is a reading of saved answers, never a draft of the editor's input: the
   header, the `Recurrence.summary/1` sentence for When, and the route and stop
-  labels `Alerts.labels_for/2` read from the alert's own version (CR-4). A draft
+  labels `Alerts.labels_for/2` read from the active schedule (CR-4). A draft
   that has answered nothing says so in words rather than showing an empty card,
   because an empty card reads as a broken one.
 
@@ -1167,7 +1173,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   selection and a typed answer arrive through one writer (INV-1).
 
   The search matches on name, number and platform code, and lists only stops of
-  the alert's own version, so the widget cannot offer a stop this alert could
+  the active schedule, so the widget cannot offer a stop this alert could
   not store (CR-4). The prototype's "Affected routes at this place" is answered
   by the routes question that follows, which arrives with the serving routes
   already pressed. **Continue** is what carries the reader there, because the
@@ -1511,7 +1517,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   A cancelled trip is named the way a rider names it - the first departure and
   where it goes - because the departures come from `Alerts.departures_on/4`,
-  which reads the schedule of the alert's own version and offers only the trips
+  which reads the active schedule and offers only the trips
   whose service is active on the date being listed (AC-10, CR-4).
 
   The service date is chosen here rather than in the timing step: a cancelled
@@ -2979,8 +2985,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   (**Save as new alert**). There is deliberately no "overwrite" action: a stale
   write never overwrites a newer revision, and a banner offering to force it
   would be the same failure wearing a button (R6, AC-16).
+
+  With no typed values waiting to be saved (`save_new?` false), as when a staged
+  target repair meets a newer revision, there is nothing to keep as a new alert, so
+  only **Load latest** is offered.
   """
   attr :id, :string, default: "alert-conflict"
+  attr :save_new?, :boolean, default: true
 
   def conflict_banner(assigns) do
     ~H"""
@@ -2991,14 +3002,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       class="mb-4 rounded-card"
     >
       <p id={"#{@id}-body"}>
-        Your latest changes aren't saved. Load the current draft to keep going, or save what
-        you have here as a new alert.
+        Your latest changes aren't saved.
+        <%= if @save_new? do %>
+          Load the current draft to keep going, or save what you have here as a new alert.
+        <% else %>
+          Load the current draft to keep going.
+        <% end %>
       </p>
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <.button id="conflict-load-latest" type="button" variant="primary" phx-click="load_latest">
           <.icon name="hero-arrow-path" class="size-4" /> Load latest
         </.button>
         <.button
+          :if={@save_new?}
           id="conflict-save-new"
           type="button"
           variant="secondary"
@@ -3083,7 +3099,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   `items` are prepared by the editor: `index`, `type` (the diagnostic's target type),
   `noun`, `id`, `note`, `replaceable?` and `op` (`nil`, `:remove` or
-  `{:replace, id, label}`). `picker` is the open replacement search or nil.
+  `{:replace, id, label}`). `picker` is the open replacement search or nil. With no
+  items the panel is absent; `notice` names the schedule a finished repair now
+  targets and shows as `#alert-repair-done`.
   """
   attr :id, :string, default: "alert-target-repair"
   attr :active_name, :string, default: nil
@@ -3091,12 +3109,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :picker, :map, default: nil
   attr :blocked?, :boolean, default: false
   attr :error, :string, default: nil
+  attr :notice, :string, default: nil
 
   def target_repair(assigns) do
     assigns = assign(assigns, :staged, Enum.count(assigns.items, & &1.op))
 
     ~H"""
-    <div class="mb-4">
+    <div :if={@items != []} class="mb-4">
       <.callout id={@id} kind="warning" title={repair_title(@active_name)} tabindex="-1">
         <p id={"#{@id}-body"}>
           The alert keeps its original targets until you remove or replace them. Other changes to
@@ -3176,6 +3195,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           :if={@error}
           id="alert-repair-error"
           role="alert"
+          tabindex="-1"
           class="mt-3 font-semibold text-error-fg [overflow-wrap:anywhere]"
         >
           {@error}
@@ -3197,6 +3217,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         </div>
       </.callout>
     </div>
+
+    <.message
+      :if={@notice}
+      id="alert-repair-done"
+      kind="success"
+      title="Targets updated."
+      class="mb-4"
+    >
+      The alert now names targets in {@notice}.
+    </.message>
     """
   end
 
