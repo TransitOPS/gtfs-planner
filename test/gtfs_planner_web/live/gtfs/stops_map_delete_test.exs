@@ -298,8 +298,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapDeleteTest do
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: ctx.organization.id,
         gtfs_version_id: ctx.version.id,
-        stop_id: station.stop_id,
-        level_id: level.level_id
+        stop_id: station.id,
+        level_id: level.id
       })
 
     Repo.insert!(%JournalEntry{

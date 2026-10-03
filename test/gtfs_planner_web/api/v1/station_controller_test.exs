@@ -457,8 +457,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, stop_level} =
         %StopLevel{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id
         }
@@ -607,8 +607,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, _stop_level} =
         %StopLevel{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
           diagram_filename: "busway_plan.png",
@@ -668,8 +668,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: historical_station.stop_id,
-          level_id: historical_level.level_id,
+          stop_id: historical_station.id,
+          level_id: historical_level.id,
           organization_id: org.id,
           gtfs_version_id: historical_version.id,
           diagram_filename: "retired.png"
@@ -705,8 +705,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, _stop_level} =
         %StopLevel{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
           diagram_filename: "concourse.png",
@@ -740,8 +740,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, _stop_level} =
         %StopLevel{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id,
           diagram_filename: "B1_busway.png"
@@ -778,8 +778,8 @@ defmodule GtfsPlannerWeb.Api.V1.StationControllerTest do
 
       {:ok, _stop_level} =
         %StopLevel{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org.id,
           gtfs_version_id: version.id
         }

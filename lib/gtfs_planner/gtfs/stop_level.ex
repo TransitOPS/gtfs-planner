@@ -8,10 +8,9 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
-          stop_id: String.t(),
-          level_id: String.t(),
+          stop_id: Ecto.UUID.t(),
+          level_id: Ecto.UUID.t(),
           diagram_filename: String.t() | nil,
-          level: map() | nil,
           scale_point_a: map() | nil,
           scale_point_b: map() | nil,
           scale_distance_meters: Decimal.t() | nil,
@@ -58,14 +57,8 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     field :floorplan_scale_mpp, :float
     field :floorplan_rotation_deg, :float
 
-    # `stop_id`/`level_id` hold scoped GTFS identifiers, so neither parent is a
-    # single-column automatic association: a plain `belongs_to` would join every
-    # organization's row sharing the identifier. `level` is a loaded projection
-    # filled by the explicit organization/version-scoped joins the readers build.
-    field :stop_id, :string
-    field :level_id, :string
-    field :level, :map, virtual: true
-
+    belongs_to :stop, GtfsPlanner.Gtfs.Stop
+    belongs_to :level, GtfsPlanner.Gtfs.Level
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 

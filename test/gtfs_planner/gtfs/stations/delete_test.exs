@@ -143,8 +143,8 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
     stop_level =
       %StopLevel{}
       |> StopLevel.changeset(%{
-        stop_id: scope.child.stop_id,
-        level_id: level.level_id,
+        stop_id: scope.child.id,
+        level_id: level.id,
         organization_id: scope.organization.id,
         gtfs_version_id: scope.version.id
       })

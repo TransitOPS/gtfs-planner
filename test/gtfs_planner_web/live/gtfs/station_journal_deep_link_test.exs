@@ -44,8 +44,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.stop_id,
-        level_id: level.level_id
+        stop_id: station.id,
+        level_id: level.id
       })
 
     child_stop =
@@ -226,8 +226,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
         insert_stop_level(%{
           organization_id: context.organization.id,
           gtfs_version_id: context.gtfs_version.id,
-          stop_id: other_station.stop_id,
-          level_id: context.level.level_id
+          stop_id: other_station.id,
+          level_id: context.level.id
         })
 
       other_child =
@@ -314,8 +314,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
         insert_stop_level(%{
           organization_id: context.organization.id,
           gtfs_version_id: other_version.id,
-          stop_id: other_station.stop_id,
-          level_id: other_level.level_id
+          stop_id: other_station.id,
+          level_id: other_level.id
         })
 
       other_child =
@@ -400,8 +400,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalDeepLinkTest do
         insert_stop_level(%{
           organization_id: other_org.id,
           gtfs_version_id: other_version.id,
-          stop_id: other_station.stop_id,
-          level_id: other_level.level_id
+          stop_id: other_station.id,
+          level_id: other_level.id
         })
 
       other_child =

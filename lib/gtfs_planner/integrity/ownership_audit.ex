@@ -32,6 +32,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
   )
 
   @containment [
+    {"stop_levels→stops", "stop_levels", "stop_id", "stops"},
+    {"stop_levels→levels", "stop_levels", "level_id", "levels"},
     {"trips.timed_pattern_id→timed_patterns", "trips", "timed_pattern_id", "timed_patterns"},
     {"alignment_segments.from_occurrence_id→route_pattern_stops", "alignment_segments",
      "from_occurrence_id", "route_pattern_stops"},
@@ -49,8 +51,6 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
   # anti-joins the parent column inside the row's own organization and version,
   # so only a row with no parent in its own scope is reported.
   @scoped_containment [
-    {"stop_levels→stops", "stop_levels", "stop_id", "stops", "stop_id"},
-    {"stop_levels→levels", "stop_levels", "level_id", "levels", "level_id"},
     {"route_pattern_stops→route_patterns", "route_pattern_stops", "route_pattern_id",
      "route_patterns", "route_pattern_id"},
     {"timed_patterns→route_patterns", "timed_patterns", "route_pattern_id", "route_patterns",

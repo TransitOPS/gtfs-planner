@@ -45,8 +45,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.stop_id,
-        level_id: level.level_id
+        stop_id: station.id,
+        level_id: level.id
       })
 
     child_node =
@@ -582,8 +582,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
         insert_stop_level(%{
           organization_id: context.organization.id,
           gtfs_version_id: context.gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: context.level.level_id
+          stop_id: station.id,
+          level_id: context.level.id
         })
 
       {:ok, scope} =

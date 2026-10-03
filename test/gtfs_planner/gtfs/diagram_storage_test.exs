@@ -238,8 +238,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
          %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "previous.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -287,8 +287,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: referenced,
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -354,87 +354,12 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
                )
     end
 
-    test "cleanup counts only the floorplan of its own scope when another scope repeats the station and level IDs",
-         %{organization: org, version: version, station: station, level: level} do
-      {:ok, attached} =
-        DiagramStorage.store_candidate(
-          org.id,
-          version.id,
-          station.stop_id,
-          ".png",
-          @candidate_png
-        )
-
-      {:ok, orphan} =
-        DiagramStorage.store_candidate(
-          org.id,
-          version.id,
-          station.stop_id,
-          ".png",
-          @candidate_png
-        )
-
-      {:ok, _stop_level} =
-        insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
-          diagram_filename: attached,
-          organization_id: org.id,
-          gtfs_version_id: version.id
-        })
-
-      # The same station and level IDs in a sibling version and in another
-      # organization each name the local orphan; neither reference may retain it.
-      sibling_version = gtfs_version_fixture(org.id)
-      foreign_org = organization_fixture()
-      foreign_version = gtfs_version_fixture(foreign_org.id)
-
-      for {scope_org, scope_version} <- [
-            {org, sibling_version},
-            {foreign_org, foreign_version}
-          ] do
-        duplicate_station =
-          stop_fixture(scope_org.id, scope_version.id,
-            stop_id: station.stop_id,
-            location_type: 1
-          )
-
-        duplicate_level =
-          level_fixture(scope_org.id, scope_version.id, level_id: level.level_id)
-
-        {:ok, _} =
-          insert_stop_level(%{
-            stop_id: duplicate_station.stop_id,
-            level_id: duplicate_level.level_id,
-            diagram_filename: orphan,
-            organization_id: scope_org.id,
-            gtfs_version_id: scope_version.id
-          })
-      end
-
-      assert {:ok, 1} =
-               DiagramStorage.cleanup_stale_candidates(
-                 org.id,
-                 version.id,
-                 station.stop_id,
-                 DateTime.add(DateTime.utc_now(), 60, :second)
-               )
-
-      assert {:ok, attached_path} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, attached)
-
-      assert File.read!(attached_path) == @candidate_png
-
-      assert {:error, :not_found} =
-               DiagramStorage.published_path(org.id, version.id, station.stop_id, orphan)
-    end
-
     test "cleanup-first and commit-first outcomes retain a committed reference or fail commit safely",
          %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "previous.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -492,8 +417,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "revoked editor cannot commit a staged candidate", scope do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: scope.station.stop_id,
-          level_id: scope.level.level_id,
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
           diagram_filename: "previous.png",
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id
@@ -529,8 +454,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "candidate commit rejects a stale stop-level revision", scope do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: scope.station.stop_id,
-          level_id: scope.level.level_id,
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
           diagram_filename: "previous.png",
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id
@@ -558,8 +483,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
          scope do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: scope.station.stop_id,
-          level_id: scope.level.level_id,
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
           diagram_filename: "previous.png",
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id
@@ -597,8 +522,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     test "failed diagram history leaves the previous filename in place", scope do
       {:ok, stop_level} =
         insert_stop_level(%{
-          stop_id: scope.station.stop_id,
-          level_id: scope.level.level_id,
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
           diagram_filename: "previous.png",
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id
@@ -641,8 +566,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -755,8 +680,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       # Reference the diagram from every published version's StopLevel.
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -764,8 +689,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: version_b_station.stop_id,
-          level_id: version_b_level.level_id,
+          stop_id: version_b_station.id,
+          level_id: version_b_level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version_b.id
@@ -773,8 +698,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: version_c_station.stop_id,
-          level_id: version_c_level.level_id,
+          stop_id: version_c_station.id,
+          level_id: version_c_level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version_c.id
@@ -818,8 +743,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
          %{organization: org, version: version, station: station, level: level} do
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "missing.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -836,8 +761,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -870,8 +795,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -895,8 +820,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id

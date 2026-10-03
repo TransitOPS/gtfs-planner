@@ -81,8 +81,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddStationLockVersionsTest do
              Repo.insert_all(StopLevel, [
                %{
                  id: stop_level_id,
-                 stop_id: stop.stop_id,
-                 level_id: level.level_id,
+                 stop_id: stop.id,
+                 level_id: level.id,
                  organization_id: context.organization.id,
                  gtfs_version_id: context.version.id,
                  inserted_at: now,

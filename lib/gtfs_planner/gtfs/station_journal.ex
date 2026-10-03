@@ -149,8 +149,8 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
         where:
           entry.organization_id == ^stop_level.organization_id and
             entry.gtfs_version_id == ^stop_level.gtfs_version_id and
-            entry.station_id in subquery(floorplan_station_rows(stop_level)) and
-            entry.target_type == "pin" and entry.stop_level_id == ^stop_level.id,
+            entry.station_id == ^stop_level.stop_id and entry.target_type == "pin" and
+            entry.stop_level_id == ^stop_level.id,
         lock: "FOR UPDATE"
       )
       |> Repo.all()
@@ -176,18 +176,6 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   end
 
   def refresh_pin_coordinates_for_stop_level(_, _, _), do: {:error, :invalid_input}
-
-  # Observations keep the station's row UUID; the floorplan names the station by
-  # its scoped GTFS ID, so the row is found inside the floorplan's own scope.
-  defp floorplan_station_rows(%StopLevel{} = stop_level) do
-    from(station in Stop,
-      where:
-        station.stop_id == ^stop_level.stop_id and
-          station.organization_id == ^stop_level.organization_id and
-          station.gtfs_version_id == ^stop_level.gtfs_version_id,
-      select: station.id
-    )
-  end
 
   @spec create_photo(Scope.t(), map(), %{
           path: String.t(),

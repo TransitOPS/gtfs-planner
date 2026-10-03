@@ -55,24 +55,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
-        stop_id: station.stop_id,
-        level_id: level.level_id,
+        stop_id: station.id,
+        level_id: level.id,
         diagram_filename: "level_#{suffix}.svg"
       })
 
     {station, level, stop_level}
-  end
-
-  defp pin_attrs(id, stop_level_id, x, y) do
-    %{
-      id: id,
-      target_type: "pin",
-      stop_level_id: stop_level_id,
-      diagram_x: x,
-      diagram_y: y,
-      body: "Pin #{id}",
-      captured_at: ~U[2026-07-18 12:00:00.000000Z]
-    }
   end
 
   describe "Station diagram LiveView journal markers layer mount and rendering" do
@@ -243,8 +231,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level_b.level_id,
+          stop_id: station.id,
+          level_id: level_b.id,
           diagram_filename: "level_b.svg"
         })
 
@@ -312,97 +300,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
                view,
                "#journal-markers-svg #journal-marker-pin-#{pin_a_id}"
              )
-    end
-  end
-
-  describe "level switching when another organization repeats the station and level IDs" do
-    test "each level shows only the pin of its own scoped floorplan", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: gtfs_version,
-      station: station,
-      stop_level: stop_level
-    } do
-      level_b =
-        level_fixture(organization.id, gtfs_version.id, %{
-          level_id: "journal_level_B",
-          level_name: "Mezzanine B",
-          level_index: 1.0
-        })
-
-      {:ok, stop_level_b} =
-        insert_stop_level(%{
-          organization_id: organization.id,
-          gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level_b.level_id,
-          diagram_filename: "level_b.svg"
-        })
-
-      # Same station and level feed IDs, owned by another organization.
-      foreign_organization = organization_fixture()
-      foreign_version = gtfs_version_fixture(foreign_organization.id)
-
-      {foreign_station, _foreign_level, foreign_stop_level} =
-        station_with_level(foreign_organization.id, foreign_version.id, "A")
-
-      pin_a_id = Ecto.UUID.generate()
-      pin_b_id = Ecto.UUID.generate()
-      foreign_pin_id = Ecto.UUID.generate()
-
-      {:ok, scope} =
-        Gtfs.resolve_station_journal_scope(
-          organization.id,
-          gtfs_version.id,
-          station.id,
-          user.id
-        )
-
-      assert %{synced_count: 2, errors: []} =
-               Gtfs.sync_journal_entries(scope, [
-                 pin_attrs(pin_a_id, stop_level.id, 20.0, 30.0),
-                 pin_attrs(pin_b_id, stop_level_b.id, 60.0, 70.0)
-               ])
-
-      foreign_user = user_fixture()
-
-      {:ok, _membership} =
-        Accounts.create_user_org_membership(%{
-          user_id: foreign_user.id,
-          organization_id: foreign_organization.id,
-          roles: ["pathways_studio_editor"]
-        })
-
-      {:ok, foreign_scope} =
-        Gtfs.resolve_station_journal_scope(
-          foreign_organization.id,
-          foreign_version.id,
-          foreign_station.id,
-          foreign_user.id
-        )
-
-      assert %{synced_count: 1, errors: []} =
-               Gtfs.sync_journal_entries(foreign_scope, [
-                 pin_attrs(foreign_pin_id, foreign_stop_level.id, 20.0, 30.0)
-               ])
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, _html} =
-        live(conn, ~p"/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
-
-      render_async(view, 5_000)
-
-      assert has_element?(view, "#journal-markers-svg #journal-marker-pin-#{pin_a_id}")
-      refute has_element?(view, "#journal-markers-svg #journal-marker-pin-#{pin_b_id}")
-      refute has_element?(view, "#journal-markers-svg #journal-marker-pin-#{foreign_pin_id}")
-
-      render_hook(view, "switch_level", %{"level_id" => level_b.id})
-
-      assert has_element?(view, "#journal-markers-svg #journal-marker-pin-#{pin_b_id}")
-      refute has_element?(view, "#journal-markers-svg #journal-marker-pin-#{pin_a_id}")
-      refute has_element?(view, "#journal-markers-svg #journal-marker-pin-#{foreign_pin_id}")
     end
   end
 
@@ -493,8 +390,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level_b.level_id,
+          stop_id: station.id,
+          level_id: level_b.id,
           diagram_filename: "level_b_alt.svg"
         })
 

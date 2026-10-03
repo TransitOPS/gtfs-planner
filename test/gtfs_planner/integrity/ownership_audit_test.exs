@@ -64,8 +64,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
              insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: version.id,
-               stop_id: station.stop_id,
-               level_id: level.level_id
+               stop_id: station.id,
+               level_id: level.id
              })
 
     route = route_fixture(org.id, version.id)
@@ -123,8 +123,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
              insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: other_version.id,
-               stop_id: stop.stop_id,
-               level_id: level.level_id
+               stop_id: stop.id,
+               level_id: level.id
              })
 
     relationship =
@@ -132,49 +132,6 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
     assert relationship.anomalies == 1
     assert stop_level.id in relationship.samples
-  end
-
-  test "stop-level containment resolves parents by GTFS ID inside the floorplan's own scope" do
-    org = organization_fixture()
-    version = gtfs_version_fixture(org.id)
-    foreign_org = organization_fixture()
-    foreign_version = gtfs_version_fixture(foreign_org.id)
-
-    local_station = stop_fixture(org.id, version.id, %{stop_id: "S1", location_type: 1})
-    local_level = level_fixture(org.id, version.id, %{level_id: "L1"})
-    stop_fixture(foreign_org.id, foreign_version.id, %{stop_id: "S1", location_type: 1})
-    level_fixture(foreign_org.id, foreign_version.id, %{level_id: "L1"})
-
-    foreign_only =
-      stop_fixture(foreign_org.id, foreign_version.id, %{stop_id: "S2", location_type: 1})
-
-    assert {:ok, _} =
-             insert_stop_level(%{
-               organization_id: org.id,
-               gtfs_version_id: version.id,
-               stop_id: local_station.stop_id,
-               level_id: local_level.level_id
-             })
-
-    # A foreign copy of the same IDs neither hides nor adds a finding.
-    assert %{anomalies: 0} = stop_level_relationship("stop_levels→stops")
-    assert %{anomalies: 0} = stop_level_relationship("stop_levels→levels")
-
-    # `S2` exists only in the foreign organization, so the local floorplan has no
-    # parent of its own; the audit reports it although the foreign row matches.
-    Repo.query!("ALTER TABLE stop_levels DROP CONSTRAINT stop_levels_stops_owner_fkey")
-
-    assert {:ok, orphaned} =
-             insert_stop_level(%{
-               organization_id: org.id,
-               gtfs_version_id: version.id,
-               stop_id: foreign_only.stop_id,
-               level_id: local_level.level_id
-             })
-
-    relationship = stop_level_relationship("stop_levels→stops")
-    assert relationship.anomalies == 1
-    assert relationship.samples == [orphaned.id]
   end
 
   test "pattern parent containment resolves by GTFS ID inside the row's own scope" do
@@ -436,8 +393,6 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     # The read-only setting must not leak into the surrounding sandbox transaction.
     route_fixture(org.id, version.id)
   end
-
-  defp stop_level_relationship(name), do: relationship(name)
 
   defp relationship(name) do
     OwnershipAudit.run().relationships |> Enum.find(&(&1.name == name))

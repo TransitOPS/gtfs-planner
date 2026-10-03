@@ -214,8 +214,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       audit = %GtfsPlanner.Gtfs.AuditContext{
@@ -1738,15 +1738,15 @@ defmodule GtfsPlanner.GtfsTest do
       # Also create stop_level associations to test diagram_filename (optional)
       {:ok, stop_level1} =
         insert_stop_level(%{
-          stop_id: station_a.stop_id,
-          level_id: level1.level_id,
+          stop_id: station_a.id,
+          level_id: level1.id,
           organization_id: org.id,
           gtfs_version_id: version.id
         })
 
       insert_stop_level(%{
-        stop_id: station_a.stop_id,
-        level_id: level2.level_id,
+        stop_id: station_a.id,
+        level_id: level2.id,
         organization_id: org.id,
         gtfs_version_id: version.id
       })
@@ -1845,8 +1845,8 @@ defmodule GtfsPlanner.GtfsTest do
       })
 
       insert_stop_level(%{
-        stop_id: station.stop_id,
-        level_id: stop_level_only_level.level_id,
+        stop_id: station.id,
+        level_id: stop_level_only_level.id,
         organization_id: org.id,
         gtfs_version_id: version.id
       })
@@ -1990,32 +1990,32 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station_a.stop_id,
-          level_id: level_ground.level_id
+          stop_id: station_a.id,
+          level_id: level_ground.id
         })
 
       {:ok, sl_upper_a} =
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station_a.stop_id,
-          level_id: level_upper_a.level_id
+          stop_id: station_a.id,
+          level_id: level_upper_a.id
         })
 
       {:ok, sl_upper_b} =
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station_a.stop_id,
-          level_id: level_upper_b.level_id
+          stop_id: station_a.id,
+          level_id: level_upper_b.id
         })
 
       {:ok, _other_station_stop_level} =
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station_b.stop_id,
-          level_id: level_ground.level_id
+          stop_id: station_b.id,
+          level_id: level_ground.id
         })
 
       other_org = organization_fixture()
@@ -2037,8 +2037,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: other_org.id,
           gtfs_version_id: other_version.id,
-          stop_id: other_station.stop_id,
-          level_id: other_level.level_id
+          stop_id: other_station.id,
+          level_id: other_level.id
         })
 
       %{
@@ -3149,8 +3149,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       from_stop =
@@ -3394,7 +3394,7 @@ defmodule GtfsPlanner.GtfsTest do
                  calibrated.organization_id,
                  calibrated.gtfs_version_id,
                  calibrated.level_id,
-                 parent_station.stop_id,
+                 parent_station.id,
                  audit_ctx
                )
 
@@ -3658,8 +3658,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       editor = editor_fixture(organization)
@@ -3774,8 +3774,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
@@ -4147,8 +4147,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: other_org.id,
           gtfs_version_id: other_version.id,
-          stop_id: other_station.stop_id,
-          level_id: other_level.level_id
+          stop_id: other_station.id,
+          level_id: other_level.id
         })
 
       attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
@@ -4185,8 +4185,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: other_version.id,
-          stop_id: other_station.stop_id,
-          level_id: other_level.level_id
+          stop_id: other_station.id,
+          level_id: other_level.id
         })
 
       attrs = Map.put(reviewed_apply_attrs(), :fingerprint, String.duplicate("a", 64))
@@ -4766,8 +4766,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
@@ -5187,8 +5187,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: active_level.level_id
+          stop_id: station.id,
+          level_id: active_level.id
         })
 
       %{
@@ -5342,8 +5342,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: active_level.level_id
+          stop_id: station.id,
+          level_id: active_level.id
         })
 
       editor = editor_fixture(organization)
@@ -5588,8 +5588,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: active_level.level_id
+          stop_id: station.id,
+          level_id: active_level.id
         })
 
       %{
@@ -6232,8 +6232,8 @@ defmodule GtfsPlanner.GtfsTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       %{

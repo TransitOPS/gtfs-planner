@@ -60,8 +60,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ImportTest do
       # Pre-create a stop_level (simulates existing record)
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.stop_id,
-          level_id: level.level_id,
+          stop_id: station.id,
+          level_id: level.id,
           organization_id: org_id,
           gtfs_version_id: version_id
         })

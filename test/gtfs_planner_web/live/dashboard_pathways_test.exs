@@ -630,8 +630,8 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
   defp floorplan(ctx, station, level, diagram_filename) do
     {:ok, stop_level} =
       insert_stop_level(%{
-        stop_id: station.stop_id,
-        level_id: level.level_id,
+        stop_id: station.id,
+        level_id: level.id,
         diagram_filename: diagram_filename,
         organization_id: ctx.organization.id,
         gtfs_version_id: ctx.version.id

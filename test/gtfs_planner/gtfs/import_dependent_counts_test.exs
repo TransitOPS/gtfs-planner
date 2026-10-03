@@ -21,7 +21,6 @@ defmodule GtfsPlanner.Gtfs.ImportDependentCountsTest do
   alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.ReliefPoint
-  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Translation
   alias GtfsPlanner.Repo
 
@@ -160,32 +159,13 @@ defmodule GtfsPlanner.Gtfs.ImportDependentCountsTest do
   end
 
   describe "the fk_uuid gap" do
-    test "journal entries cannot be counted before a stop row exists", context do
-      # `journal_entries` is a `via: :fk_uuid` entry. It matches `stops.id`, which
-      # an unimported natural key does not have, so it is absent from the result
+    test "levels and journal entries cannot be counted before a stop row exists", context do
+      # These are the two `via: :fk_uuid` entries. They match `stops.id`, which an
+      # unimported natural key does not have, so they are absent from the result
       # rather than reported as zero — nothing was counted, not "none found".
       assert %{"1434" => kinds} = counts(context, ["1434"]) |> Map.put("1434", %{stop_times: 1})
+      refute Map.has_key?(kinds, :stop_levels)
       refute Map.has_key?(kinds, :journal_entries)
-    end
-
-    test "floorplans are counted by their scoped GTFS identifier", context do
-      stop =
-        Repo.get_by!(Stop,
-          stop_id: "1434",
-          organization_id: context.organization.id,
-          gtfs_version_id: context.version.id
-        )
-
-      level = level_fixture(context.organization.id, context.version.id, level_id: "L1")
-
-      insert_stop_level(%{
-        organization_id: context.organization.id,
-        gtfs_version_id: context.version.id,
-        stop_id: stop.stop_id,
-        level_id: level.level_id
-      })
-
-      assert counts(context, ["1434"]) == %{"1434" => %{stop_levels: 1}}
     end
   end
 end

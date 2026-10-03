@@ -1346,8 +1346,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         insert_stop_level(%{
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id,
-          stop_id: station.stop_id,
-          level_id: level.level_id
+          stop_id: station.id,
+          level_id: level.id
         })
 
       child =

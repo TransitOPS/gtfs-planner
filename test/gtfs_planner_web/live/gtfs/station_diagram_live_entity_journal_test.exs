@@ -48,8 +48,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.stop_id,
-        level_id: level.level_id
+        stop_id: station.id,
+        level_id: level.id
       })
 
     child_stop =
@@ -1074,8 +1074,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveEntityJournalTest do
       insert_stop_level(%{
         organization_id: context.organization.id,
         gtfs_version_id: context.gtfs_version.id,
-        stop_id: other_station.stop_id,
-        level_id: context.level.level_id
+        stop_id: other_station.id,
+        level_id: context.level.id
       })
 
     render_patch(view, "/gtfs/#{context.gtfs_version.id}/stops/#{other_station.stop_id}/diagram")

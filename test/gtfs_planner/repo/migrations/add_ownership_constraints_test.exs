@@ -21,6 +21,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   import GtfsPlanner.VersionsFixtures
 
   @containment [
+    {"stop_levels", "stop_id", "stops"},
+    {"stop_levels", "level_id", "levels"},
     {"trips", "timed_pattern_id", "timed_patterns"},
     {"alignment_segments", "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas", "flex_service_id", "flex_services"},
@@ -87,12 +89,10 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       assert definition =~ "REFERENCES #{parent}(id, organization_id)"
     end
 
-    # `stop_levels`, the pattern occurrences and timings and the trip assignments store
+    # The pattern occurrences and timings and the trip assignments store
     # their parents' GTFS identifiers, so their containment is a natural composite key
     # that follows a parent rename and deletes with the parent.
     for {child, parent, name, column} <- [
-          {"stop_levels", "stops", "stop_levels_stops_owner_fkey", "stop_id"},
-          {"stop_levels", "levels", "stop_levels_levels_owner_fkey", "level_id"},
           {"route_pattern_stops", "route_patterns",
            "route_pattern_stops_route_patterns_owner_fkey", "route_pattern_id"},
           {"timed_patterns", "route_patterns", "timed_patterns_route_patterns_owner_fkey",
@@ -297,7 +297,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert_trip_and_version_cascades!()
   end
 
-  test "new stop levels reject a parent GTFS ID that exists only in another version" do
+  test "new stop levels reject a parent from another version of the same organization" do
     org = organization_fixture()
     first = gtfs_version_fixture(org.id)
     second = gtfs_version_fixture(org.id)
@@ -315,8 +315,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
             """,
             [
               Ecto.UUID.dump!(Ecto.UUID.generate()),
-              foreign_stop.stop_id,
-              level.level_id,
+              Ecto.UUID.dump!(foreign_stop.id),
+              Ecto.UUID.dump!(level.id),
               Ecto.UUID.dump!(org.id),
               Ecto.UUID.dump!(second.id)
             ]

@@ -388,8 +388,8 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportFlowTest do
       insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: version_id,
-        stop_id: station.stop_id,
-        level_id: level.level_id,
+        stop_id: station.id,
+        level_id: level.id,
         diagram_filename: @diagram_filename,
         scale_point_a: %{"x" => 10, "y" => 12},
         scale_point_b: %{"x" => 60, "y" => 58},

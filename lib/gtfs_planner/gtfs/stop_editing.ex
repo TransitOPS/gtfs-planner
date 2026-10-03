@@ -893,9 +893,8 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   and `descriptive` are `StopReferences.usage/3`'s items. **Any** blocking item
   refuses the delete. The refusal is on the *presence* of the item, never on a
   count reaching a threshold: `StopReferences.counts/3` is structurally unable
-  to see the remaining `via: :fk_uuid` references — `journal_entries` and
-  `editing_statuses` match on `stops.id`, and an unimported stop ID has none —
-  so a count-based
+  to see the `via: :fk_uuid` references — `stop_levels` and `journal_entries`
+  match on `stops.id`, and an unimported stop ID has none — so a count-based
   refusal would be passing for the wrong reason on exactly the rows a station
   delete most needs to refuse on. `usage/3` runs the ref's own scoped query and
   so sees all three `via` shapes.

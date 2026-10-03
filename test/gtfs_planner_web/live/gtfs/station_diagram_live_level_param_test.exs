@@ -46,16 +46,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.stop_id,
-        level_id: ground_level.level_id
+        stop_id: station.id,
+        level_id: ground_level.id
       })
 
     {:ok, _upper_stop_level} =
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.stop_id,
-        level_id: upper_level.level_id
+        stop_id: station.id,
+        level_id: upper_level.id
       })
 
     other_station =
@@ -76,8 +76,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: other_station.stop_id,
-        level_id: other_station_level.level_id
+        stop_id: other_station.id,
+        level_id: other_station_level.id
       })
 
     %{

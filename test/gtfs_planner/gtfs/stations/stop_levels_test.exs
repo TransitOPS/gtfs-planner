@@ -15,10 +15,8 @@ defmodule GtfsPlanner.Gtfs.Stations.StopLevelsTest do
     Audit,
     AuditContext,
     ChangeLog,
-    JournalEntry,
     Level,
     Pathway,
-    StationJournal.Scope,
     Stations,
     Stop,
     StopLevel
@@ -248,80 +246,6 @@ defmodule GtfsPlanner.Gtfs.Stations.StopLevelsTest do
     assert updated_logs(scope.audit, :stop_level, scope.stop_level.id) == []
   end
 
-  test "reviewed alignment refreshes only the observation pinned to its own floorplan", scope do
-    pin = insert_pin!(scope.organization, scope.version, scope.station, scope.stop_level)
-
-    # The same station and level IDs in another organization own a floorplan and
-    # a pin of their own, which an alignment of this floorplan must not reach.
-    other_organization = organization_fixture()
-    other_version = gtfs_version_fixture(other_organization.id)
-
-    other_station =
-      stop_fixture(other_organization.id, other_version.id,
-        stop_id: scope.station.stop_id,
-        location_type: 1
-      )
-
-    other_level =
-      level_fixture(other_organization.id, other_version.id, level_id: scope.level.level_id)
-
-    {:ok, other_stop_level} =
-      insert_stop_level(%{
-        organization_id: other_organization.id,
-        gtfs_version_id: other_version.id,
-        stop_id: other_station.stop_id,
-        level_id: other_level.level_id
-      })
-
-    other_pin = insert_pin!(other_organization, other_version, other_station, other_stop_level)
-
-    {:ok, review} =
-      Gtfs.preview_stop_level_alignment(scope.stop_level.id, alignment_attrs(), 1000, 800)
-
-    assert {:ok, _result} =
-             Stations.apply_reviewed_alignment(
-               scope.audit,
-               scope.stop_level.id,
-               Map.put(alignment_attrs(), :fingerprint, review.fingerprint),
-               1000,
-               800
-             )
-
-    # A pin at the image centre sits on the floorplan's geographic centre.
-    refreshed = Repo.get!(JournalEntry, pin.id)
-    assert_in_delta refreshed.lat, 40.7128, 1.0e-9
-    assert_in_delta refreshed.lon, -74.006, 1.0e-9
-    assert %{lat: nil, lon: nil} = Repo.get!(JournalEntry, other_pin.id)
-  end
-
-  test "renaming the parent level cascades once to the floorplan and refuses a stale revision",
-       scope do
-    assert {:ok, renamed} =
-             Stations.update_level(
-               scope.audit,
-               scope.level.id,
-               %{"level_id" => "L1_RENAMED"},
-               scope.level.lock_version
-             )
-
-    assert renamed.level_id == "L1_RENAMED"
-
-    cascaded = Repo.get!(StopLevel, scope.stop_level.id)
-    assert cascaded.level_id == "L1_RENAMED"
-    assert cascaded.lock_version > scope.stop_level.lock_version
-
-    assert {:error, {:stale, current}} =
-             Stations.save_alignment(
-               scope.audit,
-               scope.stop_level.id,
-               alignment_attrs(),
-               scope.stop_level.lock_version
-             )
-
-    assert current == cascaded.lock_version
-    assert Repo.get!(StopLevel, scope.stop_level.id).floorplan_center_lat == nil
-  end
-
   @tag :unboxed
   test "version-exclusive holder blocks scale save", _scope do
     supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
@@ -387,30 +311,6 @@ defmodule GtfsPlanner.Gtfs.Stations.StopLevelsTest do
       floorplan_scale_mpp: 0.25,
       floorplan_rotation_deg: 0.0
     }
-  end
-
-  defp insert_pin!(organization, version, station, stop_level) do
-    scope = %Scope{
-      organization_id: organization.id,
-      gtfs_version_id: version.id,
-      station_id: station.id,
-      station_stop_id: station.stop_id,
-      actor_id: editor_fixture(organization).id
-    }
-
-    JournalEntry.create_changeset(
-      %JournalEntry{},
-      %{
-        id: Ecto.UUID.generate(),
-        target_type: "pin",
-        stop_level_id: stop_level.id,
-        diagram_x: 50.0,
-        diagram_y: 40.0,
-        captured_at: ~U[2026-10-02 12:00:00.000000Z]
-      },
-      scope
-    )
-    |> Repo.insert!()
   end
 
   defp updated_logs(audit, type, id) do

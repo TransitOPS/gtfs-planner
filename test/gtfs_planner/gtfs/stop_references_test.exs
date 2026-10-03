@@ -116,8 +116,8 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
                if(kind == :array, do: {:array, :string}, else: :string)
            end)
 
-    # stop_levels.stop_id stores the station's scoped GTFS identifier.
-    assert %{rows: [["character varying"]]} =
+    # stop_levels.stop_id matches the name pattern but stores stops.id, a UUID.
+    assert %{rows: [["uuid"]]} =
              Repo.query!("""
              SELECT data_type FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = 'stop_levels'
