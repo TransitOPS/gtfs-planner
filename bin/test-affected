@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# Advisory diff-to-tests selector: print the focused tests for what changed since a base revision.
+# It never replaces `mix precommit`, which stays the completion gate.
+#
+# Usage: bin/test-affected [--base <ref>]
+#
+#   --base <ref>   compare against <ref> (default: git merge-base HEAD origin/main)
+#
+# Changes are `git diff --name-status <base>` (committed and working-tree edits) plus untracked files.
+# ExUnit files are selected from test/**/*_test.exs:
+#   1. a changed or added test file is selected; a deleted one is skipped;
+#   2. the `defmodule` names in each changed lib/**/*.ex are the changed modules (for a deleted
+#      or renamed file, the base revision's content counts);
+#   3. a test names module A.B.C when it contains the full name (not followed by `.[A-Z]` or an
+#      identifier character), `alias A.B.{..C..}` (multi-line allowed), or `alias A.B` plus `B.C`;
+#   4. one hop: lib files that name a changed module contribute their modules, and tests naming
+#      those are selected too;
+#   5. a selection over a quarter of the tracked test files, or a change under test/support/,
+#      config/, mix.exs, mix.lock or priv/repo/migrations/, prints the bin/test-all
+#      recommendation with the count instead of a file list.
+# Dynamic references (apply/3, module names built from strings) are not seen.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+advisory="Advisory selection; mix precommit remains the completion gate."
+
+usage() {
+  echo "Usage: bin/test-affected [--base <ref>]" >&2
+}
+
+die() {
+  echo "bin/test-affected: $*" >&2
+  exit 2
+}
+
+base=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --base)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      base=$2
+      shift 2
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+command -v rg >/dev/null || die "ripgrep (rg) is required"
+
+if [ -z "$base" ]; then
+  base=$(git merge-base HEAD origin/main 2>/dev/null) || die "cannot find a merge base with origin/main; pass --base <ref>"
+else
+  base=$(git rev-parse --verify --quiet "$base^{commit}") || die "unknown base revision: $base"
+fi
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/test-affected.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+# Output sections already printed; a section start adds a blank line between sections.
+printed=0
+
+section() {
+  [ "$printed" -eq 0 ] || echo
+  printed=$((printed + 1))
+  echo "$1"
+}
+
+# Writes $work/changes.tsv: one `<status>\t<path>\t<base path>` line per changed file. The status
+# is A, D, R or another git letter (treated as a modification); <base path> is the path at the base
+# revision and differs from <path> only for renames.
+collect_changes() {
+  {
+    git diff --name-status -z -M "$base" |
+      while IFS= read -r -d '' status; do
+        case $status in
+          R*)
+            IFS= read -r -d '' old
+            IFS= read -r -d '' path
+            ;;
+          *)
+            IFS= read -r -d '' path
+            old=$path
+            ;;
+        esac
+        printf '%s\t%s\t%s\n' "${status:0:1}" "$path" "$old"
+      done
+    git ls-files --others --exclude-standard -z |
+      while IFS= read -r -d '' path; do
+        printf 'A\t%s\t%s\n' "$path" "$path"
+      done
+  } >"$work/changes.tsv"
+}
+
+# `defmodule` names in the files given as arguments or, with none, on stdin. A nested module is
+# qualified with the enclosing top-level module (one level of nesting).
+# shellcheck disable=SC2016 # an awk program: nothing in it should expand
+module_names_awk='
+  FNR == 1 { top = "" }
+  /^[ \t]*defmodule[ \t]+[A-Z]/ {
+    line = $0
+    sub(/^[ \t]*defmodule[ \t]+/, "", line)
+    match(line, /^[A-Z][A-Za-z0-9_.]*/)
+    name = substr(line, 1, RLENGTH)
+    if ($0 ~ /^defmodule/) {
+      top = name
+      print name
+    } else if (top != "") {
+      print top "." name
+    }
+  }
+'
+
+# Modules defined in the newline-separated file names listed in the file $1.
+modules_in_files() {
+  [ -s "$1" ] || return 0
+  tr '\n' '\0' <"$1" | xargs -0 awk "$module_names_awk"
+}
+
+# Writes $work/changed_modules.txt from the lib files in changes.tsv: base-revision content for
+# every file that existed at the base, current content for every file that still exists.
+collect_changed_modules() {
+  awk -F'\t' '$1 != "A" && $3 ~ /^lib\/.*\.ex$/ { print $3 }' "$work/changes.tsv" |
+    while IFS= read -r path; do
+      git show "$base:$path" | awk "$module_names_awk"
+    done >"$work/modules.base"
+  awk -F'\t' '$1 != "D" && $2 ~ /^lib\/.*\.ex$/ { print $2 }' "$work/changes.tsv" >"$work/lib.current"
+  { cat "$work/modules.base"; modules_in_files "$work/lib.current"; } |
+    LC_ALL=C sort -u >"$work/changed_modules.txt"
+}
+
+# Reads module names on stdin and prints one rg pattern file line per way a file can name them (see
+# rule 3). Dots are written [.] and boundaries consume a character because the regex engine used
+# by rg -f has no lookaround. For module A.B.C, split k = 1..n-1 gives the parent A.B and rest C
+# (the rule's forms), and shorter parents such as `alias A` with `A.B.C` are handled the same way.
+module_patterns() {
+  awk '
+    function dots(s) { gsub(/[.]/, "[.]", s); return s }
+    BEGIN {
+      w = "A-Za-z0-9_"
+      before = "(?m)(?:^|[^" w ".])"
+      after = "(?:$|[^" w ".]|[.](?:[^A-Z]|$))"
+      alias = "(?m)^[[:blank:]]*alias[[:blank:]]+"
+    }
+    {
+      n = split($0, seg, ".")
+      print before dots($0) after
+      for (k = 1; k < n; k++) {
+        parent = seg[1]
+        for (i = 2; i <= k; i++) parent = parent "." seg[i]
+        rest = seg[k + 1]
+        for (i = k + 2; i <= n; i++) rest = rest "." seg[i]
+        print alias dots(parent) "[.][{](?:[^}]*[,[:space:]])?" dots(rest) "[,}[:space:]]"
+        print alias dots(parent) "[[:blank:]]*(?:$|,|#)(?s:.*)" before seg[k] "[.]" dots(rest) after
+      }
+    }
+  '
+}
+
+# Files under directory $1 matching glob $2 that name a module listed in the file $3.
+files_naming() {
+  [ -s "$3" ] || return 0
+  module_patterns <"$3" >"$work/patterns.txt"
+  local status=0
+  rg --no-config --files-with-matches --multiline --glob "$2" -f "$work/patterns.txt" -- "$1" || status=$?
+  [ "$status" -le 1 ] || die "rg failed with exit status $status"
+}
+
+# Writes $work/exunit.txt (selected test files, sorted) and $work/foundation.txt (changed paths that
+# call for the full run).
+select_exunit() {
+  awk -F'\t' '$1 != "D" && $2 ~ /^test\/.*_test\.exs$/ { print $2 }' "$work/changes.tsv" >"$work/tests.changed"
+
+  collect_changed_modules
+  files_naming lib '*.ex' "$work/changed_modules.txt" >"$work/lib.hop"
+  { cat "$work/changed_modules.txt"; modules_in_files "$work/lib.hop"; } |
+    LC_ALL=C sort -u >"$work/hop_modules.txt"
+  { cat "$work/tests.changed"; files_naming test '*_test.exs' "$work/hop_modules.txt"; } |
+    LC_ALL=C sort -u >"$work/exunit.txt"
+
+  awk -F'\t' '
+    {
+      for (i = 2; i <= 3; i++) {
+        if ($i ~ /^(test\/support\/|config\/|priv\/repo\/migrations\/)/ || $i == "mix.exs" || $i == "mix.lock") {
+          print $i
+          next
+        }
+      }
+    }
+  ' "$work/changes.tsv" | LC_ALL=C sort -u >"$work/foundation.txt"
+}
+
+report_exunit() {
+  local count total
+  count=$(awk 'END { print NR }' "$work/exunit.txt")
+  total=$(git ls-files 'test/**/*_test.exs' | awk 'END { print NR }')
+
+  if [ -s "$work/foundation.txt" ]; then
+    section ExUnit
+    echo "  Run the full suite: bin/test-all"
+    awk 'NR <= 3 { printf "%s%s", (NR > 1 ? ", " : "  Foundation change: "), $0 }
+         END { if (NR > 3) printf " and %d more", NR - 3; print "" }' "$work/foundation.txt"
+    echo "  Selected: $count of $total test files"
+  elif [ $((count * 4)) -gt "$total" ]; then
+    section ExUnit
+    echo "  Run the full suite: bin/test-all"
+    echo "  Selected: $count of $total test files, more than a quarter of the suite"
+  elif [ "$count" -gt 0 ]; then
+    section ExUnit
+    sed 's/^/  /' "$work/exunit.txt"
+    echo
+    echo "  mix test $(paste -s -d ' ' "$work/exunit.txt")"
+  fi
+}
+
+collect_changes
+select_exunit
+report_exunit
+
+# Later sections (JavaScript, browser journeys, advisory notes) print through `section`.
+
+[ "$printed" -gt 0 ] || echo "No affected tests found."
+echo
+echo "$advisory"
