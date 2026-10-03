@@ -180,18 +180,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       alert = cancelled_alert(context, schedule.route)
 
       {:ok, alert} =
-        Alerts.save_draft(context.audit, alert.id, alert.revision, %{
-          "scope" => %{
-            "shape" => "trips",
-            "trips" => [
-              %{
-                "trip_id" => schedule.early.trip_id,
-                "service_date" => "2026-10-05",
-                "start_time" => "25:15:00"
-              }
-            ]
-          }
-        })
+        Alerts.save_draft(
+          context.audit,
+          alert.id,
+          alert.revision,
+          %{
+            "scope" => %{
+              "shape" => "trips",
+              "trips" => [
+                %{
+                  "trip_id" => schedule.early.trip_id,
+                  "service_date" => "2026-10-05",
+                  "start_time" => "25:15:00"
+                }
+              ]
+            }
+          },
+          schedule_opts(context.audit)
+        )
 
       {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=departures")
 

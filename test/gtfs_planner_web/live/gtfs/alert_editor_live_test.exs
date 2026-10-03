@@ -34,15 +34,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     other_version = gtfs_version_fixture(organization.id, %{name: "Winter 2027 service"})
-    # The editor is organization-owned, so the version its reads resolve against
-    # is the organization's latest published one, not one named in the URL. The
-    # second fixture is backdated so the first stays that version, the same idiom
-    # `test/support/browser_seed.exs` uses for the same reason.
+    # The editor is organization-owned, so the version its reads and writes
+    # resolve against is the organization's active schedule, not one named in the
+    # URL or selected in the navbar. The second version is backdated so the first
+    # stays the navbar's, the same idiom `test/support/browser_seed.exs` uses.
     Repo.update!(
       Ecto.Changeset.change(other_version, published_at: ~U[2020-01-01 00:00:00.000000Z])
     )
 
     actor = editor_fixture(organization)
+    activate_version!(organization, version, actor)
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
     agency_fixture(organization.id, other_version.id, %{agency_timezone: "America/Los_Angeles"})
 

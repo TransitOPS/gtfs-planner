@@ -129,6 +129,27 @@ defmodule GtfsPlanner.Alerts.Publication do
   end
 
   @doc """
+  Refuses a selection the active schedule cannot honour.
+
+  `diagnostics` are `Alerts.Targets.resolve/2`'s missing and inapplicable selectors
+  for one alert. Any of them refuses with one `:scope` error: an identity the
+  schedule lacks reads as `unresolved_message/0`, and one that exists but does not
+  fit (a stop the route does not serve, a trip that does not run that day) says so.
+  Nothing is published narrower or guessed.
+  """
+  @spec refuse_diagnostics([map()]) :: :ok | {:error, [field_error()]}
+  def refuse_diagnostics([]), do: :ok
+
+  def refuse_diagnostics(diagnostics) do
+    message =
+      if Enum.any?(diagnostics, &(&1.kind == :missing)),
+        do: unresolved_message(),
+        else: inapplicable_message()
+
+    {:error, [error(:scope, message)]}
+  end
+
+  @doc """
   Builds one accepted snapshot: the whole public intent of one alert, reduced to
   GTFS identities and absolute instants.
 
@@ -405,6 +426,11 @@ defmodule GtfsPlanner.Alerts.Publication do
 
   defp unresolved_message do
     "This alert names an identity its source no longer has. Retarget it before publishing."
+  end
+
+  defp inapplicable_message do
+    "This alert names a stop, stretch or departure the active schedule does not run that way. " <>
+      "Retarget it before publishing."
   end
 
   # A mode is expanded by the caller into the explicit routes the trusted source

@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     actor = editor_fixture(organization)
 
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
+    activate_version!(organization, version, actor)
 
     [skipped, boarding] =
       stops(organization, version, [

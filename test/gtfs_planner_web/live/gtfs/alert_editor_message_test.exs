@@ -282,9 +282,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       assert generated.message.customized == false
 
       assert {:ok, _changed} =
-               Alerts.save_draft(context.audit, alert.id, generated.revision, %{
-                 "scope" => %{"stop_ids" => [context.middle.stop_id, context.last.stop_id]}
-               })
+               Alerts.save_draft(
+                 context.audit,
+                 alert.id,
+                 generated.revision,
+                 %{
+                   "scope" => %{"stop_ids" => [context.middle.stop_id, context.last.stop_id]}
+                 },
+                 schedule_opts(context.audit)
+               )
 
       {:ok, reloaded, _html} = live(context.conn, message_path(alert))
 

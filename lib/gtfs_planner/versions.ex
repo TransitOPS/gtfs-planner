@@ -494,17 +494,40 @@ defmodule GtfsPlanner.Versions do
         Repo.rollback(:no_active_schedule)
 
       true ->
-        version =
-          from(v in GtfsVersion,
-            where:
-              v.id == ^organization.active_gtfs_version_id and
-                v.organization_id == ^organization.id,
-            lock: "FOR UPDATE"
-          )
-          |> Repo.one!()
-
-        %{version: version, token: token(organization)}
+        %{version: lock_active_version!(organization), token: token(organization)}
     end
+  end
+
+  @doc """
+  Takes the locks of `lock_active_schedule!/2` for a command that learns only after it has
+  read its own row whether it depends on the schedule, and reports instead of refusing.
+
+  An alert save is metadata-only unless it changes a target, and that is known only against
+  the locked alert; the alert row must come after the active version, so the version is
+  locked first whether or not it ends up mattering. The organization row `FOR SHARE`, the
+  actor's editor membership and the active version `FOR UPDATE` (when one exists) are held
+  in that order. Rolls the surrounding transaction back with `:forbidden` for a missing
+  membership; otherwise returns the locked `version` (nil without an active schedule), its
+  current `token` and `current?`, whether `expected_token` equals that token. The caller
+  decides what a stale or absent selection means for its write.
+  """
+  @spec lock_schedule_for_write!(map(), term()) :: %{
+          version: GtfsVersion.t() | nil,
+          token: selection_token(),
+          current?: boolean()
+        }
+  def lock_schedule_for_write!(scope, expected_token) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError, "lock_schedule_for_write!/2 must run inside Repo.transaction/1"
+    end
+
+    organization = lock_selection!(scope, "FOR SHARE")
+
+    %{
+      version: organization.active_gtfs_version_id && lock_active_version!(organization),
+      token: token(organization),
+      current?: current_token?(organization, expected_token)
+    }
   end
 
   @doc """
@@ -688,6 +711,15 @@ defmodule GtfsPlanner.Versions do
       )
       |> Repo.one()
     end
+  end
+
+  defp lock_active_version!(%Organization{} = organization) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^organization.active_gtfs_version_id and v.organization_id == ^organization.id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one!()
   end
 
   defp token(%Organization{} = organization) do

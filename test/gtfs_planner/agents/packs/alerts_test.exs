@@ -247,16 +247,22 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       stop = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Elm St"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "situation" => "detour",
-          "scope" => %{
-            "shape" => "route_stops",
-            "route_ids" => [route.route_id],
-            "stop_ids" => [stop.stop_id]
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{
+            "situation" => "detour",
+            "scope" => %{
+              "shape" => "route_stops",
+              "route_ids" => [route.route_id],
+              "stop_ids" => [stop.stop_id]
+            },
+            "timing" => %{"start_date" => "2026-10-05", "start_time" => "08:00:00"},
+            "message" => %{"header" => "Route 12 detour"}
           },
-          "timing" => %{"start_date" => "2026-10-05", "start_time" => "08:00:00"},
-          "message" => %{"header" => "Route 12 detour"}
-        })
+          schedule_opts(context.audit)
+        )
 
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
 
@@ -282,9 +288,13 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
 
       {:ok, _saved} =
-        Alerts.save_draft(context.sibling_audit, elsewhere.id, elsewhere.revision, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [sibling_route.route_id]}
-        })
+        Alerts.save_draft(
+          context.sibling_audit,
+          elsewhere.id,
+          elsewhere.revision,
+          %{"scope" => %{"shape" => "routes", "route_ids" => [sibling_route.route_id]}},
+          schedule_opts(context.sibling_audit)
+        )
 
       sibling_scope =
         scope_fixture(context.actor, context.organization, context.sibling, elsewhere.id)
@@ -500,20 +510,26 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "situation" => "delay",
-          "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]},
-          "timing" => %{
-            "start_date" => "2026-10-05",
-            "start_time" => "08:00:00",
-            "end_kind" => "unknown",
-            "check_in_at" => "2026-10-05 10:00:00"
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{
+            "situation" => "delay",
+            "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]},
+            "timing" => %{
+              "start_date" => "2026-10-05",
+              "start_time" => "08:00:00",
+              "end_kind" => "unknown",
+              "check_in_at" => "2026-10-05 10:00:00"
+            },
+            "message" => %{
+              "header" => "Route 12 delayed",
+              "description" => "Route 12 buses are running late. Allow extra time."
+            }
           },
-          "message" => %{
-            "header" => "Route 12 delayed",
-            "description" => "Route 12 buses are running late. Allow extra time."
-          }
-        })
+          schedule_opts(context.audit)
+        )
 
       assert {:ok, check} = call("check_draft", %{}, context.scope)
 
@@ -673,9 +689,13 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]}
-        })
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{"scope" => %{"shape" => "routes", "route_ids" => [route.route_id]}},
+          schedule_opts(context.audit)
+        )
 
       Repo.delete!(route)
 

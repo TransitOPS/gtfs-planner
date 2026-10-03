@@ -12230,6 +12230,21 @@ case Accounts.register_first_admin(%{
         actor_email: editor.email
       }
 
+      # Alerts are written against the organization's active schedule, and the first
+      # version an organization has keeps that pointer, so the alerts version is
+      # selected explicitly before any alert is created.
+      alerts_token = fn ->
+        {:ok, %{token: token}} = GtfsPlanner.Versions.active_schedule(alerts_audit)
+        token
+      end
+
+      {:ok, _active} =
+        GtfsPlanner.Versions.set_active_schedule(
+          alerts_audit,
+          alerts_version.id,
+          alerts_token.()
+        )
+
       {:ok, _alerts_script} =
         GtfsPlanner.Alerts.create_script(alerts_audit, %{
           name: "Route detour",
@@ -12253,7 +12268,9 @@ case Accounts.register_first_admin(%{
       alerts_check_in = NaiveDateTime.new!(alerts_today, ~T[18:00:00])
 
       alerts_new = fn attrs ->
-        {:ok, alert} = GtfsPlanner.Alerts.create_alert(alerts_audit, attrs)
+        {:ok, alert} =
+          GtfsPlanner.Alerts.create_alert(alerts_audit, attrs, expected_schedule: alerts_token.())
+
         alert
       end
 
@@ -12362,6 +12379,7 @@ case Accounts.register_first_admin(%{
         new: alerts_new,
         route_12: alerts_route_12,
         today: alerts_today,
+        token: alerts_token,
         upcoming: alerts_upcoming
       }
     end
@@ -12377,17 +12395,18 @@ case Accounts.register_first_admin(%{
       new: alerts_new,
       route_12: alerts_route_12,
       today: alerts_today,
+      token: alerts_token,
       upcoming: alerts_upcoming
     } = seed_alerts_fixtures.(org, editor)
 
     # ── Alerts journeys organization (spec 30) ──
     #
-    # The alert editor resolves its schedule from the organization's latest
-    # published version, so the alert journeys need an organization whose newest
-    # published version is the alert-authoring one. This organization's default
-    # version is staging (versions are only published when they are finalized),
-    # so the fixture version above is the one the editor and its questions read.
-    # No other spec signs in here.
+    # The alert editor resolves its schedule from the organization's active
+    # schedule, so the alert journeys need an organization whose active schedule is
+    # the alert-authoring version. This organization's default version is staging
+    # (versions are only published when they are finalized), so the fixture version
+    # above is the one the editor and its questions read. No other spec signs in
+    # here.
     {:ok, alerts_org} =
       Organizations.create_organization_unchecked(%{
         name: "Browser Alerts Org",
@@ -12646,7 +12665,8 @@ case Accounts.register_first_admin(%{
                  "description" => alert.message.description
                }
              },
-             publish?: true
+             publish?: true,
+             expected_schedule: alerts_token.()
            ) do
         {:ok, %{alert: _accepted, publication: {:refused, field_errors}}} ->
           raise "Browser seed: alert publication refused: #{inspect(field_errors)}"

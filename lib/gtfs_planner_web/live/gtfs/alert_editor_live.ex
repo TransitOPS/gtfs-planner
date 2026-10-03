@@ -15,18 +15,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   ## One writer, and one version
 
-  Every write here is `Alerts.create_alert/2`, `Alerts.save_draft/4` or
-  `Alerts.delete_alert/3` (INV-1). The audit context is built from the socket's
-  trusted assigns - the organization, the navbar's version when the organization
-  has one, and the signed-in user - so no identity comes from a param (CR-2).
-  The version is what the alert's answers are checked against: it is the
-  schedule the questions read and the alert's provenance is captured from, and
-  it is `nil` for an organization with no schedule, where a private
-  system-scope draft is still writable (AC-10). The alert is never read through
-  a version other than its own provenance, so an alert of another organization
-  - or no alert at all - redirects with an error (R1, R6). The reader of a
-  refusal learns nothing beyond it: `Alerts.version_name_for/2` is a read that
-  returns a version name and nothing else.
+  Every write here is `Alerts.create_alert/3`, `Alerts.save_draft/5`,
+  `Alerts.save_review/5` or `Alerts.delete_alert/3` (INV-1). The audit context is
+  built from the socket's trusted assigns - the organization, its active
+  schedule and the signed-in user - so no identity comes from a param (CR-2).
+  The active schedule is what the alert's answers are checked against: it is the
+  schedule the questions read, the navbar's version never decides it, and it is
+  `nil` for an organization with none, which can start no alert. The page reads
+  the schedule's selection token once, when it opens, and passes it back with
+  every command as `expected_schedule`; a target-dependent write is refused once
+  the selection has moved, and no event swaps in a fresher token. The alert is
+  never read through a version other than its own provenance, so an alert of
+  another organization - or no alert at all - redirects with an error (R1, R6).
+  The reader of a refusal learns nothing beyond it: `Alerts.version_name_for/2`
+  is a read that returns a version name and nothing else.
 
   ## The step sequence
 
@@ -135,7 +137,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   `/alerts/new` it shows the **Describe the situation** start card, because
   there is no draft to talk about yet and no alert to hold a conversation: the
   first note the reader sends is what creates the draft, through
-  `Alerts.create_alert/2`, and the editor then navigates to that row's own
+  `Alerts.create_alert/3`, and the editor then navigates to that row's own
   assistant URL, where `AgentPanel.open/1` attaches to the conversation the
   start card already began.
 
@@ -223,6 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -323,6 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:alert_id, params["alert_id"])
      |> assign(:alert, nil)
+     |> assign(:active_schedule, active_schedule(socket))
      |> assign(:loaded_revision, nil)
      |> assign(:preview, empty_preview())
      |> assign(:load_state, :loading)
@@ -810,7 +814,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   def handle_event("save_as_new", _params, socket) do
     case socket.assigns.pending_attrs do
       params when is_map(params) ->
-        case Alerts.create_alert(audit_context(socket), castable(params)) do
+        case Alerts.create_alert(audit_context(socket), castable(params), schedule_opts(socket)) do
           {:ok, created} ->
             {:noreply,
              socket
@@ -916,7 +920,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           }
         }
 
-        case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+        case Alerts.save_draft(
+               audit_context(socket),
+               alert.id,
+               alert.revision,
+               attrs,
+               schedule_opts(socket)
+             ) do
           {:ok, saved} ->
             {:noreply,
              socket
@@ -1372,7 +1382,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     socket
     |> assign(:publication, prepare_publication(socket, alert))
     |> assign(:reference_version, reference_version(socket, alert))
-    |> assign(:reference_missing?, reference_missing?(alert))
+    |> assign(:reference_missing?, reference_missing?(socket, alert))
   end
 
   defp prepare_publication(_socket, nil), do: nil
@@ -1479,22 +1489,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  # An identity the capture could not resolve is a selector that cannot become
-  # a public route, stop or trip, so the note names it before the operator
-  # tries to publish rather than as a bare field refusal afterwards (AC-10,
-  # FH-13).
-  defp reference_missing?(nil), do: false
+  # A selector the active schedule cannot honour cannot become a public route,
+  # stop or trip, so the note names it before the operator tries to publish
+  # rather than as a bare field refusal afterwards (AC-10, FH-13). It is the
+  # same per-alert diagnostic the list flags as Needs attention.
+  defp reference_missing?(_socket, nil), do: false
 
-  defp reference_missing?(%Alert{} = alert) do
-    selectors = get_in(alert.target_reference || %{}, ["selectors"]) || %{}
-
-    Enum.any?(["unresolved_routes", "unresolved_stops"], &present_ids?(Map.get(selectors, &1))) or
-      Enum.any?(Map.get(selectors, "route_stops") || [], &(not Map.get(&1, "resolved", false))) or
-      Enum.any?(Map.get(selectors, "trips") || [], &(not Map.get(&1, "resolved", false)))
-  end
-
-  defp present_ids?(ids) when is_list(ids), do: Enum.reject(ids, &(&1 in [nil, []])) != []
-  defp present_ids?(_ids), do: false
+  defp reference_missing?(socket, %Alert{} = alert),
+    do: Alerts.diagnostics_for(audit_context(socket), alert) != []
 
   defp offset_choices_from(nil), do: %{}
 
@@ -1559,8 +1561,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
            alert.id,
            base,
            castable(attrs),
-           publish?: true,
-           offset_choices: socket.assigns.offset_choices
+           [publish?: true, offset_choices: socket.assigns.offset_choices] ++
+             schedule_opts(socket)
          ) do
       {:ok, %{alert: saved} = result} ->
         {:noreply, apply_publication_result(socket, saved, Map.fetch!(result, :publication))}
@@ -2309,7 +2311,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp store_message(socket, alert, script) do
     attrs = message_attrs(alert, script, message_labels(socket, alert))
 
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           schedule_opts(socket)
+         ) do
       {:ok, saved} -> {:ok, saved}
       # Another editor wrote between this load and the generation, so the
       # wording is left to the editor's own first save, which reports the
@@ -2463,7 +2471,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     base = base_revision(socket, params, alert)
     socket = assign(socket, :pending_attrs, with_base(params, base))
 
-    case Alerts.save_draft(audit_context(socket), alert.id, base, castable(params)) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           base,
+           castable(params),
+           schedule_opts(socket)
+         ) do
       {:ok, saved} ->
         {:noreply,
          socket
@@ -2515,7 +2529,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
            audit_context(socket),
            alert.id,
            base_revision(socket, params, alert),
-           castable(params)
+           castable(params),
+           schedule_opts(socket)
          ) do
       {:ok, saved} ->
         {:ok,
@@ -2645,7 +2660,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp start_interview(socket, text) do
-    case Alerts.create_alert(audit_context(socket), %{}) do
+    case Alerts.create_alert(audit_context(socket), %{}, schedule_opts(socket)) do
       {:ok, alert} ->
         socket =
           socket
@@ -2696,7 +2711,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp write_prepared(socket, alert, conversation_id, entry_id, params) do
     attrs = mark_prepared_wording(socket, alert, params)
 
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           schedule_opts(socket)
+         ) do
       {:ok, saved} ->
         socket
         |> assign(:alert, saved)
@@ -3266,7 +3287,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp answer_and_advance(socket, answered, alert, attrs) do
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           schedule_opts(socket)
+         ) do
       {:ok, saved} ->
         {:noreply, advance_without_writing(socket, saved, answered)}
 
@@ -3308,7 +3335,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp search_query(_params), do: nil
 
   defp create_and_advance(socket, urgency) do
-    case Alerts.create_alert(audit_context(socket), %{"urgency" => urgency}) do
+    case Alerts.create_alert(
+           audit_context(socket),
+           %{"urgency" => urgency},
+           schedule_opts(socket)
+         ) do
       {:ok, alert} ->
         {:noreply,
          push_navigate(socket, to: saved_path(socket, alert, advance(alert, :urgency, socket)))}
@@ -3534,7 +3565,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp write_error_message(:stale),
     do: "This alert changed elsewhere. Reload it to see the current draft."
 
+  defp write_error_message(:stale_active) do
+    "The active schedule changed since this page opened. Reload the page to choose targets again."
+  end
+
+  defp write_error_message(:no_active_schedule) do
+    "Select an active schedule on the alerts page before writing an alert."
+  end
+
   defp write_error_message(_reason), do: "That change could not be saved."
+
+  # The active schedule and its token as the organization's editor read them when
+  # this page opened, or nil when there is none or the actor cannot read it. The
+  # token is held for the life of the page: a target-dependent write passes it back
+  # as an expectation and is refused once the selection has moved, so no event
+  # quietly replaces it with a fresh read.
+  defp active_schedule(socket) do
+    with %{id: organization_id} <- socket.assigns[:current_organization],
+         %{id: user_id} <- socket.assigns[:current_user],
+         {:ok, active} <-
+           Versions.active_schedule(%{actor_id: user_id, organization_id: organization_id}) do
+      active
+    else
+      _no_active_schedule -> nil
+    end
+  end
+
+  defp schedule_opts(socket) do
+    case socket.assigns.active_schedule do
+      %{token: token} -> [expected_schedule: token]
+      nil -> []
+    end
+  end
 
   defp audit_context(socket) do
     %AuditContext{
@@ -3546,13 +3608,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     }
   end
 
-  # The navbar's version when the organization has one, and `nil` when it does
-  # not. Every question here reads that version's schedule, so an organization
-  # with no schedule offers none of them and its draft is a private
-  # system-scope alert instead (AC-10).
+  # The organization's active schedule, and `nil` when it has none. Every
+  # question here reads that schedule, the one a target-dependent write is
+  # validated against, so the navbar's version never decides which stops and
+  # routes the editor offers.
   defp selected_version_id(socket) do
-    case socket.assigns[:current_gtfs_version] do
-      %{id: version_id} -> version_id
+    case socket.assigns[:active_schedule] do
+      %{version: %{id: version_id}} -> version_id
       _no_version -> nil
     end
   end
@@ -3560,8 +3622,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # The assistant's own scope line names the schedule this editor reads its
   # questions from, and the organization when there is no schedule to name.
   defp scope_line(assigns) do
-    case assigns[:current_gtfs_version] do
-      %{name: name} -> "Alerts · " <> name
+    case assigns[:active_schedule] do
+      %{version: %{name: name}} -> "Alerts · " <> name
       _no_version -> "Alerts · " <> organization_name(assigns)
     end
   end

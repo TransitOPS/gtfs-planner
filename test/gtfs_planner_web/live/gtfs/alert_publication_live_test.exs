@@ -256,12 +256,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
       Repo.delete!(dropped)
 
       {:ok, _alert} =
-        Alerts.save_draft(context.audit, alert.id, alert.revision, %{
-          "scope" => %{
-            "shape" => "routes",
-            "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
-          }
-        })
+        Alerts.save_draft(
+          context.audit,
+          alert.id,
+          alert.revision,
+          %{
+            "scope" => %{
+              "shape" => "routes",
+              "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
+            }
+          },
+          schedule_opts(context.audit)
+        )
 
       {:ok, view, _html} = live(context.conn, review_path(alert))
 

@@ -263,6 +263,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
           now_timing(context)
         )
 
+      activate_version!(context.organization, context.version, context.actor)
+
       {:ok, view, _html} = live(context.conn, alerts_path())
 
       # Both resolve against the active version, so the alert written against the

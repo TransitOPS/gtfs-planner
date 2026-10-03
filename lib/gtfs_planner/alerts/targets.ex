@@ -426,6 +426,59 @@ defmodule GtfsPlanner.Alerts.Targets do
     }
   end
 
+  @doc """
+  Merges a capture taken from the active schedule with the capture an alert held.
+
+  A private partial repair validates only the identities it adds, so the unchanged
+  ones the active schedule lacks must stay as the alert already knew them. `fresh` is
+  `capture_reference/2` of the new answer; every route, stop, pair and trip it lists
+  as unresolved is replaced by the entry `retained` held for the same identity, and
+  the zone and source provenance stay the retained capture's. Identities `retained`
+  never held stay unresolved, and a `retained` with no capture changes nothing.
+  """
+  @spec merge_reference(map(), map() | nil) :: map()
+  def merge_reference(fresh, retained) when is_map(fresh) do
+    retained = retained || %{}
+    held = Map.get(retained, "selectors") || %{}
+
+    selectors =
+      fresh["selectors"]
+      |> keep_resolved_entries("routes", "unresolved_routes", held)
+      |> keep_resolved_entries("stops", "unresolved_stops", held)
+      |> keep_unresolved_entries("route_stops", held, &{&1["route_id"], &1["stop_id"]})
+      |> keep_unresolved_entries(
+        "trips",
+        held,
+        &{&1["id"], &1["service_date"], &1["start_time"]}
+      )
+
+    fresh
+    |> Map.put("selectors", selectors)
+    |> Map.merge(Map.take(retained, ["source_gtfs_version_id", "timezone"]))
+  end
+
+  defp keep_resolved_entries(selectors, entries_key, unresolved_key, held) do
+    kept =
+      Enum.filter(held[entries_key] || [], &(&1["gtfs_id"] in selectors[unresolved_key]))
+
+    selectors
+    |> Map.update!(entries_key, &(&1 ++ kept))
+    |> Map.update!(unresolved_key, &(&1 -- Enum.map(kept, fn entry -> entry["gtfs_id"] end)))
+  end
+
+  defp keep_unresolved_entries(selectors, key, held, identity) do
+    retained = Map.new(held[key] || [], &{identity.(&1), &1})
+
+    Map.update!(
+      selectors,
+      key,
+      &Enum.map(&1, fn entry -> retained_entry(entry, retained, identity) end)
+    )
+  end
+
+  defp retained_entry(%{"resolved" => true} = entry, _retained, _identity), do: entry
+  defp retained_entry(entry, retained, identity), do: Map.get(retained, identity.(entry), entry)
+
   defp empty_reference(audit_context) do
     capture_reference(%ScopeAnswer{}, audit_context)
   end

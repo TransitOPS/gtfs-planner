@@ -1065,6 +1065,55 @@ defmodule GtfsPlanner.VersionsTest do
     end
   end
 
+  describe "lock_schedule_for_write!/2" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+      scope = editor_scope(organization)
+      {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+      %{organization: organization, first: first, second: second, scope: scope, token: token}
+    end
+
+    test "reports a matching token without refusing", c do
+      first_id = c.first.id
+      token = c.token
+
+      assert {:ok, %{version: %GtfsVersion{id: ^first_id}, token: ^token, current?: true}} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, c.token) end)
+    end
+
+    test "locks and reports the current schedule when the token is stale, absent or forged", c do
+      {:ok, %{token: moved}} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      second_id = c.second.id
+
+      for expected <- [c.token, nil, %{c.token | version_id: c.second.id}] do
+        assert {:ok, %{version: %GtfsVersion{id: ^second_id}, token: ^moved, current?: false}} =
+                 Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, expected) end)
+      end
+    end
+
+    test "returns no version when nothing is selected", c do
+      clear_pointer(c.organization)
+      {:ok, %{token: empty}} = Versions.active_schedule(c.scope)
+
+      assert {:ok, %{version: nil, token: ^empty, current?: true}} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, empty) end)
+    end
+
+    test "still refuses a revoked editor and must run inside a transaction", c do
+      assert_raise ArgumentError, ~r/inside Repo.transaction/, fn ->
+        Versions.lock_schedule_for_write!(c.scope, c.token)
+      end
+
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id))
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, c.token) end)
+    end
+  end
+
   describe "activate_full_publication!/3" do
     setup do
       organization = organization_fixture()

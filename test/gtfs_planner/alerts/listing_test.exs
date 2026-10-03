@@ -229,6 +229,10 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       sibling_only = route_delay(%{audit: other_audit}, "RB")
       sibling_shared = route_delay(%{audit: other_audit}, "RA")
 
+      # The sibling's alerts were written while it was active; the read is judged
+      # by the schedule that is active now.
+      activate_version!(context.organization, context.version, context.actor)
+
       assert {:ok, workspace} = Alerts.workspace(context.audit, @now_utc)
 
       # Only the alert that names a route the active schedule lacks is flagged. The

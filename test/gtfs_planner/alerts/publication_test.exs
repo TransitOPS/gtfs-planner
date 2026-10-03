@@ -232,12 +232,117 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
           organization_id: context.organization.id
         )
 
+      opts = schedule_opts(context.audit)
       deactivate_membership_fixture(membership)
 
-      assert {:error, :forbidden} = save_review(context, alert, %{}, publish?: true)
+      assert {:error, :forbidden} =
+               Alerts.save_review(
+                 context.audit,
+                 alert.id,
+                 alert.revision,
+                 %{},
+                 [publish?: true] ++ opts
+               )
+
       assert Repo.get!(Alert, alert.id).revision == accepted.desired_revision
       assert publication_for(alert) == accepted
       assert channel_revision(context) == 1
+    end
+
+    test "a republish the active schedule cannot honour saves the edit and keeps what was accepted",
+         context do
+      alert = accepted_alert(context)
+      accepted = publication_for(alert)
+
+      switch_to_schedule_without_routes!(context)
+
+      assert {:ok, %{alert: saved, publication: {:refused, [%{field: :scope, message: message}]}}} =
+               save_review(context, alert, %{"message" => %{"header" => "Route 1 late"}},
+                 publish?: true
+               )
+
+      assert message =~ "no longer has"
+      assert saved.revision == alert.revision + 1
+      assert Repo.get!(Alert, alert.id).message.header == "Route 1 late"
+
+      # The accepted snapshot, its revision and the channel are exactly as they were.
+      assert publication_for(alert) == accepted
+      assert channel_revision(context) == 1
+    end
+
+    test "refuses a dated departure the active schedule does not run that day", context do
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
+      trip_fixture(context.organization.id, context.version.id, context.route.route_id, %{
+        trip_id: "t_1",
+        service_id: "weekday"
+      })
+
+      alert =
+        complete_alert(context.audit, %{
+          "situation" => "cancelled_trips",
+          "scope" => %{
+            "shape" => "trips",
+            "route_ids" => [context.route.route_id],
+            # A Saturday: the weekday service does not run.
+            "trips" => [%{"trip_id" => "t_1", "service_date" => "2026-10-10"}]
+          }
+        })
+
+      assert {:ok, %{publication: {:refused, [%{field: :scope, message: message}]}}} =
+               save_review(context, alert, %{}, publish?: true)
+
+      assert message =~ "does not run that way"
+      assert publication_count(alert) == 0
+    end
+
+    test "a stale or absent active schedule refuses a republish before it saves", context do
+      alert = accepted_alert(context)
+      accepted = publication_for(alert)
+      stale = schedule_opts(context.audit)
+      attrs = %{"message" => %{"header" => "Route 1 late"}}
+
+      switch_to_schedule_without_routes!(context)
+
+      assert {:error, :stale_active} =
+               Alerts.save_review(
+                 context.audit,
+                 alert.id,
+                 alert.revision,
+                 attrs,
+                 [publish?: true] ++ stale
+               )
+
+      assert Repo.get!(Alert, alert.id).revision == alert.revision
+      assert publication_for(alert) == accepted
+
+      # A private save needs no schedule: the same stale token still saves the edit
+      # and publishes nothing.
+      assert {:ok, %{publication: :private}} =
+               Alerts.save_review(context.audit, alert.id, alert.revision, attrs, stale)
+
+      assert Repo.get!(Alert, alert.id).message.header == "Route 1 late"
+      assert publication_for(alert) == accepted
+
+      Repo.update_all(
+        from(o in GtfsPlanner.Organizations.Organization,
+          where: o.id == ^context.organization.id
+        ),
+        set: [active_gtfs_version_id: nil]
+      )
+
+      current = Repo.get!(Alert, alert.id)
+
+      assert {:error, :no_active_schedule} =
+               Alerts.save_review(
+                 context.audit,
+                 current.id,
+                 current.revision,
+                 attrs,
+                 [publish?: true] ++ schedule_opts(context.audit)
+               )
+
+      assert Repo.get!(Alert, alert.id).revision == current.revision
     end
 
     test "keeps the draft and reports explicit errors for an incomplete alert", context do
@@ -280,12 +385,18 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
       Repo.delete!(dropped)
 
       {:ok, alert} =
-        Alerts.save_draft(context.audit, alert.id, alert.revision, %{
-          "scope" => %{
-            "shape" => "routes",
-            "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
-          }
-        })
+        Alerts.save_draft(
+          context.audit,
+          alert.id,
+          alert.revision,
+          %{
+            "scope" => %{
+              "shape" => "routes",
+              "route_ids" => [context.route.route_id, dropped.route_id, later.route_id]
+            }
+          },
+          schedule_opts(context.audit)
+        )
 
       assert {:ok, %{publication: {:refused, [%{field: :scope, message: message}]}}} =
                save_review(context, alert, %{}, publish?: true)
@@ -549,9 +660,26 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
          context do
       uuid_like = "ABCDEF00-0000-0000-0000-000000000000"
 
+      # The trip runs on the Monday it is cancelled and both starts are departures
+      # of its frequency windows, which is what the active schedule must hold for
+      # the instances to be publishable.
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
       trip_fixture(context.organization.id, context.version.id, context.route.route_id, %{
-        trip_id: uuid_like
+        trip_id: uuid_like,
+        service_id: "weekday"
       })
+
+      for {from, until, headway} <- [
+            {"08:00:00", "09:00:00", 3600},
+            {"25:00:00", "26:00:00", 900}
+          ] do
+        frequency_fixture(context.organization.id, context.version.id, uuid_like, %{
+          start_time: from,
+          end_time: until,
+          headway_secs: headway
+        })
+      end
 
       alert =
         complete_alert(context.audit, %{
@@ -594,11 +722,15 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
              ]
     end
 
-    test "a mode expands to the explicit feed IDs of the source version's routes", context do
+    test "a mode expands to the explicit feed IDs of the active schedule's routes", context do
       route_fixture(context.organization.id, context.version.id, %{
         route_id: "r_2",
         route_type: 3
       })
+
+      # A sibling version's route of the same mode is not the active schedule's.
+      sibling = gtfs_version_fixture(context.organization.id)
+      route_fixture(context.organization.id, sibling.id, %{route_id: "r_sibling", route_type: 3})
 
       route_fixture(context.organization.id, context.version.id, %{
         route_id: "r_rail",
@@ -718,10 +850,24 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
   defp maybe_scheduled(snapshot, _opts), do: snapshot
 
   defp save_review(context, alert, attrs, opts \\ []) do
-    Alerts.save_review(context.audit, alert.id, alert.revision, attrs, opts)
+    Alerts.save_review(
+      context.audit,
+      alert.id,
+      alert.revision,
+      attrs,
+      opts ++ schedule_opts(context.audit)
+    )
   end
 
   defp autosave(context, alert), do: save_review(context, alert, %{}, [])
+
+  # The organization's active schedule becomes a version that holds none of the
+  # accepted alert's routes.
+  defp switch_to_schedule_without_routes!(context) do
+    other = gtfs_version_fixture(context.organization.id)
+    agency_fixture(context.organization.id, other.id, %{agency_timezone: @zone})
+    activate_version!(context.organization, other, context.actor)
+  end
 
   defp publication_for(alert), do: Repo.get_by!(Publication, alert_id: alert.id)
 

@@ -866,9 +866,13 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert Map.keys(Alerts.stops_by_id(context.audit, [@stop_id])) == [@stop_id]
 
       assert {:error, %Ecto.Changeset{} = changeset} =
-               Alerts.create_alert(context.audit, %{
-                 "scope" => %{"shape" => "routes", "route_ids" => [String.downcase(@route_id)]}
-               })
+               Alerts.create_alert(
+                 context.audit,
+                 %{
+                   "scope" => %{"shape" => "routes", "route_ids" => [String.downcase(@route_id)]}
+                 },
+                 expected_schedule: active_token!(context.audit)
+               )
 
       assert %{scope: ["Choose routes from this version."]} =
                Ecto.Changeset.traverse_errors(changeset, fn {message, _opts} -> message end)
@@ -948,6 +952,96 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
                    ]
                  }
                })
+    end
+  end
+
+  describe "merge_reference/2" do
+    @retained %{
+      "source_gtfs_version_id" => "v1",
+      "timezone" => "America/New_York",
+      "selectors" => %{
+        "routes" => [%{"id" => "R1", "gtfs_id" => "R1", "label" => "One"}],
+        "unresolved_routes" => [],
+        "stops" => [],
+        "unresolved_stops" => ["S9"],
+        "route_stops" => [
+          %{
+            "route_id" => "R1",
+            "stop_id" => "S1",
+            "route_label" => "One",
+            "stop_label" => "Elm",
+            "resolved" => true
+          }
+        ],
+        "trips" => [
+          %{
+            "id" => "T1",
+            "gtfs_id" => "T1",
+            "service_date" => "2026-10-05",
+            "start_time" => nil,
+            "label" => "Depot",
+            "resolved" => true
+          }
+        ]
+      }
+    }
+
+    test "keeps what the alert held for identities the new capture cannot resolve" do
+      unresolved_pair = %{"route_id" => "R1", "stop_id" => "S1", "resolved" => false}
+      new_pair = %{"route_id" => "R2", "stop_id" => "S2", "resolved" => true}
+      unresolved_trip = %{"id" => "T1", "service_date" => "2026-10-05", "resolved" => false}
+      later_trip = %{"id" => "T1", "service_date" => "2026-10-06", "resolved" => false}
+
+      fresh = %{
+        "source_gtfs_version_id" => "v2",
+        "timezone" => "Asia/Tokyo",
+        "selectors" => %{
+          "routes" => [],
+          "unresolved_routes" => ["R1", "R9"],
+          "stops" => [],
+          "unresolved_stops" => ["S9"],
+          "route_stops" => [unresolved_pair, new_pair],
+          "trips" => [Map.put(unresolved_trip, "start_time", nil), later_trip]
+        }
+      }
+
+      merged = Targets.merge_reference(fresh, @retained)
+
+      # The zone and provenance are the retained capture's, not the new schedule's.
+      assert merged["source_gtfs_version_id"] == "v1"
+      assert merged["timezone"] == "America/New_York"
+
+      selectors = merged["selectors"]
+
+      # R1 keeps its label; R9 and S9 were never held as resolved and stay unresolved.
+      assert selectors["routes"] == [%{"id" => "R1", "gtfs_id" => "R1", "label" => "One"}]
+      assert selectors["unresolved_routes"] == ["R9"]
+      assert selectors["unresolved_stops"] == ["S9"]
+
+      assert [%{"stop_label" => "Elm", "resolved" => true}, ^new_pair] = selectors["route_stops"]
+      assert [%{"label" => "Depot", "resolved" => true}, ^later_trip] = selectors["trips"]
+    end
+
+    test "a resolved entry is never replaced and no retained capture changes nothing" do
+      fresh = %{
+        "source_gtfs_version_id" => "v2",
+        "timezone" => "Asia/Tokyo",
+        "selectors" => %{
+          "routes" => [%{"id" => "R1", "gtfs_id" => "R1", "label" => "Uno"}],
+          "unresolved_routes" => [],
+          "stops" => [],
+          "unresolved_stops" => [],
+          "route_stops" => [],
+          "trips" => []
+        }
+      }
+
+      assert Targets.merge_reference(fresh, @retained)["selectors"]["routes"] == [
+               %{"id" => "R1", "gtfs_id" => "R1", "label" => "Uno"}
+             ]
+
+      assert Targets.merge_reference(fresh, nil) == fresh
+      assert Targets.merge_reference(fresh, %{}) == fresh
     end
   end
 

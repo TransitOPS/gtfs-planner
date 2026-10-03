@@ -28,9 +28,9 @@ defmodule GtfsPlanner.AlertsTest do
     }
   end
 
-  describe "create_alert/2" do
+  describe "create_alert/3" do
     test "inserts revision 1 in the context's organization and version", context do
-      assert {:ok, alert} = Alerts.create_alert(context.audit, %{"urgency" => "now"})
+      assert {:ok, alert} = create(context.audit, %{"urgency" => "now"})
 
       assert alert.revision == 1
       assert alert.organization_id == context.organization.id
@@ -43,7 +43,7 @@ defmodule GtfsPlanner.AlertsTest do
     end
 
     test "resolves the timing time zone from the version's agency", context do
-      {:ok, alert} = Alerts.create_alert(context.audit, %{"urgency" => "now"})
+      {:ok, alert} = create(context.audit, %{"urgency" => "now"})
 
       assert alert.timing.time_zone == "America/Los_Angeles"
     end
@@ -65,7 +65,7 @@ defmodule GtfsPlanner.AlertsTest do
         "updated_by_id" => Ecto.UUID.generate()
       }
 
-      assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
+      assert {:ok, alert} = create(context.audit, attrs)
 
       assert alert.organization_id == context.organization.id
       assert alert.source_gtfs_version_id == context.version.id
@@ -81,7 +81,7 @@ defmodule GtfsPlanner.AlertsTest do
     test "cannot move an alert's times into another zone", context do
       attrs = %{"urgency" => "now", "timing" => %{"time_zone" => "Asia/Tokyo"}}
 
-      assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
+      assert {:ok, alert} = create(context.audit, attrs)
 
       assert alert.timing.time_zone == "America/Los_Angeles"
     end
@@ -89,7 +89,7 @@ defmodule GtfsPlanner.AlertsTest do
     test "returns an invalid changeset without inserting a row", context do
       attrs = %{"urgency" => "now", "message" => %{"header" => String.duplicate("a", 121)}}
 
-      assert {:error, %Ecto.Changeset{} = changeset} = Alerts.create_alert(context.audit, attrs)
+      assert {:error, %Ecto.Changeset{} = changeset} = create(context.audit, attrs)
 
       assert %{message: %{header: [_ | _]}} = nested_errors(changeset)
       assert Repo.aggregate(Alert, :count) == 0
@@ -97,9 +97,12 @@ defmodule GtfsPlanner.AlertsTest do
 
     test "refuses a deactivated member and inserts nothing", context do
       membership = Repo.get_by(GtfsPlanner.Accounts.UserOrgMembership, user_id: context.actor.id)
+      opts = active_opts(context.audit)
       deactivate_membership_fixture(membership)
 
-      assert {:error, :forbidden} = Alerts.create_alert(context.audit, %{"urgency" => "now"})
+      assert {:error, :forbidden} =
+               Alerts.create_alert(context.audit, %{"urgency" => "now"}, opts)
+
       assert Repo.aggregate(Alert, :count) == 0
     end
 
@@ -108,7 +111,9 @@ defmodule GtfsPlanner.AlertsTest do
       organization_membership_fixture(viewer, context.organization, [])
       audit = audit_context(context.organization, context.version, viewer)
 
-      assert {:error, :forbidden} = Alerts.create_alert(audit, %{"urgency" => "now"})
+      assert {:error, :forbidden} =
+               Alerts.create_alert(audit, %{"urgency" => "now"}, active_opts(context.audit))
+
       assert Repo.aggregate(Alert, :count) == 0
     end
 
@@ -116,7 +121,9 @@ defmodule GtfsPlanner.AlertsTest do
       other_actor = editor_fixture(organization_fixture())
       audit = audit_context(context.organization, context.version, other_actor)
 
-      assert {:error, :forbidden} = Alerts.create_alert(audit, %{"urgency" => "now"})
+      assert {:error, :forbidden} =
+               Alerts.create_alert(audit, %{"urgency" => "now"}, active_opts(context.audit))
+
       assert Repo.aggregate(Alert, :count) == 0
     end
 
@@ -133,7 +140,7 @@ defmodule GtfsPlanner.AlertsTest do
         }
       }
 
-      assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
+      assert {:ok, alert} = create(context.audit, attrs)
       assert alert.scope.route_ids == ["r_1"]
       assert alert.scope.stop_ids == ["s_1"]
       assert [%{trip_id: trip_id}] = alert.scope.trips
@@ -146,7 +153,7 @@ defmodule GtfsPlanner.AlertsTest do
 
       attrs = %{"urgency" => "now", "scope" => %{"stop_ids" => [stop.stop_id]}}
 
-      assert {:error, %Ecto.Changeset{} = changeset} = Alerts.create_alert(context.audit, attrs)
+      assert {:error, %Ecto.Changeset{} = changeset} = create(context.audit, attrs)
       assert %{scope: ["Choose stops from this version."]} = nested_errors(changeset)
       assert Repo.aggregate(Alert, :count) == 0
     end
@@ -291,7 +298,8 @@ defmodule GtfsPlanner.AlertsTest do
 
       attrs = weekly_delay_attrs(route.route_id)
 
-      assert {:ok, saved} = Alerts.save_draft(context.audit, alert.id, 1, attrs)
+      assert {:ok, saved} =
+               Alerts.save_draft(context.audit, alert.id, 1, attrs, schedule_opts(context.audit))
 
       assert saved.revision == 2
       assert saved.complete == true
@@ -325,7 +333,13 @@ defmodule GtfsPlanner.AlertsTest do
              "Choose departures from this version."}
           ] do
         assert {:error, %Ecto.Changeset{} = changeset} =
-                 Alerts.save_draft(context.audit, alert.id, 1, %{"scope" => scope})
+                 Alerts.save_draft(
+                   context.audit,
+                   alert.id,
+                   1,
+                   %{"scope" => scope},
+                   schedule_opts(context.audit)
+                 )
 
         assert message in nested_errors(changeset).scope
       end
@@ -340,16 +354,24 @@ defmodule GtfsPlanner.AlertsTest do
       alert = alert_fixture(context.audit)
 
       assert {:error, %Ecto.Changeset{} = changeset} =
-               Alerts.save_draft(context.audit, alert.id, 1, %{
-                 "scope" => %{"shape" => "routes", "mode_route_type" => 1}
-               })
+               Alerts.save_draft(
+                 context.audit,
+                 alert.id,
+                 1,
+                 %{"scope" => %{"shape" => "routes", "mode_route_type" => 1}},
+                 schedule_opts(context.audit)
+               )
 
       assert %{scope: ["Choose a route type this version has."]} = nested_errors(changeset)
 
       assert {:ok, saved} =
-               Alerts.save_draft(context.audit, alert.id, 1, %{
-                 "scope" => %{"shape" => "routes", "mode_route_type" => 3}
-               })
+               Alerts.save_draft(
+                 context.audit,
+                 alert.id,
+                 1,
+                 %{"scope" => %{"shape" => "routes", "mode_route_type" => 3}},
+                 schedule_opts(context.audit)
+               )
 
       assert saved.scope.mode_route_type == 3
     end
@@ -546,6 +568,12 @@ defmodule GtfsPlanner.AlertsTest do
   defp nested_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, _opts} -> message end)
   end
+
+  # An alert is written against the active schedule, so the context's version is
+  # selected first (see `AlertsFixtures.active_token!/1`).
+  defp active_opts(audit), do: [expected_schedule: active_token!(audit)]
+
+  defp create(audit, attrs), do: Alerts.create_alert(audit, attrs, active_opts(audit))
 
   defp audit_context(organization, version, actor) do
     %AuditContext{

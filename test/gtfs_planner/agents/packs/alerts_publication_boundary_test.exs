@@ -173,6 +173,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       {:ok, kept} = Alerts.get_alert(context.audit, alert.id)
       assert kept.source_gtfs_version_id == context.source.id
 
+      activate_version!(context.organization, context.selected, context.actor)
       delete_version!(context.source)
 
       assert {:ok, %{"urgency" => "now", "situation" => "detour"} = draft} =
@@ -217,6 +218,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       alert = answered_alert(context)
       scope = scope(context, alert)
 
+      activate_version!(context.organization, context.selected, context.actor)
       delete_version!(context.source)
 
       assert {:prepared, %{command: {:alert_changes, wording}}, %{"status" => "prepared"}} =
@@ -246,6 +248,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
       alert = answered_alert(context)
       scope = scope(context, alert)
 
+      activate_version!(context.organization, context.selected, context.actor)
       delete_version!(context.source)
 
       publication_keys = ~w(publication publish published served served_from publish_now)
@@ -339,14 +342,20 @@ defmodule GtfsPlanner.Agents.Packs.AlertsPublicationBoundaryTest do
     alert = alert_fixture(context.audit, %{"urgency" => "now"})
 
     {:ok, saved} =
-      Alerts.save_draft(context.audit, alert.id, alert.revision, %{
-        "situation" => "detour",
-        "scope" => %{
-          "shape" => "routes",
-          "route_ids" => [context.source_route.route_id]
+      Alerts.save_draft(
+        context.audit,
+        alert.id,
+        alert.revision,
+        %{
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "routes",
+            "route_ids" => [context.source_route.route_id]
+          },
+          "message" => %{"header" => "Route 12 detour"}
         },
-        "message" => %{"header" => "Route 12 detour"}
-      })
+        schedule_opts(context.audit)
+      )
 
     saved
   end
