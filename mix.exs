@@ -127,7 +127,7 @@ defmodule GtfsPlanner.MixProject do
         "deps.unlock --unused",
         "format",
         "credo diff --from-git-ref origin/main --strict",
-        "test"
+        "cmd bin/test-all"
       ]
     ]
   end
