@@ -256,8 +256,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveNamingRollbackTest do
       insert_stop_level(%{
         organization_id: scope.organization.id,
         gtfs_version_id: scope.version.id,
-        stop_id: scope.station.id,
-        level_id: level.id
+        stop_id: scope.station.stop_id,
+        level_id: level.level_id
       })
 
     {:ok, _audit_log} =

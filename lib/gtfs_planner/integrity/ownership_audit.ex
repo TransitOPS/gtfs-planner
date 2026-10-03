@@ -32,8 +32,6 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
   )
 
   @containment [
-    {"stop_levels→stops", "stop_levels", "stop_id", "stops"},
-    {"stop_levels→levels", "stop_levels", "level_id", "levels"},
     {"route_pattern_stops→route_patterns", "route_pattern_stops", "route_pattern_id",
      "route_patterns"},
     {"timed_patterns→route_patterns", "timed_patterns", "route_pattern_id", "route_patterns"},
@@ -47,6 +45,16 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
      "roster_lines"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
      "stops"}
+  ]
+
+  # `stop_levels` stores its parents' GTFS identifiers rather than row UUIDs, so
+  # a parent found only in another organization or version is not an anomaly:
+  # the same identifier legitimately exists in every scope. These relationships
+  # anti-join the parent inside the row's own organization and version, so only
+  # a floorplan with no parent in its own scope is reported.
+  @scoped_containment [
+    {"stop_levels→stops", "stop_levels", "stop_id", "stops"},
+    {"stop_levels→levels", "stop_levels", "level_id", "levels"}
   ]
 
   @organization_containment [
@@ -90,6 +98,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
         relationships =
           Enum.map(@version_owner_tables, &version_owner(&1, repo, sample_limit)) ++
             Enum.map(@containment, &containment(&1, repo, sample_limit)) ++
+            Enum.map(@scoped_containment, &scoped_containment(&1, repo, sample_limit)) ++
             Enum.map(@organization_containment, &organization_containment(&1, repo, sample_limit)) ++
             [import_receipts(repo, sample_limit)]
 
@@ -129,6 +138,20 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     """
 
     relationship(name, child, :containment, query, repo, sample_limit)
+  end
+
+  defp scoped_containment({name, child, fk, parent}, repo, sample_limit) do
+    query = """
+    SELECT t.id
+    FROM #{child} AS t
+    LEFT JOIN #{parent} AS p
+      ON p.#{fk} = t.#{fk}
+     AND p.organization_id = t.organization_id
+     AND p.gtfs_version_id = t.gtfs_version_id
+    WHERE t.#{fk} IS NOT NULL AND p.id IS NULL
+    """
+
+    relationship(name, child, :scoped_containment, query, repo, sample_limit)
   end
 
   defp organization_containment({name, child, fk, parent}, repo, sample_limit) do

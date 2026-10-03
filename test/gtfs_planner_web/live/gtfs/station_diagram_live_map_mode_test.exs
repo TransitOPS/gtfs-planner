@@ -102,8 +102,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       %{
@@ -219,8 +219,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: other_level.id
+          stop_id: station.stop_id,
+          level_id: other_level.level_id
         })
 
       _geo_stop =
@@ -407,8 +407,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: unaligned_level.id
+          stop_id: station.stop_id,
+          level_id: unaligned_level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(unaligned_stop_level, "ac8-unaligned.png")
@@ -425,8 +425,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: no_diagram_level.id
+          stop_id: station.stop_id,
+          level_id: no_diagram_level.level_id
         })
 
       conn = log_in_user(conn, user, organization: organization)
@@ -440,18 +440,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(
                view,
-               "#floorplan-reason-#{unaligned_level.id}",
+               "#floorplan-reason-#{panel_level_key(unaligned_level.id)}",
                "Not yet aligned"
              )
 
       assert has_element?(
                view,
                floorplan_selector(unaligned_level.id) <>
-                 "[aria-describedby='floorplan-reason-#{unaligned_level.id}']"
+                 "[aria-describedby='floorplan-reason-#{panel_level_key(unaligned_level.id)}']"
              )
 
       assert has_element?(view, floorplan_selector(no_diagram_level.id) <> "[disabled]")
-      assert has_element?(view, "#floorplan-reason-#{no_diagram_level.id}", "No diagram")
+
+      assert has_element?(
+               view,
+               "#floorplan-reason-#{panel_level_key(no_diagram_level.id)}",
+               "No diagram"
+             )
     end
 
     test "stops checkbox disabled with reason when no geo-coded child stops (AC-9)", %{
@@ -475,8 +480,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: other_level.id
+          stop_id: station.stop_id,
+          level_id: other_level.level_id
         })
 
       conn = log_in_user(conn, user, organization: organization)
@@ -490,14 +495,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       assert has_element?(
                view,
-               "#stops-reason-#{other_level.id}",
+               "#stops-reason-#{panel_level_key(other_level.id)}",
                "No geo-coded child stops"
              )
 
       assert has_element?(
                view,
                stops_selector(other_level.id) <>
-                 "[aria-describedby='stops-reason-#{other_level.id}']"
+                 "[aria-describedby='stops-reason-#{panel_level_key(other_level.id)}']"
              )
     end
 
@@ -622,8 +627,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: target_level.id
+          stop_id: station.stop_id,
+          level_id: target_level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(target_stop_level, "ac13-target.png")
@@ -729,16 +734,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: below_level.id
+          stop_id: station.stop_id,
+          level_id: below_level.level_id
         })
 
       {:ok, above_stop_level} =
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: above_level.id
+          stop_id: station.stop_id,
+          level_id: above_level.level_id
         })
 
       alignment_attrs = %{
@@ -1105,8 +1110,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: above_level.id,
+          stop_id: station.stop_id,
+          level_id: above_level.level_id,
           diagram_filename: "above-ref.png"
         })
 
@@ -1130,10 +1135,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       # The middle level now appears as an other level with a saved alignment and a diagram,
       # so its floorplan checkbox is enabled (no disabled reason).
       refute has_element?(view, floorplan_selector(middle_level.id) <> "[disabled]")
-      refute has_element?(view, "#floorplan-reason-#{middle_level.id}")
+      refute has_element?(view, "#floorplan-reason-#{panel_level_key(middle_level.id)}")
 
       reloaded = Repo.get!(GtfsPlanner.Gtfs.StopLevel, above_stop_level.id)
-      assert reloaded.level_id == above_level.id
+      assert reloaded.level_id == above_level.level_id
     end
 
     test "save_alignment rejects out-of-range lat and does not mutate the DB", %{
@@ -1596,8 +1601,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: other_level.id
+          stop_id: station.stop_id,
+          level_id: other_level.level_id
         })
 
       active_stop =
@@ -1827,8 +1832,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: other_level.id
+          stop_id: station.stop_id,
+          level_id: other_level.level_id
         })
 
       {:ok, _} =
@@ -1888,7 +1893,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       render_click(element(view, stops_selector(other_level.id)))
       assert_push_event(view, "set_other_levels", %{levels: levels})
 
-      other = Enum.find(levels, &(&1.level_id == other_level.id))
+      other = Enum.find(levels, &(&1.level_id == other_level.level_id))
       assert other != nil
 
       # Level wrapper keeps its stable shape: id, color, floorplan, stops.
@@ -1995,8 +2000,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "unsaved-diagram.png")
@@ -2193,8 +2198,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "review-diagram.png")
@@ -2562,8 +2567,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
             insert_stop_level(%{
               organization_id: organization.id,
               gtfs_version_id: gtfs_version.id,
-              stop_id: station.id,
-              level_id: level.id
+              stop_id: station.stop_id,
+              level_id: level.level_id
             })
 
           {:ok, _} = put_stop_level_diagram(stop_level, "review-adapter.png")
@@ -3207,8 +3212,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "dialog-diagram.png")
@@ -3673,8 +3678,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "workspace-diagram.png")
@@ -3782,8 +3787,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "rebuild-diagram.png")
@@ -4000,8 +4005,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       {:ok, _} = put_stop_level_diagram(stop_level, "popover-diagram.png")
@@ -4405,8 +4410,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     {:ok, _} = put_stop_level_diagram(stop_level, "#{prefix}-diagram.png")
@@ -4525,8 +4530,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
         insert_stop_level(%{
           organization_id: context.organization.id,
           gtfs_version_id: context.gtfs_version.id,
-          stop_id: context.station.id,
-          level_id: other_level.id
+          stop_id: context.station.stop_id,
+          level_id: other_level.level_id
         })
 
       Map.put(context, :other_level, other_level)
@@ -5547,8 +5552,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     {:ok, _} =
@@ -5577,8 +5582,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     _geo_stop =
@@ -5595,14 +5600,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
     level.id
   end
 
+  # The other-levels panel keys on the floorplan's stored GTFS level identifier, so
+  # a level row handle is translated before it reaches the DOM query.
   defp floorplan_selector(level_id) do
     "#other-levels-panel input[phx-click='toggle_other_level_floorplan']" <>
-      "[phx-value-level-id='#{level_id}']"
+      "[phx-value-level-id='#{panel_level_key(level_id)}']"
   end
 
   defp stops_selector(level_id) do
     "#other-levels-panel input[phx-click='toggle_other_level_stops']" <>
-      "[phx-value-level-id='#{level_id}']"
+      "[phx-value-level-id='#{panel_level_key(level_id)}']"
+  end
+
+  defp panel_level_key(level_id) do
+    Repo.get!(GtfsPlanner.Gtfs.Level, level_id).level_id
   end
 
   defp floorplan_checked?(view, level_id) do

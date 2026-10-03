@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [],
         pathways: [],
         focused_marker_id: "journal-marker-pin-#{noted_pin.id}"
@@ -134,6 +135,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [],
         pathways: [],
         focused_marker_id: nil
@@ -174,6 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [],
         pathways: [],
         focused_marker_id: nil
@@ -240,6 +243,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [node_stop],
         pathways: [],
         focused_marker_id: nil
@@ -294,6 +298,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [node_stop],
         pathways: [],
         focused_marker_id: nil
@@ -370,6 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [stop_a, stop_b],
         pathways: [pathway],
         focused_marker_id: nil
@@ -429,6 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level1_id,
+        active_level_token: level1_id,
         child_stops: [s1, s3, s4],
         pathways: [pw_cross, pw_zero],
         focused_marker_id: nil
@@ -464,6 +471,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       geometry = %{
         active_level_id: level_id,
+        active_level_token: level_id,
         child_stops: [],
         pathways: [],
         focused_marker_id: nil

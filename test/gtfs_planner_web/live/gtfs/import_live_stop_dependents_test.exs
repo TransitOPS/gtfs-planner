@@ -156,11 +156,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveStopDependentsTest do
            )
   end
 
-  test "a stop with a level is not listed, because a level names the stop by its UUID", context do
-    # The level reference is `via: :fk_uuid`: it matches `stops.id`, which does not
-    # exist yet for a stop being removed by a natural key. The review cannot count
-    # it and says nothing, which is why `StopEditing.delete_review/2` refuses a
-    # delete with a level rather than relying on a count from here.
+  test "a stop with a floorplan is listed, because the floorplan names the stop by its GTFS ID",
+       context do
+    # `stop_levels.stop_id` stores the station's scoped GTFS identifier, so the
+    # review can count it by the natural key it is removing. `journal_entries`
+    # remains a `via: :fk_uuid` reference with no `stops.id` to match, which is
+    # why `StopEditing.delete_review/2` refuses a delete on a journal entry
+    # rather than relying on a count from here.
     %{view: view, decision_id: decision_id} =
       review_removal(context, "1434", fn ctx ->
         stop = Repo.get_by!(GtfsPlanner.Gtfs.Stop, stop_id: "1434")
@@ -171,12 +173,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveStopDependentsTest do
         GtfsPlanner.GtfsFixtures.insert_stop_level(%{
           organization_id: ctx.organization.id,
           gtfs_version_id: ctx.version.id,
-          stop_id: stop.id,
-          level_id: level.id
+          stop_id: stop.stop_id,
+          level_id: level.level_id
         })
       end)
 
-    refute has_element?(view, "#diff-decision-dependents-#{decision_id}")
+    assert has_element?(view, "#diff-decision-dependents-#{decision_id}")
+
+    assert view |> element("#diff-decision-dependents-#{decision_id}") |> render() =~
+             "1 level"
   end
 
   test "a removal of a stop nothing uses omits the line", context do

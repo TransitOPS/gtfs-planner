@@ -277,8 +277,8 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
-        stop_id: station.id,
-        level_id: level.id,
+        stop_id: station.stop_id,
+        level_id: level.level_id,
         diagram_filename: "browser_seed_diagram.png"
       })
 
@@ -669,8 +669,8 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
-        stop_id: station.id,
-        level_id: level2.id,
+        stop_id: station.stop_id,
+        level_id: level2.level_id,
         diagram_filename: "browser_seed_diagram_l2.png"
       })
 
@@ -9008,8 +9008,8 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id,
-        stop_id: evo_station.id,
-        level_id: evo_level.id,
+        stop_id: evo_station.stop_id,
+        level_id: evo_level.level_id,
         diagram_filename: "browser_seed_evo_diagram.png"
       })
 
@@ -10817,8 +10817,8 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: home_pathways_org.id,
         gtfs_version_id: home_pathways_version.id,
-        stop_id: home_uns.id,
-        level_id: home_pathways_level.id,
+        stop_id: home_uns.stop_id,
+        level_id: home_pathways_level.level_id,
         diagram_filename: "UNS-L1.png"
       })
 
@@ -11560,8 +11560,8 @@ case Accounts.register_first_admin(%{
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: stops_map_org.id,
         gtfs_version_id: stops_map_version.id,
-        stop_id: stops_map_station.id,
-        level_id: stops_map_level.id
+        stop_id: stops_map_station.stop_id,
+        level_id: stops_map_level.level_id
       })
 
     # Shape geometry from OpenStreetMap road paths, simplified

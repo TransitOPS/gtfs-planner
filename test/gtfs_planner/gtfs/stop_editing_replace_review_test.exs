@@ -510,8 +510,8 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
       GtfsPlanner.GtfsFixtures.insert_stop_level(%{
         organization_id: fixture.organization.id,
         gtfs_version_id: fixture.version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     level

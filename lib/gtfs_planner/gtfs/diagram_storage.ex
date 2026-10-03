@@ -502,7 +502,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     if is_nil(station), do: Repo.rollback(:not_found)
 
     with :ok <- advisory_lock(scope, filename),
-         %StopLevel{} = current <- locked_stop_level(expected_stop_level.id, scope, station.id),
+         %StopLevel{} = current <-
+           locked_stop_level(expected_stop_level.id, scope, station.stop_id),
          true <- File.regular?(path) do
       swap_stop_level_diagram(audit, expected_stop_level, current, filename)
     else
@@ -563,12 +564,10 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
 
   defp candidate_referenced?(scope, filename) do
     from(sl in StopLevel,
-      join: s in Stop,
-      on: s.id == sl.stop_id,
       where:
         sl.organization_id == ^scope.organization_id and
           sl.gtfs_version_id == ^scope.gtfs_version_id and
-          s.stop_id == ^scope.station_stop_id and sl.diagram_filename == ^filename,
+          sl.stop_id == ^scope.station_stop_id and sl.diagram_filename == ^filename,
       select: true,
       limit: 1
     )
@@ -576,11 +575,11 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     |> Kernel.==(true)
   end
 
-  defp locked_stop_level(stop_level_id, scope, station_id) do
+  defp locked_stop_level(stop_level_id, scope, station_stop_id) do
     from(sl in StopLevel,
       where:
         sl.id == ^stop_level_id and sl.organization_id == ^scope.organization_id and
-          sl.gtfs_version_id == ^scope.gtfs_version_id and sl.stop_id == ^station_id,
+          sl.gtfs_version_id == ^scope.gtfs_version_id and sl.stop_id == ^station_stop_id,
       lock: "FOR UPDATE"
     )
     |> Repo.one()
@@ -760,15 +759,13 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     from(sl in GtfsPlanner.Gtfs.StopLevel,
       join: v in GtfsPlanner.Versions.GtfsVersion,
       on: sl.gtfs_version_id == v.id,
-      join: s in GtfsPlanner.Gtfs.Stop,
-      on: sl.stop_id == s.id,
       where:
         v.id == ^gtfs_version_id and
           v.organization_id == ^organization_id and
           v.publication_status == "published" and
           sl.organization_id == ^organization_id and
           sl.gtfs_version_id == ^gtfs_version_id and
-          s.stop_id == ^station_stop_id and
+          sl.stop_id == ^station_stop_id and
           sl.diagram_filename == ^filename,
       select: true,
       limit: 1
@@ -783,18 +780,16 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     base =
       from(sl in GtfsPlanner.Gtfs.StopLevel,
         join: v in GtfsPlanner.Versions.GtfsVersion,
-        on: sl.gtfs_version_id == v.id,
-        join: s in GtfsPlanner.Gtfs.Stop,
-        on: sl.stop_id == s.id
+        on: sl.gtfs_version_id == v.id
       )
 
     query =
-      from([sl, v, s] in base,
+      from([sl, v] in base,
         where: v.publication_status == "published" and not is_nil(sl.diagram_filename),
         select: %{
           organization_id: sl.organization_id,
           gtfs_version_id: sl.gtfs_version_id,
-          station_stop_id: s.stop_id,
+          station_stop_id: sl.stop_id,
           diagram_filename: sl.diagram_filename
         }
       )

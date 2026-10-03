@@ -51,7 +51,10 @@ station_uuid = u.(station.id)
 level =
   Repo.one(
     from sl in "stop_levels",
-      where: sl.stop_id == type(^station_uuid, :binary_id) and not is_nil(sl.diagram_filename),
+      where:
+        sl.organization_id == type(^org_id, :binary_id) and
+          sl.gtfs_version_id == type(^version_id, :binary_id) and
+          sl.stop_id == ^station_stop_id and not is_nil(sl.diagram_filename),
       select: %{id: sl.id, filename: sl.diagram_filename},
       order_by: sl.id,
       limit: 1

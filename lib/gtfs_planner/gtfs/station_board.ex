@@ -270,7 +270,7 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
 
   defp summarize(station, facts) do
     child_levels = Map.get(facts.child_levels, station.stop_id, MapSet.new())
-    stop_level_levels = Map.get(facts.stop_level_levels, station.id, MapSet.new())
+    stop_level_levels = Map.get(facts.stop_level_levels, station.stop_id, MapSet.new())
     {last_edited_at, last_edited_by} = Map.get(facts.last_edits, station.stop_id, {nil, nil})
 
     %{
@@ -278,7 +278,7 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
       stop_id: station.stop_id,
       name: station.name,
       level_count: MapSet.size(MapSet.union(child_levels, stop_level_levels)),
-      floorplan_count: Map.get(facts.floorplan_counts, station.id, 0),
+      floorplan_count: Map.get(facts.floorplan_counts, station.stop_id, 0),
       pathway_count: Map.get(facts.pathway_counts, station.stop_id, 0),
       last_edited_at: last_edited_at,
       last_edited_by: last_edited_by
@@ -310,7 +310,7 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
     from(sl in StopLevel,
       join: l in Level,
       on:
-        l.id == sl.level_id and l.organization_id == ^organization_id and
+        l.level_id == sl.level_id and l.organization_id == ^organization_id and
           l.gtfs_version_id == ^gtfs_version_id,
       where: sl.organization_id == ^organization_id and sl.gtfs_version_id == ^gtfs_version_id,
       select: {sl.stop_id, l.level_id, sl.diagram_filename}

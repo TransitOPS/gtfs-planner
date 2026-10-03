@@ -185,8 +185,8 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       scope = %Scope{
@@ -1480,8 +1480,8 @@ defmodule GtfsPlanner.Gtfs.StationJournalTest do
         insert_stop_level(%{
           organization_id: scope_a.organization_id,
           gtfs_version_id: scope_a.gtfs_version_id,
-          stop_id: scope_a.station_id,
-          level_id: level.id
+          stop_id: scope_a.station_stop_id,
+          level_id: level.level_id
         })
 
       pin_id = Ecto.UUID.generate()

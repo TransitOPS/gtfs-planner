@@ -555,8 +555,8 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id
@@ -597,8 +597,8 @@ defmodule GtfsPlannerWeb.UploadsPlugTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version.id

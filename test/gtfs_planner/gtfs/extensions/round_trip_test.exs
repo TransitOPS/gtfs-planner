@@ -43,8 +43,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.RoundTripTest do
       # Create stop_level with diagram and calibration
       {:ok, sl} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_a.id,
           gtfs_version_id: version_a.id,
           diagram_filename: "floor_L1.png"

@@ -22,8 +22,6 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   import GtfsPlanner.VersionsFixtures
 
   @containment [
-    {"stop_levels", "stop_id", "stops"},
-    {"stop_levels", "level_id", "levels"},
     {"route_pattern_stops", "route_pattern_id", "route_patterns"},
     {"timed_patterns", "route_pattern_id", "route_patterns"},
     {"trips", "timed_pattern_id", "timed_patterns"},
@@ -91,6 +89,17 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       assert {^child, ^parent, definition, "a"} = Map.fetch!(constraints, name)
       assert definition =~ "FOREIGN KEY (#{foreign_key}, organization_id)"
       assert definition =~ "REFERENCES #{parent}(id, organization_id)"
+    end
+
+    # `stop_levels` stores scoped GTFS identifiers, so its containment is a natural
+    # composite key that follows a parent rename and deletes with the parent.
+    for {parent, column} <- [{"stops", "stop_id"}, {"levels", "level_id"}] do
+      assert {"stop_levels", ^parent, definition, "c"} =
+               Map.fetch!(constraints, "stop_levels_#{parent}_owner_fkey")
+
+      assert definition =~ "FOREIGN KEY (organization_id, gtfs_version_id, #{column})"
+      assert definition =~ "REFERENCES #{parent}(organization_id, gtfs_version_id, #{column})"
+      assert definition =~ "ON UPDATE CASCADE ON DELETE CASCADE"
     end
 
     refute Enum.any?(constraints, fn {_name, {child, parent, _definition, _delete_rule}} ->
@@ -273,7 +282,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert_trip_and_version_cascades!()
   end
 
-  test "new stop levels reject a parent from another version of the same organization" do
+  test "new stop levels reject a parent GTFS ID that exists only in another version" do
     org = organization_fixture()
     first = gtfs_version_fixture(org.id)
     second = gtfs_version_fixture(org.id)
@@ -291,8 +300,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
             """,
             [
               Ecto.UUID.dump!(Ecto.UUID.generate()),
-              Ecto.UUID.dump!(foreign_stop.id),
-              Ecto.UUID.dump!(level.id),
+              foreign_stop.stop_id,
+              level.level_id,
               Ecto.UUID.dump!(org.id),
               Ecto.UUID.dump!(second.id)
             ]

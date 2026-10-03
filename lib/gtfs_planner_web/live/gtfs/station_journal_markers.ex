@@ -237,10 +237,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp project_group_coordinates(%{kind: :pin} = group, {active_level_id, _token}, geometry) do
+  defp project_group_coordinates(
+         %{kind: :pin} = group,
+         {_active_level_id, active_level_token},
+         geometry
+       ) do
     active_stop_level_id = normalize_id(geometry[:active_stop_level_id])
 
-    if group.stop_level_id == active_level_id or
+    # A pin's resolved level is the floorplan's stored GTFS level identifier, so
+    # it compares with the selected level's identifier. The floorplan row handle
+    # still covers a pin whose level could not be resolved.
+    if group.stop_level_id == active_level_token or
          (not is_nil(active_stop_level_id) and group.stop_level_id == active_stop_level_id) do
       {:ok, group.x, group.y}
     else
