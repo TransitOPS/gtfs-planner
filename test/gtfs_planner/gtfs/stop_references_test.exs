@@ -378,20 +378,21 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
          context do
       before = retained(context)
 
+      replace!(context, context.active_id, "S1", "S2")
+      delete!(context, context.active_id, "S3")
+
+      # The replace leaves S1 in the schedule; renaming it moves the schedule's stop.
       assert {:ok, _counts} =
                Repo.transaction(fn ->
                  Versions.lock_for_exclusive_write!(context.organization.id, context.active_id)
 
                  StopReferences.rename!(context.organization.id, context.active_id, %{
-                   "S4" => "S9"
+                   "S1" => "S9"
                  })
                end)
 
-      replace!(context, context.active_id, "S1", "S2")
-      delete!(context, context.active_id, "S3")
-
-      # The deleted stop is gone from the schedule, and the alert still names it.
-      assert stops_missing(context) == ["S3"]
+      # Neither stop the alert names is in the schedule now, and the alert still names both.
+      assert stops_missing(context) == ["S1", "S3"]
       assert retained(context) == before
 
       assert before.scope.stop_ids == ["S1", "S3"]
