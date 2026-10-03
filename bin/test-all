@@ -25,6 +25,14 @@
 # summary line. A partition that crashed, was killed or printed no summary fails
 # the run. On exit, including Ctrl-C, the script stops the servers and partition
 # process groups it started and nothing else.
+#
+# After the partitions finish it prints a table (tests, failures, seed, setup and
+# test seconds, exit status), a command that reproduces each partition, the
+# failure output of failed partitions and, when tests failed, one `mix test
+# <file:line ...>` command that reruns every failure. It also writes the union of
+# the partitions' failures to the default failures manifest, so `mix test
+# --failed` reruns the same tests; that file then holds only this run's failures,
+# and a merge that fails exits non-zero.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -63,9 +71,11 @@ max_cases=$(((2 * cpus + partitions - 1) / partitions))
 pid=()
 url=()
 result=()
-started='' # partitions whose server start was attempted
-running='' # partitions launched and not yet waited for
-keep_run=  # set once every launched partition has a result: keep the logs
+code=()     # exit status
+launched=() # launch time, epoch seconds
+started=''  # partitions whose server start was attempted
+running=''  # partitions launched and not yet waited for
+keep_run=   # set once every launched partition has a result: keep the logs
 
 # Stop what this run started, whatever ended it. Partition process groups first
 # (SIGTERM, then SIGKILL), since they hold connections to the servers; then the
@@ -130,6 +140,17 @@ echo "partitions: $partitions (running: ${parts//$'\n'/ }), max-cases: $max_case
 # at once.
 mix compile
 
+# Where `mix test --failed` reads failures, resolved once here for the merge at
+# the end. Needs the compile above, not a project build of its own.
+default_manifest=$(mix run --no-start --no-compile -e 'IO.puts(Path.join(Mix.Project.manifest_path(), ".mix_test_failures"))') || default_manifest=
+case $default_manifest in
+  /*) ;;
+  *)
+    echo "bin/test-all: could not resolve the default failures manifest path" >&2
+    exit 1
+    ;;
+esac
+
 # Servers start one after another (about two seconds each). Starting them in
 # parallel would save that, at the cost of no longer knowing which partition's
 # start failed first.
@@ -156,6 +177,7 @@ for i in $parts; do
     mix test --partitions "$partitions" --max-cases "$max_cases" "$@" \
     >"$run/p$i.log" 2>&1 </dev/null &
   pid[i]=$!
+  launched[i]=$(date +%s)
   running="$running $i"
   echo "partition $i: started, pid ${pid[$i]}, log $run/p$i.log"
 done
@@ -167,12 +189,13 @@ set +m
 failed=''
 for i in $parts; do
   if wait "${pid[$i]}"; then st=0; else st=$?; fi
+  code[i]=$st
   rest=''
   for j in $running; do [ "$j" = "$i" ] || rest="$rest $j"; done
   running=$rest
   if [ "$st" -ne 0 ]; then
     result[i]="FAILED (exit $st)"
-  elif ! grep -Eq '^[0-9]+ tests?, [0-9]+ failures?' "$run/p$i.log"; then
+  elif ! grep -Eq '^([0-9]+ [a-z]+, )+[0-9]+ failures?' "$run/p$i.log"; then
     result[i]="FAILED (exit 0, no ExUnit summary)"
   else
     result[i]="passed (exit 0)"
@@ -181,14 +204,168 @@ for i in $parts; do
 done
 keep_run=1
 
-# Reporting seam: the per-partition report, the rerun command and the manifest
-# merge belong here. Inputs per launched partition i: "$run/p$i.log",
-# "$run/p$i/failures", ${result[$i]} and the partition lists $parts and $failed.
+# One status line per partition.
 for i in $parts; do
   echo "partition $i of $partitions: ${result[$i]}  $run/p$i.log"
 done
 
+# --- Report ------------------------------------------------------------------
+#
+# Everything below reads ExUnit's own output in $run/p<i>.log; a value a log
+# lacks (a partition that died before its summary) prints as "-".
+
+# log_stats <log>: seed, max_cases, tests, failures, skipped, excluded, test
+# seconds, from the ExUnit lines. Failures include "invalid" tests (a failed
+# setup_all), which ExUnit lists separately but counts as failed.
+log_stats() {
+  awk '
+    BEGIN { seed = mc = secs = tests = fails = skipped = excluded = "-" }
+    /^Running ExUnit with seed: / { seed = $5; sub(/,$/, "", seed); mc = $7 }
+    /^Finished in / { secs = $3 }
+    /^([0-9]+ [a-z]+, )+[0-9]+ failures?/ {
+      tests = fails = skipped = excluded = 0
+      n = split($0, w, /[ ,()]+/)
+      for (k = 1; k < n; k++) {
+        if (w[k] !~ /^[0-9]+$/) continue
+        if (w[k + 1] ~ /^(tests?|doctests?|propert(y|ies))$/) tests += w[k]
+        else if (w[k + 1] ~ /^(failures?|invalid)$/) fails += w[k]
+        else if (w[k + 1] == "skipped") skipped = w[k]
+        else if (w[k + 1] == "excluded") excluded = w[k]
+      }
+    }
+    END { print seed, mc, tests, fails, skipped, excluded, secs }
+  ' "$1"
+}
+
+# log_failures <log>: the output from the first numbered failure to the summary.
+log_failures() { awk '/^  [0-9]+\) /{on=1} /^Finished in /{on=0} on' "$1"; }
+
+# log_locations <log>: file:line of every failure; ExUnit prints it on the line
+# after the numbered header.
+log_locations() {
+  awk '
+    /^  [0-9]+\) / { want = 1; next }
+    want && /^     [^ ]+:[0-9]+$/ { print substr($0, 6) }
+    { want = 0 }
+  ' "$1"
+}
+
+# File modification time in seconds: GNU stat first, then BSD.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
+row() { printf '%-4s %-5s %-6s %-8s %-7s %-8s %-7s %-6s %-6s %s\n' "$@"; }
+
+args='' # the caller's arguments, so a reproduction runs the same files
+[ $# -eq 0 ] || args=$(printf ' %q' "$@")
+
+# Setup is the partition's wall time (launch to its last output) minus ExUnit's
+# own "Finished in", so it covers BEAM start, migrations and everything else
+# before the tests. The log's modification time has one-second resolution.
+echo
+row part files tests failures skipped excluded seed setup test exit
+total_tests=0 total_failures=0 total_skipped=0 total_excluded=0
+reproduce=''
+failures_in=()
+for i in $parts; do
+  read -r seed mc tests fails skipped excluded secs <<<"$(log_stats "$run/p$i.log")"
+  setup=- test_s=-
+  [ "$secs" = - ] || test_s=${secs}s
+  [ "$secs" = - ] || setup=$(awk -v e="$(mtime "$run/p$i.log")" -v l="${launched[$i]}" -v t="$secs" 'BEGIN { s = e - l - t; printf "%ds", (s < 0 ? 0 : s + 0.5) }')
+  # ExUnit does not say how many files it gave a partition, and a count taken
+  # from the arguments would be wrong for directories, --stale and --failed.
+  row "$i" '?' "$tests" "$fails" "$skipped" "$excluded" "$seed" "$setup" "$test_s" "${code[$i]}"
+  if [ "$tests" != - ]; then
+    total_tests=$((total_tests + tests))
+    total_failures=$((total_failures + fails))
+    total_skipped=$((total_skipped + skipped))
+    total_excluded=$((total_excluded + excluded))
+  fi
+  failures_in[i]=0
+  [ "$fails" = - ] || failures_in[i]=$fails
+  seed_arg=''
+  [ "$seed" = - ] || seed_arg=" --seed $seed"
+  [ "$mc" != - ] || mc=$max_cases
+  reproduce="${reproduce}reproduce partition $i: TEST_PARTITIONS=$partitions TEST_PARTITION_ONLY=$i bin/test-all$seed_arg --max-cases $mc$args"$'\n'
+done
+row all '' "$total_tests" "$total_failures" "$total_skipped" "$total_excluded" '' '' '' ''
+echo
+printf '%s' "$reproduce"
+
+for i in $failed; do
+  echo
+  echo "---- partition $i: ${result[$i]}  $run/p$i.log"
+  if grep -Eq '^  [0-9]+\) ' "$run/p$i.log"; then
+    log_failures "$run/p$i.log" | cat -s
+  else
+    echo "(no failed test in the log; last lines)"
+    tail -n 20 "$run/p$i.log" | awk 1 # awk adds the newline a killed partition's last line lacks
+  fi
+done
+
+# One command for every failure, partitions in order, each location once.
+locations=$(for i in $parts; do log_locations "$run/p$i.log"; done | awk '!seen[$0]++' | tr '\n' ' ')
+if [ -n "$locations" ]; then
+  echo
+  echo "rerun failed tests: mix test ${locations% }"
+elif [ "$total_failures" -gt 0 ]; then
+  echo
+  echo "bin/test-all: $total_failures tests failed but no file:line was found in the logs" >&2
+fi
+
+# Merge the partitions' manifests into the default one. ExUnit's read/1 turns an
+# unreadable or unrecognised file into an empty manifest, so the script checks
+# readability itself and treats an empty manifest next to reported failures as a
+# problem: a format change in a later Elixir must not silently drop failures.
+# ExUnit.FailuresManifest is @moduledoc false; the printed rerun command does not
+# depend on it. A partition that died leaves no manifest and is skipped (its
+# failure is already in the exit status).
+merge='
+[out | pairs] = System.argv()
+
+results =
+  for [failures, path] <- Enum.chunk_every(pairs, 2) do
+    case File.read(path) do
+      {:ok, _} ->
+        manifest = ExUnit.FailuresManifest.read(path)
+
+        problem =
+          if failures != "0" and manifest == %{},
+            do: "#{path} has no entries although the partition reported #{failures} failures"
+
+        {manifest, problem}
+
+      {:error, :enoent} when failures == "0" ->
+        {%{}, nil}
+
+      {:error, reason} ->
+        {%{}, "cannot read #{path}: #{:file.format_error(reason)}"}
+    end
+  end
+
+merged = results |> Enum.map(&elem(&1, 0)) |> Enum.reduce(%{}, &Map.merge(&2, &1))
+problems = for {_, problem} <- results, problem, do: problem
+
+problems =
+  try do
+    ExUnit.FailuresManifest.write!(merged, out)
+    IO.puts("failures manifest: #{map_size(merged)} failed tests written to #{out}")
+    problems
+  rescue
+    error -> problems ++ ["cannot write #{out}: #{Exception.message(error)}"]
+  end
+
+for problem <- problems, do: IO.puts(:stderr, "bin/test-all: #{problem}")
+if problems != [], do: System.halt(1)
+'
+merge_args=()
+for i in $parts; do merge_args+=("${failures_in[$i]}" "$run/p$i/failures"); done
+merge_failed=
+if ! elixir -e "$merge" "$default_manifest" "${merge_args[@]}"; then
+  echo "bin/test-all: failure manifests were not merged; mix test --failed will not rerun this run's failures" >&2
+  merge_failed=1
+fi
+
 if [ -n "$failed" ]; then
   echo "bin/test-all: failed partitions:$failed" >&2
-  exit 1
 fi
+[ -z "$failed$merge_failed" ] || exit 1
