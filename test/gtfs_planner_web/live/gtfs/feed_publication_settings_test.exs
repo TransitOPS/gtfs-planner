@@ -132,6 +132,22 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationSettingsTest do
     end
   end
 
+  describe "a served file whose source could not be selected" do
+    test "stays published and says only that the active schedule did not change", context do
+      full = current_channel(context, :full, filename: "network.zip", export_type: "full")
+
+      Repo.update!(
+        Ecto.Changeset.change(full, last_error: Publication.active_source_unavailable())
+      )
+
+      {:ok, view, _html} = live(conn(context), @published_feeds)
+
+      assert row_text(view, "#feed-status-full") =~ "Published"
+      assert row_text(view, "#feed-note-full") =~ "active schedule did not change"
+      refute has_element?(view, "#feed-detail-full")
+    end
+  end
+
   describe "what each product sees" do
     test "a Pathways organization has this page and still hides its hidden surfaces", context do
       pathways_organization = organization_fixture(%{product: :pathways})

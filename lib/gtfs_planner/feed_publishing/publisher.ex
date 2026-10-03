@@ -62,8 +62,12 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
   alias GtfsPlanner.FeedPublishing.Namespace
   alias GtfsPlanner.FeedPublishing.Publication
   alias GtfsPlanner.FeedPublishing.Storage
+  alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.RunnerAdmission
+  alias GtfsPlanner.Values
+  alias GtfsPlanner.Versions
 
   @lease_seconds 180
   @retry_seconds 30
@@ -1067,34 +1071,44 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
   defp complete(attempt, etag, last_modified) do
     token = attempt.lease_token
 
-    case Repo.transaction(fn -> complete_locked(attempt.id, token, etag, last_modified) end) do
-      {:ok, result} -> {:ok, result}
-      {:error, :fenced} -> {:ok, :pending}
+    case Repo.transaction(fn -> complete_locked(attempt, token, etag, last_modified) end) do
+      {:ok, {result, activation}} ->
+        announce_activation(attempt, activation)
+        {:ok, result}
+
+      {:error, :fenced} ->
+        {:ok, :pending}
     end
   end
 
-  defp complete_locked(attempt_id, token, etag, last_modified) do
+  # Lock order: organization (full channel only), channel, attempt. A membership command
+  # holds the organization row while it waits for a member's row, and a publishing editor
+  # (`FeedPublishing.publish_static/4`) holds that row shared while it waits for the channel.
+  # A receipt that held the channel while it waited for the organization would close that
+  # cycle. Channel before attempt matches `claim_locked/2`.
+  defp complete_locked(attempt, token, etag, last_modified) do
+    lock_organization_for_full!(attempt)
+
+    publication =
+      Repo.one!(from p in Publication, where: p.id == ^attempt.publication_id, lock: "FOR UPDATE")
+
     locked =
       Repo.one(
         from a in Attempt,
-          where: a.id == ^attempt_id and a.lease_token == ^token,
+          where: a.id == ^attempt.id and a.lease_token == ^token,
           lock: "FOR UPDATE"
       )
 
     if locked == nil do
       Repo.rollback(:fenced)
     else
-      publication =
-        Repo.one!(
-          from p in Publication, where: p.id == ^locked.publication_id, lock: "FOR UPDATE"
-        )
-
       finish(locked, publication, etag, last_modified)
     end
   end
 
   defp finish(attempt, publication, etag, last_modified) do
     now = DateTime.utc_now()
+    activation = activate_source(attempt, publication)
 
     served = %{
       manifest_bytes: attempt.manifest_body,
@@ -1112,7 +1126,7 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
         Map.merge(served, %{
           status: :current,
           next_retry_at: nil,
-          last_error: nil,
+          last_error: receipt_error(activation, nil),
           active_attempt_id: attempt.id
         })
       )
@@ -1127,14 +1141,14 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
       })
       |> Repo.update!()
 
-      :current
+      {:current, activation}
     else
       publication
       |> Ecto.Changeset.change(
         Map.merge(served, %{
           status: :pending,
           next_retry_at: DateTime.add(now, @retry_seconds),
-          last_error: "newer accepted content is pending",
+          last_error: receipt_error(activation, "newer accepted content is pending"),
           active_attempt_id: nil
         })
       )
@@ -1149,7 +1163,7 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
       })
       |> Repo.update!()
 
-      :superseded
+      {:superseded, activation}
     end
   end
 
@@ -1170,34 +1184,98 @@ defmodule GtfsPlanner.FeedPublishing.Publisher do
   defp serve_then_supersede(attempt, etag, last_modified) do
     now = DateTime.utc_now()
 
-    Repo.transaction(fn ->
-      Repo.update_all(
-        from(a in Attempt, where: a.id == ^attempt.id),
-        set: [state: "superseded", retired_at: now, lease_token: nil, lease_expires_at: nil]
-      )
+    {:ok, activation} =
+      Repo.transaction(fn ->
+        lock_organization_for_full!(attempt)
 
-      Repo.update_all(
-        from(p in Publication, where: p.id == ^attempt.publication_id),
-        set: [
-          manifest_bytes: attempt.manifest_body,
-          manifest_sha256: attempt.manifest_sha256,
-          manifest_etag: etag,
-          manifest_generation: attempt.generation,
-          manifest_sequence: attempt.sequence,
-          manifest_last_modified: parse_http_date(last_modified),
-          last_refresh_at: now,
-          status: :pending,
-          active_attempt_id: nil,
-          next_retry_at: DateTime.add(now, @retry_seconds),
-          last_error: "newer accepted content is pending"
-        ]
-      )
+        publication =
+          Repo.one!(
+            from p in Publication, where: p.id == ^attempt.publication_id, lock: "FOR UPDATE"
+          )
 
-      :superseded
-    end)
+        Repo.update_all(
+          from(a in Attempt, where: a.id == ^attempt.id),
+          set: [state: "superseded", retired_at: now, lease_token: nil, lease_expires_at: nil]
+        )
 
+        activation = activate_source(attempt, publication)
+
+        Repo.update_all(
+          from(p in Publication, where: p.id == ^attempt.publication_id),
+          set: [
+            manifest_bytes: attempt.manifest_body,
+            manifest_sha256: attempt.manifest_sha256,
+            manifest_etag: etag,
+            manifest_generation: attempt.generation,
+            manifest_sequence: attempt.sequence,
+            manifest_last_modified: parse_http_date(last_modified),
+            last_refresh_at: now,
+            status: :pending,
+            active_attempt_id: nil,
+            next_retry_at: DateTime.add(now, @retry_seconds),
+            last_error: receipt_error(activation, "newer accepted content is pending")
+          ]
+        )
+
+        activation
+      end)
+
+    announce_activation(attempt, activation)
     {:ok, :superseded}
   end
+
+  # -- Active schedule ------------------------------------------------------
+
+  # A confirmed full-GTFS receipt also selects its source as the organization's active
+  # schedule, in the same transaction as the served receipt. Queued, failed and uncertain
+  # attempts never get here, and the other channels carry no schedule source.
+  defp activate_source(attempt, %Publication{channel: :full}) do
+    Versions.activate_full_publication!(
+      attempt.organization_id,
+      attempt.sequence,
+      source_version_id(attempt)
+    )
+  end
+
+  defp activate_source(_attempt, _publication), do: :unchanged
+
+  defp lock_organization_for_full!(%Attempt{
+         organization_id: organization_id,
+         publication: %Publication{channel: :full}
+       }),
+       do: Versions.lock_organization!(organization_id)
+
+  defp lock_organization_for_full!(_attempt), do: :ok
+
+  # The version frozen when the attempt was queued. An attempt queued before that value was
+  # frozen falls back to its scoped export run, which can be gone.
+  defp source_version_id(%Attempt{private_snapshot: %{"source" => %{"gtfs_version_id" => id}}})
+       when is_binary(id),
+       do: id
+
+  defp source_version_id(%Attempt{
+         organization_id: organization_id,
+         private_snapshot: %{"source" => %{"run_id" => run_id}}
+       }) do
+    with true <- Values.uuid?(run_id),
+         %Run{gtfs_version_id: version_id} <- ExportRuns.get_scoped_run(organization_id, run_id) do
+      version_id
+    else
+      _no_run -> nil
+    end
+  end
+
+  defp source_version_id(_attempt), do: nil
+
+  # The served file stays served and the channel stays current; the typed diagnostic only
+  # says the active schedule was left alone.
+  defp receipt_error(:unavailable, _default), do: Publication.active_source_unavailable()
+  defp receipt_error(_activation, default), do: default
+
+  defp announce_activation(attempt, {:changed, %{version_id: version_id}}),
+    do: Versions.announce_activation(attempt.organization_id, version_id)
+
+  defp announce_activation(_attempt, _activation), do: :ok
 
   defp supersede(attempt, token) do
     case Repo.transaction(fn -> supersede_locked(attempt.id, attempt.publication_id, token) end) do

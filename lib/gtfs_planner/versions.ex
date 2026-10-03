@@ -539,6 +539,44 @@ defmodule GtfsPlanner.Versions do
     end
   end
 
+  @doc """
+  Applies one confirmed full-GTFS receipt to the organization's active schedule.
+
+  Call inside the receipt transaction, after the receipt's own attempt and channel
+  locks. `sequence` is the served full manifest's sequence and `source_version_id` the
+  version its file was exported from. Under the organization lock, a receipt whose
+  sequence is not newer than `active_full_publication_sequence` was already applied or
+  is older than one that was, and changes nothing (`:unchanged`), so a replayed or
+  late receipt cannot undo a later manual choice. A newer receipt is consumed once:
+
+    * the source is a published version of this organization: it becomes active, and the
+      revision increments, only when it is not already active. A change returns
+      `{:changed, token}`; the caller announces it with `announce_activation/2` after
+      the outer commit. Otherwise the result is `:unchanged`;
+    * the source is absent, unpublished or deleted: the pointer stays and the receipt
+      is still consumed (`:unavailable`), because the file really was served.
+  """
+  @spec activate_full_publication!(Ecto.UUID.t(), integer(), term()) ::
+          :unchanged | {:changed, selection_token()} | :unavailable
+  def activate_full_publication!(organization_id, sequence, source_version_id)
+      when is_integer(sequence) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError, "activate_full_publication!/3 must run inside Repo.transaction/1"
+    end
+
+    organization = lock_organization!(organization_id)
+
+    if sequence <= organization.active_full_publication_sequence do
+      :unchanged
+    else
+      consume_full_receipt(
+        organization,
+        sequence,
+        locked_version(organization.id, source_version_id)
+      )
+    end
+  end
+
   # --- writer coordination --------------------------------------------------
 
   @doc """
@@ -686,21 +724,56 @@ defmodule GtfsPlanner.Versions do
 
   # `FOR KEY SHARE` is the lock the pointer's own foreign key takes. It holds off a
   # delete of the version without conflicting with a publish transition.
-  defp usable_version!(organization_id, version_id) do
-    version =
-      if Values.uuid?(version_id) do
-        from(v in GtfsVersion,
-          where: v.id == ^version_id and v.organization_id == ^organization_id,
-          lock: "FOR KEY SHARE"
-        )
-        |> Repo.one()
-      end
+  defp locked_version(organization_id, version_id) do
+    if Values.uuid?(version_id) do
+      from(v in GtfsVersion,
+        where: v.id == ^version_id and v.organization_id == ^organization_id,
+        lock: "FOR KEY SHARE"
+      )
+      |> Repo.one()
+    end
+  end
 
-    case version do
+  defp usable_version!(organization_id, version_id) do
+    case locked_version(organization_id, version_id) do
       nil -> Repo.rollback(:not_found)
       %GtfsVersion{publication_status: @published_status} = usable -> usable
       %GtfsVersion{} -> Repo.rollback(:not_usable)
     end
+  end
+
+  # The organization row is locked, so the watermark and the pointer move in one
+  # statement and the revision counts only actual pointer changes.
+  defp consume_full_receipt(organization, sequence, source) do
+    active_id = organization.active_gtfs_version_id
+
+    case source do
+      %GtfsVersion{publication_status: @published_status, id: ^active_id} ->
+        consume_receipt(organization, sequence)
+        :unchanged
+
+      %GtfsVersion{publication_status: @published_status, id: version_id} ->
+        {1, [revision]} =
+          from(o in Organization,
+            where: o.id == ^organization.id,
+            select: o.active_gtfs_version_revision
+          )
+          |> Repo.update_all(
+            set: [active_gtfs_version_id: version_id, active_full_publication_sequence: sequence],
+            inc: [active_gtfs_version_revision: 1]
+          )
+
+        {:changed, %{version_id: version_id, revision: revision}}
+
+      _unavailable ->
+        consume_receipt(organization, sequence)
+        :unavailable
+    end
+  end
+
+  defp consume_receipt(organization, sequence) do
+    from(o in Organization, where: o.id == ^organization.id)
+    |> Repo.update_all(set: [active_full_publication_sequence: sequence])
   end
 
   defp lifecycle_state(organization_id, version_id) do

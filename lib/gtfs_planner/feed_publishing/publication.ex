@@ -70,6 +70,16 @@ defmodule GtfsPlanner.FeedPublishing.Publication do
   @spec statuses() :: [atom()]
   def statuses, do: @statuses
 
+  @doc """
+  The `last_error` value of a channel whose confirmed full-GTFS file was served but
+  whose source version could no longer become the active schedule.
+
+  The upload succeeded, so the channel stays `current`; only the authoring selection
+  was left unchanged.
+  """
+  @spec active_source_unavailable() :: String.t()
+  def active_source_unavailable, do: "active_source_unavailable"
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 

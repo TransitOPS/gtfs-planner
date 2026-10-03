@@ -1052,6 +1052,57 @@ defmodule GtfsPlanner.VersionsTest do
     end
   end
 
+  describe "activate_full_publication!/3" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+
+      %{organization: organization, first: first, second: second}
+    end
+
+    test "selects a newer receipt's published source once, and a replay changes nothing", c do
+      second_id = c.second.id
+
+      assert {:ok, {:changed, %{version_id: ^second_id, revision: 2}}} =
+               receipt(c, 1, second_id)
+
+      assert receipt_state(c.organization) == {second_id, 2, 1}
+
+      assert {:ok, :unchanged} = receipt(c, 1, c.first.id)
+      assert receipt_state(c.organization) == {second_id, 2, 1}
+    end
+
+    test "consumes a newer receipt for the active version without a new revision, and ignores an older one",
+         c do
+      assert {:ok, :unchanged} = receipt(c, 3, c.first.id)
+      assert receipt_state(c.organization) == {c.first.id, 1, 3}
+
+      assert {:ok, :unchanged} = receipt(c, 2, c.second.id)
+      assert receipt_state(c.organization) == {c.first.id, 1, 3}
+    end
+
+    test "keeps the pointer for an unpublished, foreign, malformed or absent source but consumes the receipt",
+         c do
+      {:ok, staging} = Versions.create_staging_gtfs_version(c.organization.id, %{name: "Staging"})
+      foreign = gtfs_version_fixture(organization_fixture().id)
+
+      sources = [staging.id, foreign.id, "not-a-uuid", nil]
+
+      for {source, sequence} <- Enum.with_index(sources, 1) do
+        assert {:ok, :unavailable} = receipt(c, sequence, source)
+      end
+
+      assert receipt_state(c.organization) == {c.first.id, 1, 4}
+    end
+
+    test "must run inside a transaction", c do
+      assert_raise ArgumentError, ~r/inside Repo.transaction/, fn ->
+        Versions.activate_full_publication!(c.organization.id, 1, c.second.id)
+      end
+    end
+  end
+
   describe "deleting versions" do
     setup do
       organization = organization_fixture()
@@ -1259,6 +1310,19 @@ defmodule GtfsPlanner.VersionsTest do
   defp selection(organization) do
     organization = Repo.get!(Organization, organization.id)
     {organization.active_gtfs_version_id, organization.active_gtfs_version_revision}
+  end
+
+  defp receipt(c, sequence, source_version_id) do
+    Repo.transaction(fn ->
+      Versions.activate_full_publication!(c.organization.id, sequence, source_version_id)
+    end)
+  end
+
+  defp receipt_state(organization) do
+    organization = Repo.get!(Organization, organization.id)
+
+    {organization.active_gtfs_version_id, organization.active_gtfs_version_revision,
+     organization.active_full_publication_sequence}
   end
 
   # The state of an organization that predates active selection.
