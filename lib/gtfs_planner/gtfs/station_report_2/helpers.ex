@@ -77,32 +77,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Helpers do
   end
 
   @doc """
-  Finds outliers in a list of `{key, number}` tuples using standard deviation.
-  Returns items whose value exceeds `threshold` standard deviations from the mean.
-  Returns `[]` if fewer than 3 samples exist.
-  """
-  @spec find_outliers([{term(), number()}], float()) :: [{term(), number()}]
-  def find_outliers(keyed_values, threshold \\ 2.0)
-  def find_outliers(keyed_values, _threshold) when length(keyed_values) < 3, do: []
-
-  def find_outliers(keyed_values, threshold) do
-    values = Enum.map(keyed_values, fn {_key, val} -> val end)
-    n = length(values)
-    mean = Enum.sum(values) / n
-
-    variance = Enum.reduce(values, 0.0, fn v, acc -> acc + (v - mean) * (v - mean) end) / n
-    stddev = :math.sqrt(variance)
-
-    if stddev == 0.0 do
-      []
-    else
-      Enum.filter(keyed_values, fn {_key, val} ->
-        abs(val - mean) > threshold * stddev
-      end)
-    end
-  end
-
-  @doc """
   Computes the Levenshtein edit distance between two strings.
   """
   @spec levenshtein(String.t(), String.t()) :: non_neg_integer()

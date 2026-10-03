@@ -158,20 +158,15 @@ defmodule GtfsPlanner.Gtfs.StationReport2.NamingConventionsTest do
       assert check.status == :fail
     end
 
-    test "unknown stop_id in details keeps optional fields nil" do
-      # Build with a station that has title case issues, then verify
-      # that if a stop references an unknown ID, nil fields are returned.
-      # We test this by checking prefix checks with stops that have IDs
-      # not in the stop_index — but since NamingChecks only returns IDs
-      # from the input stops, we verify nil handling via the normalize path.
-      station = make_station()
-      checks = NamingConventions.build(%{station: station, child_stops: []})
+    test "prefix checks pass with no details when the station has no child stops" do
+      checks = NamingConventions.build(%{station: make_station(), child_stops: []})
 
-      # All prefix checks should pass with empty details for no child stops
       prefix_checks =
         Enum.filter(checks, fn c ->
           c.id in ["naming_node_prefix", "naming_boarding_prefix", "naming_entrance_prefix"]
         end)
+
+      assert length(prefix_checks) == 3
 
       Enum.each(prefix_checks, fn check ->
         assert check.status == :pass

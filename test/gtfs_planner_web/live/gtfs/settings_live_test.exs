@@ -74,20 +74,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
     doc |> text_of(selector) |> String.split() |> Enum.join(" ")
   end
 
-  # One overview entry: the title and destination of its row link, and whether it
-  # carries the Coming soon badge. A working entry shows no status word at all.
-  # Expected copy comes from the sitemap and the shared catalog.
-  defp assert_entry(doc, key, title, href, availability) do
+  # One overview entry: the title and destination of its row link. A working
+  # entry shows no Coming soon badge. Expected copy comes from the sitemap and the
+  # shared catalog.
+  defp assert_entry(doc, key, title, href) do
     entry = entry_doc(doc, key)
 
     assert Enum.count(LazyHTML.query(entry, "a")) == 1
     assert text_of(entry, "#settings-entry-#{key}-title") == title
     assert LazyHTML.attribute(LazyHTML.query(entry, "a"), "href") == [href]
-
-    case availability do
-      :working -> refute LazyHTML.text(entry) =~ "Coming soon"
-      :coming_soon -> assert LazyHTML.text(entry) =~ "Coming soon"
-    end
+    refute LazyHTML.text(entry) =~ "Coming soon"
   end
 
   describe "overview" do
@@ -126,29 +122,26 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         doc,
         :feed_details,
         "Feed details",
-        section_path(version.id, "feed-details"),
-        :working
+        section_path(version.id, "feed-details")
       )
 
       assert_entry(
         doc,
         :agencies,
         "Agencies",
-        section_path(version.id, "agencies"),
-        :working
+        section_path(version.id, "agencies")
       )
 
       assert text_of(doc, "#settings-entry-agencies-summary") ==
                "The agencies that operate your routes: names, websites and the timezone your schedules run in."
 
-      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), :working)
+      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"))
 
       assert_entry(
         doc,
         :export_defaults,
         "Export defaults",
-        section_path(version.id, "export-defaults"),
-        :working
+        section_path(version.id, "export-defaults")
       )
 
       # The design system renders each row's copy in spans, and a built page is a
@@ -158,14 +151,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       refute text_of(doc, "#settings-entry-export_defaults") =~ "Coming soon"
 
-      assert_entry(doc, :feed_url, "Published feeds", @published_feeds_path, :working)
+      assert_entry(doc, :feed_url, "Published feeds", @published_feeds_path)
 
-      assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"), :working)
-      assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"), :working)
+      assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"))
+      assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"))
 
       # Alert settings are organization-owned, so this row leaves the version's
       # Settings path for the page that owns them.
-      assert_entry(doc, :alerts, "Alerts", "/alerts/settings", :working)
+      assert_entry(doc, :alerts, "Alerts", "/alerts/settings")
 
       assert text_of(doc, "#settings-entry-alerts-summary") ==
                "The wording your organization uses for alerts: message scripts and writing guidelines."
@@ -257,11 +250,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         doc,
         :organization_name,
         "Organization name",
-        "/admin/users/organization-settings",
-        :working
+        "/admin/users/organization-settings"
       )
 
-      assert_entry(doc, :users, "Users", "/admin/users", :working)
+      assert_entry(doc, :users, "Users", "/admin/users")
 
       # The group is additive: the version and all-version entries are unchanged.
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
@@ -509,11 +501,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         doc,
         :organization_name,
         "Organization name",
-        "/admin/users/organization-settings",
-        :working
+        "/admin/users/organization-settings"
       )
 
-      assert_entry(doc, :users, "Users", "/admin/users", :working)
+      assert_entry(doc, :users, "Users", "/admin/users")
     end
 
     test "a Pathways editor without admin sees Alerts and no Organization group",

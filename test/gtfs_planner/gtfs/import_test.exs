@@ -7,32 +7,6 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
 
   import GtfsPlanner.GtfsFixtures
 
-  describe "parse_csv_line/1" do
-    test "parses simple CSV line" do
-      assert Import.parse_csv_line("value1,value2,value3") ==
-               {:ok, ["value1", "value2", "value3"]}
-    end
-
-    test "parses CSV line with quoted fields" do
-      assert Import.parse_csv_line(~s(value1,"quoted,value",value3)) ==
-               {:ok, ["value1", "quoted,value", "value3"]}
-    end
-
-    test "parses CSV line with escaped quotes" do
-      assert Import.parse_csv_line(~s("quoted ""value"" here",normal)) ==
-               {:ok, ["quoted \"value\" here", "normal"]}
-    end
-
-    test "handles empty fields" do
-      assert Import.parse_csv_line("value1,,value3") == {:ok, ["value1", "", "value3"]}
-      assert Import.parse_csv_line(",,") == {:ok, ["", "", ""]}
-    end
-
-    test "handles trailing comma" do
-      assert Import.parse_csv_line("value1,value2,") == {:ok, ["value1", "value2", ""]}
-    end
-  end
-
   describe "import_files/3" do
     alias GtfsPlanner.Gtfs
 

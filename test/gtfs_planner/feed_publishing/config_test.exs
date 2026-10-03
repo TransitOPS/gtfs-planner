@@ -109,17 +109,16 @@ defmodule GtfsPlanner.FeedPublishing.ConfigTest do
 
   describe "current/0" do
     setup do
-      original =
-        Application.get_env(:gtfs_planner, :feed_publishing_config) ||
-          Application.get_env(:gtfs_planner, :feed_publishing_settings)
+      originals =
+        for key <- [:feed_publishing_config, :feed_publishing_settings],
+            do: {key, Application.fetch_env(:gtfs_planner, key)}
 
       on_exit(fn ->
-        Application.delete_env(:gtfs_planner, :feed_publishing_config)
-        Application.delete_env(:gtfs_planner, :feed_publishing_settings)
-
-        case original do
-          nil -> :ok
-          value -> Application.put_env(:gtfs_planner, :feed_publishing_config, value)
+        for {key, original} <- originals do
+          case original do
+            {:ok, value} -> Application.put_env(:gtfs_planner, key, value)
+            :error -> Application.delete_env(:gtfs_planner, key)
+          end
         end
       end)
 

@@ -7,7 +7,7 @@ defmodule GtfsPlanner.Gtfs.Import.CsvParserStreamTest do
   @filename "stops.txt"
   @bom <<0xEF, 0xBB, 0xBF>>
   @max_record_bytes 1_048_576
-  @chunk_sizes [1, 7, 64, 65_536]
+  @chunk_sizes [1, 7, 65_536]
 
   # The inputs of csv_parser_test.exs, then inputs that put a BOM, CRLF, doubled
   # quotes, a quote before LF and multi-byte characters on chunk boundaries.

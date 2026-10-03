@@ -71,25 +71,6 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
       assert Exception.message(error) =~ "service_alerts_source_version_owner_fkey"
     end
 
-    test "deleting the source gtfs_version retains the alert and clears only the source", %{
-      organization: organization,
-      version: version
-    } do
-      id = insert_alert(organization, version)
-
-      Repo.delete_all(from(v in GtfsPlanner.Versions.GtfsVersion, where: v.id == ^version.id))
-
-      assert %{rows: [[organization_id, source_gtfs_version_id, revision]]} =
-               Repo.query!(
-                 "SELECT organization_id, source_gtfs_version_id, revision FROM service_alerts WHERE id = $1",
-                 [id]
-               )
-
-      assert Ecto.UUID.load!(organization_id) == organization.id
-      assert is_nil(source_gtfs_version_id)
-      assert revision == 1
-    end
-
     test "deleting the user leaves created_by_id and updated_by_id NULL", %{
       organization: organization,
       version: version

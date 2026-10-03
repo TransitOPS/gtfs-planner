@@ -7,8 +7,8 @@ defmodule GtfsPlanner.Alerts.PublicationMigrationTest do
   `target_reference` and `timezone` while their source version still resolved —
   ran against the owned partition database and is recorded in the step learning.
   These cases own the post-migration contract: two versions' alerts survive
-  intact, a deleted source clears only the provenance, the database refuses a
-  cross-tenant source, and neither old ownership key survives.
+  intact, a deleted source clears only the provenance, and neither old ownership
+  key survives. `migration_test.exs` owns the cross-tenant source refusal.
 
   Rows are written by table name with explicit ids, because the point is the
   stored shape rather than a command path. Each expected constraint violation
@@ -122,17 +122,6 @@ defmodule GtfsPlanner.Alerts.PublicationMigrationTest do
       assert route["gtfs_id"] == "R-1"
       assert route["label"] == "1 Main"
       assert alert.target_reference["timezone"] == "America/New_York"
-    end
-
-    test "refuse a source version of another organization", context do
-      foreign_version = gtfs_version_fixture(context.other_organization.id)
-
-      error =
-        assert_raise Postgrex.Error, fn ->
-          insert_alert(context.organization, foreign_version, 1, "Borrowed")
-        end
-
-      assert Exception.message(error) =~ "service_alerts_source_version_owner_fkey"
     end
   end
 

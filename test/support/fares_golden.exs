@@ -18,7 +18,7 @@ defmodule GtfsPlanner.FaresGolden do
   alias GtfsPlanner.FaresFixtures
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.CsvWriter
-  alias GtfsPlanner.Gtfs.Import
+  alias GtfsPlanner.Gtfs.Import.CsvParser
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -121,7 +121,7 @@ defmodule GtfsPlanner.FaresGolden do
       bytes
       |> String.split("\n", trim: true)
       |> Enum.map(fn line ->
-        {:ok, fields} = Import.parse_csv_line(line)
+        {:ok, fields} = CsvParser.parse_line(line)
         fields
       end)
 
