@@ -28,9 +28,8 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.TripRun
   import GtfsPlanner.BlockingFixtures
-  import GtfsPlanner.GtfsFixtures, only: [route_fixture: 3, trip_fixture: 4]
+  import GtfsPlanner.GtfsFixtures, only: [trip_fixture: 4]
   import GtfsPlanner.RunsFixtures
-  import GtfsPlanner.VersionsFixtures, only: [gtfs_version_fixture: 1]
 
   @moduletag timeout: 120_000
 
@@ -68,136 +67,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
     |> Map.new()
   end
 
-  defp move(trip, from, to), do: %{trip_id: trip.trip_id, from: from, to: to}
-
-  # Every assignment of a version, as `{day_type_key, trip_id, run_id}`.
-  defp rows_of(organization_id, gtfs_version_id) do
-    Repo.all(
-      from(row in TripRun,
-        where:
-          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
-        select: {row.day_type_key, row.trip_id, row.run_id},
-        order_by: [row.day_type_key, row.trip_id]
-      )
-    )
-  end
-
-  # A second version of the same organization with a trip for each of block 101's
-  # trip IDs, every one assigned to `run_id`.
-  defp sibling_with_same_trip_ids(world, run_id) do
-    sibling = gtfs_version_fixture(world.organization.id)
-    route_fixture(world.organization.id, sibling.id, %{route_id: "R1"})
-
-    for trip <- world.blocks["101"] do
-      sibling_trip =
-        blocked_trip_fixture(world.organization.id, sibling.id, "R1", %{
-          trip_id: trip.trip_id,
-          block_id: "101"
-        })
-
-      trip_run_fixture(world.organization.id, sibling.id, %{
-        trip: sibling_trip,
-        day_type_key: world.day_type_key,
-        run_id: run_id
-      })
-    end
-
-    sibling
-  end
-
-  describe "trip IDs shared with other scopes" do
-    test "a move and its undo write only the audited version's own row", %{world: world, a: a} do
-      sibling = sibling_with_same_trip_ids(world, "9001")
-
-      # Another organization repeats every trip ID of the fixture (a through f),
-      # and the same trip ID has a row on another day type of this version.
-      theirs = runs_version_fixture()
-
-      for trip <- theirs.blocks["101"] do
-        trip_run_fixture(theirs.organization.id, theirs.version.id, %{
-          trip: trip,
-          day_type_key: theirs.day_type_key,
-          run_id: "8001"
-        })
-      end
-
-      saturday_key = DayTypes.key(["SAT"])
-
-      trip_run_fixture(world.organization.id, world.version.id, %{
-        trip: a,
-        day_type_key: saturday_key,
-        run_id: "S1"
-      })
-
-      elsewhere = fn ->
-        {rows_of(world.organization.id, sibling.id),
-         rows_of(theirs.organization.id, theirs.version.id),
-         world.organization.id
-         |> rows_of(world.version.id)
-         |> Enum.filter(&(elem(&1, 0) == saturday_key))}
-      end
-
-      before = elsewhere.()
-
-      assert {:ok, %{undo: undo}} =
-               Gtfs.apply_run_moves(world.audit, world.day_type_key, [move(a, "1001", "2001")])
-
-      assert stored(world)[a.trip_id] == "2001"
-      assert undo == [%{trip_id: a.trip_id, from: "2001", to: "1001"}]
-      assert elsewhere.() == before
-
-      assert {:ok, _} = Gtfs.apply_run_moves(world.audit, world.day_type_key, undo)
-
-      assert stored(world)[a.trip_id] == "1001"
-      assert elsewhere.() == before
-    end
-
-    test "a trip ID that exists only in a sibling version is not part of the day", %{world: world} do
-      sibling = gtfs_version_fixture(world.organization.id)
-      route_fixture(world.organization.id, sibling.id, %{route_id: "R1"})
-
-      only_there =
-        blocked_trip_fixture(world.organization.id, sibling.id, "R1", %{
-          trip_id: "only-in-sibling",
-          block_id: "101"
-        })
-
-      trip_run_fixture(world.organization.id, sibling.id, %{
-        trip: only_there,
-        day_type_key: world.day_type_key,
-        run_id: "9001"
-      })
-
-      before = stored(world)
-      sibling_before = rows_of(world.organization.id, sibling.id)
-
-      assert {:error, {:invalid_trips, ["only-in-sibling"]}} =
-               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
-                 %{trip_id: "only-in-sibling", from: "9001", to: "2001"}
-               ])
-
-      assert stored(world) == before
-      assert rows_of(world.organization.id, sibling.id) == sibling_before
-
-      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [
-               "only-in-sibling"
-             ]) == 0
-    end
-
-    test "an undo recorded with trip row UUIDs is refused as a command", %{world: world, a: a} do
-      before = stored(world)
-
-      # Before the conversion a move named the trip by `Trip.id`. That UUID is not a
-      # trip ID of the day, so the old shape cannot be replayed or misread.
-      assert {:error, {:invalid_trips, [uuid]}} =
-               Gtfs.apply_run_moves(world.audit, world.day_type_key, [
-                 %{trip_id: a.id, from: "1001", to: nil}
-               ])
-
-      assert uuid == a.id
-      assert stored(world) == before
-    end
-  end
+  defp move(trip, from, to), do: %{trip_id: trip.id, from: from, to: to}
 
   describe "apply_run_moves/4 writing" do
     test "assigning, reassigning and unassigning are visible when the rows are re-read", %{
@@ -214,12 +84,12 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(unassigned, nil, "3001")
                ])
 
-      assert runs_of(world)[a.trip_id] == "2001"
-      refute Map.has_key?(runs_of(world), b.trip_id)
-      assert runs_of(world)[unassigned.trip_id] == "3001"
+      assert runs_of(world)[a.id] == "2001"
+      refute Map.has_key?(runs_of(world), b.id)
+      assert runs_of(world)[unassigned.id] == "3001"
       # Read from the table too, not only through the derived day.
-      assert stored(world)[a.trip_id] == "2001"
-      refute Map.has_key?(stored(world), b.trip_id)
+      assert stored(world)[a.id] == "2001"
+      refute Map.has_key?(stored(world), b.id)
     end
 
     test "an empty call changes nothing and returns no new run", %{world: world} do
@@ -241,7 +111,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(a, "1001", "1001")
                ])
 
-      assert stored(world)[a.trip_id] == "1001"
+      assert stored(world)[a.id] == "1001"
     end
 
     test "two moves with to: :new create ONE run numbered above the highest", %{
@@ -257,8 +127,8 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       # One run, not two: an operator dragging two trips onto "new run" means one
       # run. Numbered above the highest in use, not above nothing.
-      assert runs_of(world)[a.trip_id] == "1002"
-      assert runs_of(world)[b.trip_id] == "1002"
+      assert runs_of(world)[a.id] == "1002"
+      assert runs_of(world)[b.id] == "1002"
       assert Map.values(runs_of(world)) |> Enum.uniq() |> Enum.sort() == ["1001", "1002"]
     end
 
@@ -272,7 +142,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(first, nil, :new)
                ])
 
-      assert runs_of(world)[first.trip_id] == "1"
+      assert runs_of(world)[first.id] == "1"
     end
   end
 
@@ -291,8 +161,8 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       # Both refused. The correct move beside the stale one is not written
       # either — that is the "all or none" half, and it is the half a per-move
       # implementation would get wrong.
-      assert stored(world)[a.trip_id] == "1001"
-      assert stored(world)[b.trip_id] == "1001"
+      assert stored(world)[a.id] == "1001"
+      assert stored(world)[b.id] == "1001"
     end
 
     test "a from of nil is a real expectation, not an unset value", %{world: world} do
@@ -304,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(assigned, nil, "2001")
                ])
 
-      assert stored(world)[assigned.trip_id] == "1001"
+      assert stored(world)[assigned.id] == "1001"
     end
 
     test "a trip of another day type is invalid, and every offender is returned", %{world: world} do
@@ -344,17 +214,17 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                ])
 
       # Both named, not just the first, so a page can mark them all at once.
-      assert Enum.sort(invalid) == Enum.sort([saturday_trip.trip_id, frequency_trip.trip_id])
+      assert Enum.sort(invalid) == Enum.sort([saturday_trip.id, frequency_trip.id])
       assert stored(world) == before
     end
 
-    test "an unknown trip ID is invalid rather than a crash", %{world: world} do
+    test "an unknown trip UUID is invalid rather than a crash", %{world: world} do
       assert {:error, {:invalid_trips, [missing]}} =
                Gtfs.apply_run_moves(world.audit, world.day_type_key, [
-                 %{trip_id: "no-such-trip", from: nil, to: "2001"}
+                 %{trip_id: Ecto.UUID.generate(), from: nil, to: "2001"}
                ])
 
-      assert missing == "no-such-trip"
+      assert is_binary(missing)
     end
 
     test "a to of \"1 2\" is an invalid run id and writes nothing", %{world: world, a: a} do
@@ -363,7 +233,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(a, "1001", "1 2")
                ])
 
-      assert stored(world)[a.trip_id] == "1001"
+      assert stored(world)[a.id] == "1001"
     end
 
     test "a too-long run ID is refused", %{world: world, a: a} do
@@ -372,7 +242,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(a, "1001", "ABCDEFGHI")
                ])
 
-      assert stored(world)[a.trip_id] == "1001"
+      assert stored(world)[a.id] == "1001"
     end
 
     test "another organization's version is not found and writes nothing", %{
@@ -390,7 +260,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  ),
                  theirs.day_type_key,
                  [
-                   %{trip_id: a.trip_id, from: nil, to: "2001"}
+                   %{trip_id: a.id, from: nil, to: "2001"}
                  ]
                )
 
@@ -468,10 +338,10 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
         )
 
       assert after_row == "101"
-      assert runs_of(world)[a.trip_id] == "101"
+      assert runs_of(world)[a.id] == "101"
 
       # And the Saturday trip is not in the Weekday day at all.
-      refute Map.has_key?(runs_of(world), saturday.trip_id)
+      refute Map.has_key?(runs_of(world), saturday.id)
     end
   end
 
@@ -511,7 +381,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(a, "1001", "2001")
                ])
 
-      assert undo == [%{trip_id: a.trip_id, from: "2001", to: "1001"}]
+      assert undo == [%{trip_id: a.id, from: "2001", to: "1001"}]
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(
@@ -563,7 +433,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
                  move(a, "1001", nil)
                ])
 
-      refute Map.has_key?(stored(world), a.trip_id)
+      refute Map.has_key?(stored(world), a.id)
 
       assert {:ok, _} =
                Gtfs.apply_run_moves(

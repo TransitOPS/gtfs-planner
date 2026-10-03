@@ -24,7 +24,7 @@ defmodule Mix.Tasks.Gtfs.AuditOwnershipTest do
     assert release_output =~ "trip_runs.trip_id→trips\t0\t"
   end
 
-  test "a cross-version trip assignment makes both audit entry points report its row ID" do
+  test "a cross-version trip assignment makes both audit entry points report its UUID" do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     other_version = gtfs_version_fixture(org.id)
@@ -41,7 +41,7 @@ defmodule Mix.Tasks.Gtfs.AuditOwnershipTest do
                  id: id,
                  organization_id: org.id,
                  gtfs_version_id: version.id,
-                 trip_id: trip.trip_id,
+                 trip_id: trip.id,
                  day_type_key: "WK",
                  run_id: "R1",
                  inserted_at: now,

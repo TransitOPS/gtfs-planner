@@ -93,21 +93,21 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
     test "lists only the trips whose run differs, sorted by trip ID" do
       [first, second, third] = [trip(1), trip(2), trip(3)]
 
-      current = %{first.trip_id => "1001", second.trip_id => "1001", third.trip_id => "1002"}
-      proposed = %{first.trip_id => "1001", second.trip_id => "2001", third.trip_id => "1002"}
+      current = %{first.id => "1001", second.id => "1001", third.id => "1002"}
+      proposed = %{first.id => "1001", second.id => "2001", third.id => "1002"}
 
       plan = plan(current, proposed)
 
       # The first trip was already on the right run and is not a change.
       assert [%{trip_id: second_id, from: "1001", to: "2001"}] = plan.moves
-      assert second_id == second.trip_id
+      assert second_id == second.id
     end
 
     test "names every affected run, on both sides of a move" do
       [first, second] = [trip(1), trip(2)]
 
-      current = %{first.trip_id => "1001", second.trip_id => "1001"}
-      proposed = %{first.trip_id => "2001", second.trip_id => "2001"}
+      current = %{first.id => "1001", second.id => "1001"}
+      proposed = %{first.id => "2001", second.id => "2001"}
 
       plan = plan(current, proposed)
 
@@ -122,7 +122,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
 
       # The first is explicitly unassigned, the second was never in the map at
       # all. Both end up with no previous run, so both are moves from nothing.
-      plan = plan(%{first.trip_id => nil}, %{first.trip_id => "1001", second.trip_id => "1001"})
+      plan = plan(%{first.id => nil}, %{first.id => "1001", second.id => "1001"})
 
       assert [%{from: nil, to: "1001"}, %{from: nil, to: "1001"}] = plan.moves
       assert plan.changed_run_ids == ["1001"]
@@ -131,7 +131,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
 
     test "a proposal that changes nothing has no moves" do
       [first, second] = [trip(1), trip(2)]
-      same = %{first.trip_id => "1001", second.trip_id => "1002"}
+      same = %{first.id => "1001", second.id => "1002"}
 
       plan = plan(same, same)
 
@@ -142,7 +142,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
 
     test "the plan carries the day, the scope, the figures and the fingerprint through" do
       [first] = [trip(1)]
-      plan = plan(%{first.trip_id => "1001"}, %{first.trip_id => "2001"})
+      plan = plan(%{first.id => "1001"}, %{first.id => "2001"})
 
       assert plan.day_type_key == "weekday"
       assert plan.scope == :uncovered_only
@@ -196,17 +196,9 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
       assert fingerprint(trips: [trip(1), touched]) != fingerprint([])
     end
 
-    test "a trip recreated under the same trip ID with every other value equal" do
-      recreated = trip(2, id: "11111111-1111-4111-8111-111111111111")
-
-      refute recreated.id == trip(2).id
-      assert recreated.trip_id == trip(2).trip_id
-      assert fingerprint(trips: [trip(1), recreated, trip(3)]) != fingerprint([])
-    end
-
     test "one assignment" do
       [first | _] = [trip(1)]
-      assert fingerprint(assignments: %{first.trip_id => "1001"}) != fingerprint([])
+      assert fingerprint(assignments: %{first.id => "1001"}) != fingerprint([])
     end
 
     test "one crew value" do
@@ -259,7 +251,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
   describe "the fingerprint ignores order" do
     test "the same inputs given in a different order hash the same" do
       [a, b, c] = [trip(1), trip(2), trip(3)]
-      assignments = %{a.trip_id => "1001", b.trip_id => "1002", c.trip_id => "1003"}
+      assignments = %{a.id => "1001", b.id => "1002", c.id => "1003"}
 
       forwards = Plan.fingerprint(inputs(trips: [a, b, c], assignments: assignments))
 

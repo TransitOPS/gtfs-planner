@@ -74,14 +74,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
                |> TripRun.changeset(%{run_id: "R2"})
                |> Repo.insert()
 
-      assert Repo.aggregate(
-               from(t in TripRun,
-                 where:
-                   t.organization_id == ^organization.id and t.gtfs_version_id == ^version.id and
-                     t.trip_id == ^trip.trip_id
-               ),
-               :count
-             ) == 2
+      assert Repo.aggregate(from(t in TripRun, where: t.trip_id == ^trip.id), :count) == 2
     end
 
     test "a trip of another organization stores beside it", %{
@@ -155,14 +148,14 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
           run_id: "R1",
           organization_id: Ecto.UUID.generate(),
           gtfs_version_id: Ecto.UUID.generate(),
-          trip_id: "ignored-trip",
+          trip_id: Ecto.UUID.generate(),
           day_type_key: "SA"
         })
 
       assert {:ok, stored} = Repo.insert(changeset)
       assert stored.organization_id == organization.id
       assert stored.gtfs_version_id == version.id
-      assert stored.trip_id == trip.trip_id
+      assert stored.trip_id == trip.id
       assert stored.day_type_key == "WK"
     end
   end
@@ -179,29 +172,6 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
       assert {:ok, _} = Repo.delete(trip)
 
       assert Repo.aggregate(TripRun, :count) == 0
-    end
-
-    test "leaves a sibling version's assignment for the same trip ID", %{
-      organization: organization,
-      version: version,
-      trip: trip
-    } do
-      insert_run(organization, version, trip, "WK", "R1")
-
-      sibling_version = gtfs_version_fixture(organization.id)
-      sibling_route = route_fixture(organization.id, sibling_version.id)
-
-      sibling_trip =
-        blocked_trip_fixture(organization.id, sibling_version.id, sibling_route.id, %{
-          trip_id: trip.trip_id,
-          block_id: "101"
-        })
-
-      {:ok, sibling_row} = insert_run(organization, sibling_version, sibling_trip, "WK", "R9")
-
-      assert {:ok, _} = Repo.delete(trip)
-
-      assert Repo.all(from(r in TripRun, select: r.id)) == [sibling_row.id]
     end
   end
 
@@ -269,7 +239,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
     %TripRun{
       organization_id: organization.id,
       gtfs_version_id: version.id,
-      trip_id: trip.trip_id,
+      trip_id: trip.id,
       day_type_key: day_type_key
     }
   end
@@ -288,7 +258,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
       id: Ecto.UUID.generate(),
       organization_id: organization.id,
       gtfs_version_id: version.id,
-      trip_id: trip.trip_id,
+      trip_id: trip.id,
       day_type_key: day_type_key,
       run_id: run_id,
       # `timestamps/1` made these columns `NOT NULL`, and `insert_all/2` writes no

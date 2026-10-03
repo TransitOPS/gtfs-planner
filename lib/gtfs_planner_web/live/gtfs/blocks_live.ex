@@ -4019,7 +4019,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # It reflects the runs as they are saved, because a Blocks preview writes
   # nothing until Apply.
   defp assign_runs_touched(socket, plan) do
-    trip_ids = plan.moves |> Enum.map(& &1.trip.trip_id) |> Enum.uniq()
+    trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()
 
     count =
       Gtfs.count_runs_for_trips(

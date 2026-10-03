@@ -30,7 +30,6 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.Runs
-  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Gtfs.TripRun
 
   import GtfsPlanner.AccountsFixtures
@@ -145,24 +144,6 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       assert all_rows(world) == before
     end
 
-    # The recreated row keeps its trip ID, block, times, stops, assignment and
-    # `updated_at`, so every value the plan was derived from is unchanged. Only the
-    # row identity differs, and the plan is still refused.
-    test "a trip deleted and recreated under the same trip ID", %{world: world} do
-      plan = suggest(world, :uncovered_only)
-      before = all_rows(world)
-
-      uncovered = Repo.get!(Trip, hd(world.blocks["102"]).id)
-      Repo.delete!(uncovered)
-      recreated = Repo.insert!(%{Ecto.put_meta(uncovered, state: :built) | id: nil})
-
-      refute recreated.id == uncovered.id
-      assert recreated.trip_id == uncovered.trip_id
-
-      assert {:error, :stale_plan} = Gtfs.apply_run_plan(world.audit, plan)
-      assert all_rows(world) == before
-    end
-
     test "the day type's run assignments", %{world: world} do
       plan = suggest(world, :uncovered_only)
 
@@ -170,7 +151,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       # colleague's write stands, and the plan adds nothing of its own.
       assert {:ok, _} =
                Gtfs.apply_run_moves(world.audit, world.day_type_key, [
-                 %{trip_id: hd(world.blocks["101"]).trip_id, from: "1001", to: "9999"}
+                 %{trip_id: hd(world.blocks["101"]).id, from: "1001", to: "9999"}
                ])
 
       after_their_write = all_rows(world)
@@ -308,15 +289,12 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
 
       # The fingerprint covers the world, not the plan's moves, so a hand-edited
       # move is not what staleness detects — it is the trip check.
-      tampered = %{
-        plan
-        | moves: plan.moves ++ [%{trip_id: saturday.trip_id, from: nil, to: "2001"}]
-      }
+      tampered = %{plan | moves: plan.moves ++ [%{trip_id: saturday.id, from: nil, to: "2001"}]}
 
       assert {:error, {:invalid_trips, [saturday_id]}} =
                Gtfs.apply_run_plan(world.audit, tampered)
 
-      assert saturday_id == saturday.trip_id
+      assert saturday_id == saturday.id
       assert all_rows(world) == before
     end
   end

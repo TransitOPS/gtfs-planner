@@ -305,7 +305,7 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
           )
         )
 
-      assert saturday_rows == [{saturday.trip_id, "1001"}]
+      assert saturday_rows == [{saturday.id, "1001"}]
     end
 
     test "a foreign organization's version is not found and writes nothing", %{world: world} do

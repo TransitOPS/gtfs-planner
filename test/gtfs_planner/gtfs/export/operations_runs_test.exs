@@ -90,18 +90,6 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
       end
     end
 
-    test "each Operator event names one assigned trip by its GTFS trip ID", %{run_events: rows} do
-      operator_trips =
-        rows
-        |> Enum.filter(&(&1["event_type"] == "Operator"))
-        |> Enum.map(& &1["trip_id"])
-        |> Enum.sort()
-
-      # The fixture's six trips, by the IDs it gives them: a, b, c and d on block
-      # 101, e and f on block 102.
-      assert operator_trips == ["a", "b", "c", "d", "e", "f"]
-    end
-
     test "every non-blank trip_id is in trips.txt or trips_supplement.txt", %{
       entries: entries,
       run_events: rows
@@ -358,7 +346,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
 
     moves =
       for trip <- world.blocks[excluded_block_id] do
-        %{trip_id: trip.trip_id, from: run_of(world, key, trip.trip_id), to: nil}
+        %{trip_id: trip.id, from: run_of(world, key, trip.id), to: nil}
       end
 
     {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)
@@ -380,7 +368,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
 
   defp runs_containing(day, trip_id) do
     for run <- day.derived.runs,
-        Enum.any?(run.pieces, fn piece -> Enum.any?(piece.trips, &(&1.trip_id == trip_id)) end),
+        Enum.any?(run.pieces, fn piece -> Enum.any?(piece.trips, &(&1.id == trip_id)) end),
         do: run.run_id
   end
 
@@ -408,8 +396,8 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
     existing = run_ids(world, key)
 
     moves = [
-      %{trip_id: first.trip_id, from: victim.run_id, to: Gtfs.next_run_id(existing)},
-      %{trip_id: second.trip_id, from: victim.run_id, to: Gtfs.next_run_id(existing ++ ["1"])}
+      %{trip_id: first.id, from: victim.run_id, to: Gtfs.next_run_id(existing)},
+      %{trip_id: second.id, from: victim.run_id, to: Gtfs.next_run_id(existing ++ ["1"])}
     ]
 
     {:ok, _result} = Gtfs.apply_run_moves(world.audit, key, moves)

@@ -89,8 +89,8 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
     test "moves only the uncovered trips", %{world: world} do
       plan = suggest(world, :uncovered_only)
 
-      covered = MapSet.new(world.blocks["101"] |> Enum.map(& &1.trip_id))
-      uncovered = MapSet.new(world.blocks["102"] |> Enum.map(& &1.trip_id))
+      covered = MapSet.new(world.blocks["101"] |> Enum.map(& &1.id))
+      uncovered = MapSet.new(world.blocks["102"] |> Enum.map(& &1.id))
 
       moved = MapSet.new(Enum.map(plan.moves, & &1.trip_id))
 
@@ -107,7 +107,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       plan = suggest(world, :uncovered_only)
 
       for trip <- world.blocks["101"] do
-        refute Enum.any?(plan.moves, &(&1.trip_id == trip.trip_id))
+        refute Enum.any?(plan.moves, &(&1.trip_id == trip.id))
       end
     end
 
@@ -195,7 +195,7 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       {:ok, runs_day} =
         Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
 
-      every_trip = (world.blocks["101"] ++ world.blocks["102"]) |> Enum.map(& &1.trip_id)
+      every_trip = (world.blocks["101"] ++ world.blocks["102"]) |> Enum.map(& &1.id)
       assert MapSet.new(Map.keys(runs_day.assignments)) == MapSet.new(every_trip)
 
       # The old run is gone entirely, not merely unreferenced: a rebuild that

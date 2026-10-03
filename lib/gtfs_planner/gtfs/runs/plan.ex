@@ -19,13 +19,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
 
   So `fingerprint/1` covers **everything the suggestion was derived from**: the
   whole planning context, every sequence trip's identity and timing and its two
-  end stops, every assignment, and the crew rules. A trip is covered by both its
-  GTFS `trip_id`, which the assignments and moves name, and its `Trip.id` row
-  UUID with its `updated_at` revision. A trip deleted and recreated under the
-  same `trip_id` is a new row, so a plan reviewed before the recreation is
-  refused even when every timing and assignment value matches.
-  `apply_run_plan/3` recomputes the fingerprint under the lock and refuses a
-  mismatch with `:stale_plan`. That
+  end stops, every assignment, and the crew rules. `apply_run_plan/3`
+  recomputes it under the lock and refuses a mismatch with `:stale_plan`. That
   is the whole mechanism; there is no version counter and no timestamp, because
   a counter misses an edit made by a different session and a timestamp misses
   nothing but is not an input.
@@ -54,8 +49,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
   leave the old ones on screen with no indication they had changed.
   """
 
-  # `trip_id` is the trip's GTFS `trip_id` in the plan's organization and version.
-  @type move :: %{trip_id: String.t(), from: String.t() | nil, to: String.t() | nil}
+  @type move :: %{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil}
 
   @type t :: %{
           day_type_key: String.t(),
@@ -97,8 +91,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
   # themselves — but its two end stops are, because which stops a trip runs
   # between is part of its identity for blocking purposes.
   defp trip_term(trip) do
-    {trip.id, trip.trip_id, trip.block_id, trip.first_departure, trip.last_arrival,
-     stop_id(trip.first_stop), stop_id(trip.last_stop), trip.updated_at}
+    {trip.id, trip.block_id, trip.first_departure, trip.last_arrival, stop_id(trip.first_stop),
+     stop_id(trip.last_stop), trip.updated_at}
   end
 
   defp stop_id(nil), do: nil
@@ -109,7 +103,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
 
   Takes `%{day_type_key:, scope:, current:, proposed:, before:, after:, preview:,
   fingerprint:}`, where `current` and `proposed` are assignment maps keyed by
-  GTFS trip ID. The result is `t()`.
+  trip UUID. The result is `t()`.
   """
   @spec build(map()) :: t()
   def build(%{

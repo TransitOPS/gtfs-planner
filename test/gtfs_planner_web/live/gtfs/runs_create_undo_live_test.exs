@@ -102,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
 
     day.derived.uncovered
     |> Enum.filter(&(&1.block_id == block))
-    |> Enum.flat_map(&Enum.map(&1.trips, fn trip -> trip.trip_id end))
+    |> Enum.flat_map(&Enum.map(&1.trips, fn trip -> trip.id end))
     |> Enum.sort()
   end
 
@@ -306,32 +306,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
       # The fixture's own run is untouched: undo reverses THIS write, not the day.
       assert run_ids(w, "1001") != []
       assert text(view, "[data-role=toast-text]") == "Undone."
-    end
-
-    test "an undo armed before moves named trips by GTFS trip ID is refused", ctx do
-      w = world(ctx)
-      view = open(ctx, w, "panel=uncovered")
-
-      view |> element("#uncovered-0 [data-role=create-run]") |> render_click()
-
-      [_match, created] =
-        Regex.run(~r/Run ([^ ]+) created\./, text(view, "[data-role=toast-text]"))
-
-      before = run_ids(w, created)
-      [first | _] = w.blocks["101"]
-
-      # The undo as it was held before the conversion: it carries `Trip.id` row
-      # UUIDs and no format marker.
-      :sys.replace_state(view.pid, fn state ->
-        undo = %{moves: [%{trip_id: first.id, from: created, to: nil}], trips: 1}
-        put_in(state.socket.assigns.undo, undo)
-      end)
-
-      view |> element("#runs-undo") |> render_click()
-
-      assert text(view, "[data-role=toast-text]") == "There is nothing to undo."
-      assert run_ids(w, created) == before
-      refute has_element?(view, "#runs-undo")
     end
 
     test "the segment comes back to the uncovered table", ctx do

@@ -125,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
   end
 
   defp trip_ids(blocks) do
-    Enum.flat_map(blocks, fn block -> Enum.map(block.trips, & &1.trip_id) end)
+    Enum.flat_map(blocks, fn block -> Enum.map(block.trips, & &1.id) end)
   end
 
   describe "the uncovered-only scope" do
