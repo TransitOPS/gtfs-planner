@@ -45,6 +45,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
   import GtfsPlanner.AccountsFixtures,
     only: [deactivate_membership_fixture: 1, editor_audit_fixture: 2]
 
+  import GtfsPlanner.AdvancedBlockingFixtures, only: [block_attribute_fixture: 3]
+
   import GtfsPlanner.BlockingFixtures, only: [calendar_service_fixture: 3]
   import GtfsPlanner.OperationsFixtures, only: [garage_fixture: 1]
   import GtfsPlanner.TodsGeneratorFixtures
@@ -104,6 +106,10 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       assert second.assignments == first.assignments
       assert second.exclusions == first.exclusions
       assert second.counts == first.counts
+      assert second.run_deltas == first.run_deltas
+      assert second.run_days == first.run_days
+      assert second.relief_additions == first.relief_additions
+      assert second.warnings == first.warnings
       assert second.source_fingerprint == first.source_fingerprint
       assert second.normalized_inputs == first.normalized_inputs
     end
@@ -172,6 +178,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
         assert candidate.assignments == reference.assignments
         assert candidate.exclusions == reference.exclusions
         assert candidate.counts == reference.counts
+        assert candidate.run_deltas == reference.run_deltas
+        assert candidate.warnings == reference.warnings
         assert candidate.day_type_keys == reference.day_type_keys
 
         assert TodsGenerator.fingerprint(source, input, world.garage.id) ==
@@ -340,6 +348,40 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       assert preview.counts.preserved_blocks == 3
       assert preview.blocks == []
       assert preview.exclusions == []
+    end
+
+    test "a new block whose attribute rows disagree is refused as a unit" do
+      # Two attribute rows for the block the run is about to create, one for each
+      # service its trips run on and each naming a different garage. The Monday day
+      # type runs both services, so the new block has no garage it could be
+      # resolved to on that day and is refused rather than resolved by whichever row
+      # was read first.
+      world = tods_world_fixture(extra_trips: [weekday_trip(), clear_monday_trip()])
+      other = garage_fixture(world.organization.id)
+
+      block_attribute_fixture(world.organization.id, world.version.id, %{
+        service_id: "WK",
+        block_id: "103",
+        garage_id: world.garage.id
+      })
+
+      block_attribute_fixture(world.organization.id, world.version.id, %{
+        service_id: "MO",
+        block_id: "103",
+        garage_id: other.id
+      })
+
+      assert {:ok, preview} = preview(world)
+
+      assert preview.blocks == []
+      assert preview.assignments == %{}
+      assert preview.counts.new_blocks == 0
+      assert preview.counts.rejected_blocks == 1
+
+      assert by_trip_id(world, preview.exclusions) == [
+               {"gen-a", :block_attributes_conflict},
+               {"mon-clear", :block_attributes_conflict}
+             ]
     end
   end
 

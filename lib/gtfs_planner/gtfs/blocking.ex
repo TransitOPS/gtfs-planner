@@ -1364,18 +1364,31 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # station row itself is not required to exist in `stops` for the grouping to
   # hold — the child names the station, and the name falls back below.
   defp candidate_groups(stops) do
-    Enum.group_by(Map.values(stops), &candidate_stop_id/1)
+    Enum.group_by(Map.values(stops), &relief_candidate_stop_id/1)
   end
 
-  defp candidate_stop_id(%{parent_station: parent_station})
-       when is_binary(parent_station) and parent_station != "" do
+  @doc """
+  Returns the ID a relief mark for one stop is stored under.
+
+  A stop with a parent station is marked through that station, so the two bays of
+  one Riverside Station are one relief point and one row; a stop without one is
+  marked by its own ID. This is the grouping `list_relief_candidates/3` lists and
+  `update_relief_settings/3` writes, exposed so a caller that *proposes* a mark —
+  rather than saving one — names the same place the drawer would.
+
+  `stop` is a stop reference carrying `:stop_id` and `:parent_station`, or a map
+  with those keys.
+  """
+  @spec relief_candidate_stop_id(map()) :: String.t()
+  def relief_candidate_stop_id(%{parent_station: parent_station})
+      when is_binary(parent_station) and parent_station != "" do
     parent_station
   end
 
-  defp candidate_stop_id(%{stop_id: stop_id}), do: stop_id
+  def relief_candidate_stop_id(%{stop_id: stop_id}), do: stop_id
 
   # A candidate is a station when any of the day's stops under it is a child, which
-  # is the same test `candidate_stop_id/1` grouped it by.
+  # is the same test `relief_candidate_stop_id/1` grouped it by.
   defp station?(stop_id, stops) do
     Enum.any?(stops, &(&1.stop_id != stop_id))
   end
@@ -1445,7 +1458,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           is_integer(gap.wait_secs),
           gap.wait_secs > 0,
           stop <- wait_stops(gap, trips),
-          do: candidate_stop_id(stop)
+          do: relief_candidate_stop_id(stop)
 
     Enum.frequencies(counted)
   end

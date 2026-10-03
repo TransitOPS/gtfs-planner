@@ -99,11 +99,14 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   `params` are the five business inputs of `TodsGenerator.Input`; a request naming
   no dates defaults to the feed's first active calendar week. The result carries
   the normalized inputs, the source fingerprint a later save compares against, the
-  block candidate and the exclusions with their reasons.
+  block candidate, the run deltas and derived run days of the crew stage, the
+  relief marks those runs would need, the warnings and assumptions they rest on,
+  and the exclusions with their reasons.
 
   An empty service in the selected range is a result, not an error: it answers
-  `{:ok, preview}` with `no_work?: true`, no blocks and no exclusions, because
-  "this version has nothing to staff" is something a page must be able to say.
+  `{:ok, preview}` with `no_work?: true`, no blocks, no runs and no exclusions,
+  because "this version has nothing to staff" is something a page must be able to
+  say.
   """
 
   @spec preview(AuditContext.t(), map()) ::
@@ -227,9 +230,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   This is the seam between the source loader and the pure `TodsGenerator.Plan`,
   and it is what a caller permuting source facts composes through: `inputs` is a
   `Blocking.candidate_input/3` result whose row lists may be in any order. The
-  source is built from them, so the candidate and the fingerprint are the only
-  things that come back — a row order that changed either of them would mean the
-  composition depends on something other than the facts.
+  source is built from them, so the whole candidate and the fingerprint are the
+  only things that come back — a row order that changed either of them would mean
+  the composition depends on something other than the facts. Both stages are
+  composed here, in the order a preview composes them: the blocks, then the crew
+  on top of them.
 
   `day_types` are the day types the range selects and the ones the candidate may
   be composed on; the day types `inputs` carries are the wider set the completed
@@ -250,8 +255,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       {:error, {:too_large, count}}
     else
       source = source(audit, day_types, inputs, input, garage_id)
+      candidate = Plan.block_candidate(source, input)
 
-      {:ok, {Plan.block_candidate(source, input), source}}
+      {:ok, {Plan.with_runs(candidate, source, Map.fetch!(source, :input)), source}}
     end
   end
 
@@ -274,17 +280,30 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     |> length()
   end
 
+  # The candidate arrives composed: both stages are composed in
+  # `plan_from_inputs/5`, which is the one seam a permutation of source facts goes
+  # through, and this maps it into the preview a page reads. The fingerprint is
+  # over the *source*, not over the candidate, so a mark the crew stage proposes
+  # cannot change it: the same source and input still produce the same candidate
+  # and the same hash.
   defp preview({candidate, source}, input, garage_id) do
+    input = Map.put(input, "garage_id", garage_id)
+
     %{
-      normalized_inputs: Map.put(input, "garage_id", garage_id),
+      normalized_inputs: input,
       source_fingerprint: fingerprint(source, input, garage_id),
       blocks: candidate.blocks,
       assignments: candidate.assignments,
       preserved_block_ids: candidate.preserved_block_ids,
+      run_deltas: candidate.run_deltas,
+      run_days: candidate.run_days,
+      relief_additions: candidate.relief_additions,
+      assumptions: candidate.assumptions,
+      warnings: candidate.warnings,
       exclusions: candidate.exclusions,
       counts: candidate.counts,
       day_type_keys: candidate.day_type_keys,
-      no_work?: candidate.counts.blocks == 0
+      no_work?: candidate.counts.blocks == 0 and candidate.counts.new_runs == 0
     }
   end
 

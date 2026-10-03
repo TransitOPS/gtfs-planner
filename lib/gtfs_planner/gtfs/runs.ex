@@ -137,7 +137,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   defp build_runs_day(organization_id, gtfs_version_id, day) do
     key = day.day_type.key
-    blocks = block_inputs(day)
+    blocks = candidate_block_inputs(day)
     sequence_ids = MapSet.new(Enum.flat_map(blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
     rows = day_type_rows(organization_id, gtfs_version_id, key)
     version_rows = version_rows(organization_id, gtfs_version_id)
@@ -170,11 +170,25 @@ defmodule GtfsPlanner.Gtfs.Runs do
     }
   end
 
-  # The day's own inputs, in the shape `Runs.Day.derive/4` and `Runs.Cutter` take.
-  # `summary.block_id` is the block's own identifier: the trips carry a block
-  # they were built with, and this is the one the day resolved them into.
-  defp block_inputs(day) do
-    Enum.map(day.blocks, fn block ->
+  @doc """
+  Returns one day's block inputs, in the shape `Runs.Day.derive/4` and
+  `Runs.Cutter` take.
+
+  `candidate_day` is a day-shaped map whose `:blocks` carry the block's own
+  identifier, its sequence trips, its movements and its relief windows — the shape
+  `Blocking.load_day/3` builds, which is why the conversion lives here rather than
+  in every caller. `block.summary.block_id` is the block's own identifier: the
+  trips carry a block they were built with, and this is the one the day resolved
+  them into.
+
+  A caller that composes a day itself — the TODS generator composes one from
+  candidate blocks and a scope's rows — passes it here rather than rebuilding the
+  input shape, so the derivation a candidate is read with is the derivation the
+  page reads.
+  """
+  @spec candidate_block_inputs(%{blocks: [map()]}) :: [map()]
+  def candidate_block_inputs(%{blocks: blocks}) do
+    Enum.map(blocks, fn block ->
       %{
         block_id: block.summary.block_id,
         trips: block.trips,
@@ -736,7 +750,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   defp suggest_plan(runs_day, scope) do
     %{day: day, crew: crew, assignments: current, derived: derived} = runs_day
-    blocks = block_inputs(day)
+    blocks = candidate_block_inputs(day)
 
     cut = Cutter.run(scope, blocks, current, day.context, crew)
     proposed = Map.merge(current, cut.assignments)

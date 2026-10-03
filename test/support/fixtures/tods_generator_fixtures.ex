@@ -35,7 +35,10 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   """
 
   import GtfsPlanner.AccountsFixtures, only: [editor_audit_fixture: 2]
-  import GtfsPlanner.AdvancedBlockingFixtures, only: [route_operating_setting_fixture: 3]
+
+  import GtfsPlanner.AdvancedBlockingFixtures,
+    only: [route_operating_setting_fixture: 3, stop_with_coordinates_fixture: 3]
+
   import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.GtfsFixtures, only: [route_fixture: 3, stop_fixture: 3]
   import GtfsPlanner.OperationsFixtures
@@ -60,6 +63,22 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   @monday_service "MO"
   @saturday_service "SA"
 
+  # The crew cases' own terminal, the two stops of their impossible-drive block, and
+  # the stop that has no coordinates at all. The terminal sits at the world's garage
+  # point, so a block that starts and ends its trips there has no pull-out or
+  # pull-back drive to add to its platform span and a 16-hour block is 16 hours of
+  # platform.
+  @crew_terminal "TRM"
+  @crew_edge_a "EDGE_A"
+  @crew_edge_b "EDGE_B"
+  @crew_no_coordinates "NOGEO"
+
+  # 0.02 degrees of latitude is about 2 224 m, so at the fixture's 30 km/h and 1.3
+  # circuity the drive between the two edge stops is 6 whole minutes — longer than
+  # the 3-minute gap the impossible-drive case leaves for it.
+  @crew_edge_point {40.0, -74.0}
+  @crew_far_edge_point {40.02, -74.0}
+
   @doc """
   Builds the published version the block-candidate cases share.
 
@@ -76,7 +95,7 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   def tods_world_fixture(opts \\ []) do
     opts = Map.new(opts)
 
-    world = runs_version_fixture()
+    world = runs_version_fixture(Map.take(opts, [:max_piece_minutes]))
     %{organization: organization, version: version} = world
 
     calendar_service_fixture(organization.id, version.id, %{
@@ -256,6 +275,180 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
       "terminal_relief?" => false
     }
     |> Map.merge(Map.new(overrides))
+  end
+
+  @doc """
+  The five normalized inputs for one day type: `world`'s first active week.
+
+  That week's Monday is the day before the calendars start, so the fixture's
+  Monday-only service has no active date in the range and the version's weekday day
+  type is the only one selected. A crew case asks about one day type for the same
+  reason it asks about one block: the facts it asserts are then literal rather than
+  a sum over days.
+  """
+  def crew_inputs(world, overrides \\ %{}) do
+    monday = first_active_week(world)
+
+    %{
+      "start_date" => Date.to_iso8601(monday),
+      "end_date" => Date.to_iso8601(Date.add(monday, 4)),
+      "representative_week" => Date.to_iso8601(monday),
+      "garage_id" => world.garage.id,
+      "terminal_relief?" => false
+    }
+    |> Map.merge(Map.new(overrides))
+  end
+
+  @doc """
+  Builds the published world one crew case reads: `tods_world_fixture/1` with
+  `:max_piece_minutes` forwarded, plus the stops and the one existing block the
+  case names.
+
+  `:block` is `:long_duty`, `:overnight`, `:impossible_drive` or `:unknown_drive`,
+  and adds that block with `:block`, `:trips` (`trip_id => Trip`) and
+  `:terminal_stop_id` on the returned world; omitting it leaves the world's own
+  blocks as the uncovered work. `:existing_run` stores that run ID on the added
+  block's own first trip, which is the saved work a generation must leave exactly
+  as it found it. Each block uses the world's own route and weekday service, so it
+  resolves to the world's garage and is in the world's weekday day type.
+  """
+  def crew_world_fixture(opts \\ []) do
+    opts = Map.new(opts)
+
+    world =
+      opts
+      |> Map.take([:max_piece_minutes])
+      |> tods_world_fixture()
+      |> add_crew_block(Map.get(opts, :block))
+
+    case Map.get(opts, :existing_run) do
+      nil -> world
+      run_id -> put_existing_run(world, run_id)
+    end
+  end
+
+  defp add_crew_block(world, nil), do: world
+  defp add_crew_block(world, :long_duty), do: long_duty_block(world)
+  defp add_crew_block(world, :overnight), do: overnight_block(world)
+  defp add_crew_block(world, :impossible_drive), do: impossible_drive_block(world)
+  defp add_crew_block(world, :unknown_drive), do: unknown_drive_block(world)
+
+  # A block of 16 hours: four trips of 3 h 45 at the crew terminal with 20-minute
+  # layovers between them, from 04:00 to 20:00. Its platform span is its trip span,
+  # and its middle layover is 480 minutes in — so at a 480-minute piece limit the
+  # block is one impossible piece, and two legal ones once that layover is marked.
+  defp long_duty_block(world) do
+    terminal = crew_terminal_stop(world)
+
+    trips = [
+      crew_trip(world, "301", terminal, "long-1", "04:00:00", "07:45:00"),
+      crew_trip(world, "301", terminal, "long-2", "08:05:00", "12:10:00"),
+      crew_trip(world, "301", terminal, "long-3", "12:30:00", "16:20:00"),
+      crew_trip(world, "301", terminal, "long-4", "16:40:00", "20:00:00")
+    ]
+
+    crew_block(world, "301", terminal, trips)
+  end
+
+  # A block that runs past midnight: two trips of an hour at the crew terminal,
+  # signing on at 23:15 and signing off at 25:45. Its seconds are service-day
+  # seconds, which is the point: nothing in a generation re-bases them onto a clock.
+  defp overnight_block(world) do
+    terminal = crew_terminal_stop(world)
+
+    trips = [
+      crew_trip(world, "302", terminal, "night-1", "23:30:00", "24:30:00"),
+      crew_trip(world, "302", terminal, "night-2", "24:40:00", "25:40:00")
+    ]
+
+    crew_block(world, "302", terminal, trips)
+  end
+
+  # A block whose one gap is 3 minutes for a 6-minute drive: the vehicle cannot make
+  # the move, so no rule the version holds produces a relief window in it.
+  defp impossible_drive_block(world) do
+    first = crew_stop(world, @crew_edge_a, "Edge A", @crew_edge_point)
+    second = crew_stop(world, @crew_edge_b, "Edge B", @crew_far_edge_point)
+
+    trips = [
+      crew_trip(world, "401", first, "edge-1", "05:00:00", "05:30:00"),
+      crew_trip(world, "401", second, "edge-2", "05:33:00", "06:03:00")
+    ]
+
+    crew_block(world, "401", first, trips)
+  end
+
+  # A block whose one gap joins a stop that has coordinates to one that has none, so
+  # the drive between them cannot be computed at all — unknown rather than zero.
+  defp unknown_drive_block(world) do
+    first = crew_stop(world, @crew_edge_a, "Edge A", @crew_edge_point)
+
+    stop_with_coordinates_fixture(world.organization.id, world.version.id, %{
+      stop_id: @crew_no_coordinates,
+      stop_name: "No Coordinates",
+      location_type: 3,
+      stop_lat: nil,
+      stop_lon: nil
+    })
+
+    trips = [
+      crew_trip(world, "402", first, "nogeo-1", "05:00:00", "05:30:00"),
+      crew_trip(world, "402", @crew_no_coordinates, "nogeo-2", "05:40:00", "06:10:00")
+    ]
+
+    crew_block(world, "402", first, trips)
+  end
+
+  # The trip of one crew case's own block: blocked, on the version's own route so it
+  # resolves to the world's garage, and on the world's weekday service.
+  defp crew_trip(world, block_id, stop_id, trip_id, first_departure, last_arrival) do
+    blocked_trip_fixture(world.organization.id, world.version.id, world.route.route_id, %{
+      trip_id: trip_id,
+      service_id: @weekday_service,
+      block_id: block_id,
+      first_stop: stop_id,
+      last_stop: stop_id,
+      first_arrival: first_departure,
+      first_departure: first_departure,
+      last_arrival: last_arrival
+    })
+  end
+
+  defp crew_block(world, block_id, terminal_stop_id, trips) do
+    Map.merge(world, %{
+      block: block_id,
+      trips: Map.new(trips, &{&1.trip_id, &1}),
+      first_trip: hd(trips),
+      terminal_stop_id: terminal_stop_id
+    })
+  end
+
+  # The crew cases' terminal, at the world garage's own point.
+  defp crew_terminal_stop(world) do
+    crew_stop(world, @crew_terminal, "Crew Terminal", {world.garage.lat, world.garage.lon})
+  end
+
+  defp crew_stop(world, stop_id, name, {lat, lon}) do
+    stop_with_coordinates_fixture(world.organization.id, world.version.id, %{
+      stop_id: stop_id,
+      stop_name: name,
+      stop_lat: lat,
+      stop_lon: lon
+    })
+
+    stop_id
+  end
+
+  # The case's saved run, on the added block's own first trip: the work a generation
+  # must leave exactly where it found it, and the ID its numbering must not reuse.
+  defp put_existing_run(world, run_id) do
+    trip_run_fixture(world.organization.id, world.version.id, %{
+      trip: world.first_trip.id,
+      day_type_key: world.weekday_day_type,
+      run_id: run_id
+    })
+
+    world
   end
 
   @doc """
