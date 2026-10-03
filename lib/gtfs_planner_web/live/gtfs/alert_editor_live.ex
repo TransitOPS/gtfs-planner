@@ -17,14 +17,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   Every write here is `Alerts.create_alert/2`, `Alerts.save_draft/4` or
   `Alerts.delete_alert/3` (INV-1). The audit context is built from the socket's
-  trusted assigns - the organization, the version in the URL and the signed-in
-  user - so no identity comes from a param (CR-2). The alert's own
-  `gtfs_version_id` is checked against the version in the URL before anything
-  renders: an alert of another version redirects to this version's list naming
-  the version it does belong to, and an alert of another organization - or no
-  alert at all - redirects with an error (R1, R6). The editor never reads an
-  alert's answers through a version it is not editing, which is also why the
-  foreign-version message comes from `Alerts.version_name_for/2`, a read that
+  trusted assigns - the organization, the navbar's version when the organization
+  has one, and the signed-in user - so no identity comes from a param (CR-2).
+  The version is what the alert's answers are checked against: it is the
+  schedule the questions read and the alert's provenance is captured from, and
+  it is `nil` for an organization with no schedule, where a private
+  system-scope draft is still writable (AC-10). The alert is never read through
+  a version other than its own provenance, so an alert of another organization
+  - or no alert at all - redirects with an error (R1, R6). The reader of a
+  refusal learns nothing beyond it: `Alerts.version_name_for/2` is a read that
   returns a version name and nothing else.
 
   ## The step sequence
@@ -115,18 +116,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   the row does not hold, and it carries the Rider preview's own derivations
   rather than a second reading of the same facts.
 
-  **Save alert** is the whole action set of that step. It writes through
-  `Alerts.save_draft/4` first, so the question "is this alert finished?" is
-  asked of the row this editor holds, and then it runs
-  `Alerts.Completion.errors/1` - the same function the row's `complete` flag
-  comes from. With questions outstanding they are listed with a link to each
-  step that answers one, and the summary takes the reader to the first; with
-  none, the editor returns to the list with the flash **Alert saved.**
-  (AC-23, FH-23).
+  **Save alert** writes through `Alerts.save_review/5`. Unchecked, that is the
+  private save this step always made, so the question "is this alert finished?"
+  is asked of the row this editor holds and `Alerts.Completion.errors/1` lists
+  what is outstanding with a link to each step that answers one; with none, the
+  editor returns to the list with the flash **Alert saved.** (AC-23, FH-23).
+  Checked, the same command also accepts the committed revision for publication,
+  and the action card reports the accepted state, the refusal that names what to
+  fix, or the manifest's own confirmation date (AC-11, AC-14, AC-15).
 
-  Nothing on this step publishes. There is no Live, Scheduled, Ended, End,
-  Publish, Schedule or feed copy here or anywhere else in this LiveView,
-  because saving an alert never publishes one in this package (R2, CR-1).
+  The Publish/Republish checkbox is the only consent this editor reads. An
+  unchecked save and every autosave stay private, so a periodic realtime refresh
+  never turns a draft into a publication (INV-3, FH-6).
 
   ## Assistant mode is the same draft, interviewed
 
@@ -139,8 +140,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   start card already began.
 
   Every edit route in assistant mode mounts `AgentPanel` with the `alerts` pack,
-  `auto_apply: true` and this alert's own id as the session's subject, and opens
-  it. Each settled prepared change arrives as
+  `auto_apply: true`, `organization_scoped: true` and this alert's own id as the
+  session's subject, and opens it. The conversation is bound to that alert and
+  to this organization, not to the version the navbar happens to name, so
+  selecting another version while the alert is open leaves this conversation —
+  and this alert — alone; the pack derives whatever schedule context it needs
+  from the alert's own retained source. Each settled prepared change arrives as
   `{:agent_prepared, conversation_id, entry_id}`; a message naming another
   conversation, or another alert's session, changes nothing. The change itself
   is applied here and nowhere else: `Agents.prepared/3` returns the model's own
@@ -159,14 +164,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   step asks for wording and puts the request in the composer, so nothing is
   sent that the operator did not read first.
 
-  ## What this frame does not do
+  ## What this frame carries, and what it does not
 
-  It carries no publication state and no publication action: saving an alert
-  never publishes one in this package, so Live, Scheduled, Ended, End and feed
-  copy is absent by construction (R2, CR-1). The question bodies belong to the
-  steps that own them; this step builds the frame they render inside, creation on
-  the first answer, the version check, the preference, the autosave form with its
-  save status and conflict banner, **Delete alert**, and the assistant frame the
+  It carries the publication state and the one Publish/Republish action, and
+  nothing else about publishing: the served bytes, the manifest and the queues
+  belong to the backend steps. The question bodies belong to the steps that own
+  them; this frame builds them, creation on the first answer, the version check,
+  the preference, the autosave form with its save status and conflict banner,
+  **Delete alert**, the publication controls, and the assistant frame the
   interview runs in.
   """
 
@@ -201,7 +206,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       urgency_question: 1
     ]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Agents
@@ -211,14 +216,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Message
   alias GtfsPlanner.Alerts.MessageAnswer
+  alias GtfsPlanner.Alerts.Publication
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Alerts.TimingAnswer
+  alias GtfsPlanner.FeedPublishing.Config, as: PublishingConfig
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
-  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+  on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access_in_organization}
 
   @modes [:form, :assistant]
 
@@ -358,11 +367,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:message_guidelines, "")
      |> assign(:review_errors, [])
      |> assign(:review_checks, [])
+     |> assign(:publication, nil)
+     |> assign(:publish?, false)
+     |> assign(:offset_choices, %{})
+     |> assign(:publication_errors, [])
+     |> assign(:reference_version, nil)
+     |> assign(:reference_missing?, false)
      |> assign(:assistant_note_form, assistant_note_form())
      |> assign(:assistant_candidate, nil)
      |> assign(:assistant_filled?, false)
      |> assign(:form, draft_form(%Alert{}))
-     |> AgentPanel.mount("alerts", auto_apply: true)}
+     |> AgentPanel.mount("alerts", auto_apply: true, organization_scoped: true)}
   end
 
   @impl true
@@ -1287,16 +1302,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  def handle_event("save_alert", _params, socket) do
+  def handle_event("save_alert", params, socket) when is_map(params) do
     # The write goes first, so the completeness question is asked of the row
     # this editor holds rather than of the row as it was before the last
     # answer. A refused or stale write keeps the editor open, exactly as
     # `save_and_close` does, rather than answering a question about a row the
     # database refused (INV-1, R6).
-    case write_pending(socket) do
-      {:ok, socket} -> finish_review(socket)
-      {:refused, socket} -> {:noreply, socket}
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> save_alert(socket, alert, Map.get(params, "publish") == "true")
     end
+  end
+
+  # The review's publication control keeps its own state between saves: the
+  # checkbox value and the offset an editor chose for an ambiguous reading are
+  # mirrored here as they change, so a refused publication can be retried with
+  # the same intent rather than reset to unchecked (AC-15, AC-16).
+  def handle_event("set_publication_inputs", params, socket) when is_map(params) do
+    {:noreply,
+     socket
+     |> assign(:publish?, Map.get(params, "publish") == "true")
+     |> assign(:offset_choices, offset_choices_from(Map.get(params, "offset_choices")))}
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
@@ -1333,6 +1359,232 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     Enum.map(errors, fn {step, _field, message} ->
       %{href: editor_path(socket, step: step), msg: message}
     end)
+  end
+
+  # -- Publication ---------------------------------------------------------
+
+  # The accepted row, the manifest's own receipt, and whether this organization
+  # has publishing configured at all. The read is scoped to the context's
+  # organization, so another tenant's publication is never named here. This is
+  # the `Alerts.Publication` read model rendered as one prepared state, so the
+  # templates never query (CR-2).
+  defp assign_publication(socket, alert) do
+    socket
+    |> assign(:publication, prepare_publication(socket, alert))
+    |> assign(:reference_version, reference_version(socket, alert))
+    |> assign(:reference_missing?, reference_missing?(alert))
+  end
+
+  defp prepare_publication(_socket, nil), do: nil
+
+  defp prepare_publication(socket, %Alert{} = alert) do
+    row =
+      Repo.get_by(Publication,
+        alert_id: alert.id,
+        organization_id: socket.assigns.current_organization.id
+      )
+
+    now = DateTime.utc_now()
+    zone = alert.timezone
+
+    %{
+      status: publication_status(row, now),
+      disabled?: PublishingConfig.current() == :disabled,
+      accepted?: not is_nil(row && row.desired_revision),
+      date_label: confirmed_date_label(row && row.last_published_at, zone),
+      requested_label: requested_label(row, now, zone)
+    }
+  end
+
+  # A row that a served manifest confirmed at its newest accepted revision is
+  # published; one whose notice has not begun is scheduled; one that is accepted
+  # but not yet confirmed is staging. A pending withdrawal outranks them all,
+  # because the removal is the newest intent (AC-15, AC-16).
+  defp publication_status(nil, _now), do: :never_published
+  defp publication_status(%{withdrawal: :pending}, _now), do: :removal_pending
+  defp publication_status(%{desired_revision: nil}, _now), do: :never_published
+
+  defp publication_status(%{desired_revision: desired, confirmed_revision: confirmed}, _now)
+       when desired == confirmed,
+       do: :published
+
+  defp publication_status(%{desired_snapshot: snapshot}, now) do
+    publication_status_from_snapshot(snapshot, DateTime.to_unix(now))
+  end
+
+  defp confirmed_date_label(nil, _zone), do: nil
+
+  defp confirmed_date_label(%DateTime{} = at, zone),
+    do: "Reflected in the public feed " <> localize_label(at, zone)
+
+  # A scheduled acceptance has a request time, not a publication time: the
+  # clock it names is the notice boundary, and the confirmation date stays the
+  # one an earlier manifest proved (AC-14, AC-15).
+  defp requested_label(nil, _now, _zone), do: nil
+  defp requested_label(%{withdrawal: :pending}, _now, _zone), do: nil
+  defp requested_label(%{requested_at: nil}, _now, _zone), do: nil
+
+  defp requested_label(%{desired_revision: desired, confirmed_revision: confirmed}, _now, _zone)
+       when desired == confirmed,
+       do: nil
+
+  defp requested_label(%{desired_snapshot: snapshot} = row, now, zone) do
+    if publication_status(row, now) == :scheduled do
+      "Scheduled to start " <> instant_label(Map.get(snapshot || %{}, "notice_at"), zone)
+    else
+      "Changes requested " <> localize_label(row.requested_at, zone)
+    end
+  end
+
+  defp instant_label(nil, _zone), do: "soon"
+
+  defp instant_label(unix, zone) when is_integer(unix) do
+    unix |> DateTime.from_unix!() |> localize_label(zone)
+  end
+
+  # A publication instant is a UTC timestamp; the alert's own retained zone is
+  # how the reader knows which local day it was. The conversion goes through
+  # `DisplayClock`, the project's one zone reader, rather than a second one.
+  defp localize_label(%DateTime{} = at, zone) do
+    zone = valid_zone(zone)
+
+    [local] =
+      DisplayClock.localize_many([at], %{
+        timezone: zone,
+        fallback?: false,
+        fallback_reason: nil
+      })
+
+    Calendar.strftime(local, "%-d %b %Y at %H:%M") <> " " <> zone
+  end
+
+  defp valid_zone(zone) when is_binary(zone) do
+    case String.trim(zone) do
+      "" -> "UTC"
+      trimmed -> trimmed
+    end
+  end
+
+  defp valid_zone(_zone), do: "UTC"
+
+  # The trusted reference version the selectors were captured from, named for
+  # the reader. A version that no longer resolves is named as deleted rather
+  # than hidden, because that is the reason the selectors need re-choosing.
+  defp reference_version(_socket, nil), do: nil
+
+  defp reference_version(socket, %Alert{} = alert) do
+    case Alerts.version_name_for(audit_context(socket), alert.id) do
+      {:ok, name} -> name
+      {:error, _reason} -> "the deleted version"
+    end
+  end
+
+  # An identity the capture could not resolve is a selector that cannot become
+  # a public route, stop or trip, so the note names it before the operator
+  # tries to publish rather than as a bare field refusal afterwards (AC-10,
+  # FH-13).
+  defp reference_missing?(nil), do: false
+
+  defp reference_missing?(%Alert{} = alert) do
+    selectors = get_in(alert.target_reference || %{}, ["selectors"]) || %{}
+
+    Enum.any?(["unresolved_routes", "unresolved_stops"], &present_ids?(Map.get(selectors, &1))) or
+      Enum.any?(Map.get(selectors, "route_stops") || [], &(not Map.get(&1, "resolved", false))) or
+      Enum.any?(Map.get(selectors, "trips") || [], &(not Map.get(&1, "resolved", false)))
+  end
+
+  defp present_ids?(ids) when is_list(ids), do: Enum.reject(ids, &(&1 in [nil, []])) != []
+  defp present_ids?(_ids), do: false
+
+  defp offset_choices_from(nil), do: %{}
+
+  defp offset_choices_from(choices) when is_map(choices) do
+    Map.new(choices, fn {key, value} ->
+      case Integer.parse(to_string(value)) do
+        {seconds, ""} -> {key, seconds}
+        _other -> {key, 0}
+      end
+    end)
+  end
+
+  defp offset_choices_from(_choices), do: %{}
+
+  # The accepted save keeps its draft and its checkbox intent whatever the
+  # publication did: a refusal only adds the field errors the operator has to
+  # answer, and a success says what was accepted (AC-11, AC-12).
+  defp apply_publication_result(socket, saved, outcome) do
+    socket =
+      socket
+      |> assign(:alert, saved)
+      |> assign(:pending_attrs, nil)
+      |> assign(:form, draft_form(saved))
+      |> assign(:save_state, :saved)
+      |> rebuild(saved)
+
+    case outcome do
+      {:refused, errors} ->
+        assign(socket, :publication_errors, errors)
+
+      status when status in [:private, :pending, :scheduled] ->
+        socket
+        |> assign(:publication_errors, [])
+        |> put_flash(:info, publication_flash(status))
+    end
+  end
+
+  defp publication_flash(:private), do: "Alert saved."
+  defp publication_flash(:scheduled), do: "Publication scheduled."
+  defp publication_flash(_pending), do: "Publication requested."
+
+  # An unchecked Save is the private save this editor always made: the same
+  # write, then the same completeness reading that lists the outstanding
+  # questions or finishes the alert (AC-23).
+  defp save_alert(socket, _alert, false) do
+    case write_pending(socket) do
+      {:ok, socket} -> finish_review(socket)
+      {:refused, socket} -> {:noreply, socket}
+    end
+  end
+
+  # A checked Save is one command: the same private write and, when it commits,
+  # the acceptance of exactly that revision as this alert's public intent. The
+  # draft is saved either way, so a refused publication leaves the operator on
+  # their work with the exact correction to make (AC-11, AC-12).
+  defp save_alert(socket, alert, true) do
+    attrs = socket.assigns.pending_attrs || %{}
+    base = base_revision(socket, attrs, alert)
+
+    case Alerts.save_review(
+           audit_context(socket),
+           alert.id,
+           base,
+           castable(attrs),
+           publish?: true,
+           offset_choices: socket.assigns.offset_choices
+         ) do
+      {:ok, %{alert: saved} = result} ->
+        {:noreply, apply_publication_result(socket, saved, Map.fetch!(result, :publication))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:form, draft_form(changeset))
+         |> assign(:save_state, :error)
+         |> assign(:publication_errors, [])}
+
+      {:error, :stale, current} ->
+        {:noreply, stale_conflict(socket, alert, current, with_base(attrs, base))}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+    end
+  end
+
+  defp publication_status_from_snapshot(snapshot, now) do
+    case Map.get(snapshot || %{}, "notice_at") do
+      notice when is_integer(notice) -> if notice > now, do: :scheduled, else: :publishing
+      _later -> :publishing
+    end
   end
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
@@ -2363,6 +2615,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:flags, flags)
     |> assign(:steps, prepare_steps(steps_for(alert, flags), socket.assigns.step, flags, socket))
     |> assign(:preview, preview(socket, alert))
+    |> assign_publication(alert)
     |> prepare_questions(alert)
   end
 
@@ -2548,6 +2801,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # -- Loading ------------------------------------------------------------
 
   defp load_editor(socket, params) do
+    case socket.assigns[:current_organization] do
+      # An editor with no organization in context - a system administrator who
+      # has none selected - reaches the explicit unavailable state rather than a
+      # question sequence built from a context that does not exist.
+      nil ->
+        assign(socket, :load_state, :organization_required)
+
+      _organization ->
+        load_editor_in_organization(socket, params)
+    end
+  end
+
+  defp load_editor_in_organization(socket, params) do
     socket = assign(socket, :mode, mode_from(params, socket))
 
     case socket.assigns.live_action do
@@ -2567,9 +2833,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         leave(socket, "You no longer have permission to change alerts here.")
 
       {:error, :not_found} ->
-        # R1: the alert's content was never read, because `get_alert/2` scoped the
-        # load to this version. Naming the version it belongs to is the only
-        # question left, and only within this organization.
+        # R1: the alert's content was never read, because `get_alert/2` scoped
+        # the load to this organization. The only question left is which version
+        # of this organization's own alert is missing, and `version_name_for/2`
+        # answers that within the organization or not at all.
         case Alerts.version_name_for(audit, socket.assigns.alert_id) do
           {:ok, name} -> leave(socket, "That alert belongs to #{name}.")
           {:error, _reason} -> leave(socket, "That alert is not available here.", :error)
@@ -2610,6 +2877,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:conflict, draft.conflict)
     |> assign(:pending_attrs, draft.pending_attrs)
     |> assign(:review_errors, [])
+    |> assign(:publish?, false)
+    |> assign(:offset_choices, %{})
+    |> assign(:publication_errors, [])
+    |> assign_publication(alert)
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
     |> assign(:route_error, nil)
@@ -3091,11 +3362,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     "#{saved_base_path(socket, alert)}?#{query}"
   end
 
-  defp saved_base_path(socket, alert), do: "/gtfs/#{version_id(socket)}/alerts/#{alert.id}"
-  defp new_path(socket), do: "/gtfs/#{version_id(socket)}/alerts/new"
-  defp alerts_path(socket), do: "/gtfs/#{version_id(socket)}/alerts"
-
-  defp version_id(socket), do: socket.assigns.current_gtfs_version.id
+  defp saved_base_path(_socket, alert), do: "/alerts/#{alert.id}"
+  defp new_path(_socket), do: "/alerts/new"
+  defp alerts_path(_socket), do: "/alerts"
 
   # -- The Rider preview --------------------------------------------------
 
@@ -3261,12 +3530,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      gtfs_version_id: selected_version_id(socket),
       station_stop_id: nil,
       actor_id: socket.assigns.current_user.id,
       actor_email: socket.assigns.current_user.email
     }
   end
+
+  # The navbar's version when the organization has one, and `nil` when it does
+  # not. Every question here reads that version's schedule, so an organization
+  # with no schedule offers none of them and its draft is a private
+  # system-scope alert instead (AC-10).
+  defp selected_version_id(socket) do
+    case socket.assigns[:current_gtfs_version] do
+      %{id: version_id} -> version_id
+      _no_version -> nil
+    end
+  end
+
+  # The assistant's own scope line names the schedule this editor reads its
+  # questions from, and the organization when there is no schedule to name.
+  defp scope_line(assigns) do
+    case assigns[:current_gtfs_version] do
+      %{name: name} -> "Alerts · " <> name
+      _no_version -> "Alerts · " <> organization_name(assigns)
+    end
+  end
+
+  defp organization_name(assigns), do: assigns.current_organization.name
 
   # -- Rendering ----------------------------------------------------------
 
@@ -3283,414 +3574,436 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       available_versions={assigns[:available_versions] || []}
     >
       <div id="alert-editor" class="ds-page group/editor">
-        <.back_link id="alert-back-link" navigate={~p"/gtfs/#{@current_gtfs_version.id}/alerts"}>
+        <.back_link id="alert-back-link" navigate={~p"/alerts"}>
           Alerts
         </.back_link>
 
-        <.header>
-          {if @alert, do: "Update alert", else: "New alert"}
-          <:subtitle>
-            Choose what you know. We'll help with the rest.
-          </:subtitle>
-          <:actions>
-            <.mode_control
-              id="alert-mode"
-              mode={@mode}
-              preferred={@preferred}
-              unavailable?={@agent_unavailable?}
-              class="sm:mt-1"
-            />
-          </:actions>
-        </.header>
+        <.message
+          :if={@load_state == :organization_required}
+          id="alert-editor-organization-required"
+          kind="error"
+          title="Alerts need an organization."
+        >
+          Choose an organization to write its alerts.
+        </.message>
 
-        <%= if @mode == :assistant do %>
-          <%!-- Assistant mode is the same draft in a second frame: the start card
+        <%= if @load_state != :organization_required do %>
+          <.header>
+            {if @alert, do: "Update alert", else: "New alert"}
+            <:subtitle>
+              Choose what you know. We'll help with the rest.
+            </:subtitle>
+            <:actions>
+              <.mode_control
+                id="alert-mode"
+                mode={@mode}
+                preferred={@preferred}
+                unavailable?={@agent_unavailable?}
+                class="sm:mt-1"
+              />
+            </:actions>
+          </.header>
+
+          <%= if @mode == :assistant do %>
+            <%!-- Assistant mode is the same draft in a second frame: the start card
                  before there is a row, then the conversation card beside the same
                  Rider preview the form shows. --%>
-          <div
-            id="alert-assistant"
-            class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
-          >
-            <div class="min-w-0">
-              <.assistant_start
-                :if={is_nil(@alert)}
-                form={@assistant_note_form}
-                examples={@agent_examples}
-              />
+            <div
+              id="alert-assistant"
+              class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
+            >
+              <div class="min-w-0">
+                <.assistant_start
+                  :if={is_nil(@alert)}
+                  form={@assistant_note_form}
+                  examples={@agent_examples}
+                />
 
-              <.agent_panel
-                :if={not is_nil(@alert) and @agent_open?}
-                id="alert-assistant-panel"
-                layout={:main}
-                title={@agent_title}
-                intro={@agent_intro}
-                examples={@agent_examples}
-                scope_line={"Alerts · " <> @current_gtfs_version.name}
-                status={@agent_status}
-                entries={@streams.agent_entries}
-                form={@agent_form}
-                notice={@agent_notice}
-                entries_empty?={@agent_entries_empty?}
-              />
+                <.agent_panel
+                  :if={not is_nil(@alert) and @agent_open?}
+                  id="alert-assistant-panel"
+                  layout={:main}
+                  title={@agent_title}
+                  intro={@agent_intro}
+                  examples={@agent_examples}
+                  scope_line={scope_line(assigns)}
+                  status={@agent_status}
+                  entries={@streams.agent_entries}
+                  form={@agent_form}
+                  notice={@agent_notice}
+                  entries_empty?={@agent_entries_empty?}
+                />
 
-              <.callout
-                :if={@assistant_candidate}
-                id="alert-assistant-stale"
-                kind="warning"
-                title="This alert changed after the assistant prepared these answers."
-                class="mt-4 rounded-card"
-              >
-                <p id="alert-assistant-stale-body">
-                  Your own answers stay as they are. Applying these answers writes the assistant's
-                  change on top of them at the version this alert is at now.
-                </p>
-                <div class="mt-3">
-                  <.button
-                    id={"apply-changes-#{@assistant_candidate.entry_id}"}
-                    type="button"
-                    variant="primary"
-                    phx-click="apply_assistant_changes"
-                    phx-value-entry={@assistant_candidate.entry_id}
-                    class="min-h-11"
-                  >
-                    Apply changes
-                  </.button>
-                </div>
-              </.callout>
+                <.callout
+                  :if={@assistant_candidate}
+                  id="alert-assistant-stale"
+                  kind="warning"
+                  title="This alert changed after the assistant prepared these answers."
+                  class="mt-4 rounded-card"
+                >
+                  <p id="alert-assistant-stale-body">
+                    Your own answers stay as they are. Applying these answers writes the assistant's
+                    change on top of them at the version this alert is at now.
+                  </p>
+                  <div class="mt-3">
+                    <.button
+                      id={"apply-changes-#{@assistant_candidate.entry_id}"}
+                      type="button"
+                      variant="primary"
+                      phx-click="apply_assistant_changes"
+                      phx-value-entry={@assistant_candidate.entry_id}
+                      class="min-h-11"
+                    >
+                      Apply changes
+                    </.button>
+                  </div>
+                </.callout>
+              </div>
+
+              <.rider_preview
+                alert={@preview.alert}
+                header={@preview.header}
+                when_summary={@preview.when_summary}
+                effect={@preview.effect}
+                routes={@preview.routes}
+                where={@preview.where}
+                what={@preview.what}
+                assistant?={@assistant_filled?}
+              />
             </div>
+          <% else %>
+            <div class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <div class="min-w-0">
+                <.progress steps={@steps} />
 
-            <.rider_preview
-              alert={@preview.alert}
-              header={@preview.header}
-              when_summary={@preview.when_summary}
-              effect={@preview.effect}
-              routes={@preview.routes}
-              where={@preview.where}
-              what={@preview.what}
-              assistant?={@assistant_filled?}
-            />
-          </div>
-        <% else %>
-          <div class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <div class="min-w-0">
-              <.progress steps={@steps} />
+                <.conflict_banner :if={@conflict} id="alert-conflict" />
 
-              <.conflict_banner :if={@conflict} id="alert-conflict" />
-
-              <.form
-                for={@form}
-                id="alert-form"
-                phx-change="autosave"
-                phx-submit="save_and_close"
-              >
-                <%!-- The base revision this editor writes against. It is a hidden
+                <.form
+                  for={@form}
+                  id="alert-form"
+                  phx-change="autosave"
+                  phx-submit="save_and_close"
+                >
+                  <%!-- The base revision this editor writes against. It is a hidden
                        field rather than a server assign because a change replayed
                        by form recovery after a reconnect must still carry the
                        revision it was composed on (R6). --%>
-                <input
-                  type="hidden"
-                  name="alert[revision]"
-                  value={form_revision(@pending_attrs, @alert)}
-                />
-                <%!-- The form's first submit button is disabled, so Enter in a text
+                  <input
+                    type="hidden"
+                    name="alert[revision]"
+                    value={form_revision(@pending_attrs, @alert)}
+                  />
+                  <%!-- The form's first submit button is disabled, so Enter in a text
                        field (a route search, a date) does nothing instead of
                        submitting as Save and close. The real Save and close sits in
                        the bar, after the form. --%>
-                <button type="submit" disabled hidden aria-hidden="true" tabindex="-1"></button>
+                  <button type="submit" disabled hidden aria-hidden="true" tabindex="-1"></button>
 
-                <.question_card
-                  id="alert-question"
-                  step={@step}
-                  eyebrow={eyebrow(@alert)}
-                  heading={question_for(@step, @alert)}
-                  hint={question_hint(@step)}
-                  back={back_patch(@steps, @step)}
-                >
-                  <.urgency_question
-                    :if={@step == :urgency}
-                    alert={@alert}
-                    event="choose_urgency"
-                    name="urgency"
-                  />
+                  <.question_card
+                    id="alert-question"
+                    step={@step}
+                    eyebrow={eyebrow(@alert)}
+                    heading={question_for(@step, @alert)}
+                    hint={question_hint(@step)}
+                    back={back_patch(@steps, @step)}
+                  >
+                    <.urgency_question
+                      :if={@step == :urgency}
+                      alert={@alert}
+                      event="choose_urgency"
+                      name="urgency"
+                    />
 
-                  <.situation_question
-                    :if={@step == :situation}
-                    alert={@alert}
-                    event="choose_situation"
-                  />
+                    <.situation_question
+                      :if={@step == :situation}
+                      alert={@alert}
+                      event="choose_situation"
+                    />
 
-                  <.mode_question
-                    :if={@step == :mode}
-                    alert={@alert}
-                    event="choose_mode"
-                    route_types={@mode_route_types}
-                  />
+                    <.mode_question
+                      :if={@step == :mode}
+                      alert={@alert}
+                      event="choose_mode"
+                      route_types={@mode_route_types}
+                    />
 
-                  <.change_question
-                    :if={@step == :change}
-                    alert={@alert}
-                    event="choose_change"
-                  />
+                    <.change_question
+                      :if={@step == :change}
+                      alert={@alert}
+                      event="choose_change"
+                    />
 
-                  <.routes_question
-                    :if={@step == :routes}
-                    options={@route_options}
-                    selected={selected_route_ids(@alert)}
-                    query={@route_query}
-                    error={@route_error}
-                    system_selected?={system_scope?(@alert)}
-                    allow_system?={system_scope_offered?(@alert)}
-                  />
+                    <.routes_question
+                      :if={@step == :routes}
+                      options={@route_options}
+                      selected={selected_route_ids(@alert)}
+                      query={@route_query}
+                      error={@route_error}
+                      system_selected?={system_scope?(@alert)}
+                      allow_system?={system_scope_offered?(@alert)}
+                    />
 
-                  <.direction_question
-                    :if={@step == :direction}
-                    alert={@alert}
-                    event="choose_direction"
-                    directions={@directions}
-                  />
+                    <.direction_question
+                      :if={@step == :direction}
+                      alert={@alert}
+                      event="choose_direction"
+                      directions={@directions}
+                    />
 
-                  <.place_question
-                    :if={@step == :place}
-                    field={@place_field}
-                    error={@stop_error}
-                  />
+                    <.place_question
+                      :if={@step == :place}
+                      field={@place_field}
+                      error={@stop_error}
+                    />
 
-                  <.stops_question
-                    :if={@step == :stops}
-                    options={@route_stop_options}
-                    selected={scope(@alert).stop_ids || []}
-                    stretch={@stretch_ends}
-                    error={@stop_error}
-                  />
+                    <.stops_question
+                      :if={@step == :stops}
+                      options={@route_stop_options}
+                      selected={scope(@alert).stop_ids || []}
+                      stretch={@stretch_ends}
+                      error={@stop_error}
+                    />
 
-                  <.shared_question
-                    :if={@step == :shared}
-                    routes={@shared_routes}
-                    all_routes?={scope(@alert).all_routes_at_stops}
-                  />
+                    <.shared_question
+                      :if={@step == :shared}
+                      routes={@shared_routes}
+                      all_routes?={scope(@alert).all_routes_at_stops}
+                    />
 
-                  <.alternative_question
-                    :if={@step == :alternative}
-                    alert={@alert}
-                    form={@form}
-                    field={@boarding_field}
-                    directions_open?={@directions_open?}
-                    error={@stop_error}
-                  />
+                    <.alternative_question
+                      :if={@step == :alternative}
+                      alert={@alert}
+                      form={@form}
+                      field={@boarding_field}
+                      directions_open?={@directions_open?}
+                      error={@stop_error}
+                    />
 
-                  <.departures_question
-                    :if={@step == :departures}
-                    dates={@departure_dates}
-                    form={@service_date_form}
-                    routes_chosen?={@departure_routes?}
-                    error={@departure_error}
-                  />
+                    <.departures_question
+                      :if={@step == :departures}
+                      dates={@departure_dates}
+                      form={@service_date_form}
+                      routes_chosen?={@departure_routes?}
+                      error={@departure_error}
+                    />
 
-                  <.timing_question
-                    :if={@step == :timing}
-                    alert={@alert}
-                    form={@form}
-                    now?={not is_nil(@alert) and @alert.urgency == :now}
-                    date_form={@timing_date_form}
-                    occurrences={@timing_occurrences}
-                    notice_default={@notice_default}
-                    check_in_options={@check_in_options}
-                    error={@timing_error}
-                  />
+                    <.timing_question
+                      :if={@step == :timing}
+                      alert={@alert}
+                      form={@form}
+                      now?={not is_nil(@alert) and @alert.urgency == :now}
+                      date_form={@timing_date_form}
+                      occurrences={@timing_occurrences}
+                      notice_default={@notice_default}
+                      check_in_options={@check_in_options}
+                      error={@timing_error}
+                    />
 
-                  <.reason_question :if={@step == :reason} alert={@alert} form={@form} />
+                    <.reason_question :if={@step == :reason} alert={@alert} form={@form} />
 
-                  <.message_question
-                    :if={@step == :message}
-                    alert={@alert}
-                    form={@form}
-                    scripts={@message_scripts}
-                    browsing?={@browse_scripts?}
-                    script_name={@message_script_name}
-                    review?={@message_review?}
-                    checks={@message_checks}
-                    guidelines={@message_guidelines}
-                  />
+                    <.message_question
+                      :if={@step == :message}
+                      alert={@alert}
+                      form={@form}
+                      scripts={@message_scripts}
+                      browsing?={@browse_scripts?}
+                      script_name={@message_script_name}
+                      review?={@message_review?}
+                      checks={@message_checks}
+                      guidelines={@message_guidelines}
+                    />
 
-                  <.review_details
-                    :if={@step == :review}
-                    alert={@alert}
-                    effect={@preview.effect}
-                    routes={@preview.routes}
-                    header={@preview.header}
-                    when_summary={@preview.when_summary}
-                    where={@preview.where}
-                    what={@preview.what}
-                    errors={@review_errors}
-                  />
+                    <.review_details
+                      :if={@step == :review}
+                      alert={@alert}
+                      effect={@preview.effect}
+                      routes={@preview.routes}
+                      header={@preview.header}
+                      when_summary={@preview.when_summary}
+                      where={@preview.where}
+                      what={@preview.what}
+                      errors={@review_errors}
+                    />
 
-                  <:actions>
-                    <%!-- The one question in this step that is not self-contained.
+                    <:actions>
+                      <%!-- The one question in this step that is not self-contained.
                          Its choices are already saved; Continue is the explicit
                          action that moves on, and it refuses to move when
                          nothing is chosen. --%>
-                    <.button
-                      :if={@step == :routes}
-                      id="alert-routes-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_routes"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :routes}
+                        id="alert-routes-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_routes"
+                      >
+                        Continue
+                      </.button>
 
-                    <.button
-                      :if={@step == :place}
-                      id="alert-place-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_place"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :place}
+                        id="alert-place-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_place"
+                      >
+                        Continue
+                      </.button>
 
-                    <.button
-                      :if={@step == :stops}
-                      id="alert-stops-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_stops"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :stops}
+                        id="alert-stops-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_stops"
+                      >
+                        Continue
+                      </.button>
 
-                    <.button
-                      :if={@step == :alternative}
-                      id="alert-alternative-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_alternative"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :alternative}
+                        id="alert-alternative-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_alternative"
+                      >
+                        Continue
+                      </.button>
 
-                    <.button
-                      :if={@step == :departures}
-                      id="alert-departures-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_departures"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :departures}
+                        id="alert-departures-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_departures"
+                      >
+                        Continue
+                      </.button>
 
-                    <%!-- The other-reason explanation is the one answer this step
+                      <%!-- The other-reason explanation is the one answer this step
                          cannot carry a reader on by itself, so Continue is what
                          moves on once it is stored - or once the reader decides
                          not to describe the other reason at all. --%>
-                    <.button
-                      :if={@step == :reason}
-                      id="alert-reason-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_reason"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :reason}
+                        id="alert-reason-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_reason"
+                      >
+                        Continue
+                      </.button>
 
-                    <%!-- The timing answers are several fields rather than one
+                      <%!-- The timing answers are several fields rather than one
                          self-contained choice, so Continue is what carries the
                          reader on, and it refuses while an answer this
                          situation needs is missing. --%>
-                    <.button
-                      :if={@step == :timing}
-                      id="alert-timing-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_timing"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :timing}
+                        id="alert-timing-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_timing"
+                      >
+                        Continue
+                      </.button>
 
-                    <%!-- The message is several fields, each already saved by
+                      <%!-- The message is several fields, each already saved by
                          its own change, so Continue only carries the reader on.
                          Nothing is refused: the wording checks are advisory and
                          a header over the advisory limit still saves
                          (AC-22). --%>
-                    <.button
-                      :if={@step == :message}
-                      id="alert-message-continue"
-                      type="button"
-                      variant="primary"
-                      class="ml-auto"
-                      phx-click="continue_message"
-                    >
-                      Continue
-                    </.button>
+                      <.button
+                        :if={@step == :message}
+                        id="alert-message-continue"
+                        type="button"
+                        variant="primary"
+                        class="ml-auto"
+                        phx-click="continue_message"
+                      >
+                        Continue
+                      </.button>
 
-                    <%!-- Drafting wording with the assistant is the one action on
+                      <%!-- Drafting wording with the assistant is the one action on
                          this step that leaves the form. It puts the request in
                          the assistant's own composer, so the turn starts when the
                          operator sends it. --%>
-                    <.button
-                      :if={@step == :message}
-                      id="draft-with-assistant"
-                      type="button"
-                      variant="secondary"
-                      phx-click="draft_with_assistant"
-                    >
-                      <.icon name="hero-sparkles" class="size-4" /> Draft with assistant
-                    </.button>
-                  </:actions>
-                </.question_card>
-              </.form>
+                      <.button
+                        :if={@step == :message}
+                        id="draft-with-assistant"
+                        type="button"
+                        variant="secondary"
+                        phx-click="draft_with_assistant"
+                      >
+                        <.icon name="hero-sparkles" class="size-4" /> Draft with assistant
+                      </.button>
+                    </:actions>
+                  </.question_card>
+                </.form>
+              </div>
+
+              <.review_actions
+                :if={@step == :review}
+                effect={@preview.effect}
+                checks={@review_checks}
+                publication={@publication}
+                publish?={@publish?}
+                offset_choices={@offset_choices}
+                publication_errors={@publication_errors}
+                reference_version={@reference_version}
+                reference_missing?={@reference_missing?}
+                timezone={@alert && @alert.timezone}
+              />
+
+              <.rider_preview
+                :if={@step != :review}
+                alert={@preview.alert}
+                header={@preview.header}
+                when_summary={@preview.when_summary}
+                effect={@preview.effect}
+                routes={@preview.routes}
+                where={@preview.where}
+                what={@preview.what}
+              />
             </div>
+          <% end %>
 
-            <.review_actions :if={@step == :review} effect={@preview.effect} checks={@review_checks} />
+          <.save_bar
+            id="alert-save-bar"
+            status={save_status(@alert, @save_state)}
+            state={@save_state}
+            detail={refusal_detail(@form)}
+            retry?={is_nil(@conflict)}
+            show_delete?={not is_nil(@alert)}
+            back_path={~p"/alerts"}
+            form_id={if @mode == :form, do: "alert-form"}
+            close_variant={if @step == :review, do: "secondary", else: "primary"}
+          />
 
-            <.rider_preview
-              :if={@step != :review}
-              alert={@preview.alert}
-              header={@preview.header}
-              when_summary={@preview.when_summary}
-              effect={@preview.effect}
-              routes={@preview.routes}
-              where={@preview.where}
-              what={@preview.what}
-            />
-          </div>
+          <.confirm_dialog
+            :if={@alert}
+            id="delete-alert-dialog"
+            open={@delete_open?}
+            title="Delete this alert?"
+            confirm_label="Delete alert"
+            cancel_label="Keep alert"
+            pending_label="Deleting…"
+            confirm_variant="danger"
+            on_cancel="cancel_delete"
+            on_confirm="confirm_delete"
+            described_by="delete-alert-dialog-body"
+            return_focus_id="delete-alert"
+          >
+            <p>Delete {alert_title(@alert)}? This can't be undone.</p>
+          </.confirm_dialog>
         <% end %>
-
-        <.save_bar
-          id="alert-save-bar"
-          status={save_status(@alert, @save_state)}
-          state={@save_state}
-          detail={refusal_detail(@form)}
-          retry?={is_nil(@conflict)}
-          show_delete?={not is_nil(@alert)}
-          back_path={~p"/gtfs/#{@current_gtfs_version.id}/alerts"}
-          form_id={if @mode == :form, do: "alert-form"}
-          close_variant={if @step == :review, do: "secondary", else: "primary"}
-        />
-
-        <.confirm_dialog
-          :if={@alert}
-          id="delete-alert-dialog"
-          open={@delete_open?}
-          title="Delete this alert?"
-          confirm_label="Delete alert"
-          cancel_label="Keep alert"
-          pending_label="Deleting…"
-          confirm_variant="danger"
-          on_cancel="cancel_delete"
-          on_confirm="confirm_delete"
-          described_by="delete-alert-dialog-body"
-          return_focus_id="delete-alert"
-        >
-          <p>Delete {alert_title(@alert)}? This can't be undone.</p>
-        </.confirm_dialog>
       </div>
     </Layouts.app>
     """

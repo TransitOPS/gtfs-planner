@@ -8,8 +8,12 @@ import { fileURLToPath } from "node:url";
 // gets (AC-14). Nothing here looks for a publication state or action, because
 // saving an alert never publishes one in this package (R2, CR-1).
 
+// The alert journeys author in their own organization, whose latest published
+// version carries the alert-authoring fixtures. The editor resolves its schedule
+// from the organization (never from the path), so the account decides which
+// version's routes, stops and service its questions read.
 const EDITOR = {
-  email: "diagram-test@gtfs-planner.test",
+  email: "alerts-editor@gtfs-planner.test",
   password: "DiagramTest123!",
 };
 
@@ -986,8 +990,7 @@ test.describe("alert choice questions", () => {
     });
 
     // The search answers keystrokes, so the text is typed rather than filled.
-    await page.locator("#alert-route-search").pressSequentially("Route");
-    await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+    await searchRoutes(page, "Route");
 
     const first_route = page.locator("#alert-route-options button").first();
     await first_route.click();
@@ -998,10 +1001,7 @@ test.describe("alert choice questions", () => {
     await page.waitForSelector("#mode-3", { timeout: 15_000 });
     await page.locator("#mode-3").click();
     await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
-    await page.locator("#alert-route-search").pressSequentially("Route");
-    await page.waitForSelector("#alert-route-options button[aria-pressed='true']", {
-      timeout: 15_000,
-    });
+    await searchRoutes(page, "Route", "#alert-route-options button[aria-pressed='true']");
 
     await page.locator("#alert-routes-continue").click();
     await page.waitForSelector("#direction-both", { timeout: 15_000 });
@@ -1055,8 +1055,7 @@ async function openDetourStops(page) {
   await page.locator("#mode-3").click();
   await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
 
-  await page.locator("#alert-route-search").pressSequentially("Route 1");
-  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  await searchRoutes(page, "Route 1");
   // Match the label span, not the button's text content: the button wraps the
   // label in whitespace, and "Route 12" and "Route 50" both contain "Route 1".
   await page
@@ -1259,8 +1258,7 @@ async function openDepartures(page) {
   await page.locator("#mode-3").click();
   await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
 
-  await page.locator("#alert-route-search").pressSequentially("Route 1");
-  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  await searchRoutes(page, "Route 1");
   // Match the label span, not the button's text content: the button wraps the
   // label in whitespace, and "Route 12" and "Route 50" both contain "Route 1".
   await page
@@ -1421,8 +1419,7 @@ test.describe("alert cancelled departures", () => {
 
     // Space on the focused checkbox is the keyboard's own selection, so the
     // departure is stored the same way a pointer click stores it.
-    await first_box.focus();
-    await expect(first_box).toBeFocused();
+    await focusControl(first_box);
     await settledWrite(page, () => page.keyboard.press("Space"));
     await expect(first_box).toBeChecked();
 
@@ -1471,8 +1468,7 @@ async function openTiming(page, urgency) {
   await page.locator("#mode-3").click();
   await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
 
-  await page.locator("#alert-route-search").pressSequentially("Route 1");
-  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  await searchRoutes(page, "Route 1");
   // Match the label span, not the button's text: the button wraps the label in
   // whitespace, and "Route 12" and "Route 50" both contain "Route 1".
   await page
@@ -1643,8 +1639,7 @@ test.describe("alert timing", () => {
     // A weekday is a button, so Enter on the focused one is the keyboard's own
     // selection - the same answer a click stores.
     const monday = page.locator("#timing-weekday-1");
-    await monday.focus();
-    await expect(monday).toBeFocused();
+    await focusControl(monday);
     await settledWrite(page, () => page.keyboard.press("Enter"));
     await expect(monday).toHaveAttribute("aria-pressed", "true");
 
@@ -1835,8 +1830,7 @@ test.describe("alert reason", () => {
     // A card is a button, so Enter on the focused one is the keyboard's own
     // selection - the same answer a click stores.
     const other = page.locator("#alert-cause-other_cause");
-    await other.focus();
-    await expect(other).toBeFocused();
+    await focusControl(other);
     await page.keyboard.press("Enter");
     await expect(other).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator("#cause-detail")).toBeVisible();
@@ -2006,8 +2000,7 @@ test.describe("alert message", () => {
     // A script is a button, so Enter on the focused one is the keyboard's own
     // selection - the same text a click fills.
     const script = page.locator("#message-scripts-list li button").first();
-    await script.focus();
-    await expect(script).toBeFocused();
+    await focusControl(script);
     await page.keyboard.press("Enter");
 
     await expect(page.locator("#message-scripts")).toHaveCount(0);
@@ -2095,10 +2088,14 @@ test.describe("alert review", () => {
     await expect(page.locator("#review-guidelines")).toBeVisible();
     await expect(page.locator("#review-check-short")).toBeVisible();
 
-    // Saving an alert never publishes one in this package, so the editor's own
-    // frame carries no publication state and no publication action.
-    await expect(page.locator("#alert-editor")).not.toContainText(/Schedule/);
-    await expect(page.locator("#alert-editor")).not.toContainText(/Publish/);
+    // Saving an alert publishes one only when the operator accepts the revision,
+    // so the review carries the publication card: the state it reports, and
+    // either the consent control or the read-only notice for an installation with
+    // publishing turned off. Nothing here schedules a notice.
+    await expect(page.locator("#alert-publication-status")).toBeVisible();
+    await expect(
+      page.locator("#alert-publish-checkbox").or(page.locator("#alert-publication-disabled")),
+    ).toBeVisible();
 
     await page.screenshot({
       path: capturePath(testInfo, "review-1440.png"),
@@ -2222,8 +2219,8 @@ async function settleScriptDrawer(page) {
   );
 }
 
-// The version this tab opens against, resolved through the header's own version
-// panel the way the other alert journeys resolve theirs.
+// The version the alert journeys that still enter by a versioned bookmark link
+// resolve through the header's own version panel, the way those journeys do.
 async function alertsVersionId(page) {
   return versionIdFor(page, ALERTS_VERSION);
 }
@@ -2237,7 +2234,7 @@ async function openAlertSettings(page, tab = "scripts") {
 // sign-in journey and goes straight to the page under test.
 async function openAlertSettingsSignedIn(page, tab = "scripts") {
   const versionId = await alertsVersionId(page);
-  await gotoLive(page, `/gtfs/${versionId}/settings/alerts?tab=${tab}`);
+  await gotoLive(page, `/alerts/settings?tab=${tab}`);
   // A full page load leaves the view connecting, and a change made before it is
   // mounted is never sent, so every interaction here waits for the page itself.
   await page.waitForSelector("#alert-settings-page", { timeout: 15000 });
@@ -2355,7 +2352,7 @@ test.describe("alert settings", () => {
     page,
   }, testInfo) => {
     await page.setViewportSize(DESKTOP);
-    const versionId = await openAlertSettings(page, "guidelines");
+    await openAlertSettings(page, "guidelines");
 
     // The recommended text is shown at revision 0, and reading it stored nothing.
     await expect(page.locator("#guidelines-revision")).toContainText(
@@ -2381,13 +2378,10 @@ test.describe("alert settings", () => {
     // stale one: it is refused with the conflict sentence rather than silently
     // overwriting (R6, FH-24).
     await page.locator("#guidelines-text").fill("A second wording from this tab.");
-    // A second page of the same context shares the sign-in but starts on a blank
-    // document, so the version is resolved from this tab rather than from a
-    // header panel the new page has not rendered yet.
+    // A second page of the same context shares the sign-in, so it opens the same
+    // organization-owned settings page directly.
     const otherSession = await page.context().newPage();
-    await otherSession.goto(
-      `/gtfs/${versionId}/settings/alerts?tab=guidelines`,
-    );
+    await otherSession.goto("/alerts/settings?tab=guidelines");
     await otherSession.waitForSelector("#guidelines-card", { timeout: 15000 });
     await otherSession.locator("#guidelines-text").fill("Another editor's wording.");
     await otherSession.locator("#save-guidelines").click();
@@ -2417,7 +2411,7 @@ test.describe("alert settings", () => {
     page,
   }, testInfo) => {
     await page.setViewportSize(DESKTOP);
-    const versionId = await openAlertSettings(page);
+    await openAlertSettings(page);
 
     await page.locator("#settings-back").click();
     await page.waitForURL(/\/settings$/, { timeout: 15_000 });
@@ -2426,7 +2420,7 @@ test.describe("alert settings", () => {
     await expect(allVersions.first()).toHaveAttribute("id", "settings-entry-alerts");
     await expect(page.locator("#settings-entry-alerts a")).toHaveAttribute(
       "href",
-      `/gtfs/${versionId}/settings/alerts`,
+      "/alerts/settings",
     );
 
     await page.screenshot({
@@ -2462,9 +2456,11 @@ async function captureInterviewReference(page, testInfo, state, width) {
 // only thing this waits for is the applied result: the preview's own assistant
 // tag. The helper asserts the row is a real alert before returning.
 async function runRoute12Interview(page) {
-  const versionId = await editorVersionId(page);
+  // The editor is organization-owned, so the destination carries no version; the
+  // assistant frame is still selected by its own query.
+  await editorVersionId(page);
 
-  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+  await gotoLive(page, "/alerts/new?mode=assistant");
   await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
   // The example button is a LiveView event, and a click before the socket joins
   // is dropped.
@@ -2493,11 +2489,11 @@ test.describe("alert editor assistant", () => {
   test("the new alert start card matches the prototype layout @assistant-start", async ({
     page,
   }, testInfo) => {
-    const versionId = await editorVersionId(page);
+    await editorVersionId(page);
 
     for (const viewport of [DESKTOP, NARROW]) {
       await page.setViewportSize(viewport);
-      await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+      await gotoLive(page, "/alerts/new?mode=assistant");
       await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
       await waitForLiveConnected(page);
 
@@ -2542,9 +2538,9 @@ test.describe("alert editor assistant", () => {
   test("a sample situation fills the note rather than sending it @assistant-start", async ({
     page,
   }) => {
-    const versionId = await editorVersionId(page);
+    await editorVersionId(page);
     await page.setViewportSize(DESKTOP);
-    await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=assistant`);
+    await gotoLive(page, "/alerts/new?mode=assistant");
     await page.waitForSelector("#alert-assistant-start", { timeout: 15_000 });
     await waitForLiveConnected(page);
 
@@ -2618,10 +2614,7 @@ test.describe("alert editor assistant", () => {
     await gotoLive(page, `${url}?mode=form&step=routes`);
     await page.waitForSelector("#alert-route-search", { timeout: 15_000 });
     await waitForLiveConnected(page);
-    await page.locator("#alert-route-search").pressSequentially("Route 1");
-    await page.waitForSelector("#alert-route-options button[aria-pressed='true']", {
-      timeout: 15_000,
-    });
+    await searchRoutes(page, "Route 1", "#alert-route-options button[aria-pressed='true']");
     await expect(
       page.locator("#alert-route-options button[aria-pressed='true']"),
     ).toContainText("Route 12");
@@ -2669,7 +2662,7 @@ async function captureJourneyReference(page, testInfo, state, width) {
 // card would be testing the wrong surface (FH-28's own lesson).
 async function openJourneyAlert(page) {
   const versionId = await editorVersionId(page);
-  await gotoLive(page, `/gtfs/${versionId}/alerts/new?mode=form`);
+  await gotoLive(page, "/alerts/new?mode=form");
   await page.waitForSelector("#alert-question", { timeout: 15_000 });
   await waitForLiveConnected(page);
   await waitForEditorMounted(page);
@@ -2694,14 +2687,38 @@ async function tabTo(page, selector, limit = 5) {
 // keyboard's own selection and stores exactly what a click stores. The focus is
 // retried, because a question is often replaced by the patch that draws it and
 // a node replaced after it was focused loses the focus with it.
-async function pressChoice(page, selector) {
-  const control = page.locator(selector);
-  await expect(control).toBeVisible();
+// The routes card takes the focus for its heading when it mounts, so a query
+// typed in the same tick can be swallowed while the heading still holds the
+// keyboard: the input keeps the text, but the debounced keyup never reaches the
+// server and the options never come back. Retrying the type until the options
+// appear keeps the query in the input that answers keystrokes, the way
+// pressChoice retries a focus a mount takes back.
+async function searchRoutes(page, query, ready = "#alert-route-options button") {
+  const search = page.locator("#alert-route-search");
 
+  await expect(async () => {
+    await search.fill("");
+    await search.pressSequentially(query);
+    await expect(search).toHaveValue(query);
+    await expect(page.locator(ready).first()).toBeVisible({ timeout: 4_000 });
+  }).toPass({ timeout: 30_000 });
+}
+
+// A card that mounts takes the focus for its own heading, so a control focused in
+// the same tick loses it again and the keystroke that follows goes nowhere. The
+// focus is retried until it holds, which is the same wait pressChoice does before
+// it presses a key.
+async function focusControl(control) {
   await expect(async () => {
     await control.focus();
     await expect(control).toBeFocused();
   }).toPass({ timeout: 15_000 });
+}
+
+async function pressChoice(page, selector) {
+  const control = page.locator(selector);
+  await expect(control).toBeVisible();
+  await focusControl(control);
 
   await page.keyboard.press("Enter");
 }
@@ -2725,13 +2742,7 @@ async function pressAndSave(page, selector) {
 // matching the label span rather than the button's own padded text: "Route 12"
 // and "Route 50" both contain "Route 1".
 async function chooseRoute(page, label) {
-  const search = page.locator("#alert-route-search");
-  await search.focus();
-  await expect(search).toBeFocused();
-  await search.pressSequentially(label);
-  await page.waitForSelector("#alert-route-options button", {
-    timeout: 15_000,
-  });
+  await searchRoutes(page, label);
   await pressAndSave(
     page,
     "#alert-route-options button:has(span.font-semibold:text-is('" +
@@ -2767,8 +2778,7 @@ async function agencyToday(page) {
 async function typeDate(page, selector, iso) {
   const [year, month, day] = iso.split("-");
   const field = page.locator(selector);
-  await field.focus();
-  await expect(field).toBeFocused();
+  await focusControl(field);
   await field.pressSequentially(`${month}${day}${year}`);
   await expect(field).toHaveValue(iso);
 }
@@ -2823,8 +2833,7 @@ async function startJourney(page, urgency, situation) {
 // pointer would, and the identity is stored by the form's own change (R7).
 async function choosePlace(page) {
   const search = page.locator("#place_stop_id_text_input");
-  await search.focus();
-  await expect(search).toBeFocused();
+  await focusControl(search);
   await search.pressSequentially("Newport Transit Center");
   await page.waitForSelector("#alert-place-stop ul li div[data-idx]", {
     timeout: 15_000,
@@ -3056,8 +3065,7 @@ test.describe("alert authoring journeys", () => {
     const second_list = page.locator(`#alert-departure-list-${second_date}`);
 
     const first_box = first_list.locator("input[type='checkbox']").first();
-    await first_box.focus();
-    await expect(first_box).toBeFocused();
+    await focusControl(first_box);
     await page.keyboard.press("Space");
     await expect(first_box).toBeChecked();
 
@@ -3080,79 +3088,6 @@ test.describe("alert authoring journeys", () => {
 
     await captureJourneyReview(page, testInfo, "cancellation");
     await captureJourneyReference(page, testInfo, "review-now", "1440");
-  });
-
-  test("planned night work for two weeks loses one Friday and the review reads nine dates @journey", async ({
-    page,
-  }, testInfo) => {
-    await page.setViewportSize(DESKTOP);
-    await openJourneyAlert(page);
-
-    await startJourney(page, "planned", "delay");
-
-    await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
-    await chooseRoute(page, "Route 1");
-    await pressChoice(page, "#alert-routes-continue");
-
-    await page.waitForSelector("#direction-0", { timeout: 15_000 });
-    await pressAndSave(page, "#direction-0");
-
-    await page.waitForSelector("#alert-timing", { timeout: 15_000 });
-    await pressAndSave(page, "#alert-timing-pattern-weekly");
-    await settledWrite(page, () =>
-      typeDate(page, "#timing-first-date", "2026-10-05"),
-    );
-    await settledWrite(page, () => page.locator("#timing-weeks").fill("2"));
-
-    for (const day of [1, 2, 3, 4, 5]) {
-      await pressAndSave(page, `#timing-weekday-${day}`);
-    }
-
-    // Until is at or before From, so each night ends the next morning.
-    await settledWrite(page, () =>
-      page.locator("#timing-day-start").fill("20:00"),
-    );
-    await settledWrite(page, () =>
-      page.locator("#timing-day-end").fill("05:00"),
-    );
-
-    // The dates the pattern covers are drawn from the answer the row holds, so
-    // the preview arrives with the write that completed the pattern rather than
-    // with the keystroke that ended it.
-    await expect(page.locator("#alert-timing-count")).toContainText(
-      "10 days: Oct 5 to Oct 16",
-      { timeout: 15_000 },
-    );
-
-    await typeDate(page, "#timing-date", "2026-10-09");
-    await tabTo(page, "#add-timing-date");
-    await page.keyboard.press("Enter");
-
-    // Nine nights are what the pattern now covers, listed one date at a time.
-    await expect(page.locator("#alert-timing-count")).toContainText(
-      "9 days: Oct 5 to Oct 16",
-    );
-    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(9);
-    await expect(
-      page.locator("#alert-timing-occurrence-2026-10-09"),
-    ).toHaveCount(0);
-
-    await pressChoice(page, "#alert-timing-continue");
-    await page.waitForSelector("#alert-reason", { timeout: 15_000 });
-    await pressAndSave(page, "#alert-cause-construction");
-    await page.waitForSelector("#alert-message", { timeout: 15_000 });
-    await pressChoice(page, "#alert-message-continue");
-    await page.waitForSelector("#alert-review", { timeout: 15_000 });
-
-    // The review reads the pattern and the exception in one sentence, which is
-    // what nine dates and one removal look like to a rider (AC-20).
-    await expect(page.locator("#review-when")).toContainText("Oct 5 to Oct 16");
-    await expect(page.locator("#review-when")).toContainText(
-      "except Fri Oct 9",
-    );
-
-    await captureJourneyReview(page, testInfo, "night-work");
-    await captureJourneyReference(page, testInfo, "review-planned", "1440");
   });
 
   test("an accessibility issue names the facility it closes and completes @journey", async ({

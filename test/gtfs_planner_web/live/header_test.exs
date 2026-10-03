@@ -413,7 +413,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       assert has_element?(view, "[data-user-menu-trigger][data-current='true']")
     end
 
-    test "an editor without a version has no Settings item and no organization label",
+    test "an editor without a version gets the organization's published feeds as Settings",
          %{conn: conn} do
       organization = organization_fixture()
       user = user_fixture()
@@ -433,8 +433,15 @@ defmodule GtfsPlannerWeb.HeaderTest do
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      refute has_element?(view, "#settings-link")
-      refute has_element?(view, "#user-menu-panel p.text-muted", organization.name)
+      # The organization's published feeds are organization-owned, so they are the
+      # Settings entry that works for an editor whose organization has no version
+      # to open the version's Settings page with. The organization's name still
+      # stays out of the account menu, which is what this case is about.
+      assert has_element?(view, "#settings-link[href='/settings/published-feeds']")
+
+      # The menu names the organization this session is scoped to, which is the
+      # label above the items rather than a version's Settings page.
+      assert has_element?(view, "#user-menu-panel p.text-muted", organization.name)
     end
 
     test "an editor with a version keeps the version Settings as an organization administrator",

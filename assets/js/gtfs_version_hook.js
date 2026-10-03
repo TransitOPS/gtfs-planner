@@ -139,6 +139,15 @@ const GtfsVersionHook = {
 
   buildTargetUrl(versionId) {
     const { pathname, search, hash } = window.location;
+
+    // Alerts belongs to the organization, so its path carries no version to
+    // rewrite. Switching the version while an alert is open must land on the
+    // same alert rather than on the version's default page, because the alert's
+    // identity is the organization's and not the selected schedule's.
+    if (pathname === "/alerts" || pathname.startsWith("/alerts/")) {
+      return pathname + (search || "") + (hash || "");
+    }
+
     const gtfsMatch = pathname.match(/^\/gtfs\/[^/]+/);
 
     if (gtfsMatch) {

@@ -34,7 +34,7 @@ defmodule GtfsPlanner.AlertsTest do
 
       assert alert.revision == 1
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
       assert alert.created_by_id == context.actor.id
       assert alert.updated_by_id == context.actor.id
       assert alert.urgency == :now
@@ -55,7 +55,7 @@ defmodule GtfsPlanner.AlertsTest do
       attrs = %{
         "urgency" => "now",
         "organization_id" => other_organization.id,
-        "gtfs_version_id" => other_version.id,
+        "source_gtfs_version_id" => other_version.id,
         "revision" => 99,
         "complete" => true,
         "effect" => "no_service",
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.AlertsTest do
       assert {:ok, alert} = Alerts.create_alert(context.audit, attrs)
 
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
       assert alert.revision == 1
       assert alert.complete == false
       assert alert.effect == nil
@@ -201,8 +201,13 @@ defmodule GtfsPlanner.AlertsTest do
       same_org_alert =
         alert_fixture(audit_context(context.organization, other_version_same_org, context.actor))
 
+      # An alert belongs to its organization, and both versions' alerts list and
+      # edit in one organization, so the version an alert was written against
+      # does not hide it. Another organization's alert stays not found, and an
+      # unknown or malformed id is treated the same way.
       assert {:error, :not_found} = Alerts.get_alert(context.audit, foreign_alert.id)
-      assert {:error, :not_found} = Alerts.get_alert(context.audit, same_org_alert.id)
+      assert {:ok, found} = Alerts.get_alert(context.audit, same_org_alert.id)
+      assert found.id == same_org_alert.id
       assert {:error, :not_found} = Alerts.get_alert(context.audit, Ecto.UUID.generate())
       assert {:error, :not_found} = Alerts.get_alert(context.audit, "not-a-uuid")
     end
@@ -405,13 +410,18 @@ defmodule GtfsPlanner.AlertsTest do
       same_org_alert =
         alert_fixture(audit_context(context.organization, other_version_same_org, context.actor))
 
-      for alert_id <- [foreign_alert.id, same_org_alert.id, Ecto.UUID.generate(), "not-a-uuid"] do
+      for alert_id <- [foreign_alert.id, Ecto.UUID.generate(), "not-a-uuid"] do
         assert {:error, :not_found} =
                  Alerts.save_draft(context.audit, alert_id, 1, %{"situation" => "delay"})
       end
 
+      # The other version's alert is this organization's, so its draft saves.
+      assert {:ok, saved} =
+               Alerts.save_draft(context.audit, same_org_alert.id, 1, %{"situation" => "delay"})
+
+      assert saved.revision == 2
       assert Repo.get!(Alert, foreign_alert.id).revision == 1
-      assert Repo.get!(Alert, same_org_alert.id).revision == 1
+      assert Repo.get!(Alert, same_org_alert.id).revision == 2
     end
   end
 
@@ -484,12 +494,15 @@ defmodule GtfsPlanner.AlertsTest do
         alert_fixture(audit_context(context.organization, other_version_same_org, context.actor))
 
       assert {:error, :not_found} = Alerts.delete_alert(context.audit, foreign_alert.id, 1)
-      assert {:error, :not_found} = Alerts.delete_alert(context.audit, same_org_alert.id, 1)
       assert {:error, :not_found} = Alerts.delete_alert(context.audit, Ecto.UUID.generate(), 1)
       assert {:error, :not_found} = Alerts.delete_alert(context.audit, "not-a-uuid", 1)
 
+      # The other version's alert is this organization's, so it deletes.
+      assert {:ok, deleted} = Alerts.delete_alert(context.audit, same_org_alert.id, 1)
+      assert deleted.id == same_org_alert.id
+
       assert Repo.get!(Alert, foreign_alert.id)
-      assert Repo.get!(Alert, same_org_alert.id)
+      refute Repo.get(Alert, same_org_alert.id)
     end
   end
 

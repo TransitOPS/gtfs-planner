@@ -14,11 +14,21 @@ defmodule GtfsPlanner.Validations do
   `start_mobility_data_run/4` creates a run and hands it to a
   `Validations.Runner` under `Validations.RunnerSupervisor`, which owns the
   lease from claim to terminal write.
+
+  `start_artifact_run/3` validates one already-exported artifact instead of the
+  version's current rows. It takes the actor's current editor membership first,
+  pins the selected export run's artifact through `ExportRuns` (the owner of
+  acquisition) and records the verified SHA-256, export run, slot and pin token
+  on the run, so the runner's later read can only see those exact bytes. The
+  report stays bound to the artifact: a fresh run is never a feed check of the
+  version, and source edits after the export cannot change what was reviewed.
   """
 
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.Export
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator.Result
   alias GtfsPlanner.Repo
   alias GtfsPlanner.RunnerAdmission
@@ -27,6 +37,10 @@ defmodule GtfsPlanner.Validations do
   require Logger
 
   @mobility_run_types ["mobility_data", "mobility_data_flex"]
+
+  # A validation run owns the pin it acquired under this owner id, so it can
+  # renew and release it without ever seeing another owner's claim.
+  @artifact_pin_owner_prefix "validation-run:"
 
   @lease_seconds Application.compile_env(:gtfs_planner, :validation_lease_seconds, 300)
 
@@ -74,6 +88,157 @@ defmodule GtfsPlanner.Validations do
 
   def start_mobility_data_run(_organization_id, _version_id, _run_type, _actor),
     do: {:error, :invalid_run_type}
+
+  @doc """
+  Validates one selected export artifact and starts its runner.
+
+  `run_id` is an export run the organization owns and `slot` is the trusted
+  `main` or `flex` artifact of that run. The actor must currently be an editor
+  (`{:error, :forbidden}` otherwise, and no run is created).
+
+  The run is created only after `ExportRuns.pin_publication/5` has verified the
+  bytes and leased them, so a run never exists whose artifact it cannot read. A
+  run that is not ready, has no such slot, or whose artifact is already pinned by
+  another owner is refused with the pin's own reason and creates nothing.
+
+  When the runner supervisor is at its `:runner_limits` cap the run never starts:
+  it is failed with `error_details` `"busy"` and the result is `{:error, :busy}`.
+  Any other start failure fails the run as `"not_started"` and returns
+  `{:error, :not_started}`. Either way the pin this function acquired is
+  released, so a refused review never holds the artifact.
+  """
+  @spec start_artifact_run(map(), Ecto.UUID.t(), :main | :flex) ::
+          {:ok, ValidationRun.t()}
+          | {:error,
+             :forbidden
+             | :not_found
+             | :artifact_busy
+             | :invalid_slot
+             | :busy
+             | :not_started
+             | Ecto.Changeset.t()}
+  def start_artifact_run(scope, export_run_id, slot) when slot in [:main, :flex] do
+    # The owner id is derived from the validation run's own id, so the run can
+    # rebuild its claim after a restart without a second stored credential.
+    run_id = Ecto.UUID.generate()
+
+    case pin_and_create(scope, export_run_id, slot, run_id) do
+      {:ok, run} ->
+        start_artifact_runner(run)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def start_artifact_run(_scope, _export_run_id, _slot), do: {:error, :invalid_slot}
+
+  defp pin_and_create(scope, export_run_id, slot, run_id) do
+    Repo.transaction(fn ->
+      # INV-1/CR-2: current membership is locked before the export run the pin
+      # locks, so a permission revoked after the page loaded refuses the write.
+      Authorization.lock_editor!(scope)
+      create_pinned_artifact_run(scope, export_run_id, slot, run_id)
+    end)
+  end
+
+  # `Repo.transaction/1` wraps the function's own result once more, so the
+  # inserted run is unwrapped here.
+  defp create_pinned_artifact_run(scope, export_run_id, slot, run_id) do
+    with {:ok, organization_id} <- cast_organization_id(scope),
+         {:ok, run} <- open_artifact_run(organization_id, export_run_id, slot, run_id) do
+      run
+    else
+      :error -> Repo.rollback(:forbidden)
+    end
+  end
+
+  # A run that never starts is failed by `start_runner/1`; the pin this function
+  # acquired goes with it, so a refused review never holds the artifact.
+  defp start_artifact_runner(run) do
+    case start_runner(run) do
+      {:ok, started} ->
+        {:ok, started}
+
+      {:error, reason} ->
+        _ = release_artifact_pin(run)
+        {:error, reason}
+    end
+  end
+
+  defp open_artifact_run(organization_id, export_run_id, slot, run_id) do
+    with %Export.Run{} = export_run <- ExportRuns.get_scoped_run(organization_id, export_run_id),
+         {:ok, pin} <-
+           ExportRuns.pin_publication(
+             organization_id,
+             export_run.gtfs_version_id,
+             export_run_id,
+             slot,
+             @artifact_pin_owner_prefix <> run_id
+           ) do
+      create_artifact_run(run_id, organization_id, export_run, pin, slot)
+    else
+      nil -> Repo.rollback(:not_found)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  @doc """
+  The pin claim this run holds on its artifact, for `ExportRuns` readers that
+  accept one. Returns a claim that matches nothing for a run that is not
+  artifact-bound, so it is never a usable credential by accident.
+  """
+  @spec artifact_pin_claim(ValidationRun.t()) :: map()
+  def artifact_pin_claim(%ValidationRun{id: id, artifact_pin_token: token})
+      when not is_nil(token) do
+    %{owner_id: @artifact_pin_owner_prefix <> id, pin_token: token}
+  end
+
+  def artifact_pin_claim(%ValidationRun{}),
+    do: %{owner_id: @artifact_pin_owner_prefix, pin_token: Ecto.UUID.generate()}
+
+  @doc """
+  Releases the artifact pin this run acquired, if it still owns it.
+
+  `Validations.Runner` calls this after the terminal row is written, so a review
+  that finished, failed or was refused never keeps the private artifact from being
+  cleaned up. A run that is not artifact-bound releases nothing, and a claim
+  that was already fenced logs rather than fails.
+  """
+  @spec release_artifact_pin(ValidationRun.t()) :: :ok | {:error, :lease_lost}
+  def release_artifact_pin(%ValidationRun{artifact_export_run_id: run_id} = run)
+      when not is_nil(run_id) do
+    ExportRuns.release_publication_pin(
+      run.organization_id,
+      run_id,
+      artifact_pin_claim(run)
+    )
+  end
+
+  def release_artifact_pin(%ValidationRun{}), do: :ok
+
+  defp create_artifact_run(run_id, organization_id, export_run, pin, slot) do
+    %ValidationRun{
+      id: run_id,
+      organization_id: organization_id,
+      gtfs_version_id: export_run.gtfs_version_id,
+      started_at: DateTime.utc_now()
+    }
+    |> ValidationRun.system_changeset(%{
+      run_type: "mobility_data_artifact",
+      status: "started",
+      artifact_sha256: pin.sha256,
+      artifact_slot: slot,
+      artifact_export_run_id: export_run.id,
+      artifact_pin_token: pin.pin_token
+    })
+    |> Repo.insert()
+  end
+
+  defp cast_organization_id(%{organization_id: organization_id}),
+    do: Ecto.UUID.cast(organization_id)
+
+  defp cast_organization_id(_), do: :error
 
   defp actor_id(%{id: id}), do: id
   defp actor_id(_actor), do: nil

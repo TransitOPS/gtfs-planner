@@ -88,7 +88,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     test "organization scripts come first, then the read-only built-ins", context do
       {:ok, org_script} = Alerts.create_script(context.audit, @org_script)
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       ids =
         view
@@ -116,21 +116,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "an organization with no scripts of its own still reads the built-ins", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#scripts-status", "0 scripts of your own")
       assert has_element?(view, "#copy-builtin-detour")
     end
 
     test "the built-in rows name the situation a script is offered for", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       assert has_element?(view, "#script-for-builtin-detour", "Detour")
       assert has_element?(view, "#script-for-builtin-no_service_day", "Cancelled departures")
     end
 
     test "the page carries no publication state or action", context do
-      {:ok, _view, html} = live(context.conn, alerts_path(context.version))
+      {:ok, _view, html} = live(context.conn, alerts_path())
 
       for word <- ["Publish", "Schedule", "Data sent to apps", "Alert feed"] do
         refute html =~ word
@@ -142,7 +142,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     setup :editor_conn
 
     test "Create script opens the drawer with the placeholder reference", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       html =
         view
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "a refused save shows the field error and keeps what was typed", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#create-script") |> render_click()
 
@@ -194,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "a saved script is listed, then edited through the drawer", context do
       {:ok, _script} = Alerts.create_script(context.audit, @org_script)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       html =
         view
@@ -225,7 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "Copy to edit creates an organization script and opens it in the drawer", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       html =
         view
@@ -258,7 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "copying the same built-in twice is a second variant, not a failure", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#copy-builtin-detour") |> render_click()
       view |> element("#script-cancel") |> render_click()
@@ -276,7 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "delete asks first, then removes the organization's own script only", context do
       {:ok, org_script} = Alerts.create_script(context.audit, @org_script)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#script-name-#{org_script.id}") |> render_click()
       view |> element("#script-delete") |> render_click()
@@ -298,7 +298,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     test "keeping the script at the delete question leaves it and the drawer as they were",
          context do
       {:ok, org_script} = Alerts.create_script(context.audit, @org_script)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#script-name-#{org_script.id}") |> render_click()
       view |> element("#script-delete") |> render_click()
@@ -311,7 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "Edit seeds the drawer from the stored script and validation still runs", context do
       {:ok, script} = Alerts.create_script(context.audit, @org_script)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#edit-script-#{script.id}") |> render_click()
 
@@ -335,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
         |> audit_context(other_version, other_actor)
         |> Alerts.create_script(%{@org_script | "name" => "Their script"})
 
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       render_click(view, "open_edit_script", %{"script_id" => theirs.id})
 
@@ -345,7 +345,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "saving a script another editor deleted keeps the typed wording", context do
       {:ok, script} = Alerts.create_script(context.audit, @org_script)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#edit-script-#{script.id}") |> render_click()
       {:ok, _deleted} = Alerts.delete_script(context.audit, script.id)
@@ -375,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "a revoked role saves nothing and reports the forbidden outcome", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version))
+      {:ok, view, _html} = live(context.conn, alerts_path())
 
       view |> element("#create-script") |> render_click()
       revoke_editor_role!(context.actor, context.organization)
@@ -405,7 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     setup :editor_conn
 
     test "?tab=guidelines shows the recommended text at revision 0", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
       doc = LazyHTML.from_fragment(render(view))
 
       assert has_element?(view, "#alert-settings-tab-guidelines[aria-selected='true']")
@@ -421,7 +421,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "Save guidelines stores the text and advances the revision", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
 
       view
       |> form("#guidelines-form", %{
@@ -435,7 +435,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "a document over the limit is refused on the field and saves once shortened", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
 
       view
       |> form("#guidelines-form", %{
@@ -465,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     test "a stale revision is refused with the conflict sentence and overwrites nothing",
          context do
       # The page is open at revision 0 when another editor saves.
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
       {:ok, _first} = Alerts.save_guidelines(context.audit, "First wording.", 0)
 
       view
@@ -487,7 +487,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "a stale warning does not come back as a notice after leaving the tab", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
       {:ok, _first} = Alerts.save_guidelines(context.audit, "First wording.", 0)
 
       view
@@ -509,7 +509,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
     test "a revoked role saves nothing and reports the forbidden outcome", context do
       {:ok, _first} = Alerts.save_guidelines(context.audit, "First wording.", 0)
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=guidelines")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=guidelines")
 
       revoke_editor_role!(context.actor, context.organization)
 
@@ -525,7 +525,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     end
 
     test "an unknown tab falls back to the scripts tab rather than raising", context do
-      {:ok, view, _html} = live(context.conn, alerts_path(context.version) <> "?tab=feed")
+      {:ok, view, _html} = live(context.conn, alerts_path() <> "?tab=feed")
 
       assert has_element?(view, "#scripts-table")
       refute has_element?(view, "#guidelines-card")
@@ -547,7 +547,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
       conn = log_in_user(build_conn(), member, organization: context.organization)
 
       assert {:error, {:redirect, %{to: "/admin/organizations"}}} =
-               live(conn, alerts_path(context.version))
+               live(conn, alerts_path())
     end
 
     test "the page reaches its own page ahead of the section route", context do
@@ -555,7 +555,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
 
       # "alerts" is a built destination, so it never reaches `SettingsLive`'s
       # section lookup, which would answer "That settings section doesn’t exist."
-      assert {:ok, view, _html} = live(conn, alerts_path(context.version))
+      assert {:ok, view, _html} = live(conn, alerts_path())
       assert has_element?(view, "#alert-settings-page")
       assert has_element?(view, "#alert-settings-tabs")
     end
@@ -568,7 +568,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertSettingsLiveTest do
     }
   end
 
-  defp alerts_path(version), do: "/gtfs/#{version.id}/settings/alerts"
+  defp alerts_path, do: "/alerts/settings"
 
   # The organization's own scripts only: `Alerts.list_scripts/1` also returns the
   # read-only built-ins, and a refusal here is about the page's own writes.

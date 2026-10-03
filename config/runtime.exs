@@ -136,6 +136,16 @@ config :gtfs_planner,
            else: nil
          )
 
+# Public feed publishing is optional. The six GTFS_PUBLISH_* settings are normalized
+# once here, through their single owner, and stored for `GtfsPlanner.FeedPublishing.Config.current/0`.
+# Test configuration is never replaced from here, so no ordinary run can reach a live
+# bucket through ambient publishing secrets; `config/test.exs` owns the test value.
+if config_env() != :test do
+  config :gtfs_planner,
+         :feed_publishing_config,
+         GtfsPlanner.FeedPublishing.Config.load(System.get_env())
+end
+
 if config_env() != :test do
   # OpenRouter has no production model default: OPENROUTER_MODEL selects one
   # explicit non-Sonnet model. Production refuses to boot without a key or with

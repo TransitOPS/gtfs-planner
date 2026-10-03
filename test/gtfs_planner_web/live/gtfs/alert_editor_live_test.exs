@@ -34,6 +34,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     other_version = gtfs_version_fixture(organization.id, %{name: "Winter 2027 service"})
+    # The editor is organization-owned, so the version its reads resolve against
+    # is the organization's latest published one, not one named in the URL. The
+    # second fixture is backdated so the first stays that version, the same idiom
+    # `test/support/browser_seed.exs` uses for the same reason.
+    Repo.update!(
+      Ecto.Changeset.change(other_version, published_at: ~U[2020-01-01 00:00:00.000000Z])
+    )
+
     actor = editor_fixture(organization)
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
     agency_fixture(organization.id, other_version.id, %{agency_timezone: "America/Los_Angeles"})
@@ -53,7 +61,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     test "/alerts/new renders the frame and writes no row", context do
       assert Repo.aggregate(GtfsPlanner.Alerts.Alert, :count) == 0
 
-      {:ok, view, _html} = live(context.conn, new_path(context.version))
+      {:ok, view, _html} = live(context.conn, new_path())
 
       assert has_element?(view, "#alert-editor")
       assert has_element?(view, "#alert-back-link", "Alerts")
@@ -69,7 +77,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     end
 
     test "the first answer creates the alert and navigates to its own URL", context do
-      {:ok, view, _html} = live(context.conn, new_path(context.version))
+      {:ok, view, _html} = live(context.conn, new_path())
 
       assert view
              |> element("#alert-urgency-now")
@@ -79,18 +87,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       assert_redirect(
         view,
-        "/gtfs/#{context.version.id}/alerts/#{alert.id}?mode=form&step=situation"
+        "/alerts/#{alert.id}?mode=form&step=situation"
       )
 
       assert alert.urgency == :now
       assert alert.revision == 1
       assert alert.organization_id == context.organization.id
-      assert alert.gtfs_version_id == context.version.id
+      assert alert.source_gtfs_version_id == context.version.id
       assert alert.created_by_id == context.actor.id
     end
 
     test "the editor carries no publication state or action", context do
-      {:ok, _view, html} = live(context.conn, new_path(context.version))
+      {:ok, _view, html} = live(context.conn, new_path())
       text = LazyHTML.text(LazyHTML.from_fragment(html))
 
       for word <- @publication_copy do
@@ -106,14 +114,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "detour"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing&mode=form")
+        live(context.conn, edit_path(alert) <> "?step=timing&mode=form")
 
       assert has_element?(view, "#alert-question-title", "When should this alert end?")
       assert has_element?(view, "#alert-step-timing[aria-current='step']")
       assert page_title(view) =~ "Update alert"
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=timing&mode=form")
+        live(context.conn, edit_path(alert) <> "?step=timing&mode=form")
 
       assert has_element?(view, "#alert-question-title", "When should this alert end?")
     end
@@ -124,7 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       alert = alert_with(context, %{"urgency" => "now"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert has_element?(view, "#alert-assistant")
       refute has_element?(view, "#alert-question")
@@ -136,7 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=nonsense")
+        live(context.conn, edit_path(alert) <> "?step=nonsense")
 
       assert has_element?(view, "#alert-question-title", "When are riders affected?")
     end
@@ -148,7 +156,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     test "Make default stores the mode the editor is in and then reads Default", context do
       {:ok, _user} = Accounts.update_alert_authoring_mode(context.actor, :assistant)
 
-      {:ok, view, _html} = live(context.conn, new_path(context.version) <> "?mode=form")
+      {:ok, view, _html} = live(context.conn, new_path() <> "?mode=form")
 
       assert has_element?(view, "#make-default-mode", "Make default")
       refute has_element?(view, "#alert-mode-default")
@@ -162,7 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
     test "a reader whose stored preference is the current mode sees Default, not the link",
          context do
-      {:ok, view, _html} = live(context.conn, new_path(context.version))
+      {:ok, view, _html} = live(context.conn, new_path())
 
       assert Accounts.get_user!(context.actor.id).alert_authoring_mode == :form
       assert has_element?(view, "#alert-mode-default", "Default")
@@ -173,17 +181,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
   describe "the version an alert belongs to" do
     setup :editor_conn
 
-    test "an alert of another version redirects and names that version", context do
-      alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
+    test "an alert of another version opens, because the alert belongs to the organization",
+         context do
+      # Written against the organization's other version: the version is where an
+      # alert's selectors came from, not who owns it, so the editor opens it
+      # (step 7, AC-9). The editor still refuses another organization's alert,
+      # which its own case beside this one proves.
+      agency_fixture(context.organization.id, context.other_version.id)
 
-      assert {:error, {:live_redirect, %{to: to, flash: flash}}} =
-               live(context.conn, edit_path(context.other_version, alert))
+      alert =
+        alert_fixture(
+          %{context.audit | gtfs_version_id: context.other_version.id},
+          %{"urgency" => "now", "situation" => "delay"}
+        )
 
-      assert to == alerts_path(context.other_version)
-      assert Phoenix.Flash.get(flash, :info) =~ "Fall 2026 service"
+      assert {:ok, view, _html} = live(context.conn, edit_path(alert))
+      assert has_element?(view, "#alert-editor")
 
-      # The alert's answers were never read through the other version: they are
-      # still exactly what the editor stored against its own version.
+      # The alert's answers are still exactly what the editor stored.
       assert {:ok, found} = Alerts.get_alert(context.audit, alert.id)
       assert found.urgency == :now
       assert found.situation == :delay
@@ -202,17 +217,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
         )
 
       assert {:error, {:live_redirect, %{to: to, flash: flash}}} =
-               live(context.conn, edit_path(context.version, alert))
+               live(context.conn, edit_path(alert))
 
-      assert to == alerts_path(context.version)
+      assert to == alerts_path()
       assert Phoenix.Flash.get(flash, :error) =~ "not available"
     end
 
     test "an unknown alert id redirects with an error", context do
       assert {:error, {:live_redirect, %{to: to, flash: flash}}} =
-               live(context.conn, "/gtfs/#{context.version.id}/alerts/#{Ecto.UUID.generate()}")
+               live(context.conn, "/alerts/#{Ecto.UUID.generate()}")
 
-      assert to == alerts_path(context.version)
+      assert to == alerts_path()
       assert Phoenix.Flash.get(flash, :error) =~ "not available"
     end
   end
@@ -223,7 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     test "a detour lists its own questions and ends with reason, message and review", context do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "detour"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert progress_labels(view) == [
                "Timing",
@@ -243,7 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       route_fixture(context.organization.id, context.version.id, %{route_type: 0})
       alert = alert_with(context, %{"urgency" => "now", "situation" => "detour"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert progress_labels(view) == [
                "Timing",
@@ -301,7 +316,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       # The alert names the stop but not the other route, so the shared question
       # applies; naming both routes would remove it.
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
       assert "Shared" in progress_labels(view)
 
       both =
@@ -315,7 +330,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           }
         })
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, both))
+      {:ok, view, _html} = live(context.conn, edit_path(both))
       refute "Shared" in progress_labels(view)
     end
 
@@ -331,7 +346,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       # The current question shows its position, so the check is read on a step
       # after the first one.
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=message")
+        live(context.conn, edit_path(alert) <> "?step=message")
 
       assert has_element?(view, "#alert-step-urgency .hero-check")
       assert has_element?(view, "#alert-step-timing", "5.")
@@ -361,7 +376,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
           }
         })
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert has_element?(view, "#alert-preview-header", "Route 1 buses delayed")
       # A confirmed end names its end date, so the When line covers 5 to 7 October.
@@ -371,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     end
 
     test "an alert with nothing saved says so in words", context do
-      {:ok, view, _html} = live(context.conn, new_path(context.version))
+      {:ok, view, _html} = live(context.conn, new_path())
 
       assert has_element?(view, "#alert-preview-empty", "Your rider message will appear here")
       assert has_element?(view, "#alert-preview-when", "Not chosen yet")
@@ -385,7 +400,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       alert =
         alert_with(context, %{"urgency" => "now", "situation" => "delay", "message" => message()})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert view |> element("#delete-alert") |> render_click()
 
@@ -399,14 +414,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       assert view |> element("#delete-alert-dialog-confirm") |> render_click()
 
-      assert_redirect(view, alerts_path(context.version))
+      assert_redirect(view, alerts_path())
       assert Alerts.get_alert(context.audit, alert.id) == {:error, :not_found}
     end
 
     test "cancelling keeps the alert", context do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       assert view |> element("#delete-alert") |> render_click()
       assert view |> element("#delete-alert-dialog-cancel") |> render_click()
@@ -422,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
       organization_membership_fixture(viewer, context.organization, [])
       conn = log_in_user(build_conn(), viewer, organization: context.organization)
 
-      assert {:error, {:redirect, %{to: path}}} = live(conn, new_path(context.version))
+      assert {:error, {:redirect, %{to: path}}} = live(conn, new_path())
       assert path == "/admin/organizations"
     end
   end
@@ -436,10 +451,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
     }
   end
 
-  defp new_path(version), do: "/gtfs/#{version.id}/alerts/new"
-  defp alerts_path(version), do: "/gtfs/#{version.id}/alerts"
+  defp new_path, do: "/alerts/new"
+  defp alerts_path, do: "/alerts"
 
-  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+  defp edit_path(alert), do: "/alerts/#{alert.id}"
 
   # The progress row in reading order, as the reader sees it. Each step is a
   # link or a disabled span with the same id, so both are read the same way.

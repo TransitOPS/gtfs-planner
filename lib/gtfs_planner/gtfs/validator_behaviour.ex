@@ -25,4 +25,27 @@ defmodule GtfsPlanner.Gtfs.ValidatorBehaviour do
               opts :: keyword()
             ) ::
               {:ok, GtfsPlanner.Gtfs.Validator.Result.t()} | {:error, term()}
+
+  @doc """
+  Validates the exact bytes one artifact-bound validation run selected.
+
+  Unlike `validate/3`, which exports current database state, this reads the
+  artifact the run recorded (`artifact_sha256`, export run and slot) and reports
+  on exactly those bytes.
+
+  ## Parameters
+    - `organization_id` - The organization ID
+    - `validation_run_id` - The artifact-bound validation run
+    - `opts` - Options keyword list
+
+  ## Returns
+    - `{:ok, %GtfsPlanner.Gtfs.Validator.Result{}}` on successful validation
+    - `{:error, reason}` on failure
+  """
+  @callback validate_artifact(
+              organization_id :: integer(),
+              validation_run_id :: integer(),
+              opts :: keyword()
+            ) ::
+              {:ok, GtfsPlanner.Gtfs.Validator.Result.t()} | {:error, term()}
 end

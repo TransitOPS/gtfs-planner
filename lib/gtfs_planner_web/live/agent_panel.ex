@@ -17,11 +17,13 @@ defmodule GtfsPlannerWeb.AgentPanel do
   session and the turn (INV-2), so the panel never decides access itself.
 
   The panel also holds the conversation's server-owned resource context. `mount/2`
-  binds the whole-version identity of the page it was mounted on, and a host that
+  binds the whole-version identity of the page it was mounted on, a host that
   shows one resource of that version calls `set_context/2` when ordinary
-  navigation changes it. `set_context/2` affects this panel alone: it detaches the
-  prior session, clears this panel's transcript, draft and origin, and returns a
-  socket whose `agent_session` is nil, so a late event or down from the replaced
+  navigation changes it, and a host whose conversation is about an
+  organization-owned record passes `:organization_scoped` and binds none.
+  `set_context/2` affects this panel alone: it detaches the prior session,
+  clears this panel's transcript, draft and origin, and returns a socket whose
+  `agent_session` is nil, so a late event or down from the replaced
   session can no longer reach the new state (INV-1, AC-1). No other tab, session
   or native form input is touched.
 
@@ -106,16 +108,25 @@ defmodule GtfsPlannerWeb.AgentPanel do
       so a host that reviews changes itself — Calendar's — receives nothing.
     * `:subject_id` - the record this conversation is about, carried into the
       session `Scope` so two records get two conversations.
+    * `:organization_scoped` - bind no service version to this conversation,
+      because the record named by `:subject_id` belongs to the organization
+      rather than to a version. Defaults to false, which is the whole-version
+      contract every other host keeps. An organization-scoped panel names no
+      version resource either, so the reader selecting another version in the
+      navigation leaves the conversation about this record alone instead of
+      opening a second one about it.
   """
   @spec mount(Phoenix.LiveView.Socket.t(), String.t(), keyword()) :: Phoenix.LiveView.Socket.t()
   def mount(socket, pack_id, opts \\ [])
 
   def mount(socket, pack_id, opts) do
     pack = Map.fetch!(Agents.packs(), pack_id)
+    organization_scoped? = Keyword.get(opts, :organization_scoped, false) == true
 
     socket
     |> assign(:agent_pack_id, pack_id)
-    |> assign(:agent_context, Scope.context({:version, socket.assigns.current_gtfs_version.id}))
+    |> assign(:agent_context, Scope.context(version_identity(socket, organization_scoped?)))
+    |> assign(:agent_organization_scoped?, organization_scoped?)
     |> assign(:agent_title, pack.title())
     |> assign(:agent_intro, pack.intro())
     |> assign(:agent_examples, pack.examples())
@@ -377,7 +388,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
          socket
        ) do
     organization_id == socket.assigns.current_organization.id and
-      version_id == socket.assigns.current_gtfs_version.id and
+      version_id == panel_version_id(socket) and
       identity == identity_label(socket.assigns.agent_context)
   end
 
@@ -403,25 +414,51 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   # A calendar link is the verified route the calendar components use, so the
   # version comes from this panel's own assigns and an imported service ID is
-  # percent-encoded rather than able to escape the query parameter.
-  defp resolve_path(:calendar_show, id, socket) when is_binary(id) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars/show?#{[service_id: id]}"
-  end
+  # percent-encoded rather than able to escape the query parameter. A panel that
+  # binds no version resolves no link at all, which the card states rather than
+  # guesses.
+  defp resolve_path(:calendar_show, id, socket) when is_binary(id),
+    do: calendar_path(socket, id)
 
-  defp resolve_path(:calendars_index, _id, socket),
-    do: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/calendars"
+  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
 
   defp resolve_path(:route_schedules, id, socket) when is_binary(id),
     do: route_schedules_path(socket, id)
 
   defp resolve_path(_kind, _id, _socket), do: nil
 
+  # The paths are built the way the calendar components build them: the version
+  # comes from this panel's own assigns and the service ID is percent-encoded, so
+  # an imported ID can never escape the query parameter. A panel that binds no
+  # version resolves no link at all, which the card states rather than guesses.
+  defp calendar_path(socket, service_id) do
+    case calendar_base(socket) do
+      nil -> nil
+      base -> base <> "/show?service_id=" <> URI.encode_www_form(service_id)
+    end
+  end
+
+  defp calendars_path(socket), do: calendar_base(socket)
+
   # A route reference is the route's own Schedules page in this version, built the
   # way the route components build it: the version comes from this panel's own
   # assigns and the verified route percent-encodes the route ID as a path segment,
   # so an imported ID cannot escape the path.
   defp route_schedules_path(socket, route_id) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}/schedules"
+    case panel_version_id(socket) do
+      nil ->
+        nil
+
+      version_id ->
+        ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules"
+    end
+  end
+
+  defp calendar_base(socket) do
+    case panel_version_id(socket) do
+      nil -> nil
+      version_id -> ~p"/gtfs/#{version_id}/calendars"
+    end
   end
 
   ## Handoff to the host
@@ -585,15 +622,51 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp scope(socket) do
     %Scope{
       organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      gtfs_version_id: scope_version_id(socket),
       user_id: socket.assigns.current_user.id,
       user_email: socket.assigns.current_user.email,
       pack_id: socket.assigns.agent_pack_id,
-      version_name: socket.assigns.current_gtfs_version.name,
+      version_name: scope_version_name(socket),
       subject_id: socket.assigns.agent_subject_id,
       resource_context: socket.assigns.agent_context
     }
   end
+
+  # The version the host's navbar currently names, or nil when it names none. An
+  # organization-scoped panel keeps no version even when the navbar has one: the
+  # record its conversation is about is the organization's, so the selected
+  # version is neither that record's identity nor the context its tools read
+  # (CR-4).
+  defp scope_version_id(socket) do
+    case socket.assigns[:agent_organization_scoped?] do
+      true -> nil
+      _version_scoped -> version_id(socket.assigns[:current_gtfs_version])
+    end
+  end
+
+  defp scope_version_name(socket) do
+    case socket.assigns[:agent_organization_scoped?] do
+      true ->
+        nil
+
+      _version_scoped ->
+        socket.assigns[:current_gtfs_version] && socket.assigns.current_gtfs_version.name
+    end
+  end
+
+  defp version_identity(_socket, true), do: nil
+
+  defp version_identity(socket, false) do
+    case version_id(socket.assigns[:current_gtfs_version]) do
+      nil -> nil
+      version_id -> {:version, version_id}
+    end
+  end
+
+  defp version_id(%{id: id}), do: to_string(id)
+  defp version_id(_no_version), do: nil
+
+  defp panel_version_id(socket), do: version_id(socket.assigns[:current_gtfs_version])
 
   defp empty_form, do: to_form(%{"message" => ""}, as: :agent)
 end

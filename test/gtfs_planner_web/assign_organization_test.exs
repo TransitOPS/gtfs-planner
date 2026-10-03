@@ -220,13 +220,16 @@ defmodule GtfsPlannerWeb.AssignOrganizationTest do
       assert socket_redirect_to(socket) == "/users/log_in"
     end
 
-    test "administrator bypass continues without organization assigns" do
+    test "administrator bypass continues with the explicit no-organization assigns" do
       admin = system_administrator_fixture()
       socket = build_socket(admin)
 
+      # The bypass assigns the same explicit nil/empty shape optional mode does,
+      # so a page that reads the organization sees "no organization" rather than
+      # a missing key.
       assert {:cont, socket} = AssignOrganization.on_mount(:default, %{}, %{}, socket)
-      refute Map.has_key?(socket.assigns, :current_organization)
-      refute Map.has_key?(socket.assigns, :organization_context_status)
+      assert Map.get(socket.assigns, :current_organization) == nil
+      assert socket.assigns.organization_context_status == :system_administrator
     end
 
     test "a system administrator who also edits the session's organization is not bypassed" do

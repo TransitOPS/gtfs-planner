@@ -22,6 +22,15 @@ defmodule GtfsPlanner.Agents.Scope do
   assistant editor — and is `nil` for a conversation with no such record, such as
   Calendar's. It is part of the session key, so two alerts of one person and
   version get two conversations.
+
+  `gtfs_version_id` is optional, and a scope with none is an organization-owned
+  conversation rather than a broken one: the Alerts editor is about the alert,
+  which belongs to the organization, so the version a person happens to have
+  selected in the navigation is neither its identity nor the context its tools
+  read. A pack derives whatever schedule context it needs from the subject row it
+  already resolved (CR-4), and `resolve_identity/1` authorizes such a scope on its
+  organization and subject instead of on a version. Every other host binds a
+  version identity, so those conversations keep their exact version contract.
   """
 
   alias GtfsPlanner.Authorization
@@ -62,7 +71,7 @@ defmodule GtfsPlanner.Agents.Scope do
 
   @type t :: %__MODULE__{
           organization_id: Ecto.UUID.t(),
-          gtfs_version_id: Ecto.UUID.t(),
+          gtfs_version_id: Ecto.UUID.t() | nil,
           user_id: Ecto.UUID.t(),
           user_email: String.t() | nil,
           pack_id: String.t(),
@@ -71,8 +80,13 @@ defmodule GtfsPlanner.Agents.Scope do
           resource_context: resource_context()
         }
 
-  @doc "Builds a resource context for `identity` with no approved extension."
-  @spec context(identity()) :: resource_context()
+  @doc """
+  Builds a resource context for `identity` with no approved extension.
+
+  `nil` is the context of a conversation bound to no version resource, which is
+  what an organization-owned conversation about one record uses.
+  """
+  @spec context(identity() | nil) :: resource_context()
   def context(identity), do: %{identity: identity, approved_extension: nil}
 
   @doc """
@@ -137,7 +151,10 @@ defmodule GtfsPlanner.Agents.Scope do
 
   # An absent, foreign, deleted and malformed resource are the same result: the
   # caller learns that the page's resource is unavailable, never what another
-  # organization or version holds (AC-2).
+  # organization or version holds (AC-2). A scope that binds no version names no
+  # version resource, so there is nothing to resolve here: its pack's own
+  # `authorize_context/1` is the boundary that re-reads its subject on every
+  # request, tool call and delivered result.
   defp resolve_context(%__MODULE__{} = scope) do
     with :ok <- resolve_identity(scope) do
       resolve_approved(scope)
@@ -148,10 +165,18 @@ defmodule GtfsPlanner.Agents.Scope do
     case scope.resource_context do
       %{identity: {:route, id}} -> resolve_route(scope, id)
       %{identity: {:version, id}} -> resolve_version(scope, id)
-      %{identity: nil} -> resolve_version(scope, scope.gtfs_version_id)
+      %{identity: nil} -> resolve_scope_version(scope)
       _other -> {:error, :unavailable}
     end
   end
+
+  # A host that bound no version is authorized by its organization alone; a host
+  # that did is still checked against it, so a stale version-scoped panel keeps
+  # refusing exactly as before.
+  defp resolve_scope_version(%__MODULE__{gtfs_version_id: nil}), do: :ok
+
+  defp resolve_scope_version(%__MODULE__{} = scope),
+    do: resolve_version(scope, scope.gtfs_version_id)
 
   defp resolve_route(%__MODULE__{} = scope, id) do
     with :ok <- resolve_version(scope, scope.gtfs_version_id) do

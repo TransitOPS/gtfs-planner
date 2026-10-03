@@ -37,8 +37,14 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   supplied scope. Exactly one PostgreSQL-valid IANA name resolves to that zone.
   No usable value resolves to `:missing`, an unknown name to `:invalid`, and more
   than one distinct name to `:conflicting`; each falls back to UTC.
+
+  A scope with no service version has no agency to resolve: it is `:missing` and
+  falls back to the same disclosed UTC, which is the answer an organization with
+  no schedule already gets (CR-7).
   """
-  @spec resolve_zone(Ecto.UUID.t(), Ecto.UUID.t()) :: zone_resolution()
+  @spec resolve_zone(Ecto.UUID.t(), Ecto.UUID.t() | nil) :: zone_resolution()
+  def resolve_zone(_organization_id, nil), do: fallback(:missing)
+
   def resolve_zone(organization_id, gtfs_version_id) do
     organization_id
     |> distinct_zone_candidates(gtfs_version_id)
@@ -144,7 +150,7 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   the civil date and the disclosed zone resolution (including any
   `:missing`/`:invalid`/`:conflicting` UTC fallback).
   """
-  @spec today(Ecto.UUID.t(), Ecto.UUID.t()) :: today_resolution()
+  @spec today(Ecto.UUID.t(), Ecto.UUID.t() | nil) :: today_resolution()
   def today(organization_id, gtfs_version_id) do
     resolution = resolve_zone(organization_id, gtfs_version_id)
     Map.put(resolution, :date, local_date(DateTime.utc_now(), resolution))

@@ -45,6 +45,23 @@ defmodule GtfsPlanner.Alerts.Recurrence do
         }
 
   @doc """
+  Returns the widest civil span an answer may cover, in days.
+
+  Exposed so a caller that compiles these occurrences can name the same bound in
+  the correction it returns, rather than restating the number in its own words.
+  """
+  @spec max_span_days() :: pos_integer()
+  def max_span_days, do: @max_span_days
+
+  @doc """
+  Returns the largest number of occurrences an answer may expand to.
+
+  Exposed for the same reason as `max_span_days/0`.
+  """
+  @spec max_occurrences() :: pos_integer()
+  def max_occurrences, do: @max_occurrences
+
+  @doc """
   Expands a timing answer into the occurrences it describes, in date order.
 
   A `:weekly` answer is every chosen weekday across `weeks` whole weeks from its

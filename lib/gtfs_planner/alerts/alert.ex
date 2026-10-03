@@ -1,21 +1,32 @@
 defmodule GtfsPlanner.Alerts.Alert do
   @moduledoc """
-  One service alert draft, scoped to the organization and GTFS version it was
-  created in (R1).
+  One service alert draft, owned by the organization that wrote it.
 
   The row stores authoring intent, not compiled GTFS-Realtime output: `scope`,
   `timing` and `message` are the operator's own answers in the three embedded
   schemas, and `effect` and the derived dates are set by the `Alerts` commands
   rather than by the editor (R3).
 
-  Identity, `revision`, `complete`, `effect`, `first_date` and `last_date` are
-  server-owned. `draft_changeset/2` never casts them, so a form param or a
-  prepared assistant change cannot move an alert to another tenant, claim a
-  revision, mark itself finished or write an effect the completion rules did not
-  derive (R4, CR-2).
+  `source_gtfs_version_id` is optional provenance, not ownership: the alert
+  belongs to `organization_id` and survives the deletion of the version it was
+  written against. `target_reference` is the server-owned capture of the trusted
+  wire IDs, labels and source row UUIDs those answers resolved to, so a source
+  version can disappear without the alert losing its published identity, and an
+  identity that no longer resolves is recorded as unresolved rather than
+  replaced by a guess.
+
+  Identity, `revision`, `complete`, `effect`, `first_date` and `last_date`,
+  `target_reference`, `public_entity_id` and `deleted_at` are server-owned.
+  `draft_changeset/2` never casts them, so a form param or a prepared assistant
+  change cannot move an alert to another tenant, claim a revision, mark itself
+  finished, write an effect the completion rules did not derive, or hand itself
+  a public identity (R4, CR-2).
 
   The embedded answers store civil dates and times with the version's zone name;
-  nothing in this schema converts between zones (R12, CR-7).
+  nothing in this schema converts between zones (R12, CR-7). `timezone` is the
+  alert's own retained zone, which is NULL when the source had no single usable
+  agency zone: publication then requires an explicit organization zone instead
+  of inheriting the disclosed display fallback.
   """
 
   use Ecto.Schema
@@ -87,12 +98,19 @@ defmodule GtfsPlanner.Alerts.Alert do
     field :first_date, :date
     field :last_date, :date
 
+    # The trusted capture of the scope answer's resolved identities, owned by the
+    # `Alerts` commands and never cast from operator input.
+    field :target_reference, :map, default: %{}
+    field :timezone, :string
+    field :deleted_at, :utc_datetime_usec
+    field :public_entity_id, Ecto.UUID
+
     embeds_one :scope, ScopeAnswer, on_replace: :update
     embeds_one :timing, TimingAnswer, on_replace: :update
     embeds_one :message, MessageAnswer, on_replace: :update
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
-    belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
+    belongs_to :source_gtfs_version, GtfsPlanner.Versions.GtfsVersion
     belongs_to :created_by, GtfsPlanner.Accounts.User
     belongs_to :updated_by, GtfsPlanner.Accounts.User
 
@@ -102,7 +120,7 @@ defmodule GtfsPlanner.Alerts.Alert do
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
           organization_id: Ecto.UUID.t() | nil,
-          gtfs_version_id: Ecto.UUID.t() | nil,
+          source_gtfs_version_id: Ecto.UUID.t() | nil,
           revision: integer() | nil,
           urgency: :now | :planned | nil,
           situation:
@@ -137,9 +155,14 @@ defmodule GtfsPlanner.Alerts.Alert do
           scope: ScopeAnswer.t() | nil,
           timing: TimingAnswer.t() | nil,
           message: MessageAnswer.t() | nil,
+          target_reference: map(),
+          timezone: String.t() | nil,
+          deleted_at: DateTime.t() | nil,
+          public_entity_id: Ecto.UUID.t() | nil,
           organization:
             GtfsPlanner.Organizations.Organization.t() | Ecto.Association.NotLoaded.t(),
-          gtfs_version: GtfsPlanner.Versions.GtfsVersion.t() | Ecto.Association.NotLoaded.t(),
+          source_gtfs_version:
+            GtfsPlanner.Versions.GtfsVersion.t() | Ecto.Association.NotLoaded.t() | nil,
           created_by: GtfsPlanner.Accounts.User.t() | Ecto.Association.NotLoaded.t() | nil,
           updated_by: GtfsPlanner.Accounts.User.t() | Ecto.Association.NotLoaded.t() | nil,
           inserted_at: DateTime.t() | nil,
@@ -156,13 +179,27 @@ defmodule GtfsPlanner.Alerts.Alert do
   def situations, do: @situations
 
   @doc """
+  Lists the effects the completion rules derive, which are also the values the
+  public feed's GTFS-RT `Effect` enum accepts.
+  """
+  @spec effects() :: [atom()]
+  def effects, do: @effects
+
+  @doc """
+  Lists the causes an alert may state, which are also the values the public
+  feed's GTFS-RT `Cause` enum accepts.
+  """
+  @spec causes() :: [atom()]
+  def causes, do: @causes
+
+  @doc """
   Creates the changeset the editor autosaves and the review step saves.
 
   Casts only the operator's own fields, then each embedded answer through its own
   changeset. Nothing is required, because a draft is saved at every step and
   completeness is a separate derivation. Identity, `revision`, `complete`,
-  `effect` and the derived dates are never cast, so they keep the values the
-  `Alerts` commands own.
+  `effect`, the derived dates, `target_reference` and `public_entity_id` are
+  never cast, so they keep the values the `Alerts` commands own.
   """
   @spec draft_changeset(t(), map()) :: Ecto.Changeset.t()
   def draft_changeset(alert, attrs) do

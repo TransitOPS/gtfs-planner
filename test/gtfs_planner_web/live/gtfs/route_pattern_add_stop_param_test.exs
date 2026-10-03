@@ -123,10 +123,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
       # position rather than only the code holding it.
       assert has_element?(view, "#pattern-stops", "New Curb Stop")
 
-      html = render(view)
+      # Compare the rendered rows in document order rather than raw substring
+      # offsets: unrelated markup can repeat the stop tokens and made this
+      # assertion order-dependent under a full-suite run.
+      rendered_order =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#pattern-stops li")
+        |> Enum.map(&LazyHTML.text/1)
 
-      assert index(html, "S1") < index(html, "NEW")
-      assert index(html, "NEW") < index(html, "S2")
+      row_position = fn text -> Enum.find_index(rendered_order, &String.contains?(&1, text)) end
+
+      assert row_position.("S1") < row_position.("New Curb Stop")
+      assert row_position.("New Curb Stop") < row_position.("S2")
     end
 
     test "a stop past the last one is staged at the end, not after the second", ctx do
@@ -316,10 +326,5 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
 
       assert staged(ctx, view) == ["S1", "S2", "S3"]
     end
-  end
-
-  defp index(html, needle) do
-    {position, _length} = :binary.match(html, needle)
-    position
   end
 end

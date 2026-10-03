@@ -212,6 +212,45 @@ config :gtfs_planner,
 # Maintenance is exercised explicitly so SQL sandbox tests retain process ownership.
 config :gtfs_planner, :task_artifact_maintenance_enabled, false
 
+# Public feed publishing stays disabled in ordinary runs: `config/runtime.exs` never
+# reads GTFS_PUBLISH_* in test, so ambient production secrets cannot activate it. A
+# case that installs a loopback storage boundary opts in explicitly below; the fixture
+# is a raw settings map because this file is compiled before
+# `GtfsPlanner.FeedPublishing.Config` exists, and `current/0` normalizes it on read.
+# Public feed publishing is configured for the browser stack only: `bin/test-browser`
+# runs the ordinary application, and its journeys assert real addresses, receipts
+# and states, so the capability has to be on. The credentials below are loopback
+# placeholders that can only reach the local HTTP boundary, and no ambient
+# environment value is read. Ordinary ExUnit runs leave the settings unset, which
+# is the absent-configuration state EV-1 proves, and a focused run still opts in
+# with `GTFS_PUBLISH_TEST_LOOPBACK=true`. `GTFS_PUBLISH_TEST_DISABLED=true` boots
+# the same browser stack with nothing configured, which is the disabled state the
+# journeys compare against.
+publishing_configured? =
+  (System.get_env("BROWSER_E2E") == "true" or
+     System.get_env("GTFS_PUBLISH_TEST_LOOPBACK") == "true") and
+    System.get_env("GTFS_PUBLISH_TEST_DISABLED") != "true"
+
+if publishing_configured? do
+  config :gtfs_planner, :feed_publishing_settings, %{
+    "GTFS_PUBLISH_BUCKET" => "gtfs-planner-loopback",
+    "GTFS_PUBLISH_ENDPOINT" => "https://storage.loopback.invalid",
+    "GTFS_PUBLISH_REGION" => "us-east-1",
+    "GTFS_PUBLISH_ACCESS_KEY_ID" => "loopback-access-key",
+    "GTFS_PUBLISH_SECRET_ACCESS_KEY" => "loopback-secret-access-key",
+    "GTFS_PUBLISH_PUBLIC_BASE_URL" => "https://feeds.loopback.invalid"
+  }
+end
+
+# Feed-publishing storage substitutes only the Req final HTTP transport in test,
+# so no test can reach an object store while the concrete Req/SigV4 request
+# construction stays real. `GtfsPlanner.FeedPublishing.HTTPBoundary` is an
+# in-memory object store keyed by the calling process, so a test that seeds an
+# object or asserts on the signed request owns its own state.
+config :gtfs_planner,
+       :feed_publishing_http_options,
+       finch_request: &GtfsPlanner.FeedPublishing.HTTPBoundary.request/4
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

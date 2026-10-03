@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Alerts.AlertTest do
       changeset =
         Alert.draft_changeset(%Alert{}, %{
           "organization_id" => Ecto.UUID.generate(),
-          "gtfs_version_id" => Ecto.UUID.generate(),
+          "source_gtfs_version_id" => Ecto.UUID.generate(),
           "revision" => 99,
           "complete" => true,
           "effect" => "no_service",
@@ -44,13 +44,13 @@ defmodule GtfsPlanner.Alerts.AlertTest do
       assert Ecto.Changeset.get_field(changeset, :first_date) == nil
       assert Ecto.Changeset.get_field(changeset, :last_date) == nil
       assert Ecto.Changeset.get_field(changeset, :organization_id) == nil
-      assert Ecto.Changeset.get_field(changeset, :gtfs_version_id) == nil
+      assert Ecto.Changeset.get_field(changeset, :source_gtfs_version_id) == nil
     end
 
     test "ignores a stored alert's identity fields while casting operator fields" do
       alert = %Alert{
         organization_id: Ecto.UUID.generate(),
-        gtfs_version_id: Ecto.UUID.generate(),
+        source_gtfs_version_id: Ecto.UUID.generate(),
         revision: 4,
         complete: true,
         effect: :no_service
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Alerts.AlertTest do
       assert Ecto.Changeset.get_field(changeset, :effect) == :no_service
       assert Ecto.Changeset.get_field(changeset, :cause) == :construction
       assert Ecto.Changeset.get_change(changeset, :organization_id) == nil
-      assert Ecto.Changeset.get_change(changeset, :gtfs_version_id) == nil
+      assert Ecto.Changeset.get_change(changeset, :source_gtfs_version_id) == nil
     end
 
     test "never casts the timing answer's time_zone" do
@@ -380,7 +380,7 @@ defmodule GtfsPlanner.Alerts.AlertTest do
           "message" => %{"header" => "Route 1 detour"}
         })
         |> Ecto.Changeset.put_change(:organization_id, organization.id)
-        |> Ecto.Changeset.put_change(:gtfs_version_id, version.id)
+        |> Ecto.Changeset.put_change(:source_gtfs_version_id, version.id)
         |> Repo.insert!()
 
       loaded = Repo.get!(Alert, alert.id)
@@ -457,7 +457,7 @@ defmodule GtfsPlanner.Alerts.AlertTest do
     %Alert{}
     |> Alert.draft_changeset(params)
     |> Ecto.Changeset.put_change(:organization_id, organization.id)
-    |> Ecto.Changeset.put_change(:gtfs_version_id, version.id)
+    |> Ecto.Changeset.put_change(:source_gtfs_version_id, version.id)
     |> Repo.insert!()
   end
 end

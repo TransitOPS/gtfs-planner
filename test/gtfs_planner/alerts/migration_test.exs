@@ -68,10 +68,10 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
           insert_alert(other_organization, version)
         end
 
-      assert Exception.message(error) =~ "service_alerts_version_owner_fkey"
+      assert Exception.message(error) =~ "service_alerts_source_version_owner_fkey"
     end
 
-    test "deleting the gtfs_version deletes its alerts", %{
+    test "deleting the source gtfs_version retains the alert and clears only the source", %{
       organization: organization,
       version: version
     } do
@@ -79,7 +79,15 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
 
       Repo.delete_all(from(v in GtfsPlanner.Versions.GtfsVersion, where: v.id == ^version.id))
 
-      assert count_alerts(id) == 0
+      assert %{rows: [[organization_id, source_gtfs_version_id, revision]]} =
+               Repo.query!(
+                 "SELECT organization_id, source_gtfs_version_id, revision FROM service_alerts WHERE id = $1",
+                 [id]
+               )
+
+      assert Ecto.UUID.load!(organization_id) == organization.id
+      assert is_nil(source_gtfs_version_id)
+      assert revision == 1
     end
 
     test "deleting the user leaves created_by_id and updated_by_id NULL", %{
@@ -110,7 +118,7 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
                Repo.query!(
                  """
                  SELECT id FROM service_alerts
-                 WHERE organization_id = $1 AND gtfs_version_id = $2 AND last_date = $3
+                 WHERE organization_id = $1 AND source_gtfs_version_id = $2 AND last_date = $3
                  """,
                  [Ecto.UUID.dump!(organization.id), Ecto.UUID.dump!(version.id), last_date]
                )
@@ -227,8 +235,6 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
     count
   end
 
-  defp count_alerts(id), do: count("service_alerts", id)
-
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
   defp insert_alert(organization, version, overrides \\ %{}) do
@@ -237,7 +243,7 @@ defmodule GtfsPlanner.Alerts.MigrationTest do
     defaults = %{
       id: id,
       organization_id: Ecto.UUID.dump!(organization.id),
-      gtfs_version_id: Ecto.UUID.dump!(version.id),
+      source_gtfs_version_id: Ecto.UUID.dump!(version.id),
       revision: 1,
       complete: false,
       inserted_at: now(),

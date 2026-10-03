@@ -112,6 +112,19 @@ defmodule GtfsPlanner.Alerts.TimingAnswer do
     )
   end
 
+  @doc """
+  Whether this answer's end can close a period.
+
+  Only a confirmed end with a time actually ends the alert. An estimated or
+  unknown end names when recovery is expected or that there is none, and an
+  unanswered end names nothing, so both leave the alert open. `check_in_at` is an
+  internal operator aid and is never an end: an alert must not expire because no
+  one checked in.
+  """
+  @spec closed_end?(t()) :: boolean()
+  def closed_end?(%{end_kind: :confirmed, end_time: %Time{}}), do: true
+  def closed_end?(%__MODULE__{}), do: false
+
   defp validate_weekdays(changeset) do
     validate_change(changeset, :weekdays, fn :weekdays, weekdays ->
       if Enum.all?(weekdays, &(&1 in 1..7)) do

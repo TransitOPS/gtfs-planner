@@ -243,7 +243,10 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     # Trigger an abnormal (killed) worker exit.
     send(worker_pid, :die)
 
-    assert_receive {:import_run_changed, _}
+    # The interruption is broadcast before the runner stops; the wait matches the
+    # explicit waits this file uses elsewhere, so a loaded host cannot turn an
+    # arriving message into a missing one.
+    assert_receive {:import_run_changed, _}, 5_000
     assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, {:worker_exit, :killed}}
 
     run_after = Repo.get!(Run, run.id)

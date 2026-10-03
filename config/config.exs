@@ -48,6 +48,13 @@ config :gtfs_planner,
   # Duration (in seconds) a validation run's execution lease remains valid before
   # `Validations.reconcile_expired/1` may fail the run as `lease_expired`.
   validation_lease_seconds: 300,
+  # Duration (in seconds) a publication pin protects a ready export run's private
+  # artifact from cleanup while a public generation is validated and uploaded.
+  # Renewed every `export_publication_pin_renew_seconds`; expiry returns the run
+  # to normal artifact retention.
+  export_publication_pin_seconds: 180,
+  # Interval (in seconds) at which a live publication pin is renewed.
+  export_publication_pin_renew_seconds: 30,
   # Module the export worker runs before it builds a ZIP. Its `run/3` returns
   # `:ok` or `{:error, issues}`; each issue is stored as a run warning.
   otp_preflight_module: GtfsPlanner.Gtfs.Export.Preflight
@@ -166,6 +173,12 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+
+# Time zone database used to resolve civil alert timing into explicit UTC
+# periods. Autoupdate is disabled so a deployed instance never fetches zone
+# rules over the network at runtime and never silently reinterprets already
+# accepted periods: the pinned dependency version is the only zone source.
+config :tzdata, autoupdate: :disabled
 
 # Filter password- and token-bearing keys from structured parameter logging.
 # This covers substring matches (current_password, password_confirmation) but

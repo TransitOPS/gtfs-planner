@@ -5,6 +5,8 @@ defmodule GtfsPlanner.Application do
 
   use Application
 
+  alias GtfsPlanner.FeedPublishing.{Config, Publisher}
+
   @impl true
   def start(_type, _args) do
     limits = Application.fetch_env!(:gtfs_planner, :runner_limits)
@@ -45,7 +47,7 @@ defmodule GtfsPlanner.Application do
         # {GtfsPlanner.Worker, arg},
         # Start to serve requests, typically the last entry
         GtfsPlannerWeb.Endpoint
-      ] ++ task_artifact_maintenance_children()
+      ] ++ task_artifact_maintenance_children() ++ feed_publishing_children()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -65,5 +67,21 @@ defmodule GtfsPlanner.Application do
     if Application.get_env(:gtfs_planner, :task_artifact_maintenance_enabled, true),
       do: [GtfsPlanner.Gtfs.TaskArtifactMaintenance],
       else: []
+  end
+
+  @doc """
+  The FeedPublishing children ordinary startup supervises.
+
+  The periodic publisher is added only when publishing configuration is
+  complete, so a disabled installation never starts a worker that could send
+  HTTP; an enabled one discovers queued durable work without a browser or a
+  manual initializer.
+  """
+  @spec feed_publishing_children() :: [Supervisor.child_spec()]
+  def feed_publishing_children do
+    case Config.current() do
+      {:enabled, _config} -> [Publisher]
+      :disabled -> []
+    end
   end
 end

@@ -75,7 +75,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "every cause is offered once, in the prototype's words", context do
       alert = delay_alert(context)
-      {:ok, view, html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, html} = live(context.conn, reason_path(alert))
 
       values = html |> doc() |> LazyHTML.query("#alert-cause button") |> values()
 
@@ -94,7 +94,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "the two open-ended causes are distinct cards with distinct words", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       # Other and Unknown are separate answers here, so a rider is never asked
       # to mean "other" by a card that says "not known" (FH-21).
@@ -106,7 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "the stored cause is the one the reader pressed, and the editor moves on", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       view |> element("#alert-cause-weather") |> render_click()
 
@@ -121,7 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "a cause the question never offered stores nothing", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       # Sent as a raw event rather than through `form/3`: this is the input a
       # hand-made event would carry, and it names a cause no card offers.
@@ -139,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "Other reason reveals the explanation and keeps the reader on the question", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       refute has_element?(view, "#cause-detail")
 
@@ -155,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "the explanation autosaves and is still there after a reload", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       view |> element("#alert-cause-other_cause") |> render_click()
       render_change(view, "autosave", %{"alert" => %{"cause_detail" => "a fallen tree"}})
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
       assert saved.cause == :other_cause
       assert saved.cause_detail == "a fallen tree"
 
-      {:ok, reloaded, html} = live(context.conn, reason_path(context, alert))
+      {:ok, reloaded, html} = live(context.conn, reason_path(alert))
 
       assert has_element?(reloaded, "#cause-detail")
       assert reloaded |> element("#cause-detail") |> render() =~ "a fallen tree"
@@ -173,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "a blank explanation is still a complete answer to the question", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       view |> element("#alert-cause-other_cause") |> render_click()
       view |> element("#alert-reason-continue") |> render_click()
@@ -186,7 +186,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
 
     test "Not known yet hides the explanation and drops what it held", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       view |> element("#alert-cause-other_cause") |> render_click()
       render_change(view, "autosave", %{"alert" => %{"cause_detail" => "a fallen tree"}})
@@ -200,14 +200,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
       # than staying in the rider's message under a different cause.
       assert is_nil(saved.cause_detail)
 
-      {:ok, reloaded, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, reloaded, _html} = live(context.conn, reason_path(alert))
       refute has_element?(reloaded, "#cause-detail")
       assert has_element?(reloaded, "#alert-cause-unknown_cause[aria-pressed='true']")
     end
 
     test "an explanation over the row's own limit is refused and kept on screen", context do
       alert = delay_alert(context)
-      {:ok, view, _html} = live(context.conn, reason_path(context, alert))
+      {:ok, view, _html} = live(context.conn, reason_path(alert))
 
       view |> element("#alert-cause-other_cause") |> render_click()
 
@@ -239,8 +239,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
     }
   end
 
-  defp reason_path(context, alert),
-    do: "/gtfs/#{context.version.id}/alerts/#{alert.id}?step=reason"
+  defp reason_path(alert),
+    do: "/alerts/#{alert.id}?step=reason"
 
   defp doc(html), do: LazyHTML.from_fragment(html)
 

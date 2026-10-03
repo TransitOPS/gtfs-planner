@@ -765,7 +765,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       # The same reading the list row uses: the identity is still named, and the
       # list flags it rather than the message inventing a name for it.
-      assert %{stops: missing} = Listing.missing_target_ids([alert], context.version.id)
+      assert %{stops: missing} = Listing.missing_target_ids([alert])
       assert MapSet.member?(missing, stop.id)
     end
 

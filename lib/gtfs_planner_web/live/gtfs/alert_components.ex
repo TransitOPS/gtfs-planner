@@ -23,10 +23,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   offers a way to overwrite a newer revision: a stale save is resolved by taking
   one side or the other, never by forcing (R6, AC-16).
 
-  None of these surfaces shows a publication state or a publication action,
-  because saving an alert never publishes one in this package (R2, CR-1). The
-  words Live, Scheduled, Ended, End and feed therefore appear nowhere in this
-  module.
+  The review action card is the one surface that carries publication state: the
+  Publish/Republish checkbox and the confirmed status and date the
+  `Alerts.Publication` read model holds. No autosave and no other surface
+  publishes anything, so Live, Scheduled, Ended, End and feed copy appears only
+  there (R2, CR-1).
   """
 
   use Phoenix.Component
@@ -135,8 +136,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   `role="tablist"` with `aria-selected` on the pressed tab, and the pressed tab
   also carries `aria-current="page"`, so the selection is never signalled by
   colour alone.
+
+  The tab path carries no version: the strip belongs to the organization's
+  alert list, so a tab keeps the alert set the organization owns rather than a
+  slice of one schedule.
   """
-  attr :version_id, :any, required: true
   attr :tab, :atom, required: true
   attr :counts, :map, required: true, doc: "the four tab counts, keyed by tab atom"
 
@@ -151,7 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       <.link
         :for={{key, label} <- tab_items()}
         id={"alerts-tab-#{key}"}
-        patch={"/gtfs/#{@version_id}/alerts?tab=#{key}"}
+        patch={"/alerts?tab=#{key}"}
         role="tab"
         aria-selected={to_string(@tab == key)}
         aria-current={@tab == key && "page"}
@@ -512,9 +516,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   because an empty card reads as a broken one.
 
   "Draft - review before publishing" and "Data sent to apps" are prototype
-  elements this package does not have: saving an alert never publishes one, so
-  there is nothing to review before publishing and no outbound payload to show
-  (R2, CR-1).
+  elements this package still does not have: the preview reads saved answers, and
+  the outbound payload is the manifest the publisher writes, not anything this
+  card holds (R2, CR-1).
   """
   attr :alert, :any, required: true, doc: "the loaded alert, or `nil` before the first answer"
   attr :header, :string, default: nil
@@ -2549,9 +2553,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   reader to the first: a refusal that leaves the reader on the button they just
   pressed is a refusal they can miss (AC-23, FH-23).
 
-  The prototype's **Data sent to apps** card is absent with every publication
-  state and action, because this package saves an alert and never sends one
-  anywhere (R2, CR-1).
+  The prototype's **Data sent to apps** card is absent: the outbound payload is
+  the manifest the publisher writes, not a card this step renders. The
+  publication status and the Publish/Republish action live in the action card
+  beside these details (AC-11, AC-14).
   """
   attr :alert, :any, required: true, doc: "the loaded alert, or `nil` before the first answer"
 
@@ -2665,13 +2670,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   end
 
   @doc """
-  The review step's right-hand card: what saving this alert means, the writing
-  guidelines' own results, and the one action that finishes it (AC-23).
+  The review step's right-hand card: what saving this alert means, the state of
+  its public publication, the writing guidelines' own results, and the one
+  action that finishes it (AC-23).
 
-  **Save alert** is the whole action set of this step. It is the prototype's
-  **Publish alert** and **Schedule alert** with the publication this package
-  does not do removed, so the review ends in saving a draft rather than in
-  sending one (R2, CR-1).
+  **Save alert** writes through `Alerts.save_review/5`. The Publish/Republish
+  checkbox is the explicit consent: unchecked, the save stays private; checked,
+  the command stores exactly the committed revision as this alert's public
+  intent and reports what that did. The card reads the accepted content and the
+  manifest's own receipt back, so the confirmation date is never a time this
+  card invents and a scheduled acceptance shows its request time instead
+  (AC-11, AC-14, AC-15).
+
+  A refused publication is reported apart from the save: the draft is kept, the
+  checkbox keeps its checked value, and each refusal names the field that needs
+  an answer. An ambiguous civil reading carries the offsets the editor has to
+  choose between, and the keyed fields under the checkbox are where that choice
+  is made rather than guessed (AC-12).
 
   A `:no_service` alert says what that effect does to a rider's trip plan,
   because it is the one effect that changes what a planner suggests rather than
@@ -2685,7 +2700,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :effect, :atom, default: nil, doc: "`Alerts.Completion.effect_for/1` for this alert"
   attr :checks, :list, default: [], doc: "`Message.checks/2` over the stored answer"
 
+  attr :publication, :map,
+    default: nil,
+    doc: "the prepared publication state, or nil before the alert loads"
+
+  attr :publish?, :boolean, default: false, doc: "the checkbox's current value"
+  attr :offset_choices, :map, default: %{}, doc: "chosen offsets, keyed by `choice_key/2`"
+
+  attr :publication_errors, :list,
+    default: [],
+    doc: "the field errors from the last checked save's refused publication"
+
+  attr :reference_version, :string, default: nil
+  attr :reference_missing?, :boolean, default: false
+  attr :timezone, :string, default: nil
+
   def review_actions(assigns) do
+    assigns =
+      assigns
+      |> assign(:keyed_errors, Enum.filter(assigns.publication_errors, &key_error?/1))
+      |> assign(:plain_errors, Enum.reject(assigns.publication_errors, &key_error?/1))
+
     ~H"""
     <aside id="alert-review-actions" class="grid content-start gap-4 lg:sticky lg:top-4">
       <section class="grid gap-3 rounded-card border border-subtle bg-white p-4 sm:p-5">
@@ -2695,6 +2730,57 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         <p id="review-outcome" class="text-sm text-default">
           Saving keeps this alert with the version you are editing. You can change any answer,
           and the message, whenever you come back.
+        </p>
+
+        <div id="alert-publication" class="grid gap-2 rounded-card bg-canvas px-3 py-2.5">
+          <p id="alert-publication-status" class="text-sm font-bold text-strong">
+            {publication_status_label(@publication)}
+          </p>
+          <p id="alert-publication-date" class="text-[13px] text-muted">
+            {publication_date_label(@publication)}
+          </p>
+          <p
+            :if={@publication && @publication.requested_label}
+            id="alert-publication-requested"
+            class="text-[13px] text-muted"
+          >
+            {@publication.requested_label}
+          </p>
+          <dl class="mt-1 grid gap-1 text-[13px]">
+            <div class="flex items-baseline justify-between gap-2">
+              <dt class="text-muted">Reference version</dt>
+              <dd
+                id="alert-reference-version"
+                class="min-w-0 break-words text-right font-medium text-strong"
+              >
+                {@reference_version || "None"}
+              </dd>
+            </div>
+            <div class="flex items-baseline justify-between gap-2">
+              <dt class="text-muted">Time zone</dt>
+              <dd id="alert-timezone" class="min-w-0 break-words text-right font-medium text-strong">
+                {@timezone || "Not set"}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <p
+          :if={@reference_missing?}
+          id="alert-reference-missing"
+          class="rounded-card bg-warning-bg px-3 py-2 text-sm text-warning-fg"
+        >
+          This alert names an identity its reference version no longer holds. Choose the
+          affected routes again before publishing.
+        </p>
+
+        <p
+          :if={@publication && @publication.disabled?}
+          id="alert-publication-disabled"
+          class="rounded-card bg-canvas px-3 py-2 text-sm text-default"
+        >
+          Publishing is turned off for this organization. An accepted alert stays exactly as
+          it is, and an administrator can turn it back on.
         </p>
 
         <p
@@ -2716,13 +2802,113 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           <.advisory_checks scope="review" checks={@checks} />
         </div>
 
-        <.button id="save-alert" type="button" variant="primary" class="w-full" phx-click="save_alert">
+        <.form
+          :if={@publication && not @publication.disabled?}
+          for={%{}}
+          id="review-publication-form"
+          phx-change="set_publication_inputs"
+        >
+          <.input
+            type="checkbox"
+            id="alert-publish-checkbox"
+            name="publish"
+            value="true"
+            checked={@publish?}
+            label={publish_checkbox_label(@publication)}
+            class="size-4 rounded border-control"
+          />
+
+          <GtfsPlannerWeb.PlannerComponents.choice_cards
+            :for={error <- @keyed_errors}
+            id={"alert-offset-choice-#{Map.get(error, :key)}"}
+            name={"offset_choices[#{Map.get(error, :key)}]"}
+            type="radio"
+            label={Map.get(error, :message)}
+            options={offset_options(error)}
+            selected={selected_offsets(@offset_choices, error)}
+          />
+        </.form>
+
+        <p
+          :for={error <- @plain_errors}
+          id={"alert-publication-error-#{Map.get(error, :field)}"}
+          class="rounded-card bg-error-bg px-3 py-2 text-sm text-error-fg"
+        >
+          {Map.get(error, :message)}
+        </p>
+
+        <.button
+          id="save-alert"
+          type="button"
+          variant="primary"
+          class="w-full"
+          phx-click="save_alert"
+          phx-value-publish={to_string(@publish?)}
+        >
           <.icon name="hero-check" class="size-4" /> Save alert
         </.button>
       </section>
     </aside>
     """
   end
+
+  # The one-line status above the action. `:never_published` and an absent row
+  # read the same way, because an alert with no accepted content has no public
+  # state to describe.
+  defp publication_status_label(%{status: :scheduled}), do: "Scheduled"
+  defp publication_status_label(%{status: :publishing}), do: "Publishing changes"
+  defp publication_status_label(%{status: :published}), do: "Published"
+  defp publication_status_label(%{status: :removal_pending}), do: "Removal requested"
+  defp publication_status_label(_publication), do: "Not published"
+
+  defp publication_date_label(%{date_label: label}) when is_binary(label), do: label
+  defp publication_date_label(_publication), do: "No confirmed publication yet."
+
+  defp publish_checkbox_label(%{accepted?: true}), do: "Republish these changes"
+  defp publish_checkbox_label(_publication), do: "Publish this alert"
+
+  # An offset choice is a UTC offset and nothing else: naming a zone abbreviation
+  # would guess a label the operator did not choose, and the two choices are the
+  # same reading resolved twice.
+  defp offset_choice_label(choice) do
+    seconds = Map.get(choice, :offset_seconds, 0)
+    {sign, abs} = if seconds < 0, do: {"−", -seconds}, else: {"+", seconds}
+
+    "UTC#{sign}#{pad2(div(abs, 3600))}:#{pad2(div(rem(abs, 3600), 60))}"
+  end
+
+  defp offset_options(error) do
+    error
+    |> Map.get(:choices, [])
+    |> Enum.map(fn choice ->
+      %{
+        value: Map.get(choice, :offset_seconds),
+        label: offset_choice_label(choice),
+        description: offset_choice_description(choice)
+      }
+    end)
+  end
+
+  defp offset_choice_description(choice) do
+    case Map.get(choice, :start) do
+      start when is_integer(start) ->
+        start |> DateTime.from_unix!() |> Calendar.strftime("%-d %b %Y at %H:%M UTC")
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp selected_offsets(offset_choices, error) do
+    case Map.get(offset_choices, Map.get(error, :key)) do
+      nil -> []
+      offset -> [offset]
+    end
+  end
+
+  defp key_error?(error), do: not is_nil(Map.get(error, :key))
+
+  defp pad2(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp url_of(%{message: %{url: url}}), do: url
   defp url_of(_alert), do: nil

@@ -45,7 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+        live(context.conn, edit_path(alert) <> "?step=situation")
 
       assert has_element?(view, "#situation-delay", "Delays")
       assert has_element?(view, "#situation-detour", "A different path, with stops skipped.")
@@ -79,7 +79,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "detour"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=routes")
+        live(context.conn, edit_path(alert) <> "?step=routes")
 
       assert has_element?(view, "#alert-question-title", "Which routes are affected?")
 
@@ -98,7 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
     test "a service change asks what changes before it asks about routes", context do
       alert = alert_with(context, %{"urgency" => "planned", "situation" => "service_change"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=change")
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=change")
 
       assert has_element?(view, "#alert-question-title", "What kind of service change?")
       assert has_element?(view, "#change-fewer_trips", "Fewer trips")
@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
         })
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=direction")
+        live(context.conn, edit_path(alert) <> "?step=direction")
 
       assert has_element?(view, "#direction-both", "Both directions")
       assert has_element?(view, "#direction-0", "To Lincoln City")
@@ -184,7 +184,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+        live(context.conn, edit_path(alert) <> "?step=situation")
 
       refute has_element?(view, "#alert-step-mode")
 
@@ -211,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+        live(context.conn, edit_path(alert) <> "?step=situation")
 
       view |> element("#situation-delay") |> render_click()
 
@@ -250,7 +250,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
 
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=routes")
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=routes")
 
       assert has_element?(view, "#alert-question-title", "Which routes are affected?")
       assert has_element?(view, "#alert-routes-continue", "Continue")
@@ -291,7 +291,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       _coast = route_fixture(context.organization.id, context.version.id, %{route_id: "R1"})
       alert = alert_with(context, %{"urgency" => "now", "situation" => "delay"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=routes")
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=routes")
 
       revision = alert.revision
 
@@ -310,7 +310,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       _coast = route_fixture(context.organization.id, context.version.id, %{route_id: "R1"})
       alert = alert_with(context, %{"urgency" => "now", "situation" => "suspension"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert) <> "?step=routes")
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=routes")
 
       assert has_element?(view, "#alert-routes-system", "The whole system")
 
@@ -331,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+        live(context.conn, edit_path(alert) <> "?step=situation")
 
       # Another tab saves revision 2 while this editor still holds revision 1.
       assert {:ok, _other} =
@@ -362,7 +362,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
       alert = alert_with(context, %{"urgency" => "now"})
 
       {:ok, view, _html} =
-        live(context.conn, edit_path(context.version, alert) <> "?step=situation")
+        live(context.conn, edit_path(alert) <> "?step=situation")
 
       assert {:ok, _other} =
                Alerts.save_draft(context.audit, alert.id, alert.revision, %{
@@ -396,7 +396,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
     test "a card value that is not one of the choices advances nothing", context do
       alert = alert_with(context, %{"urgency" => "now"})
 
-      {:ok, view, _html} = live(context.conn, edit_path(context.version, alert))
+      {:ok, view, _html} = live(context.conn, edit_path(alert))
 
       render_click(view, "choose_situation", %{"situation" => "everything_cancelled"})
       render_click(view, "choose_mode", %{"route_type" => "bus"})
@@ -419,7 +419,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorChoicesTest do
     }
   end
 
-  defp edit_path(version, alert), do: "/gtfs/#{version.id}/alerts/#{alert.id}"
+  defp edit_path(alert), do: "/alerts/#{alert.id}"
 
   defp alert_with(context, attrs), do: alert_fixture(context.audit, attrs)
 

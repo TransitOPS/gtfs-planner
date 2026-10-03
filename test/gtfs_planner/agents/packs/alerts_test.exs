@@ -171,16 +171,27 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
-    test "refuses a subject alert of another version before any tool reads it", context do
+    test "reads a subject alert of this organization written against another version", context do
+      sibling_route =
+        route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
+
+      _scope_route =
+        route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
       scope = %{context.scope | subject_id: elsewhere.id}
 
-      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
+      assert {:ok, %{"urgency" => "planned"}} =
+               Dispatch.call(AlertsPack, scope, "get_draft", "{}")
 
-      assert Dispatch.call(AlertsPack, scope, "search_routes", ~s|{"query":"12"}|) ==
-               {:error, :unavailable}
+      assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") != {:error, :unavailable}
 
-      assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") == {:error, :unavailable}
+      # The tools read the alert's own retained source version, not the version
+      # this scope carries.
+      assert {:ok, %{"routes" => routes}} =
+               Dispatch.call(AlertsPack, scope, "search_routes", ~s|{"query":"12"}|)
+
+      assert Enum.map(routes, & &1["id"]) == [sibling_route.id]
     end
 
     test "refuses a subject alert of another organization", context do
@@ -205,12 +216,28 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert Dispatch.call(AlertsPack, context.scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
-    test "a tool read that loses a race with a delete answers a message, not data", context do
+    test "the subject is this organization's alert whichever version wrote it", context do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
       scope = %{context.scope | subject_id: elsewhere.id}
 
+      assert {:ok, %{"urgency" => "planned"}} = AlertsPack.call("get_draft", %{}, scope)
+    end
+
+    test "a subject alert of another organization is refused, not read", context do
+      stranger = editor_fixture(context.foreign_organization)
+
+      elsewhere =
+        alert_fixture(
+          audit_context(context.foreign_organization, context.foreign_version, stranger),
+          %{"urgency" => "planned"}
+        )
+
+      scope = %{context.scope | subject_id: elsewhere.id}
+
       assert AlertsPack.call("get_draft", %{}, scope) ==
-               {:error, "This alert is not in this service version."}
+               {:error, "This alert is not available here."}
+
+      assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
     end
   end
 
@@ -266,11 +293,14 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["urgency"] == "planned"
       assert draft["scope"]["route_ids"] == [sibling_route.id]
 
-      # The same alert read through this version's scope is refused, not read.
-      foreign_scope = %{sibling_scope | gtfs_version_id: context.version.id}
+      # The alert is the subject and the organization owns it, so a scope naming
+      # another of the organization's versions reads the same draft: the version
+      # supplies lookup context, never the identity of the subject (step 9). The
+      # editor still refuses another organization, which its own cases prove.
+      other_version_scope = %{sibling_scope | gtfs_version_id: context.version.id}
 
-      assert Dispatch.call(AlertsPack, foreign_scope, "get_draft", "{}") ==
-               {:error, :unavailable}
+      assert {:ok, same_draft} = Dispatch.call(AlertsPack, other_version_scope, "get_draft", "{}")
+      assert same_draft["scope"]["route_ids"] == [sibling_route.id]
     end
   end
 

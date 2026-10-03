@@ -17,6 +17,18 @@ defmodule GtfsPlanner.Alerts.Targets do
   agency has far more rows than one pick list can show, and narrowing the query
   beats paging, so the caller says that the list is the first 25 matches.
 
+  `capture_reference/2` builds the trusted wire IDs, labels and zone an alert
+  keeps when its source version disappears, from the same scoped reads the
+  editor's options come from (CR-5).
+
+  A context with no `gtfs_version_id` has no schedule to read: every
+  version-scoped reader below answers its own empty result for one - no options,
+  no labels, no row maps, and no identity resolved - instead of building a query
+  that compares a column with nil. That is the reading an alert whose source
+  version was deleted and an organization that has no schedule yet both need,
+  and it never falls back to whichever version happens to be current (AC-9,
+  AC-10).
+
   `departures_on/4` decides whether a trip runs on the date with
   `Gtfs.Calendars.ServiceDates.active_dates_between/4`, which is the same
   evaluation the Calendar helper shows, so a cancelled departure is never
@@ -32,7 +44,9 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Listing
+  alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -87,6 +101,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   keystroke is the only thing that opens the list.
   """
   @spec search_routes(AuditContext.t(), term()) :: [route_option()]
+  def search_routes(%AuditContext{gtfs_version_id: nil}, _query), do: []
+
   def search_routes(%AuditContext{organization_id: o, gtfs_version_id: v}, query) do
     case search_pattern(query) do
       nil ->
@@ -120,7 +136,11 @@ defmodule GtfsPlanner.Alerts.Targets do
   offered to itself.
   """
   @spec search_stops(AuditContext.t(), term(), keyword()) :: [stop_option()]
-  def search_stops(%AuditContext{} = audit_context, query, opts \\ []) do
+  def search_stops(audit_context, query, opts \\ [])
+
+  def search_stops(%AuditContext{gtfs_version_id: nil}, _query, _opts), do: []
+
+  def search_stops(%AuditContext{} = audit_context, query, opts) do
     case search_pattern(query) do
       nil ->
         []
@@ -158,6 +178,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   one trip's, each at the earliest position any trip gives it.
   """
   @spec route_stops(AuditContext.t(), term()) :: [stop_option()]
+  def route_stops(%AuditContext{gtfs_version_id: nil}, _route_id), do: []
+
   def route_stops(%AuditContext{} = audit_context, route_id) do
     case scoped_route(audit_context, route_id) do
       nil ->
@@ -191,6 +213,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   appear, and a stop no trip of the version serves yields no routes.
   """
   @spec routes_at_stops(AuditContext.t(), [term()]) :: [route_option()]
+  def routes_at_stops(%AuditContext{gtfs_version_id: nil}, _stop_ids), do: []
+
   def routes_at_stops(%AuditContext{} = audit_context, stop_ids) when is_list(stop_ids) do
     gtfs_stop_ids =
       from(s in Stop,
@@ -240,6 +264,14 @@ defmodule GtfsPlanner.Alerts.Targets do
   """
   @spec departures_on(AuditContext.t(), term(), 0 | 1 | nil, Date.t()) :: [departure()]
   def departures_on(
+        %AuditContext{gtfs_version_id: nil},
+        _route_id,
+        _direction_id,
+        %Date{} = _date
+      ),
+      do: []
+
+  def departures_on(
         %AuditContext{} = audit_context,
         route_id,
         direction_id,
@@ -268,6 +300,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   version actually contains rather than the whole GTFS table.
   """
   @spec route_types(AuditContext.t()) :: [integer()]
+  def route_types(%AuditContext{gtfs_version_id: nil}), do: []
+
   def route_types(%AuditContext{organization_id: o, gtfs_version_id: v}) do
     Gtfs.list_distinct_route_types(o, v)
   end
@@ -284,6 +318,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   @type direction_option :: %{direction_id: 0 | 1, label: String.t()}
 
   @spec route_directions(AuditContext.t(), [term()]) :: [direction_option()]
+  def route_directions(%AuditContext{gtfs_version_id: nil}, _route_ids), do: []
+
   def route_directions(%AuditContext{} = audit_context, route_ids) when is_list(route_ids) do
     gtfs_route_ids =
       from(r in Route,
@@ -314,6 +350,268 @@ defmodule GtfsPlanner.Alerts.Targets do
   end
 
   @doc """
+  Builds the server-owned capture of what a scope answer resolves to.
+
+  The capture is what an alert publishes and what it keeps when its source
+  version disappears: the trusted GTFS wire IDs and labels of the routes, stops,
+  pairs and trips the answer names, the agency identities a system-wide alert is
+  about, and the source version's own zone. Every read here is scoped to the
+  context's organization *and* its version, so an identity of another tenant or
+  of a sibling version is recorded as unresolved instead of being adopted
+  (R1, CR-5).
+
+  An identity that does not resolve is recorded as such and never replaced by a
+  guess, and `Alerts.Listing.missing_target_ids/1` reads exactly these entries
+  once the source version is gone. `scope_digest` is
+  `Alerts.ScopeAnswer.digest/1` of the answer the capture was taken from, so a
+  later save can tell whether the selection it carries still describes the
+  answer.
+  """
+  @spec capture_reference(ScopeAnswer.t() | nil, AuditContext.t()) :: map()
+  def capture_reference(nil, %AuditContext{} = audit_context) do
+    empty_reference(audit_context)
+  end
+
+  # No source version means nothing can resolve: an organization with no usable
+  # schedule still authors a private draft, so the capture names the version it
+  # does not have and records no identity rather than refusing the write (AC-10).
+  def capture_reference(%ScopeAnswer{} = scope, %AuditContext{gtfs_version_id: nil}) do
+    empty_selectors = %{
+      "shape" => shape_string(scope.shape),
+      "mode_route_type" => scope.mode_route_type,
+      "direction_id" => scope.direction_id,
+      "routes" => [],
+      "unresolved_routes" => [],
+      "stops" => [],
+      "unresolved_stops" => [],
+      "route_stops" => [],
+      "trips" => [],
+      "agencies" => []
+    }
+
+    %{
+      "source_gtfs_version_id" => nil,
+      "scope_digest" => ScopeAnswer.digest(scope),
+      "timezone" => nil,
+      "selectors" => empty_selectors
+    }
+  end
+
+  def capture_reference(%ScopeAnswer{} = scope, %AuditContext{} = audit_context) do
+    %{
+      "source_gtfs_version_id" => audit_context.gtfs_version_id,
+      "scope_digest" => ScopeAnswer.digest(scope),
+      "timezone" => source_timezone(audit_context),
+      "selectors" => %{
+        "shape" => shape_string(scope.shape),
+        "mode_route_type" => scope.mode_route_type,
+        "direction_id" => scope.direction_id,
+        "routes" => resolved_routes(audit_context, scope.route_ids),
+        "unresolved_routes" => unresolved_routes(audit_context, scope.route_ids),
+        "stops" => resolved_stops(audit_context, scope.stop_ids),
+        "unresolved_stops" => unresolved_stops(audit_context, scope.stop_ids),
+        "route_stops" => route_stop_entries(audit_context, scope.route_stop_pairs),
+        "trips" => trip_entries(audit_context, scope.trips),
+        "agencies" => agency_entries(audit_context, scope)
+      }
+    }
+  end
+
+  defp empty_reference(audit_context) do
+    capture_reference(%ScopeAnswer{}, audit_context)
+  end
+
+  defp shape_string(nil), do: nil
+  defp shape_string(shape) when is_atom(shape), do: Atom.to_string(shape)
+
+  # The source version's own zone, and only when it declared exactly one usable
+  # zone. A version with no zone or conflicting zones captures none, so the alert
+  # reads as needing an explicit organization zone instead of inheriting a
+  # display fallback (CR-5).
+  defp source_timezone(%AuditContext{
+         organization_id: organization_id,
+         gtfs_version_id: version_id
+       })
+       when not is_nil(version_id) do
+    case DisplayClock.resolve_zone(organization_id, version_id) do
+      %{timezone: timezone, fallback?: false} -> timezone
+      _fallback -> nil
+    end
+  end
+
+  defp source_timezone(%AuditContext{}), do: nil
+
+  defp resolved_routes(_audit_context, nil), do: []
+
+  defp resolved_routes(audit_context, ids) do
+    present =
+      route_rows(audit_context, ids)
+      |> Map.new(&{&1.id, &1})
+
+    ids
+    |> uuids()
+    |> Enum.filter(&Map.has_key?(present, &1))
+    |> Enum.map(fn id ->
+      route = Map.fetch!(present, id)
+
+      %{"id" => route.id, "gtfs_id" => route.route_id, "label" => route_label(route)}
+    end)
+  end
+
+  defp unresolved_routes(audit_context, ids), do: unresolved_reference(audit_context, Route, ids)
+
+  defp resolved_stops(_audit_context, nil), do: []
+
+  defp resolved_stops(audit_context, ids) do
+    present =
+      from(s in Stop,
+        where: s.organization_id == ^audit_context.organization_id,
+        where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
+        where: s.id in ^uuids(ids),
+        select: s
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    ids
+    |> uuids()
+    |> Enum.filter(&Map.has_key?(present, &1))
+    |> Enum.map(fn id ->
+      stop = Map.fetch!(present, id)
+
+      %{"id" => stop.id, "gtfs_id" => stop.stop_id, "label" => stop_label(stop)}
+    end)
+  end
+
+  defp unresolved_stops(audit_context, ids), do: unresolved_reference(audit_context, Stop, ids)
+
+  # One existence query for every identity of one table at once, so a capture
+  # costs three queries rather than one per identity.
+  defp unresolved_reference(_audit_context, _schema, nil), do: []
+
+  defp unresolved_reference(audit_context, schema, ids) do
+    candidates = uuids(ids)
+
+    present =
+      from(row in schema,
+        where: row.organization_id == ^audit_context.organization_id,
+        where: row.gtfs_version_id == ^audit_context.gtfs_version_id,
+        where: row.id in ^candidates,
+        select: row.id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    # The answer's own spelling is what is recorded, so a Needs attention row
+    # names the identity the operator stored rather than a re-cast form of it.
+    Enum.reject(ids, &(canonical_uuid(&1) in present))
+  end
+
+  defp route_rows(audit_context, ids) do
+    from(r in Route,
+      where: r.organization_id == ^audit_context.organization_id,
+      where: r.gtfs_version_id == ^audit_context.gtfs_version_id,
+      where: r.id in ^uuids(ids),
+      select: r
+    )
+    |> Repo.all()
+  end
+
+  # A pair keeps both of its row UUIDs whatever resolved, because the alert
+  # still names that pair; `resolved` says whether both ends still name rows.
+  defp route_stop_entries(_audit_context, nil), do: []
+
+  defp route_stop_entries(audit_context, pairs) do
+    routes = route_rows(audit_context, Enum.map(pairs, & &1.route_id)) |> Map.new(&{&1.id, &1})
+    stops = stop_rows(audit_context, Enum.map(pairs, & &1.stop_id)) |> Map.new(&{&1.id, &1})
+
+    Enum.map(pairs, fn pair ->
+      route = Map.get(routes, canonical_uuid(pair.route_id))
+      stop = Map.get(stops, canonical_uuid(pair.stop_id))
+
+      %{
+        "route_id" => pair.route_id,
+        "route_gtfs_id" => route && route.route_id,
+        "route_label" => route && route_label(route),
+        "stop_id" => pair.stop_id,
+        "stop_gtfs_id" => stop && stop.stop_id,
+        "stop_label" => stop && stop_label(stop),
+        "resolved" => not is_nil(route) and not is_nil(stop)
+      }
+    end)
+  end
+
+  defp stop_rows(audit_context, ids) do
+    from(s in Stop,
+      where: s.organization_id == ^audit_context.organization_id,
+      where: s.gtfs_version_id == ^audit_context.gtfs_version_id,
+      where: s.id in ^uuids(ids),
+      select: s
+    )
+    |> Repo.all()
+  end
+
+  # A trip entry keeps the row UUID the answer named even when the trip no longer
+  # resolves, so a deleted source row stays identifiable as the thing that
+  # disappeared rather than becoming an absent entry.
+  defp trip_entries(_audit_context, nil), do: []
+
+  defp trip_entries(audit_context, trips) do
+    present =
+      from(t in Trip,
+        where: t.organization_id == ^audit_context.organization_id,
+        where: t.gtfs_version_id == ^audit_context.gtfs_version_id,
+        where: t.id in ^uuids(Enum.map(trips, & &1.trip_id)),
+        select: t
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    Enum.map(trips, fn target ->
+      trip = Map.get(present, canonical_uuid(target.trip_id))
+
+      %{
+        "id" => target.trip_id,
+        "gtfs_id" => trip && trip.trip_id,
+        "service_id" => trip && trip.service_id,
+        "service_date" => target.service_date && Date.to_iso8601(target.service_date),
+        # The trip instance's own first departure, kept for a frequency-based
+        # trip because a trip id and a service date do not identify one instance
+        # of it (AC-12).
+        "start_time" => target.start_time,
+        "label" =>
+          (trip && present_name(List.wrap(trip.trip_headsign))) || (trip && trip.trip_id),
+        "resolved" => not is_nil(trip)
+      }
+    end)
+  end
+
+  # A system-wide alert publishes against real agency identities from its own
+  # source version. Every other shape captures none: an organization alias is
+  # never a GTFS `agency_id` (AC-10).
+  defp agency_entries(%AuditContext{gtfs_version_id: nil}, _scope), do: []
+
+  defp agency_entries(audit_context, %ScopeAnswer{shape: :system})
+       when not is_nil(audit_context.gtfs_version_id) do
+    from(a in Agency,
+      where: a.organization_id == ^audit_context.organization_id,
+      where: a.gtfs_version_id == ^audit_context.gtfs_version_id,
+      order_by: [asc: a.agency_id],
+      select: {a.id, a.agency_id, a.agency_name}
+    )
+    |> Repo.all()
+    |> Enum.map(fn {id, agency_id, agency_name} ->
+      %{
+        "id" => id,
+        "gtfs_id" => agency_id,
+        "label" => present_name(List.wrap(agency_name)) || agency_id
+      }
+    end)
+  end
+
+  defp agency_entries(_audit_context, _scope), do: []
+
+  @doc """
   Returns the rider-facing labels of the routes, stops and trips an alert names.
 
   The keys are the row UUIDs the alert's stored scope holds - the same
@@ -330,6 +628,9 @@ defmodule GtfsPlanner.Alerts.Targets do
           stops: %{optional(Ecto.UUID.t()) => String.t()},
           trips: %{optional(Ecto.UUID.t()) => String.t()}
         }
+  def labels_for(%AuditContext{gtfs_version_id: nil}, %Alert{} = _alert),
+    do: %{routes: %{}, stops: %{}, trips: %{}}
+
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
     referenced = Listing.referenced_ids(alert)
 
@@ -351,6 +652,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   attention (R8).
   """
   @spec routes_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => Route.t()}
+  def routes_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
+
   def routes_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     case uuids(ids) do
       [] ->
@@ -377,6 +680,8 @@ defmodule GtfsPlanner.Alerts.Targets do
   not have chosen cannot be stored by naming its UUID (R1, CR-4).
   """
   @spec stops_by_id(AuditContext.t(), [String.t()]) :: %{optional(Ecto.UUID.t()) => stop_option()}
+  def stops_by_id(%AuditContext{gtfs_version_id: nil}, _ids), do: %{}
+
   def stops_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
     case uuids(ids) do
       [] ->
@@ -409,6 +714,13 @@ defmodule GtfsPlanner.Alerts.Targets do
           stops: [term()],
           trips: [term()]
         }) :: %{routes: [term()], stops: [term()], trips: [term()]}
+  def unresolved_ids(%AuditContext{gtfs_version_id: nil}, %{
+        routes: routes,
+        stops: stops,
+        trips: trips
+      }),
+      do: %{routes: routes, stops: stops, trips: trips}
+
   def unresolved_ids(%AuditContext{} = audit_context, %{
         routes: routes,
         stops: stops,
