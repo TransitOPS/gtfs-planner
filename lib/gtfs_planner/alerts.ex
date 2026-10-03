@@ -114,6 +114,7 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.ServiceQueries
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -250,12 +251,15 @@ defmodule GtfsPlanner.Alerts do
     * `diagnostics_by_alert` maps every listed alert to its missing and inapplicable
       selectors (`Targets.diagnostic()`), empty when it has none.
 
-  One short transaction takes the organization row `FOR SHARE`, the actor's editor
-  membership and the active version `FOR UPDATE` (`Versions.lock_active_schedule!/2`)
-  and reads every alert and target before releasing them. A selection change or a
-  mutation of the active version's routes, stops or trips therefore waits for the
-  read or is seen whole by it; the read never mixes two schedules. The window holds
-  only batched queries, no external call and no query per alert.
+  The read runs in one `REPEATABLE READ READ ONLY` transaction and takes no row lock.
+  The actor's editor membership, the active schedule with its token, the alerts and
+  every target come from the snapshot taken at the first of those reads, so a selection
+  change or a mutation of the active version's routes, stops or trips that commits
+  meanwhile is seen whole by this read or not at all; the read never mixes two
+  schedules. It does not make those writers wait, and they do not make it wait: the
+  write paths keep their lock order among themselves. A revocation that commits after
+  the snapshot is taken applies to the next read. The window holds only batched
+  queries, no external call and no query per alert.
 
   Returns `{:error, :forbidden}` without a current editor membership, and
   `{:error, :no_active_schedule}` when the organization has none, in which case no list
@@ -265,7 +269,14 @@ defmodule GtfsPlanner.Alerts do
           {:ok, workspace()} | {:error, :forbidden | :no_active_schedule}
   def workspace(%AuditContext{} = audit_context, %DateTime{} = now_utc) do
     Repo.transaction(fn ->
-      active = Versions.lock_active_schedule!(audit_context, :current)
+      begin_snapshot_read()
+
+      active =
+        case Versions.active_schedule(audit_context) do
+          {:ok, %{version: nil}} -> Repo.rollback(:no_active_schedule)
+          {:ok, active} -> active
+          {:error, :forbidden} -> Repo.rollback(:forbidden)
+        end
 
       alerts =
         from(a in Alert,
@@ -285,6 +296,16 @@ defmodule GtfsPlanner.Alerts do
     end)
   end
 
+  # `workspace/2` reads from one snapshot. The SQL sandbox already holds an open
+  # transaction and cannot change its isolation, so test config selects a no-op adapter
+  # and the interleaving cases select the production one.
+  defp begin_snapshot_read do
+    adapter =
+      Application.get_env(:gtfs_planner, :alerts_read_snapshot, ServiceQueries.Snapshot.Repo)
+
+    adapter.begin_read()
+  end
+
   @doc """
   Returns the alerts list page's four tabs as of one UTC instant.
 
@@ -302,8 +323,8 @@ defmodule GtfsPlanner.Alerts do
   Returns the selectors one alert retains that the context's schedule cannot honour.
 
   This is `workspace/2`'s per-alert diagnostics for a single alert, read against the
-  context's version without the locks `workspace/2` takes; the editor shows it beside
-  the draft it holds. A member without the editor role reads none.
+  context's version outside `workspace/2`'s snapshot; the editor shows it beside the
+  draft it holds. A member without the editor role reads none.
   """
   @spec diagnostics_for(AuditContext.t(), Alert.t()) :: [Targets.diagnostic()]
   def diagnostics_for(%AuditContext{} = audit_context, %Alert{} = alert) do

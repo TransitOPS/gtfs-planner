@@ -33,8 +33,11 @@ defmodule GtfsPlanner.Alerts.ListingTest do
   alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.ServiceQueries.Snapshot
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   # 5 October 17:00 UTC is 5 October 10:00 in the fixture's America/Los_Angeles
   # agency zone, so the existing literal expectations keep reading the same civil
@@ -43,6 +46,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
   @contention_timeout 10_000
   @collect_timeout 15_000
+  @race_handler {__MODULE__, :alerts_read_race}
 
   setup do
     organization = organization_fixture()
@@ -312,21 +316,27 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     end
   end
 
-  describe "workspace/2 under a concurrent active switch" do
+  # Each case runs `workspace/2` on its own connection with the production snapshot
+  # boundary, because the sandbox transaction cannot change its isolation. The writers
+  # take the locks the schedule editors and the active-schedule command take.
+  describe "workspace/2 beside concurrent writers" do
     setup do
+      previous = Application.get_env(:gtfs_planner, :alerts_read_snapshot)
+
+      on_exit(fn -> Application.put_env(:gtfs_planner, :alerts_read_snapshot, previous) end)
+
+      Application.put_env(:gtfs_planner, :alerts_read_snapshot, Snapshot.Repo)
+
       %{supervisor: start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})}
     end
 
-    test "a switch started during the read waits, so the read keeps one schedule", %{
-      supervisor: supervisor
-    } do
-      %{organization: organization, scope: scope, spring: spring, fall: fall, alert: alert} =
+    test "an open schedule write does not hold the read up", %{supervisor: supervisor} do
+      %{organization: organization, scope: scope, spring: spring, alert: alert} =
         unboxed(&committed_switch_fixture/0)
 
       on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
 
       audit = audit_context(organization, spring, %{id: scope.actor_id, email: nil})
-      {:ok, %{token: token}} = unboxed(fn -> Versions.active_schedule(scope) end)
 
       # A schedule writer holds the active version, as the stop and route editors do.
       holder =
@@ -336,22 +346,60 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       read = start_command(supervisor, fn -> Alerts.workspace(audit, @now_utc) end)
       send(read.pid, :go)
-      assert_blocked_by(read, holder)
 
-      # The read already holds the organization row, so the switch queues behind it.
+      assert {:ok, workspace} = Task.await(read.task, @collect_timeout)
+      assert [row] = workspace.groups.current
+      assert row.alert.id == alert.id
+
+      send(holder.pid, :release)
+      assert {:ok, :held} = Task.await(holder.task, @collect_timeout)
+    end
+
+    test "writers commit while a read is open, and the read keeps the schedule it started on",
+         %{supervisor: supervisor} do
+      %{organization: organization, scope: scope, spring: spring, fall: fall, alert: alert} =
+        unboxed(&committed_switch_fixture/0)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      audit = audit_context(organization, spring, %{id: scope.actor_id, email: nil})
+      {:ok, %{token: token}} = unboxed(fn -> Versions.active_schedule(scope) end)
+
+      read = start_command(supervisor, fn -> Alerts.workspace(audit, @now_utc) end)
+      pause_after_alert_read(self(), read.pid)
+      send(read.pid, :go)
+      assert_receive {:reader_paused, reader}, @contention_timeout
+
+      # The read has its snapshot and still has the routes and stops to read. Neither
+      # an input writer's version lock, a rename of the route the alert names nor the
+      # switch to the other schedule waits for it.
+      input_writer =
+        start_command(supervisor, fn ->
+          Repo.transaction(fn -> Versions.lock_for_input_write!(organization.id, spring.id) end)
+        end)
+
+      rename =
+        start_command(supervisor, fn ->
+          Repo.update_all(
+            from(r in Route, where: r.gtfs_version_id == ^spring.id and r.route_id == "R1"),
+            set: [route_short_name: "Renamed"]
+          )
+        end)
+
       switch =
         start_command(supervisor, fn -> Versions.set_active_schedule(scope, fall.id, token) end)
 
-      send(switch.pid, :go)
-      assert_blocked_by(switch, read)
+      for command <- [input_writer, rename, switch], do: send(command.pid, :go)
 
-      send(holder.pid, :release)
-
-      assert {:ok, workspace} = Task.await(read.task, @collect_timeout)
+      assert {:ok, %GtfsVersion{}} = Task.await(input_writer.task, @collect_timeout)
+      assert {1, nil} = Task.await(rename.task, @collect_timeout)
       assert {:ok, %{token: %{revision: switched}}} = Task.await(switch.task, @collect_timeout)
 
-      # Tabs, counts, labels and diagnostics all come from the schedule that was
-      # active when the read began, though the switch committed before it returned.
+      send(reader, :resume_query)
+      assert {:ok, workspace} = Task.await(read.task, @collect_timeout)
+
+      # Tabs, labels and diagnostics all come from the state that was committed when the
+      # read began, though three writes committed before it returned.
       assert workspace.active.version.id == spring.id
       assert workspace.active.token.revision == switched - 1
       assert [row] = workspace.groups.current
@@ -370,7 +418,7 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       assert [%{kind: :missing, id: "R1"}] = after_switch.diagnostics_by_alert[alert.id]
     end
 
-    test "a membership command holding the organization row does not deadlock with the read", %{
+    test "a revocation in flight does not hold the read up, and the next read is refused", %{
       supervisor: supervisor
     } do
       %{organization: organization, scope: scope, spring: spring} =
@@ -381,9 +429,8 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       admin = unboxed(fn -> admin_for(organization) end)
       audit = audit_context(organization, spring, %{id: scope.actor_id, email: nil})
 
-      # A membership command takes the organization row, then the member's row. The
-      # read queues behind it for the organization before it holds anything, so the
-      # two cannot wait on each other.
+      # A membership command takes the organization row, then the member's row, and
+      # revokes the editor in the same transaction.
       command =
         start_holder(
           supervisor,
@@ -393,11 +440,14 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
       read = start_command(supervisor, fn -> Alerts.workspace(audit, @now_utc) end)
       send(read.pid, :go)
-      assert_blocked_by(read, command)
-      send(command.pid, :release)
 
+      # The revocation has not committed, so the editor is still one.
+      assert {:ok, _workspace} = Task.await(read.task, @collect_timeout)
+
+      send(command.pid, :release)
       assert {:ok, :held} = Task.await(command.task, @collect_timeout)
-      assert {:error, :forbidden} = Task.await(read.task, @collect_timeout)
+
+      assert {:error, :forbidden} = unboxed(fn -> Alerts.workspace(audit, @now_utc) end)
     end
   end
 
@@ -738,6 +788,31 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     end)
   end
 
+  # Parks the reader inside its transaction once the alert rows are read and before the
+  # routes and stops are, until it is sent `:resume_query`.
+  defp pause_after_alert_read(owner, reader_pid) do
+    :telemetry.attach(
+      @race_handler,
+      [:gtfs_planner, :repo, :query],
+      fn _event, _measurements, metadata, {owner, reader} ->
+        if self() == reader and
+             String.contains?(to_string(metadata[:query]), ~s(FROM "service_alerts")) do
+          :telemetry.detach(@race_handler)
+          send(owner, {:reader_paused, self()})
+
+          receive do
+            :resume_query -> :ok
+          after
+            @contention_timeout -> :ok
+          end
+        end
+      end,
+      {owner, reader_pid}
+    )
+
+    on_exit(fn -> :telemetry.detach(@race_handler) end)
+  end
+
   defp admin_for(organization) do
     admin = user_fixture()
     organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
@@ -751,11 +826,6 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       ),
       set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
     )
-  end
-
-  defp assert_blocked_by(waiting, holder) do
-    deadline = System.monotonic_time(:millisecond) + @contention_timeout
-    assert :ok == unboxed(fn -> await_blocker(waiting.backend, holder.backend, deadline) end)
   end
 
   defp stop_closure(context, stop_id) do
