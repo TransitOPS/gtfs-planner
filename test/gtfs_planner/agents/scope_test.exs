@@ -111,10 +111,14 @@ defmodule GtfsPlanner.Agents.ScopeTest do
   end
 
   describe "the resource context" do
-    test "context/1 binds one identity and leaves the approved extension unset" do
+    test "context/1 binds one identity and leaves the approval and the source unset" do
       id = Ecto.UUID.generate()
 
-      assert Scope.context({:route, id}) == %{identity: {:route, id}, approved_extension: nil}
+      assert Scope.context({:route, id}) == %{
+               identity: {:route, id},
+               approved_extension: nil,
+               source_snapshot: nil
+             }
     end
 
     test "identity/1 reads the bound identity and is nil without one" do
@@ -148,6 +152,32 @@ defmodule GtfsPlanner.Agents.ScopeTest do
 
     test "approved_digest/1 is \"none\" without an approved extension" do
       assert Scope.approved_digest(resources_fixture().scope) == "none"
+    end
+
+    # The seam itself is AI-04's and is covered by its own
+    # `source_snapshot_test.exs`; only the cap boundary is re-measured here,
+    # because a host refuses to attach an oversized source by naming
+    # `max_context_bytes/0` rather than repeating the number.
+    test "with_source_snapshot/2 refuses a whole context over the byte cap, equality allowed" do
+      context = Scope.context({:version, Ecto.UUID.generate()})
+
+      # The cap is on the whole tagged context, so the boundary is located
+      # rather than estimated, and nearly the whole cap is usable.
+      largest = largest_admitted(context)
+
+      assert largest > Scope.max_context_bytes() - 500
+
+      # Equality is admitted; one more byte is not.
+      assert {:ok, _admitted} =
+               Scope.with_source_snapshot(context, %{
+                 kind: "k",
+                 payload: %{"a" => String.duplicate("x", largest)}
+               })
+
+      assert Scope.with_source_snapshot(context, %{
+               kind: "k",
+               payload: %{"a" => String.duplicate("x", largest + 1)}
+             }) == {:error, :too_large}
     end
   end
 
@@ -305,6 +335,36 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     }
   end
 
+  # The largest single payload value this context admits, found by doubling until
+  # the cap refuses and then bisecting, so the boundary is measured.
+  defp largest_admitted(context) do
+    probe = fn size ->
+      match?(
+        {:ok, _context},
+        Scope.with_source_snapshot(context, %{
+          kind: "k",
+          payload: %{"a" => String.duplicate("x", size)}
+        })
+      )
+    end
+
+    too_large = Enum.find(Stream.iterate(1024, &(&1 * 2)), &(not probe.(&1)))
+
+    bisect_payload(probe, 1024, too_large - 1)
+  end
+
+  defp bisect_payload(_probe, low, high) when low >= high, do: high
+
+  defp bisect_payload(probe, low, high) do
+    middle = div(low + high, 2)
+
+    if probe.(middle) do
+      bisect_payload(probe, middle + 1, high)
+    else
+      bisect_payload(probe, low, middle - 1)
+    end
+  end
+
   # The whole-version identity a Calendars page binds.
   defp version_scope(context) do
     %{context.scope | resource_context: Scope.context({:version, context.version.id})}
@@ -315,6 +375,7 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     %{context.scope | resource_context: Scope.context({:route, context.route.id})}
   end
 
+  # The same version identity carrying an approved Calendar extension.
   defp approved_scope(
          context,
          end_date \\ ~D[2026-10-12],
