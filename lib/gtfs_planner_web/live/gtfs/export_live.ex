@@ -455,6 +455,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  @impl Phoenix.LiveView
+  def handle_event("close_publication_review", _params, socket) do
+    {:noreply, close_publication_review(socket)}
+  end
+
   # The retained full feed files this organization can choose from. Listing is
   # scoped by the same `Scope` the comparison itself is authorized with, so the
   # options a form can offer never include another organization's file.
@@ -1064,11 +1069,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         Process.demonitor(ref, [:flush])
         socket
     end
-  end
-
-  @impl Phoenix.LiveView
-  def handle_event("close_publication_review", _params, socket) do
-    {:noreply, close_publication_review(socket)}
   end
 
   @impl Phoenix.LiveView

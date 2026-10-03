@@ -2332,14 +2332,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp severity_class(:warnings, count) when count > 0, do: "font-semibold text-warning-fg"
   defp severity_class(_kind, _count), do: "text-muted"
 
-  # Times are stored in UTC and the app has no per-user time zone, so the zone is
-  # named instead of implied.
-  defp format_time(%DateTime{} = time),
-    do: Calendar.strftime(time, "%b %-d, %Y %-I:%M %p") <> " UTC"
-
-  defp format_count(count),
-    do: count |> Integer.to_string() |> String.replace(~r/\B(?=(\d{3})+(?!\d))/, ",")
-
   @doc """
   One row of the differences list. The list itself is a slot on
   `comparison_results/1`; this is only the row's own markup, so the owning
