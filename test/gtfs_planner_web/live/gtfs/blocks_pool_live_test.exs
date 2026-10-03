@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
   #
   # The browser case (stacked narrow records and no page-level horizontal
   # overflow at 375px) belongs to `assets/e2e/blocks.spec.js`.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures

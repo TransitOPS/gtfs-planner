@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesCellEditTest do
   # The prepared focused command is
   # `mix test test/gtfs_planner_web/live/gtfs/route_schedules_cell_edit_test.exs`
   # (EV-24, 120 s deadline); the card defers it to branch review.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

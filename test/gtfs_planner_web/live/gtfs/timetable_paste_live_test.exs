@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
   # Mount-time patches are consumed by live/2, so a canonicalization is
   # observed by following a non-canonical path through the client with
   # render_patch/2.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
