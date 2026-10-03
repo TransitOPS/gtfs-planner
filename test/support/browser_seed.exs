@@ -12271,7 +12271,7 @@ case Accounts.register_first_admin(%{
           "urgency" => "now",
           "situation" => "delay",
           "cause" => "weather",
-          "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+          "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.route_id]},
           "message" => %{
             "header" => "Route 12 delays of up to 20 minutes",
             "description" => "Wet roads on the coast road. Expect up to 20 minutes of delay."
@@ -12290,7 +12290,10 @@ case Accounts.register_first_admin(%{
           "urgency" => "planned",
           "situation" => "stop_closed",
           "cause" => "construction",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [Enum.at(alerts_stops, 5).id]},
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => [Enum.at(alerts_stops, 5).stop_id]
+          },
           "message" => %{
             "header" => "Harbor Street stop closed for road works",
             "description" => "Harbor Street stop is closed. Board at the Ferry Terminal stop."
@@ -12306,10 +12309,10 @@ case Accounts.register_first_admin(%{
 
       alerts_in_progress = alerts_new.(%{"urgency" => "planned", "situation" => "detour"})
 
-      # The alert names a stop row that exists when it is written, because a write
-      # refuses an identity that is not a row of the version. The stop is deleted
-      # once the alert is finished, which is how a stop leaves a version in
-      # practice and what the Needs attention badge reports.
+      # The alert names a stop by its GTFS stop_id, which exists in the version when
+      # the alert is written, because a write refuses a stop_id the version does not
+      # have. The stop is deleted once the alert is finished, which is how a stop
+      # leaves a version in practice and what the Needs attention badge reports.
       {:ok, alerts_old_depot} =
         GtfsFixtures.insert_stop(%{
           organization_id: org.id,
@@ -12328,7 +12331,7 @@ case Accounts.register_first_admin(%{
           "cause" => "construction",
           "scope" => %{
             "shape" => "stop_all_routes",
-            "stop_ids" => [alerts_old_depot.id]
+            "stop_ids" => [alerts_old_depot.stop_id]
           },
           "message" => %{
             "header" => "Old Depot Road stop closed",
@@ -12677,7 +12680,7 @@ case Accounts.register_first_admin(%{
         "urgency" => "now",
         "situation" => "delay",
         "cause" => "weather",
-        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.route_id]},
         "message" => %{
           "header" => "Route 12 rerouted for the harvest fair",
           "description" => "Route 12 is detouring around the fair until Sunday evening."
