@@ -38,10 +38,10 @@ defmodule GtfsPlanner.Agents do
   the scope's organization and the active schedule it was opened under, and
   prepare answers for the editor to apply.
 
-  The `blocks` and `runs` packs are registered here but no host mounts them yet:
-  each reads the frozen operations snapshot its own `authorize_context/1` admits
-  and prepares a suggestion scope without starting one, and the Blocks and Runs
-  pages open their panels in the later wiring steps.
+  The `blocks` and `runs` packs are registered here and mounted by their own
+  pages: each reads the frozen operations snapshot its own
+  `authorize_context/1` admits and prepares a suggestion scope without starting
+  one, and the Blocks and Runs pages open their panels themselves.
   """
 
   alias GtfsPlanner.Agents.Pack
