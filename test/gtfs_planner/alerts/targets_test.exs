@@ -1213,6 +1213,64 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert [%{kind: :missing, target_type: :stop, id: "C"}] = after_delete[forward.id]
     end
 
+    test "a stretch is judged against its own routes, not the routes and ends of the batch",
+         context do
+      forward = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      back = route_fixture(context.organization.id, context.version.id, route_attrs("R2", "2"))
+      gone = route_fixture(context.organization.id, context.version.id, route_attrs("R3", "3"))
+      [a, b, c] = for id <- ~w(A B C), do: stop(context, id)
+
+      sequence(context, directed_trip(context, forward, "forward", 0), [a, b, c])
+      sequence(context, directed_trip(context, back, "back", 0), [c, b, a])
+
+      stretch = fn routes, from, to ->
+        scoped_alert(context, %{
+          "shape" => "route_stops",
+          "route_ids" => routes,
+          "stop_ids" => [from, to],
+          "stretch_from_stop_id" => from,
+          "stretch_to_stop_id" => to
+        })
+      end
+
+      runs = stretch.(["R1"], "A", "C")
+      same_ends_other_route = stretch.(["R2"], "A", "C")
+      either_route = stretch.(["R2", "R1"], "A", "C")
+      runs_again = stretch.(["R1"], "A", "C")
+      with_removed_route = stretch.(["R3", "R2"], "A", "C")
+      kept_route_runs_it = stretch.(["R3", "R1"], "A", "C")
+      delete!(GtfsPlanner.Gtfs.Route, gone.id)
+
+      batch = [
+        runs,
+        same_ends_other_route,
+        either_route,
+        runs_again,
+        with_removed_route,
+        kept_route_runs_it
+      ]
+
+      assert %{diagnostics_by_alert: found} = Targets.resolve(context.audit, batch)
+
+      # R1 runs A to C in the same batch, which does not make R2 run it, and one route
+      # that runs it is enough for a stretch that names several.
+      assert found[runs.id] == []
+      assert found[runs_again.id] == []
+      assert found[either_route.id] == []
+
+      assert [%{kind: :inapplicable, target_type: :stretch, reason: :stretch_not_on_route}] =
+               found[same_ends_other_route.id]
+
+      # A route the schedule lacks is reported as missing, and the stretch is judged
+      # against the routes that remain.
+      assert [
+               %{kind: :missing, target_type: :route, id: "R3"},
+               %{kind: :inapplicable, target_type: :stretch, reason: :stretch_not_on_route}
+             ] = found[with_removed_route.id]
+
+      assert [%{kind: :missing, target_type: :route, id: "R3"}] = found[kept_route_runs_it.id]
+    end
+
     test "a dated trip whose service no longer runs that day is inapplicable, not missing",
          context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))

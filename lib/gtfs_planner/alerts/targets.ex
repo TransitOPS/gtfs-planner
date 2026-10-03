@@ -959,41 +959,81 @@ defmodule GtfsPlanner.Alerts.Targets do
     end
   end
 
-  # {route, from, to} triples some trip of the route runs in order: the `from` stop
-  # time precedes the `to` stop time within one trip. Comparing positions inside a
-  # trip, never one global position per stop, keeps a stop that a loop visits twice
-  # from making either order impossible.
+  # Stretches some trip of one of their routes runs in order: the `from` stop time precedes
+  # the `to` stop time within one trip. Comparing positions inside a trip, never one global
+  # position per stop, keeps a stop that a loop visits twice from making either order
+  # impossible.
+  #
+  # Each distinct (routes, from, to) is probed on its own and stops at the first trip that
+  # runs it. Reading every route, `from` and `to` the listed alerts name in one join would
+  # grow with the square of the alerts listed. A stretch is judged against all its routes
+  # in one probe because one route running it is enough.
   defp ordered_stretches(audit_context, wanted, routes, stops) do
-    stretches =
-      wanted
-      |> Enum.flat_map(&List.wrap(&1.stretch))
-      |> Enum.filter(&(MapSet.member?(stops, &1.from) and MapSet.member?(stops, &1.to)))
-      |> Enum.map(
-        &%{&1 | route_ids: Enum.filter(&1.route_ids, fn id -> Map.has_key?(routes, id) end)}
-      )
-      |> Enum.reject(&(&1.route_ids == []))
+    indexed = wanted |> wanted_stretches(routes, stops) |> Enum.with_index()
+    run = run_in_order(audit_context, indexed)
 
-    case stretches do
-      [] ->
-        MapSet.new()
-
-      stretches ->
-        route_ids = stretches |> Enum.flat_map(& &1.route_ids) |> Enum.uniq()
-        froms = stretches |> Enum.map(& &1.from) |> Enum.uniq()
-        tos = stretches |> Enum.map(& &1.to) |> Enum.uniq()
-
-        from([a, t] in trip_stop_times(audit_context),
-          join: b in StopTime,
-          on:
-            b.trip_id == a.trip_id and b.organization_id == a.organization_id and
-              b.gtfs_version_id == a.gtfs_version_id and b.stop_sequence > a.stop_sequence,
-          where: t.route_id in ^route_ids and a.stop_id in ^froms and b.stop_id in ^tos,
-          distinct: true,
-          select: {t.route_id, a.stop_id, b.stop_id}
-        )
-        |> Repo.all()
-        |> MapSet.new()
+    for {stretch, ord} <- indexed, MapSet.member?(run, ord), into: MapSet.new() do
+      {stretch.route_ids, stretch.from, stretch.to}
     end
+  end
+
+  # The distinct stretches whose ends exist, narrowed to the routes the schedule has. A
+  # stretch with no route left is already reported as missing.
+  defp wanted_stretches(wanted, routes, stops) do
+    wanted
+    |> Enum.flat_map(&List.wrap(&1.stretch))
+    |> Enum.filter(&(MapSet.member?(stops, &1.from) and MapSet.member?(stops, &1.to)))
+    |> Enum.map(
+      &%{&1 | route_ids: Enum.filter(&1.route_ids, fn id -> Map.has_key?(routes, id) end)}
+    )
+    |> Enum.reject(&(&1.route_ids == []))
+    |> Enum.uniq()
+  end
+
+  # The positions in `indexed` of the stretches some trip runs in order, from one query
+  # that probes each stretch with `EXISTS`.
+  defp run_in_order(_audit_context, []), do: MapSet.new()
+
+  defp run_in_order(%AuditContext{organization_id: o, gtfs_version_id: v}, indexed) do
+    asked = asked_json(indexed)
+
+    from(
+      w in fragment(
+        "SELECT * FROM jsonb_to_recordset((?)::text::jsonb) AS w(ord int, from_id text, to_id text, route_ids text[])",
+        ^asked
+      ),
+      as: :asked,
+      where:
+        exists(
+          from(a in StopTime,
+            join: t in Trip,
+            on:
+              t.organization_id == a.organization_id and
+                t.gtfs_version_id == a.gtfs_version_id and t.trip_id == a.trip_id,
+            join: b in StopTime,
+            on:
+              b.organization_id == a.organization_id and
+                b.gtfs_version_id == a.gtfs_version_id and b.trip_id == a.trip_id and
+                b.stop_sequence > a.stop_sequence,
+            where: a.organization_id == ^o and a.gtfs_version_id == ^v,
+            where:
+              a.stop_id == parent_as(:asked).from_id and
+                b.stop_id == parent_as(:asked).to_id and
+                fragment("? = ANY(?)", t.route_id, parent_as(:asked).route_ids),
+            select: 1
+          )
+        ),
+      select: w.ord
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp asked_json(indexed) do
+    Jason.encode!(
+      for {stretch, ord} <- indexed,
+          do: %{ord: ord, from_id: stretch.from, to_id: stretch.to, route_ids: stretch.route_ids}
+    )
   end
 
   # Stop times joined to their trip, inside the context's organization and version.
@@ -1113,7 +1153,7 @@ defmodule GtfsPlanner.Alerts.Targets do
     routes = Enum.filter(route_ids, &Map.has_key?(found.routes, &1))
 
     if routes != [] and MapSet.member?(found.stops, from) and MapSet.member?(found.stops, to) and
-         not Enum.any?(routes, &MapSet.member?(found.ordered, {&1, from, to})) do
+         not MapSet.member?(found.ordered, {routes, from, to}) do
       [
         diagnostic(:inapplicable, :stretch, from, :stretch_not_on_route, %{
           route_ids: route_ids,
