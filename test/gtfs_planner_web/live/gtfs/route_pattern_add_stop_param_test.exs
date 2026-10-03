@@ -327,5 +327,4 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAddStopParamTest do
       assert staged(ctx, view) == ["S1", "S2", "S3"]
     end
   end
-
 end
