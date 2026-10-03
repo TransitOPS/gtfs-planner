@@ -445,6 +445,39 @@ defmodule GtfsPlanner.Operations do
     |> Map.new(&{&1.id, &1})
   end
 
+  @doc """
+  Holds the organization's planning garages and vehicle types `FOR SHARE` in UUID
+  order.
+
+  This is the write half of `planning_garages/1` and `planning_vehicle_types/1`: a
+  caller that composes a plan from them and then writes holds the rows its
+  resolution read, so a garage's geometry or a type's limit cannot change under the
+  write. Garage and type edits go through `authorized_write/3`, which takes no
+  blocking lock, so these scoped row locks plus the caller's serializable reads are
+  what close that boundary.
+
+  Call only inside `Repo.transaction/1`. The order is the UUID order `lock_trips!/5`
+  uses, so two callers take the same rows in the same sequence.
+  """
+  @spec lock_planning_rows!(Ecto.UUID.t()) :: :ok
+  def lock_planning_rows!(organization_id) do
+    Garage
+    |> where([g], g.organization_id == ^organization_id)
+    |> order_by([g], asc: g.id)
+    |> lock("FOR SHARE")
+    |> select([g], g.id)
+    |> Repo.all()
+
+    VehicleType
+    |> where([t], t.organization_id == ^organization_id)
+    |> order_by([t], asc: t.id)
+    |> lock("FOR SHARE")
+    |> select([t], t.id)
+    |> Repo.all()
+
+    :ok
+  end
+
   # --- vehicles --------------------------------------------------------------
 
   @doc """

@@ -70,6 +70,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Gtfs.TodsGeneration
   alias GtfsPlanner.Gtfs.TodsGenerator
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Transfers
@@ -5794,6 +5795,44 @@ defmodule GtfsPlanner.Gtfs do
              | {:too_large, non_neg_integer()}}
   def preview_tods_generation(%AuditContext{} = audit, params) do
     TodsGenerator.preview(audit, params)
+  end
+
+  @doc """
+  Applies one reviewed TODS generation preview and returns its completed receipt.
+
+  `request` carries the transport facts of one request: the `:request_id` UUID the
+  page generated for the preview, the `:input` map `preview_tods_generation/2`
+  normalized and the `:source_fingerprint` it reported. The save is one
+  SERIALIZABLE transaction with at most three attempts, and it refuses with
+  `:stale_plan` when the source no longer matches the reviewed fingerprint, so a
+  schedule edited after the preview is never written from a stale candidate.
+
+  The refusals are `{:error, changeset}` for a refused input, `:forbidden` for a
+  revoked editor, `:not_found` for a foreign, unusable or malformed request,
+  `:stale_plan`, `:request_conflict` for a completed request with another input,
+  `:nothing_to_save`, `:busy` after three exhausted attempts, and `:write_failed`
+  for a write no retry can fix. A repeated identical request answers with the
+  receipt it already has, so a lost reply cannot generate twice.
+  """
+  @spec apply_tods_generation(AuditContext.t(), map()) ::
+          {:ok, TodsGeneration.t()} | {:error, TodsGenerator.apply_error()}
+  def apply_tods_generation(%AuditContext{} = audit, request) do
+    TodsGenerator.apply(audit, request)
+  end
+
+  @doc """
+  Returns the completed receipt of one TODS generation request, scoped to the
+  audit's organization and version.
+
+  The lookup authorizes the caller's current editor membership before it reads, so
+  a revoked editor is `{:error, :forbidden}` and a request of another scope or of
+  none is `{:error, :not_found}`. It never creates a receipt, so a page asking
+  after a disconnect learns whether the request completed without writing anything.
+  """
+  @spec get_tods_generation(AuditContext.t(), Ecto.UUID.t()) ::
+          {:ok, TodsGeneration.t()} | {:error, :forbidden | :not_found}
+  def get_tods_generation(%AuditContext{} = audit, request_id) do
+    TodsGenerator.completed(audit, request_id)
   end
 
   @doc """
