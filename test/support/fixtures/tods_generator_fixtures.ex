@@ -62,6 +62,7 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   @weekday_service "WK"
   @monday_service "MO"
   @saturday_service "SA"
+  @holiday_service "HO"
 
   # The crew cases' own terminal, the two stops of their impossible-drive block, and
   # the stop that has no coordinates at all. The terminal sits at the world's garage
@@ -524,6 +525,113 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   """
   def preview(world, overrides \\ %{}) do
     Gtfs.preview_tods_generation(world.audit, tods_inputs(world, overrides))
+  end
+
+  @doc """
+  Builds the published world the roster cases read: `tods_world_fixture/1` plus a
+  holiday Monday of its own.
+
+  The holiday service is active on one Monday alone, so that date's service set is
+  `{HO, MO, WK}` — a day type of its own — while every other Monday still runs
+  `{MO, WK}`. That is what makes "a date whose day type is not its weekday's base"
+  an observable fact rather than an assumption, and it leaves Monday's own base the
+  ordinary day type.
+
+  `:extra_trips`, `:extra_route` and `:max_piece_minutes` are forwarded to
+  `tods_world_fixture/1`. The returned `:holiday_date` is the Monday of the third
+  week of `roster_inputs/2`'s range and `:holiday_day_type` is the day type that
+  date derives, read from the version's own calendars.
+  """
+  def roster_world_fixture(opts \\ []) do
+    opts = Map.new(opts)
+    world = tods_world_fixture(Map.take(opts, [:max_piece_minutes, :extra_trips, :extra_route]))
+    holiday_date = Map.get(opts, :holiday_date) || Date.add(roster_monday(world), 14)
+
+    calendar_service_fixture(world.organization.id, world.version.id, %{
+      service_id: @holiday_service,
+      name: "Holiday",
+      dates: [holiday_date]
+    })
+
+    Map.merge(world, %{
+      holiday_date: holiday_date,
+      holiday_day_type:
+        day_type_key_for(world.organization, world.version, [
+          @holiday_service,
+          @monday_service,
+          @weekday_service
+        ])
+    })
+  end
+
+  @doc """
+  The five normalized inputs a roster case reads: three weeks of January 2026 from
+  the version's first full week, so the range selects Monday's ordinary day type,
+  the weekday day type and the holiday Monday's own day type.
+
+  The representative week is the first of the three — an ordinary week — so the
+  holiday is a date the recurring model does not reach rather than the week being
+  staffed.
+  """
+  def roster_inputs(world, overrides \\ %{}) do
+    monday = roster_monday(world)
+
+    %{
+      "start_date" => Date.to_iso8601(monday),
+      "end_date" => Date.to_iso8601(Date.add(monday, 18)),
+      "representative_week" => Date.to_iso8601(monday),
+      "garage_id" => world.garage.id,
+      "terminal_relief?" => false
+    }
+    |> Map.merge(Map.new(overrides))
+  end
+
+  @doc """
+  Runs the preview on `world` with `roster_inputs/2`.
+  """
+  def roster_preview(world, overrides \\ %{}) do
+    Gtfs.preview_tods_generation(world.audit, roster_inputs(world, overrides))
+  end
+
+  @doc """
+  The Monday of the version's first *full* active week: the fixture's calendars
+  start on a Thursday, so the week its own default range names holds no ordinary
+  Monday.
+  """
+  def roster_monday(world), do: Date.add(first_active_week(world), 7)
+
+  @doc """
+  Stores one run per trip naming it, on every day type the version derives.
+
+  A run exists on the Rosters page because a stored `trip_run` row names it: the
+  roster composition reads its runs from `Runs.Day.derive/4` over the saved
+  assignments, so a world with blocks and no stored run has no run for a line to
+  hold. `runs` is `%{trip_id => run_id}` over the world's own trips — the fixture's
+  blocks or a crew case's added block — and the rows go on every derived day type,
+  so the same schedule is staffed the same way on each of them.
+  """
+  def stored_runs_fixture(world, runs) do
+    for day_type <- day_types(world), {trip_id, run_id} <- runs do
+      trip_run_fixture(world.organization.id, world.version.id, %{
+        trip: trip_uuid(world, trip_id),
+        day_type_key: day_type.key,
+        run_id: run_id
+      })
+    end
+
+    world
+  end
+
+  # One trip of the world, by the fixture's own `trip_id`, whether the fixture's
+  # block wrote it or a crew case's own block did.
+  defp trip_uuid(world, trip_id) do
+    crew = Map.get(world, :trips, %{})
+
+    case Map.get(crew, trip_id) || Map.get(world.trip_ids, trip_id) do
+      nil -> raise ArgumentError, "the world holds no trip #{inspect(trip_id)}"
+      %{id: id} -> id
+      uuid when is_binary(uuid) -> uuid
+    end
   end
 
   @doc """

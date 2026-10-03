@@ -90,12 +90,19 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
           run_deltas: %{String.t() => %{Ecto.UUID.t() => String.t()}},
           run_days: %{String.t() => Runs.Day.derived()},
           relief_additions: [String.t()],
+          roster_day_types: %{String.t() => String.t()},
+          roster_lines: [Plan.roster_line()],
+          roster_exclusions: [Plan.roster_exclusion()],
+          roster_findings: [Plan.roster_finding()],
+          hard_errors: [Plan.hard_error()],
+          coverage: Plan.coverage(),
           assumptions: [atom()],
           warnings: [Plan.run_warning()],
           exclusions: [Plan.exclusion()],
           counts: map(),
           day_type_keys: [String.t()],
-          no_work?: boolean()
+          no_work?: boolean(),
+          save_available?: boolean()
         }
 
   @doc """
@@ -105,13 +112,17 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   no dates defaults to the feed's first active calendar week. The result carries
   the normalized inputs, the source fingerprint a later save compares against, the
   block candidate, the run deltas and derived run days of the crew stage, the
-  relief marks those runs would need, the warnings and assumptions they rest on,
-  and the exclusions with their reasons.
+  relief marks those runs would need, the base-week choices, single-slot lines and
+  fictional operators the roster stage would add, the run-days it leaves unstaffed,
+  the recurring coverage it reaches, the warnings and assumptions they rest on, and
+  the exclusions with their reasons. `hard_errors` are the plan-level conflicts that
+  make a save unavailable, and `save_available?` is the whole rule: no hard error,
+  and at least one record to add.
 
   An empty service in the selected range is a result, not an error: it answers
-  `{:ok, preview}` with `no_work?: true`, no blocks, no runs and no exclusions,
-  because "this version has nothing to staff" is something a page must be able to
-  say.
+  `{:ok, preview}` with `no_work?: true`, no blocks, no runs, no lines and no
+  exclusions, because "this version has nothing to staff" is something a page must
+  be able to say.
   """
 
   @spec preview(AuditContext.t(), map()) ::
@@ -262,7 +273,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       source = source(audit, day_types, inputs, input, garage_id)
       candidate = Plan.block_candidate(source, input)
 
-      {:ok, {Plan.with_runs(candidate, source, Map.fetch!(source, :input)), source}}
+      {:ok,
+       {Plan.with_roster(
+          Plan.with_runs(candidate, source, Map.fetch!(source, :input)),
+          source,
+          Map.fetch!(source, :input)
+        ), source}}
     end
   end
 
@@ -285,12 +301,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     |> length()
   end
 
-  # The candidate arrives composed: both stages are composed in
+  # The candidate arrives composed: all three stages are composed in
   # `plan_from_inputs/5`, which is the one seam a permutation of source facts goes
   # through, and this maps it into the preview a page reads. The fingerprint is
-  # over the *source*, not over the candidate, so a mark the crew stage proposes
-  # cannot change it: the same source and input still produce the same candidate
-  # and the same hash.
+  # over the *source*, not over the candidate, so a mark the crew stage proposes or
+  # a line the roster stage proposes cannot change it: the same source and input
+  # still produce the same candidate and the same hash.
   defp preview({candidate, source}, input, garage_id) do
     input = Map.put(input, "garage_id", garage_id)
 
@@ -303,6 +319,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       run_deltas: candidate.run_deltas,
       run_days: candidate.run_days,
       relief_additions: candidate.relief_additions,
+      roster_day_types: candidate.roster_day_types,
+      roster_lines: candidate.roster_lines,
+      roster_exclusions: candidate.roster_exclusions,
+      roster_findings: candidate.roster_findings,
+      hard_errors: candidate.hard_errors,
+      coverage: candidate.coverage,
       assumptions: candidate.assumptions,
       warnings: candidate.warnings,
       exclusions: candidate.exclusions,
@@ -313,8 +335,17 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       # adds nothing and says so. `counts.blocks` is the blocks the candidate
       # presents — preserved ones included — so it is not this question's answer.
       no_work?:
-        candidate.blocks == [] and candidate.assignments == %{} and candidate.counts.new_runs == 0
+        candidate.blocks == [] and candidate.assignments == %{} and
+          candidate.counts.new_runs == 0 and candidate.counts.new_lines == 0,
+      # A save is unavailable with a hard error or with nothing to add: the first
+      # is a request the plan cannot deliver without editing a choice the operator
+      # owns, and the second would commit a receipt over no work at all.
+      save_available?: candidate.hard_errors == [] and additions?(candidate.counts)
     }
+  end
+
+  defp additions?(counts) do
+    counts.new_blocks + counts.new_runs + counts.new_lines > 0
   end
 
   # --- source ----------------------------------------------------------------
@@ -345,6 +376,18 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     %{
       day_types:
         Enum.map(inputs.day_types, fn day_type ->
+          %{
+            key: day_type.key,
+            service_ids: day_type.service_ids,
+            dates: Enum.map(day_type.dates, &Date.to_iso8601/1)
+          }
+        end),
+      # Every day type the version derives, not only the affected ones: the roster
+      # stage resolves each weekday's base day type against them, so adding,
+      # removing or redating a day type no completed row reaches can change which
+      # day type a saved slot is stored for.
+      version_day_types:
+        Enum.map(Map.fetch!(inputs, :version_day_types), fn day_type ->
           %{
             key: day_type.key,
             service_ids: day_type.service_ids,
@@ -387,11 +430,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   implementations agreeing by coincidence.
 
   It covers the normalized input, every affected day type with its services and
-  dates, the completed trip rows with their endpoints, the raw stop-time, stop,
-  parent-station and frequency rows behind them, the block IDs the affected
-  services use — a wider read than the completed rows, which reaches the blocks a
-  new ID is numbered above — the blocking context through its own digest, and the
-  crew and roster rules.
+  dates, every day type the version derives, the completed trip rows with their
+  endpoints, the raw stop-time, stop, parent-station and frequency rows behind
+  them, the block IDs the affected services use — a wider read than the completed
+  rows, which reaches the blocks a new ID is numbered above — the blocking context
+  through its own digest, and the crew and roster rules.
   """
   @spec fingerprint(map(), map(), Ecto.UUID.t()) :: String.t()
   def fingerprint(source, input, garage_id) do
@@ -400,6 +443,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     %{
       input: Map.put(input, "garage_id", garage_id),
       day_types: facts.day_types,
+      version_day_types: facts.version_day_types,
       rows: identity_rows(source),
       used_block_ids: Enum.sort(Map.fetch!(source, :used_block_ids)),
       raw: facts.raw,

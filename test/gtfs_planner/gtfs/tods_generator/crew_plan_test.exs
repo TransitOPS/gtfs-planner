@@ -46,9 +46,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
       assert preview.day_type_keys == [world.weekday_day_type]
 
       # The mark is the block's own terminal, it is additive, and it is reported
-      # because an admitted duty hands over at it.
+      # because an admitted duty hands over at it. The preview's assumption list is
+      # shared with the roster stage, which states its own; this case reads the
+      # crew stage's entry in it.
       assert preview.relief_additions == [world.terminal_stop_id]
-      assert preview.assumptions == [:terminal_relief_additive]
+      assert :terminal_relief_additive in preview.assumptions
 
       # The block's first trip keeps the run it had; the uncovered remainder is cut
       # at the block's middle layover into two duties of its own.
@@ -80,7 +82,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
 
       # Nothing was proposed and nothing was assumed: terminal relief is opt-in.
       assert preview.relief_additions == []
-      assert preview.assumptions == []
+      refute :terminal_relief_additive in preview.assumptions
 
       # The handover at the unmarked layover is a change away from relief, so the
       # whole duty is refused and all three of its trips are reported uncovered.
@@ -257,7 +259,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
       # So the terminal is reported as one of the marks the derived day rests on,
       # even though no new run uses it: a save that wrote only the new runs' marks
       # would leave the day the preview showed unreproducible.
-      assert preview.assumptions == [:terminal_relief_additive]
+      assert :terminal_relief_additive in preview.assumptions
       assert preview.relief_additions == [world.terminal_stop_id]
     end
   end

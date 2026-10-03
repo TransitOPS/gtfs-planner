@@ -902,15 +902,21 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   @doc """
   Returns the version's roster lines and their slots as plain facts.
 
-  This is `export_roster/4`'s line read without the composition: the line
-  number, the operator and each weekday's day type, run and stored sign-on and
-  sign-off times, scoped by organization and version on the line query itself.
+  This is `export_roster/4`'s line read without the composition: the line's id and
+  number, the operator holding it and each weekday's day type, run and stored
+  sign-on and sign-off times, scoped by organization and version on the line query
+  itself.
 
   A caller fingerprinting the source it read — the TODS generator's preview —
   needs to name the roster facts that would change a generated candidate without
   deriving a roster from movements to learn them. The stored sign-on and sign-off
   times are included because they are what makes a re-cut run a stale slot
   (INV-13); a write that moved one changes the hash even though the run did not.
+
+  The operator's own identity rides along beside its id because a caller composing
+  a roster from these facts reads the two fields the roster grid and the export
+  both read: a line's `operator` is what makes it assigned rather than open, and
+  `employee_id` and `display_name` are what an assignment row names.
   """
   @spec export_line_facts(Ecto.UUID.t(), Ecto.UUID.t()) :: [map()]
   def export_line_facts(organization_id, gtfs_version_id) do
@@ -918,8 +924,11 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     |> list_lines(gtfs_version_id)
     |> Enum.map(fn line ->
       %{
+        id: line.id,
         line_number: line.line_number,
         operator_id: line.operator && line.operator.id,
+        employee_id: line.operator && line.operator.employee_id,
+        display_name: line.operator && line.operator.display_name,
         days:
           Enum.map(
             line.days,

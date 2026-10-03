@@ -1747,6 +1747,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   caller composes *on*, and the returned set is the days that decide whether what
   it composed is valid there. `rows_by_day_type` keys both, so a requested day
   type the completed rows do not reach is an empty list rather than a missing key.
+  `version_day_types` is every day type the version derives, rows or no rows, which
+  is what a caller resolving the roster's base week needs: a slot repeats by
+  weekday and base day type, so a weekday this read selected nothing on still
+  decides where a slot lands.
 
   The context is built once over the completed rows, not once per day type, so a
   block the generator forms across two day types is resolved against the same
@@ -1767,6 +1771,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           {:ok,
            %{
              day_types: [DayTypes.day_type()],
+             version_day_types: [DayTypes.day_type()],
              rows_by_day_type: %{optional(String.t()) => [Queries.trip_row()]},
              context: Context.t(),
              used_block_ids: [String.t()]
@@ -1797,6 +1802,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     {:ok,
      %{
        day_types: affected,
+       # Every day type the version derives, not only the ones the completed rows
+       # reach: a roster slot repeats by weekday and base day type, so a caller
+       # resolving the base week needs the day types the selected dates did not
+       # touch as much as the ones they did.
+       version_day_types: day_types,
        rows_by_day_type: rows_by_day_type(requested, affected, rows),
        context: context,
        # Sorted so a run's `used_ids` does not depend on the order the set

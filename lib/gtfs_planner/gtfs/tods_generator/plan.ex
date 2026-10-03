@@ -7,13 +7,18 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   inside one read snapshot:
 
       %{day_types: [Blocking.DayTypes.day_type()],
+        version_day_types: [Blocking.DayTypes.day_type()],
         rows_by_day_type: %{day_type_key => [Blocking.Queries.trip_row()]},
         context: Blocking.Context.t(),
         used_block_ids: [String.t()]}
 
   `day_types` is the generation order — the day types the request selected —
   while `rows_by_day_type` also carries the affected day types the completed
-  blocks reach, which is what validity is decided over.
+  blocks reach, which is what validity is decided over. `version_day_types` is
+  every day type the version derives, which is what the roster stage resolves the
+  base week and the recurring dates against: a roster slot repeats by weekday and
+  base day type, so a weekday the request did not select still decides where a
+  slot lands.
 
   `normalized_input` is `TodsGenerator.Input.normalize/1`'s canonical map. Only
   its `"garage_id"` and its `"terminal_relief?"` are read here.
@@ -86,6 +91,37 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   save could not write. What the stage assumes is reported in `assumptions`
   rather than hidden in the numbers.
 
+  ## What the roster stage adds
+
+  `with_roster/3` maps the runs to the roster the version would hold: the base-week
+  choices the request needs, one single-slot line and one fictional operator per
+  exportable run-day no line holds, the run-days it leaves unstaffed, the findings
+  of the roster that leaves, and the recurring coverage that roster reaches. It
+  composes the version's own owners — `Rosters.BaseWeek.resolve/2`,
+  `Rosters.Roster.build/1` and `Rosters.AssignmentsExport.rows/1` — over the runs
+  the crew stage derived, so the dates, the base-week fallback and the
+  previous-date shift are the exporter's own rules rather than a second
+  implementation. Four rules decide what a generation would add:
+
+    * **A weekday the version already answers is kept.** A stored base choice, and a
+      weekday holding slots a planner set by hand, keep the base they have: moving
+      it would make those slots `:base_changed`. Where the representative date works
+      a different day type than such a weekday, the request's work there is refused
+      rather than delivered by moving a choice the operator owns.
+    * **Every other weekday takes the representative date's day type** — and only
+      where that differs from the base the version would resolve anyway, so a
+      compatible base is left alone and the stored settings change only where the
+      request needs them to.
+    * **One line per run-day, deliberately overstaffed.** Every exportable run a
+      weekday's base day type has and no line holds gets a line of its own holding
+      one slot, and an operator of its own, even when the same run works five
+      weekdays. This gives up realistic weekly duties and gains an allocation that
+      cannot create a cross-day rest conflict; the count is disclosed rather than
+      optimized away.
+    * **Held, stale and error work is never edited.** A run-day a line holds is not
+      proposed again whatever the slot's state says, and a run the export drops
+      because of an error finding is not proposed at all.
+
   ## The result
 
       %{blocks: [%{block_id:, new?: true, garage_id:, vehicle_type_id:,
@@ -95,6 +131,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         run_deltas: %{day_type_key => %{trip_uuid => run_id}},
         run_days: %{day_type_key => Runs.Day.derived()},
         relief_additions: [String.t()],
+        roster_day_types: %{weekday => day_type_key},
+        roster_lines: [roster_line()],
+        roster_exclusions: [%{subject: {weekday, day_type_key, run_id}, reason: atom()}],
+        roster_findings: [roster_finding()],
+        hard_errors: [hard_error()],
+        coverage: coverage(),
         assumptions: [atom()],
         warnings: [run_warning()],
         exclusions: [%{subject: Ecto.UUID.t(), reason: atom(), block_id: String.t() | nil}],
@@ -103,8 +145,10 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
 
   `assignments` holds new block moves only; a trip that already had a block is
   not in it, because nothing about it changes. `run_deltas` holds new run
-  assignments only, for the same reason. Every list in the result is sorted by a
-  natural key, so the same source facts in any order produce the same candidate.
+  assignments only, for the same reason. `roster_day_types` holds the base-week
+  entries a save would add, never the whole stored map. Every list in the result
+  is sorted by a natural key, so the same source facts in any order produce the
+  same candidate.
 
   ## Why the checks are asked twice
 
@@ -124,6 +168,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   alias GtfsPlanner.Gtfs.Blocking.Movements
   alias GtfsPlanner.Gtfs.Blocking.Relief
   alias GtfsPlanner.Gtfs.Blocking.Summary
+  alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
+  alias GtfsPlanner.Gtfs.Rosters.BaseWeek
+  alias GtfsPlanner.Gtfs.Rosters.Roster
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.Runs.Cutter
   alias GtfsPlanner.Gtfs.Runs.Day
@@ -179,7 +226,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
 
   @typedoc """
   The figures of the whole candidate: the block stage's, plus the runs the crew
-  stage admits and the runs it refuses.
+  stage admits and refuses and the lines, slots and operators the roster stage
+  would add beside the stored ones it leaves in place.
   """
   @type counts :: %{
           blocks: non_neg_integer(),
@@ -188,7 +236,113 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
           preserved_blocks: non_neg_integer(),
           rejected_blocks: non_neg_integer(),
           new_runs: non_neg_integer(),
-          refused_runs: non_neg_integer()
+          refused_runs: non_neg_integer(),
+          new_lines: non_neg_integer(),
+          new_slots: non_neg_integer(),
+          new_operators: non_neg_integer(),
+          preserved_lines: non_neg_integer(),
+          preserved_slots: non_neg_integer(),
+          preserved_operators: non_neg_integer(),
+          open_run_days: non_neg_integer()
+        }
+
+  @typedoc """
+  One single-slot line a generation would add, with the fictional operator that
+  would hold it.
+
+  `operator_ordinal` is the position the save names the operator by; its employee
+  ID carries the request UUID, which is transport rather than business input, so
+  the preview reports the ordinal instead of inventing the name. The times are the
+  derived run's own sign-on and sign-off, which is what makes the stored slot
+  fresh rather than stale.
+  """
+  @type roster_line :: %{
+          weekday: 1..7,
+          day_type_key: String.t(),
+          run_id: String.t(),
+          run_sign_on_secs: integer(),
+          run_sign_off_secs: integer(),
+          operator_ordinal: pos_integer()
+        }
+
+  @typedoc """
+  One run-day the plan leaves unstaffed, and why.
+
+  `subject` is `{weekday, day_type_key, run_id}` — the run-day a roster line holds
+  — because a run is one identity across the weekdays it works: a refusal that
+  named a trip would say nothing about the same run's other days. A run-day
+  appears once, under the first reason that applies: its day type is not its
+  weekday's base (`:no_base_weekday`, so no recurring line can reach it), the
+  export drops the run (`:run_has_errors`), or a stored slot holds it without
+  being exportable (`:stale_slot`).
+  """
+  @type roster_exclusion :: %{
+          subject: {1..7, String.t(), String.t()},
+          reason: :no_base_weekday | :run_has_errors | :stale_slot
+        }
+
+  @typedoc """
+  A plan-level error. A save is unavailable while one is present: the request
+  cannot be delivered without editing a choice the operator owns, so generating
+  part of it would write a roster nobody asked for.
+  """
+  @type hard_error :: %{
+          reason: :base_conflict,
+          weekday: 1..7,
+          day_type_key: String.t(),
+          retained_day_type_key: String.t() | nil
+        }
+
+  @typedoc """
+  One finding of the roster the plan would leave, for a line it would add
+  (`operator_ordinal` set) or keep (`line_number` set). The code, weekdays and
+  detail are `Rosters.Roster`'s own, so a warning reads the way the Rosters page
+  writes it.
+  """
+  @type roster_finding :: %{
+          line_number: pos_integer() | nil,
+          operator_ordinal: pos_integer() | nil,
+          code: atom(),
+          weekdays: [1..7],
+          detail: map()
+        }
+
+  @typedoc """
+  One weekday of the base week the plan composes with, and where it came from.
+
+  `day_type_key` is the day type the weekday works, `chosen?` is true when a
+  stored choice answered it, `added?` is true when this request would have to
+  store the representative date's choice to reach it, and `missing_choice` is a
+  stored key `BaseWeek.resolve/2` could not use.
+  """
+  @type base_week_day :: %{
+          weekday: 1..7,
+          day_type_key: String.t() | nil,
+          chosen?: boolean(),
+          added?: boolean(),
+          missing_choice: String.t() | nil
+        }
+
+  @typedoc """
+  What a would-be generation reaches, from the exporter's own dates.
+
+  A roster slot repeats by weekday and base day type, so the range scopes which
+  input was selected and *not* which dates a saved slot affects: `affected_dates`
+  is every date of a staffed weekday's base day type, `beyond_range_dates` is the
+  part of it outside the selected range, `open_dates` is the selected dates with
+  service the plan leaves unstaffed, `other_service_dates` is the dates whose day
+  type is not their weekday's base (different service, nothing exported for them),
+  and `exported_dates` is the dates and services `AssignmentsExport.rows/1` would
+  write — a run signing on before midnight is dated the previous day.
+  """
+  @type coverage :: %{
+          range: %{start_date: Date.t(), end_date: Date.t(), representative_week: Date.t()},
+          base_week: [base_week_day()],
+          affected_dates: [Date.t()],
+          beyond_range_dates: [Date.t()],
+          open_dates: [Date.t()],
+          other_service_dates: [Date.t()],
+          exported_dates: [%{date: Date.t(), service_id: String.t() | nil}]
         }
 
   @typedoc """
@@ -205,7 +359,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         }
 
   @typedoc """
-  The complete candidate of one request: the block candidate plus the crew stage.
+  The complete candidate of one request: the block candidate plus the crew and
+  roster stages.
   """
   @type t :: %{
           blocks: [block()],
@@ -214,6 +369,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
           run_deltas: %{String.t() => %{Ecto.UUID.t() => String.t()}},
           run_days: %{String.t() => Day.derived()},
           relief_additions: [String.t()],
+          roster_day_types: %{String.t() => String.t()},
+          roster_lines: [roster_line()],
+          roster_exclusions: [roster_exclusion()],
+          roster_findings: [roster_finding()],
+          hard_errors: [hard_error()],
+          coverage: coverage(),
           assumptions: [atom()],
           warnings: [run_warning()],
           exclusions: [exclusion()],
@@ -807,4 +968,463 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     |> Enum.uniq()
     |> Enum.sort_by(&{&1.subject, &1.reason})
   end
+
+  # --- roster stage -----------------------------------------------------------
+
+  @doc """
+  Adds the roster stage: the base-week choices, the single-slot lines and the
+  fictional operators a generation would add, the run-days it leaves unstaffed, the
+  findings of the roster that leaves, and the recurring coverage it reaches.
+
+  The composition is the version's own: `Rosters.BaseWeek.resolve/2` answers each
+  weekday's base day type, `Rosters.Roster.build/1` composes the roster over the
+  runs the crew stage derived, and `Rosters.AssignmentsExport.rows/1` expands it to
+  the dates the exporter would write. Nothing here re-derives a base-week fallback,
+  a date's day type or the previous-date shift of a run signing on before midnight.
+
+  Pure, like the rest of this module: no read, no write, no clock and no network.
+  """
+  @spec with_roster(t(), map(), map()) :: t()
+  def with_roster(candidate, source, input) do
+    day_types = Map.fetch!(source, :version_day_types)
+    rules = Map.fetch!(source, :rules)
+    settings = Map.fetch!(rules, :roster)
+    runs = candidate.run_days
+
+    stored_base = BaseWeek.resolve(day_types, settings.roster_day_types)
+
+    {additions, hard_errors} =
+      base_choices(input, day_types, stored_base, rules.roster_lines, runs)
+
+    base_week = BaseWeek.resolve(day_types, Map.merge(settings.roster_day_types, additions))
+
+    # Two compositions: the version's own lines answer which run-days are still
+    # open, and the lines a generation would add are then composed beside them, so
+    # the coverage and the findings describe the roster a save would leave.
+    kept = composed_stored_lines(rules.roster_lines, runs)
+    proposals = proposals(compose(base_week, runs, kept, settings))
+    roster = compose(base_week, runs, kept ++ Enum.map(proposals, &composed_proposal/1), settings)
+
+    assignments =
+      AssignmentsExport.rows(%{
+        roster: roster,
+        day_types: day_types,
+        run_days: runs,
+        # The export's own service reservation (`TodsExport`) names the `_prev`
+        # service; a preview holds no supplement, so it reports the date the
+        # exporter shifts to and leaves the service to the export that writes it.
+        services: nil
+      })
+
+    coverage = coverage(input, day_types, runs, assignments, roster, stored_base, additions)
+
+    Map.merge(candidate, %{
+      roster_day_types: additions,
+      roster_lines: proposals,
+      roster_exclusions: roster_exclusions(base_week, runs, roster, day_types),
+      roster_findings: roster_findings(roster, proposals),
+      hard_errors: hard_errors,
+      coverage: coverage,
+      assumptions: assumptions(candidate.assumptions, proposals, coverage),
+      counts: Map.merge(candidate.counts, roster_counts(roster, kept, proposals))
+    })
+  end
+
+  defp compose(base_week, runs, lines, settings) do
+    Roster.build(%{base_week: base_week, run_days: runs, lines: lines, rules: settings})
+  end
+
+  # --- the base week ----------------------------------------------------------
+
+  # One choice per weekday of the representative week.
+  #
+  # A weekday the version already answers is kept: a stored choice, and a weekday
+  # holding slots a planner set by hand, keep the base they have, because moving it
+  # is what makes those slots `:base_changed`. Where the representative date works a
+  # different day type than such a weekday, the request's work there is refused —
+  # reported as a `:base_conflict` — rather than delivered by moving the operator's
+  # own choice.
+  #
+  # Every other weekday takes the representative date's own day type, and only
+  # where that differs from the base the version would resolve anyway: a compatible
+  # base needs no stored change, and `roster_day_types` is what a save would write.
+  # A representative date whose day type the request did not select is left out
+  # entirely: the request holds no runs for it, so choosing it would strand the
+  # weekday's selected work with nothing to staff it.
+  defp base_choices(input, day_types, stored_base, stored_lines, runs) do
+    dates = date_day_types(day_types)
+    manual = manual_weekdays(stored_lines)
+    composed = MapSet.new(Map.keys(runs))
+
+    {additions, conflicts} =
+      Enum.reduce(representative_week(input), {%{}, []}, fn date, {additions, conflicts} ->
+        weekday = Date.day_of_week(date)
+        base = Map.fetch!(stored_base, weekday)
+        representative = Map.get(dates, date)
+
+        cond do
+          is_nil(representative) ->
+            {additions, conflicts}
+
+          not MapSet.member?(composed, representative.key) ->
+            {additions, conflicts}
+
+          base_key(base) == representative.key ->
+            {additions, conflicts}
+
+          protected?(base, manual, weekday) ->
+            {additions, [base_conflict(weekday, base, representative) | conflicts]}
+
+          true ->
+            {Map.put(additions, Integer.to_string(weekday), representative.key), conflicts}
+        end
+      end)
+
+    {additions, conflicts |> Enum.reverse() |> Enum.filter(&conflicting_work?(&1, runs))}
+  end
+
+  defp protected?(base, manual, weekday), do: base.chosen? or MapSet.member?(manual, weekday)
+
+  defp base_conflict(weekday, base, representative) do
+    %{
+      reason: :base_conflict,
+      weekday: weekday,
+      day_type_key: representative.key,
+      retained_day_type_key: base_key(base)
+    }
+  end
+
+  # A conflict is only a hard error where the request actually has work: a day type
+  # with no exportable run leaves nothing to refuse, and a plan that already cannot
+  # be staffed there is a partial outcome rather than an unusable request.
+  defp conflicting_work?(conflict, runs) do
+    runs |> day_runs(conflict.day_type_key) |> Enum.any?(&(not error_run?(&1)))
+  end
+
+  defp base_key(%{day_type: %{key: key}}), do: key
+  defp base_key(%{day_type: nil}), do: nil
+
+  # Every date one day type answers. `DayTypes.derive/1` partitions the version's
+  # dates by exact service set, so a date belongs to one day type.
+  defp date_day_types(day_types) do
+    for day_type <- day_types, date <- day_type.dates, into: %{}, do: {date, day_type}
+  end
+
+  defp manual_weekdays(stored_lines) do
+    stored_lines
+    |> Enum.flat_map(& &1.days)
+    |> Enum.map(& &1.weekday)
+    |> MapSet.new()
+  end
+
+  defp representative_week(input) do
+    monday = Date.from_iso8601!(Map.fetch!(input, "representative_week"))
+    Enum.map(0..6, &Date.add(monday, &1))
+  end
+
+  # --- the lines --------------------------------------------------------------
+
+  # Every exportable run of a base day type that no line holds, in weekday order,
+  # each with the ordinal the save would name its operator by. `Roster.build/1`
+  # answers the open work: a run-day a stored slot holds is not in it, whatever that
+  # slot's state says, and a run the export drops because of an error finding is
+  # left out here for the same reason.
+  defp proposals(roster) do
+    roster.groups
+    |> Enum.flat_map(&group_proposals/1)
+    |> Enum.sort_by(&{&1.weekday, &1.run_id})
+    |> Enum.with_index(1)
+    |> Enum.map(fn {proposal, ordinal} -> Map.put(proposal, :operator_ordinal, ordinal) end)
+  end
+
+  # One base day type's open run-days, one proposal each. A run the export drops
+  # because of an error finding is not offered: a line holding it would hold work
+  # that can never be written.
+  defp group_proposals(group) do
+    for open_run <- group.open_runs,
+        not error_run?(open_run.run),
+        weekday <- open_run.open_weekdays,
+        do: proposal(weekday, group.day_type.key, open_run.run)
+  end
+
+  defp proposal(weekday, key, run) do
+    %{
+      weekday: weekday,
+      day_type_key: key,
+      run_id: run.run_id,
+      run_sign_on_secs: run.work.sign_on_secs,
+      run_sign_off_secs: run.work.sign_off_secs
+    }
+  end
+
+  # A stored line as the composition reads it, with the days this request composed
+  # kept and the rest left out: a slot on a day type the request did not compose is
+  # not this preview's to judge, and reporting its run as removed would be a claim
+  # about a day type the composition holds no runs for. A line left with no day
+  # leaves the composition entirely.
+  defp composed_stored_lines(stored_lines, runs) do
+    stored_lines
+    |> Enum.map(&composed_stored_line(&1, runs))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp composed_stored_line(line, runs) do
+    days = Enum.filter(line.days, &(Map.get(runs, &1.day_type_key) != nil))
+
+    if days == [] do
+      nil
+    else
+      %{
+        id: line.id,
+        line_number: line.line_number,
+        operator: operator(line),
+        days: Enum.map(days, &slot_input/1)
+      }
+    end
+  end
+
+  defp operator(%{employee_id: nil}), do: nil
+
+  defp operator(line) do
+    %{employee_id: line.employee_id, display_name: line.display_name}
+  end
+
+  # The identity a save would give a proposed operator is the request's — its
+  # employee ID carries the request UUID, which is transport rather than business
+  # input — so the composed line names the ordinal and leaves the row's own employee
+  # fields to the save that writes them.
+  defp composed_proposal(proposal) do
+    %{
+      id: nil,
+      line_number: nil,
+      operator: %{employee_id: nil, display_name: nil},
+      days: [slot_input(proposal)]
+    }
+  end
+
+  defp slot_input(day) do
+    %{
+      weekday: day.weekday,
+      day_type_key: day.day_type_key,
+      run_id: day.run_id,
+      run_sign_on_secs: day.run_sign_on_secs,
+      run_sign_off_secs: day.run_sign_off_secs
+    }
+  end
+
+  # --- what the roster leaves unstaffed ---------------------------------------
+
+  # One entry per run-day the plan leaves unstaffed, over every weekday its own day
+  # type works — not only the selected dates, because a saved slot reaches all of
+  # them. A run the composition presents is checked; a day type with no run at all
+  # has nothing to leave open.
+  defp roster_exclusions(base_week, runs, roster, day_types) do
+    stale = stale_run_days(roster)
+
+    for day_type <- day_types,
+        day_runs = day_runs(runs, day_type.key),
+        day_runs != [],
+        weekday <- weekdays_of(day_type),
+        run <- day_runs,
+        subject = {weekday, day_type.key, run.run_id},
+        reason = unstaffed_reason(base_week, weekday, day_type.key, run, stale, subject),
+        not is_nil(reason),
+        do: %{subject: subject, reason: reason}
+  end
+
+  # The first reason that applies, so a run-day is reported once: a weekday whose
+  # base is another day type cannot be reached by a recurring line at all, a run the
+  # export drops is not written wherever it is, and a stale slot's run-day is held
+  # without being exported.
+  defp unstaffed_reason(base_week, weekday, key, run, stale, subject) do
+    cond do
+      not base?(base_week, weekday, key) -> :no_base_weekday
+      error_run?(run) -> :run_has_errors
+      MapSet.member?(stale, subject) -> :stale_slot
+      true -> nil
+    end
+  end
+
+  defp base?(base_week, weekday, key) do
+    case Map.get(base_week, weekday) do
+      %{day_type: %{key: ^key}} -> true
+      _no_base -> false
+    end
+  end
+
+  # The run-days a stored line holds without being able to export them, so the work
+  # is neither the generation's to add nor the export's to write.
+  defp stale_run_days(roster) do
+    for line <- roster.lines,
+        {weekday, slot} <- line.slots,
+        match?({:stale, _reason}, slot.state),
+        into: MapSet.new(),
+        do: {weekday, slot.day_type_key, slot.run_id}
+  end
+
+  defp weekdays_of(day_type) do
+    day_type.dates |> Enum.map(&Date.day_of_week/1) |> Enum.uniq() |> Enum.sort()
+  end
+
+  # --- what the roster says about itself --------------------------------------
+
+  defp roster_findings(roster, proposals) do
+    ordinals =
+      Map.new(proposals, &{{&1.weekday, &1.day_type_key, &1.run_id}, &1.operator_ordinal})
+
+    Enum.flat_map(roster.lines, fn line ->
+      Enum.map(line.findings, fn finding ->
+        %{
+          line_number: line.line_number,
+          operator_ordinal: proposal_ordinal(line, ordinals),
+          code: finding.code,
+          weekdays: finding.weekdays,
+          detail: finding.detail
+        }
+      end)
+    end)
+  end
+
+  # A proposed line holds one slot, and the day it holds names the proposal it came
+  # from: an existing line is identified by its own number instead.
+  defp proposal_ordinal(%{slots: slots}, ordinals) when map_size(slots) == 1 do
+    [{weekday, slot}] = Map.to_list(slots)
+    Map.get(ordinals, {weekday, slot.day_type_key, slot.run_id})
+  end
+
+  defp proposal_ordinal(_line, _ordinals), do: nil
+
+  defp roster_counts(roster, kept, proposals) do
+    %{
+      new_lines: length(proposals),
+      new_slots: length(proposals),
+      new_operators: length(proposals),
+      preserved_lines: length(kept),
+      preserved_slots: kept |> Enum.flat_map(& &1.days) |> length(),
+      preserved_operators:
+        kept
+        |> Enum.map(&(&1.operator && &1.operator.employee_id))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+        |> length(),
+      open_run_days: roster.groups |> Enum.map(& &1.open_run_days) |> Enum.sum()
+    }
+  end
+
+  # --- coverage ---------------------------------------------------------------
+
+  defp coverage(input, day_types, runs, assignments, roster, stored_base, additions) do
+    start_date = Date.from_iso8601!(Map.fetch!(input, "start_date"))
+    end_date = Date.from_iso8601!(Map.fetch!(input, "end_date"))
+    staffed = staffed_run_days(roster)
+    affected = affected_dates(day_types, runs, staffed)
+
+    %{
+      range: %{
+        start_date: start_date,
+        end_date: end_date,
+        representative_week: Date.from_iso8601!(Map.fetch!(input, "representative_week"))
+      },
+      base_week: base_week_days(roster.base_week, stored_base, additions),
+      affected_dates: affected,
+      beyond_range_dates: Enum.reject(affected, &in_range?(&1, start_date, end_date)),
+      open_dates: open_dates(day_types, runs, affected, start_date, end_date),
+      other_service_dates: assignments.other_service_dates,
+      exported_dates: exported_dates(assignments)
+    }
+  end
+
+  # The run-days an assigned, exportable line would write: the composition's own
+  # answer, so a slot whose stored times no longer match its run is not counted as
+  # staffed, and neither is one whose run the export drops.
+  defp staffed_run_days(roster) do
+    for line <- roster.lines,
+        not is_nil(line.operator),
+        {weekday, slot} <- line.slots,
+        slot.state == :ok,
+        not is_nil(slot.run),
+        not error_run?(slot.run),
+        into: MapSet.new(),
+        do: {weekday, slot.day_type_key}
+  end
+
+  # Every date a saved slot reaches: each date of a day type whose weekday the plan
+  # would staff, in the range or not. The date's own weekday is what decides — a
+  # slot on Tuesday repeats to every Tuesday of the base day type.
+  defp affected_dates(day_types, runs, staffed) do
+    for day_type <- day_types,
+        day_runs(runs, day_type.key) != [],
+        date <- day_type.dates,
+        MapSet.member?(staffed, {Date.day_of_week(date), day_type.key}),
+        do: date
+  end
+
+  # The dates inside the selected range with service that nothing would staff.
+  # Only a day type the request derived runs for counts: a day type whose trips were
+  # never cut has nothing this plan could have staffed.
+  defp open_dates(day_types, runs, affected, start_date, end_date) do
+    staffed = MapSet.new(affected)
+
+    for day_type <- day_types,
+        day_runs(runs, day_type.key) != [],
+        date <- day_type.dates,
+        in_range?(date, start_date, end_date),
+        not MapSet.member?(staffed, date),
+        do: date
+  end
+
+  defp in_range?(date, start_date, end_date) do
+    Date.compare(date, start_date) != :lt and Date.compare(date, end_date) != :gt
+  end
+
+  defp exported_dates(assignments) do
+    assignments.rows
+    |> Enum.map(&%{date: &1.date, service_id: &1.service_id})
+    |> Enum.uniq()
+    |> Enum.sort_by(&Date.to_iso8601(&1.date))
+  end
+
+  # `chosen?` and `missing_choice` are read from the version's *stored* answers, so
+  # a weekday this request would choose for itself reports `added?: true` rather
+  # than looking like a choice the operator already had.
+  defp base_week_days(base_week, stored_base, additions) do
+    Enum.map(1..7, fn weekday ->
+      base = Map.fetch!(base_week, weekday)
+      stored = Map.fetch!(stored_base, weekday)
+
+      %{
+        weekday: weekday,
+        day_type_key: base_key(base),
+        chosen?: stored.chosen?,
+        added?: Map.has_key?(additions, Integer.to_string(weekday)),
+        missing_choice: stored.missing_choice
+      }
+    end)
+  end
+
+  # --- the assumptions the roster stage rests on -------------------------------
+
+  # What the roster stage assumes, in the operator's terms: the allocation is one
+  # operator per run-day rather than a weekly duty, and a slot saved for a weekday
+  # reaches every matching date of the calendar, not only the selected range.
+  defp assumptions(crew_assumptions, proposals, coverage) do
+    []
+    |> add_assumption(proposals != [], :one_operator_per_run_day)
+    |> add_assumption(coverage.beyond_range_dates != [], :recurring_beyond_range)
+    |> Kernel.++(crew_assumptions)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp add_assumption(assumptions, true, assumption), do: [assumption | assumptions]
+  defp add_assumption(assumptions, false, _assumption), do: assumptions
+
+  defp day_runs(runs, key) do
+    case Map.get(runs, key) do
+      %{runs: day_runs} -> day_runs
+      nil -> []
+    end
+  end
+
+  defp error_run?(run), do: Enum.any?(run.findings, &(&1.severity == :error))
 end
