@@ -33,6 +33,7 @@ defmodule GtfsPlanner.FeedPublishing.StaticPublicationTest do
   alias GtfsPlanner.FeedPublishing.Attempt
   alias GtfsPlanner.FeedPublishing.Config
   alias GtfsPlanner.FeedPublishing.HTTPBoundary
+  alias GtfsPlanner.FeedPublishing.Manifest
   alias GtfsPlanner.FeedPublishing.Namespace
   alias GtfsPlanner.FeedPublishing.Publication
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
@@ -40,10 +41,13 @@ defmodule GtfsPlanner.FeedPublishing.StaticPublicationTest do
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+  alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   @moduletag timeout: 120_000
 
@@ -345,7 +349,216 @@ defmodule GtfsPlanner.FeedPublishing.StaticPublicationTest do
     end
   end
 
+  describe "confirmed full receipts and the active schedule" do
+    test "queueing freezes the exported version and leaves the selection alone", context do
+      before = selection(context)
+      {_run, _publication, attempt} = queue_full(context)
+
+      assert attempt.private_snapshot["source"]["gtfs_version_id"] == context.version.id
+      refute before.version_id == context.version.id
+      assert before.sequence == 0
+      assert selection(context) == before
+    end
+
+    test "confirmation selects the frozen source with the served receipt, even when its export run is gone",
+         context do
+      before = selection(context)
+      version_id = context.version.id
+
+      Phoenix.PubSub.subscribe(
+        GtfsPlanner.PubSub,
+        Versions.active_schedule_topic(context.organization.id)
+      )
+
+      {run, publication, attempt} = queue_full(context)
+
+      # The run and the pin that protected it can be gone by the time the receipt is recorded.
+      Repo.delete_all(from p in PublicationPin, where: p.export_run_id == ^run.id)
+      Repo.delete_all(from r in ValidationRun, where: r.artifact_export_run_id == ^run.id)
+      Repo.delete_all(from r in Run, where: r.id == ^run.id)
+
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+
+      assert selection(context) == %{
+               version_id: version_id,
+               revision: before.revision + 1,
+               sequence: attempt.sequence
+             }
+
+      channel = Repo.get!(Publication, publication.id)
+      assert channel.status == :current
+      assert channel.manifest_sequence == attempt.sequence
+      assert channel.last_error == nil
+      assert_receive {:active_schedule_changed, %{version_id: ^version_id}}
+    end
+
+    test "an attempt queued before the version was frozen selects its surviving run's version",
+         context do
+      {_run, publication, attempt} = queue_full(context)
+
+      legacy =
+        Map.update!(attempt.private_snapshot, "source", &Map.delete(&1, "gtfs_version_id"))
+
+      Repo.update_all(from(a in Attempt, where: a.id == ^attempt.id),
+        set: [private_snapshot: legacy]
+      )
+
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+      assert selection(context).version_id == context.version.id
+    end
+
+    test "a replayed receipt cannot undo a manual choice but a newer confirmed receipt selects again",
+         context do
+      before = selection(context)
+      {_run, publication, attempt} = queue_full(context)
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+      assert selection(context).version_id == context.version.id
+
+      # The editor chooses the earlier schedule again.
+      {:ok, %{token: token}} = Versions.active_schedule(context.scope)
+      {:ok, _} = Versions.set_active_schedule(context.scope, before.version_id, token)
+      chosen = selection(context)
+      assert chosen == %{version_id: before.version_id, revision: 3, sequence: attempt.sequence}
+
+      # The same sequence is acknowledged again: a lost database receipt, reconciled.
+      mark_sent(attempt)
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+      assert selection(context) == chosen
+
+      # A later export of another version is a new receipt with a greater sequence.
+      second = gtfs_version_fixture(context.organization.id)
+      second_run = ready_run(%{context | version: second}, [])
+      _review = seed_review(second_run, :main, [])
+      assert {:ok, preview} = FeedPublishing.preview_static(context.scope, second_run.id, :main)
+      assert {:ok, publication_id} = publish(context, preview)
+      assert publication_id == publication.id
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+
+      assert selection(context) == %{version_id: second.id, revision: 4, sequence: 2}
+      assert Repo.get!(Publication, publication.id).last_error == nil
+    end
+
+    test "a reconciled receipt selects the source without sending the manifest again", context do
+      {_run, publication, attempt} = queue_full(context)
+      mark_sent(attempt)
+      serve_remotely(context, attempt)
+
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+
+      assert Enum.filter(HTTPBoundary.requests(), &(&1.request.method == :put)) == []
+      assert selection(context).version_id == context.version.id
+      assert selection(context).sequence == attempt.sequence
+      assert Repo.get!(Publication, publication.id).manifest_sequence == attempt.sequence
+    end
+
+    test "a served file whose desired revision moved on selects its source", context do
+      {_run, publication, attempt} = queue_full(context)
+      mark_sent(attempt)
+      serve_remotely(context, attempt)
+      Repo.update!(Ecto.Changeset.change(publication, desired_revision: 2))
+
+      assert {:ok, :superseded} = FeedPublishing.advance(publication.id)
+
+      assert selection(context).version_id == context.version.id
+      assert selection(context).sequence == attempt.sequence
+      assert Repo.get!(Publication, publication.id).status == :pending
+    end
+
+    test "newer intent over an attempt that never sent selects nothing", context do
+      before = selection(context)
+      {_run, publication, _attempt} = queue_full(context)
+      Repo.update!(Ecto.Changeset.change(publication, desired_revision: 2))
+
+      assert {:ok, :superseded} = FeedPublishing.advance(publication.id)
+
+      assert HTTPBoundary.requests() == []
+      assert selection(context) == before
+    end
+
+    test "a blocked manifest selects nothing", context do
+      before = selection(context)
+      {_run, publication, attempt} = queue_full(context)
+      mark_sent(attempt)
+      HTTPBoundary.put_object(manifest_key(context), "another owner", etag: ~s("other"))
+
+      assert {:error, :blocked} = FeedPublishing.advance(publication.id)
+
+      assert selection(context) == before
+    end
+
+    test "an unconfirmed manifest read selects nothing", context do
+      before = selection(context)
+      {_run, publication, attempt} = queue_full(context)
+      mark_sent(attempt)
+      HTTPBoundary.script([{:response, 500, [], ""}])
+
+      assert {:ok, :pending} = FeedPublishing.advance(publication.id)
+
+      assert selection(context) == before
+      assert Repo.get!(Publication, publication.id).status == :pending
+    end
+
+    test "a source deleted before acknowledgment keeps the active schedule and records the served file",
+         context do
+      before = selection(context)
+      {run, publication, attempt} = queue_full(context)
+
+      Repo.delete_all(from p in PublicationPin, where: p.export_run_id == ^run.id)
+      Repo.delete_all(from v in GtfsVersion, where: v.id == ^context.version.id)
+
+      assert {:ok, :current} = FeedPublishing.advance(publication.id)
+
+      # The receipt is consumed (sequence advances) but the pointer and revision stay.
+      assert selection(context) == %{before | sequence: attempt.sequence}
+
+      channel = Repo.get!(Publication, publication.id)
+      assert channel.status == :current
+      assert channel.manifest_sequence == attempt.sequence
+      assert channel.manifest_bytes == attempt.manifest_body
+      assert channel.last_error == Publication.active_source_unavailable()
+    end
+  end
+
   # -- Fixtures and helpers -------------------------------------------------
+
+  defp selection(context) do
+    organization = Repo.get!(Organization, context.organization.id)
+
+    %{
+      version_id: organization.active_gtfs_version_id,
+      revision: organization.active_gtfs_version_revision,
+      sequence: organization.active_full_publication_sequence
+    }
+  end
+
+  # Reviews and queues the full export of `context.version`.
+  defp queue_full(context) do
+    run = ready_run(context, [])
+    _review = seed_review(run, :main, [])
+
+    assert {:ok, preview} = FeedPublishing.preview_static(context.scope, run.id, :main)
+    assert {:ok, publication_id} = publish(context, preview)
+
+    publication = Repo.get!(Publication, publication_id)
+    {run, publication, Repo.get!(Attempt, publication.active_attempt_id)}
+  end
+
+  # The attempt's send is recorded but its receipt is not.
+  defp mark_sent(attempt) do
+    Repo.update_all(from(a in Attempt, where: a.id == ^attempt.id), set: [state: "switching"])
+  end
+
+  defp manifest_key(context) do
+    namespace = Repo.get_by!(Namespace, organization_id: context.organization.id)
+    Manifest.key(namespace.prefix, :full)
+  end
+
+  defp serve_remotely(context, attempt) do
+    HTTPBoundary.put_object(manifest_key(context), attempt.manifest_body,
+      etag: ~s("remote"),
+      last_modified: "Thu, 02 Oct 2026 12:00:00 GMT"
+    )
+  end
 
   defp ready_run(context, extra_members, opts \\ []) do
     organization = context.organization

@@ -290,7 +290,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
     run(audit, :share, fn station ->
       stop_level = lock_stop_level!(audit, station, stop_level_id)
       stale_stop_level!(stop_level, expected_revision)
-      level = scoped_level!(audit, stop_level.level_id)
+      level = scoped_level_by_level_id!(audit, stop_level.level_id)
       changeset = stop_level |> StopLevel.scale_changeset(attrs) |> force_stop_level_update()
 
       with {:ok, updated} <- Repo.update(changeset),
@@ -300,8 +300,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
                updated,
                audit.organization_id,
                audit.gtfs_version_id,
-               level.id,
-               station.id,
+               level.level_id,
+               station.stop_id,
                audit
              ),
            {:ok, _log} <-
@@ -617,7 +617,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
           from(sl in StopLevel,
             where:
               sl.id == ^id and sl.organization_id == ^audit.organization_id and
-                sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+                sl.gtfs_version_id == ^audit.gtfs_version_id and
+                sl.stop_id == ^station.stop_id
           )
         )
 
@@ -639,8 +640,10 @@ defmodule GtfsPlanner.Gtfs.Stations do
         Repo.exists?(
           from(sl in StopLevel,
             where:
-              sl.level_id == ^level.id and sl.organization_id == ^audit.organization_id and
-                sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+              sl.level_id == ^level.level_id and
+                sl.organization_id == ^audit.organization_id and
+                sl.gtfs_version_id == ^audit.gtfs_version_id and
+                sl.stop_id == ^station.stop_id
           )
         )
 
@@ -985,7 +988,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
             from(sl in StopLevel,
               where:
                 sl.id == ^id and sl.organization_id == ^audit.organization_id and
-                  sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+                  sl.gtfs_version_id == ^audit.gtfs_version_id and
+                  sl.stop_id == ^station.stop_id
             )
           )
 
@@ -1023,8 +1027,10 @@ defmodule GtfsPlanner.Gtfs.Stations do
     unless Repo.exists?(
              from(sl in StopLevel,
                where:
-                 sl.level_id == ^level.id and sl.organization_id == ^audit.organization_id and
-                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+                 sl.level_id == ^level.level_id and
+                   sl.organization_id == ^audit.organization_id and
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.stop_id == ^station.stop_id
              )
            ),
            do: Repo.rollback(:not_found)
@@ -1120,6 +1126,13 @@ defmodule GtfsPlanner.Gtfs.Stations do
     ]
   end
 
+  defp scoped_level_by_level_id!(audit, level_id) do
+    case Gtfs.get_level_by_level_id(audit.organization_id, audit.gtfs_version_id, level_id) do
+      %Level{} = level -> level
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
   defp scoped_level!(audit, level_uuid) do
     with {:ok, id} <- Ecto.UUID.cast(level_uuid),
          %Level{} = level <-
@@ -1142,12 +1155,15 @@ defmodule GtfsPlanner.Gtfs.Stations do
            Repo.one(
              from(l in Level,
                join: sl in StopLevel,
-               on: sl.level_id == l.id,
+               on:
+                 sl.level_id == l.level_id and sl.organization_id == l.organization_id and
+                   sl.gtfs_version_id == l.gtfs_version_id,
                where:
                  l.id == ^id and l.organization_id == ^audit.organization_id and
                    l.gtfs_version_id == ^audit.gtfs_version_id and
                    sl.organization_id == ^audit.organization_id and
-                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.stop_id == ^station.stop_id,
                lock: "FOR UPDATE",
                select: l
              )
@@ -1164,12 +1180,15 @@ defmodule GtfsPlanner.Gtfs.Stations do
            Repo.one(
              from(sl in StopLevel,
                join: l in Level,
-               on: l.id == sl.level_id,
+               on:
+                 l.level_id == sl.level_id and l.organization_id == sl.organization_id and
+                   l.gtfs_version_id == sl.gtfs_version_id,
                where:
                  l.id == ^id and l.organization_id == ^audit.organization_id and
                    l.gtfs_version_id == ^audit.gtfs_version_id and
                    sl.organization_id == ^audit.organization_id and
-                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.stop_id == ^station.stop_id,
                lock: "FOR UPDATE",
                select: {sl, l}
              )
@@ -1187,7 +1206,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
              from(sl in StopLevel,
                where:
                  sl.id == ^id and sl.organization_id == ^audit.organization_id and
-                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.stop_id == ^station.stop_id,
                lock: "FOR UPDATE"
              )
            ) do
@@ -1223,8 +1243,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
   defp insert_stop_level(audit, station, level, attrs) do
     %StopLevel{
-      stop_id: station.id,
-      level_id: level.id,
+      stop_id: station.stop_id,
+      level_id: level.level_id,
       organization_id: audit.organization_id,
       gtfs_version_id: audit.gtfs_version_id
     }
@@ -1252,6 +1272,9 @@ defmodule GtfsPlanner.Gtfs.Stations do
       )
       |> Repo.update_all(set: [record_id: new_id, updated_at: now])
 
+    # `stop_levels.level_id` follows the rename through the
+    # `stop_levels_levels_owner_fkey` ON UPDATE CASCADE constraint; no manual
+    # update belongs here.
     %{stops: stops, translations: translations}
   end
 

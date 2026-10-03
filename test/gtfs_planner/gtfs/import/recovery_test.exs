@@ -147,8 +147,8 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
           id: Ecto.UUID.generate(),
           organization_id: org.id,
           gtfs_version_id: version.id,
-          level_id: lvl.id,
-          stop_id: stop.id,
+          level_id: lvl.level_id,
+          stop_id: stop.stop_id,
           inserted_at: now,
           updated_at: now
         }

@@ -39,9 +39,13 @@ defmodule GtfsPlanner.Gtfs.Stop do
     field :parent_station, :string
     field :level_id, :string
 
-    has_many :child_stops, __MODULE__, foreign_key: :parent_station
-    has_many :stop_levels, GtfsPlanner.Gtfs.StopLevel
-    many_to_many :levels, GtfsPlanner.Gtfs.Level, join_through: GtfsPlanner.Gtfs.StopLevel
+    # `child_stops` was an automatic association on `parent_station`, which
+    # joined every organization's rows sharing a feed ID. Child stops are read
+    # through the scoped station readers in `Gtfs` instead. The former
+    # `stop_levels`/`levels` associations joined through `stop_levels.stop_id`
+    # and `stop_levels.level_id`, which now hold scoped GTFS identifiers rather
+    # than row UUIDs; both are read through the scoped floorplan readers in
+    # `Gtfs` instead.
 
     # Virtual field for preloaded level data (populated via select_merge in queries)
     field :level, :map, virtual: true

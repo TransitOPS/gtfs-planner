@@ -66,13 +66,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternDeleteTest do
     Repo.reload!(pattern)
   end
 
-  defp occurrences(pattern_id) do
-    Repo.all(
-      from o in RoutePatternStop,
-        where: o.route_pattern_id == ^pattern_id,
-        order_by: [asc: o.position]
-    )
-  end
+  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
   defp insert_shared(organization, version, from_id, to_id, points) do
     %AlignmentSegment{
@@ -189,7 +183,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternDeleteTest do
     delete_pattern!(context, drawn)
 
     assert Repo.get(RoutePattern, pattern.id) == nil
-    assert Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id) == []
+
+    assert Repo.all(
+             from o in RoutePatternStop,
+               where:
+                 o.organization_id == ^pattern.organization_id and
+                   o.gtfs_version_id == ^pattern.gtfs_version_id and
+                   o.route_pattern_id == ^pattern.route_pattern_id
+           ) == []
 
     # The owned shape rows are gone.
     assert shape_rows(context.organization, context.version, shape_id) == []

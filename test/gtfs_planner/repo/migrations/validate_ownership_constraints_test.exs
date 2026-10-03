@@ -2,12 +2,10 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraints, as: Migration
   alias GtfsPlanner.Repo.Migrations.ValidateRunsOwnershipConstraints, as: RunsMigration
   alias GtfsPlanner.Repo.Migrations.ValidateUpstreamOwnershipConstraints, as: UpstreamMigration
 
-  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -69,7 +67,8 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     # organization. The alert keys are a retained provenance source that clears
     # only `source_gtfs_version_id`, and an `alert_publications` row that may only
     # name an alert of its own organization; neither is a version owner, because an
-    # alert outlives its source version. The four later fare keys are the one set
+    # alert outlives its source version. `organizations_active_gtfs_version_owner_fkey`
+    # keeps an organization's active schedule among its own versions. The four later fare keys are the one set
     # the shared migration leaves NOT VALID, so they are asserted apart from the
     # rest rather than as part of the validated whole.
     fare_constraints =
@@ -77,7 +76,7 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
       |> Enum.map(&"#{&1}_version_owner_fkey")
 
     {later, original} = Enum.split_with(rows, fn [name, _] -> name in fare_constraints end)
-    assert length(original) == 78
+    assert length(original) == 79
     assert Enum.all?(original, fn [_name, validated?] -> validated? end)
     assert Enum.sort(Enum.map(later, &hd/1)) == Enum.sort(fare_constraints)
     assert Enum.all?(later, fn [_name, validated?] -> not validated? end)
@@ -118,68 +117,74 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     assert error.message =~ "No rows were changed"
   end
 
-  test "runs validation marks both exact scoped keys valid" do
-    reset_runs_constraints()
-    assert runs_constraints_validated?() == [false, false]
+  # `trip_runs` now names its trip by GTFS ID, so the frozen validation module is
+  # exercised against the schema it was written for: UUID trip references in an
+  # isolated schema. `validate_all!/2` takes the schema to inspect.
+  describe "runs validation against the original trip_runs schema" do
+    setup do
+      %{schema: original_runs_schema!()}
+    end
 
-    assert :ok = RunsMigration.validate_all!(Repo)
-    assert runs_constraints_validated?() == [true, true]
-  end
+    test "marks both exact scoped keys valid", %{schema: schema} do
+      add_runs_constraints_not_valid(schema)
+      assert runs_constraints_validated?(schema) == [false, false]
 
-  test "runs validation checks both definitions before changing either flag" do
-    reset_runs_constraints()
-    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+      assert :ok = RunsMigration.validate_all!(Repo, schema)
+      assert runs_constraints_validated?(schema) == [true, true]
+    end
 
-    error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo) end
-    assert error.message =~ "trip_runs_trips_owner_fkey"
-    assert error.message =~ "missing or has the wrong key"
-    assert error.message =~ "No rows were changed"
-    assert constraint_validated?("trip_runs", "trip_runs_version_owner_fkey") == false
+    test "checks both definitions before changing either flag", %{schema: schema} do
+      add_runs_constraints_not_valid(schema)
+      Repo.query!("ALTER TABLE #{schema}.trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
 
-    Repo.query!("""
-    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
-    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE NO ACTION NOT VALID
-    """)
+      error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo, schema) end
+      assert error.message =~ "trip_runs_trips_owner_fkey"
+      assert error.message =~ "missing or has the wrong key"
+      assert error.message =~ "No rows were changed"
+      assert constraint_validated?(schema, "trip_runs", "trip_runs_version_owner_fkey") == false
 
-    error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo) end
-    assert error.message =~ "trip_runs_trips_owner_fkey"
-    assert error.message =~ "wrong key"
-    assert constraint_validated?("trip_runs", "trip_runs_version_owner_fkey") == false
-  end
+      Repo.query!("""
+      ALTER TABLE #{schema}.trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
+      FOREIGN KEY (trip_id) REFERENCES #{schema}.trips(id) ON DELETE NO ACTION NOT VALID
+      """)
 
-  test "a pre-existing wrong-version assignment survives NOT VALID installation and failed validation" do
-    drop_runs_constraints()
-    org = organization_fixture()
-    foreign_org = organization_fixture()
-    foreign_version = gtfs_version_fixture(foreign_org.id)
-    route = route_fixture(foreign_org.id, foreign_version.id)
-    trip = trip_fixture(foreign_org.id, foreign_version.id, route.route_id)
-    id = insert_trip_run!(org.id, foreign_version.id, trip.id)
-    before = row_json("trip_runs", id)
+      error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo, schema) end
+      assert error.message =~ "trip_runs_trips_owner_fkey"
+      assert error.message =~ "wrong key"
+      assert constraint_validated?(schema, "trip_runs", "trip_runs_version_owner_fkey") == false
+    end
 
-    add_runs_constraints_not_valid()
-    assert row_json("trip_runs", id) == before
-    assert runs_constraints_validated?() == [false, false]
+    test "a pre-existing wrong-version assignment survives NOT VALID installation and failed validation",
+         %{schema: schema} do
+      org = Ecto.UUID.generate()
+      foreign_org = Ecto.UUID.generate()
+      foreign_version = insert_runs_version!(schema, foreign_org)
+      trip = insert_runs_trip!(schema, foreign_org, foreign_version)
+      id = insert_trip_run!(schema, org, foreign_version, trip)
+      before = row_json("#{schema}.trip_runs", id)
 
-    assert_runs_validation_failure!("trip_runs_version_owner_fkey")
-    assert row_json("trip_runs", id) == before
-    assert runs_constraints_validated?() == [false, false]
-  end
+      add_runs_constraints_not_valid(schema)
+      assert row_json("#{schema}.trip_runs", id) == before
+      assert runs_constraints_validated?(schema) == [false, false]
 
-  test "a wrong-trip assignment rolls back the earlier validation flag" do
-    drop_runs_constraints()
-    org = organization_fixture()
-    version = gtfs_version_fixture(org.id)
-    other_version = gtfs_version_fixture(org.id)
-    route = route_fixture(org.id, other_version.id)
-    trip = trip_fixture(org.id, other_version.id, route.route_id)
-    id = insert_trip_run!(org.id, version.id, trip.id)
-    before = row_json("trip_runs", id)
+      assert_runs_validation_failure!(schema, "trip_runs_version_owner_fkey")
+      assert row_json("#{schema}.trip_runs", id) == before
+      assert runs_constraints_validated?(schema) == [false, false]
+    end
 
-    add_runs_constraints_not_valid()
-    assert_runs_validation_failure!("trip_runs_trips_owner_fkey")
-    assert row_json("trip_runs", id) == before
-    assert runs_constraints_validated?() == [false, false]
+    test "a wrong-trip assignment rolls back the earlier validation flag", %{schema: schema} do
+      org = Ecto.UUID.generate()
+      version = insert_runs_version!(schema, org)
+      other_version = insert_runs_version!(schema, org)
+      trip = insert_runs_trip!(schema, org, other_version)
+      id = insert_trip_run!(schema, org, version, trip)
+      before = row_json("#{schema}.trip_runs", id)
+
+      add_runs_constraints_not_valid(schema)
+      assert_runs_validation_failure!(schema, "trip_runs_trips_owner_fkey")
+      assert row_json("#{schema}.trip_runs", id) == before
+      assert runs_constraints_validated?(schema) == [false, false]
+    end
   end
 
   test "a version anomaly fails additive validation without changing the row" do
@@ -306,41 +311,70 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     add_route_constraint()
   end
 
-  defp reset_runs_constraints do
-    drop_runs_constraints()
-    add_runs_constraints_not_valid()
-  end
+  # The schema as it was when the runs constraints were written: a trip is named
+  # by its `trips.id` row UUID. Created inside the test's sandbox transaction, so it
+  # is rolled back with it.
+  defp original_runs_schema! do
+    schema = "runs_original_#{System.unique_integer([:positive])}"
 
-  defp drop_runs_constraints do
-    for name <- ["trip_runs_version_owner_fkey", "trip_runs_trips_owner_fkey"] do
-      Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT #{name}")
+    for statement <- [
+          "CREATE SCHEMA #{schema}",
+          """
+          CREATE TABLE #{schema}.gtfs_versions (
+            id uuid PRIMARY KEY,
+            organization_id uuid NOT NULL,
+            UNIQUE (id, organization_id)
+          )
+          """,
+          """
+          CREATE TABLE #{schema}.trips (
+            id uuid PRIMARY KEY,
+            organization_id uuid NOT NULL,
+            gtfs_version_id uuid NOT NULL,
+            UNIQUE (id, organization_id, gtfs_version_id)
+          )
+          """,
+          """
+          CREATE TABLE #{schema}.trip_runs (
+            id uuid PRIMARY KEY,
+            organization_id uuid NOT NULL,
+            gtfs_version_id uuid NOT NULL,
+            trip_id uuid NOT NULL,
+            day_type_key varchar(255) NOT NULL,
+            run_id varchar(255) NOT NULL
+          )
+          """
+        ] do
+      Repo.query!(statement)
     end
+
+    schema
   end
 
-  defp add_runs_constraints_not_valid do
+  defp add_runs_constraints_not_valid(schema) do
     Repo.query!("""
-    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_version_owner_fkey
+    ALTER TABLE #{schema}.trip_runs ADD CONSTRAINT trip_runs_version_owner_fkey
     FOREIGN KEY (gtfs_version_id, organization_id)
-    REFERENCES gtfs_versions(id, organization_id) ON DELETE NO ACTION NOT VALID
+    REFERENCES #{schema}.gtfs_versions(id, organization_id) ON DELETE NO ACTION NOT VALID
     """)
 
     Repo.query!("""
-    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
+    ALTER TABLE #{schema}.trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
     FOREIGN KEY (trip_id, organization_id, gtfs_version_id)
-    REFERENCES trips(id, organization_id, gtfs_version_id) ON DELETE NO ACTION NOT VALID
+    REFERENCES #{schema}.trips(id, organization_id, gtfs_version_id) ON DELETE NO ACTION NOT VALID
     """)
   end
 
-  defp runs_constraints_validated? do
+  defp runs_constraints_validated?(schema) do
     for name <- ["trip_runs_version_owner_fkey", "trip_runs_trips_owner_fkey"] do
-      constraint_validated?("trip_runs", name)
+      constraint_validated?(schema, "trip_runs", name)
     end
   end
 
-  defp assert_runs_validation_failure!(name) do
+  defp assert_runs_validation_failure!(schema, name) do
     error =
       assert_raise RuntimeError, fn ->
-        Repo.transaction(fn -> RunsMigration.validate_all!(Repo) end)
+        Repo.transaction(fn -> RunsMigration.validate_all!(Repo, schema) end)
       end
 
     assert error.message =~ name
@@ -352,23 +386,39 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
                ":ok -> :ok; {:error, _count} -> System.halt(1) end'"
   end
 
-  defp insert_trip_run!(org_id, version_id, trip_id) do
+  defp insert_runs_version!(schema, org_id) do
     id = Ecto.UUID.generate()
-    now = DateTime.utc_now()
 
-    assert {1, _} =
-             Repo.insert_all(TripRun, [
-               %{
-                 id: id,
-                 organization_id: org_id,
-                 gtfs_version_id: version_id,
-                 trip_id: trip_id,
-                 day_type_key: "WK",
-                 run_id: "R1",
-                 inserted_at: now,
-                 updated_at: now
-               }
-             ])
+    Repo.query!(
+      "INSERT INTO #{schema}.gtfs_versions (id, organization_id) VALUES ($1, $2)",
+      Enum.map([id, org_id], &Ecto.UUID.dump!/1)
+    )
+
+    id
+  end
+
+  defp insert_runs_trip!(schema, org_id, version_id) do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO #{schema}.trips (id, organization_id, gtfs_version_id) VALUES ($1, $2, $3)",
+      Enum.map([id, org_id, version_id], &Ecto.UUID.dump!/1)
+    )
+
+    id
+  end
+
+  defp insert_trip_run!(schema, org_id, version_id, trip_id) do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO #{schema}.trip_runs
+        (id, organization_id, gtfs_version_id, trip_id, day_type_key, run_id)
+      VALUES ($1, $2, $3, $4, 'WK', 'R1')
+      """,
+      Enum.map([id, org_id, version_id, trip_id], &Ecto.UUID.dump!/1)
+    )
 
     id
   end
@@ -399,16 +449,16 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     validated?
   end
 
-  defp constraint_validated?(table, name) do
+  defp constraint_validated?(schema \\ "public", table, name) do
     %{rows: [[validated?]]} =
       Repo.query!(
         """
         SELECT c.convalidated FROM pg_constraint AS c
         JOIN pg_class AS child ON child.oid = c.conrelid
         JOIN pg_namespace AS ns ON ns.oid = child.relnamespace
-        WHERE ns.nspname = 'public' AND child.relname = $1 AND c.conname = $2
+        WHERE ns.nspname = $1 AND child.relname = $2 AND c.conname = $3
         """,
-        [table, name]
+        [schema, table, name]
       )
 
     validated?

@@ -44,6 +44,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # and they say why: a disabled control with no reason is a dead end.
   @preview_locked_message "Apply or discard the suggestion first."
 
+  # Marks an undo whose moves name trips by GTFS trip ID. `put_undo/2` stamps it
+  # on every undo it arms, and "undo" replays only an undo that carries it.
+  @undo_format :gtfs_trip_id
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Values
@@ -317,13 +321,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   def handle_event("undo", _params, socket) do
     case socket.assigns.undo do
-      nil ->
-        {:noreply,
-         socket
-         |> put_undo(nil)
-         |> put_toast("There is nothing to undo.", :refused)}
-
-      %{moves: moves} ->
+      %{moves: moves, format: @undo_format} ->
         # The undo assign is cleared whatever the write did.
         # `apply_run_moves/4` hands back the moves it just made, so a success that
         # re-armed the button would make Undo repeatable — and a second press
@@ -338,6 +336,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
            "Can't undo: these runs changed since."
          )
          |> put_undo(nil)}
+
+      # No undo, or one armed before moves named trips by GTFS trip ID. Its
+      # `trip_id` values are `Trip.id` row UUIDs, which cannot be told from a
+      # feed trip ID that happens to look like one, so it is refused rather than
+      # replayed or translated.
+      _none_or_unmarked ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("There is nothing to undo.", :refused)}
     end
   end
 
@@ -679,7 +687,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     with {:ok, piece} <- piece_at(socket, index),
          {:ok, destination} <- destination(to) do
       moves =
-        Enum.map(piece.trips, &%{trip_id: &1.id, from: socket.assigns.run, to: destination})
+        Enum.map(piece.trips, &%{trip_id: &1.trip_id, from: socket.assigns.run, to: destination})
 
       {:noreply,
        apply_moves(
@@ -729,7 +737,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       moves =
         piece.trips
         |> Enum.drop(at + 1)
-        |> Enum.map(&%{trip_id: &1.id, from: socket.assigns.run, to: destination})
+        |> Enum.map(&%{trip_id: &1.trip_id, from: socket.assigns.run, to: destination})
 
       {:noreply,
        apply_moves(
@@ -910,7 +918,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          )}
 
       segment ->
-        moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
+        moves =
+          Enum.map(segment.trips, fn trip -> %{trip_id: trip.trip_id, from: nil, to: :new} end)
 
         {:noreply,
          apply_moves(
@@ -1477,7 +1486,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp put_undo(socket, nil), do: assign(socket, :undo, nil)
 
   defp put_undo(socket, %{moves: moves} = undo) when is_list(moves),
-    do: assign(socket, :undo, undo)
+    do: assign(socket, :undo, Map.put(undo, :format, @undo_format))
 
   # An undo reverses moves made on the day type that was loaded when it was
   # armed. Loading a different day type drops it, so Undo cannot replay those

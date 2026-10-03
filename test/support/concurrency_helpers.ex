@@ -13,7 +13,8 @@ defmodule GtfsPlanner.ConcurrencyHelpers do
 
   @doc """
   Deletes the organizations' members (see `delete_committed_members!/1`), every row
-  the organizations hold, then the organizations.
+  the organizations hold, then the organizations. The active schedule of each is
+  cleared first so its versions can go.
 
   An unboxed test commits its fixtures, so it removes them itself. Version ownership
   constraints refuse a version delete while any child row remains, so each
@@ -22,6 +23,12 @@ defmodule GtfsPlanner.ConcurrencyHelpers do
   """
   def delete_committed_scope!(organization_ids) when is_list(organization_ids) do
     delete_committed_members!(organization_ids)
+
+    # The active schedule's key refuses a delete of the active version alone.
+    Repo.query!(
+      "UPDATE organizations SET active_gtfs_version_id = NULL WHERE id = ANY($1)",
+      [Enum.map(organization_ids, &Ecto.UUID.dump!/1)]
+    )
 
     %Postgrex.Result{rows: rows} =
       Repo.query!("""

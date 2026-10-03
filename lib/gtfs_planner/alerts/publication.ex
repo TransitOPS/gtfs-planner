@@ -129,6 +129,27 @@ defmodule GtfsPlanner.Alerts.Publication do
   end
 
   @doc """
+  Refuses a selection the active schedule cannot honour.
+
+  `diagnostics` are `Alerts.Targets.resolve/2`'s missing and inapplicable selectors
+  for one alert. Any of them refuses with one `:scope` error: an identity the
+  schedule lacks reads as `unresolved_message/0`, and one that exists but does not
+  fit (a stop the route does not serve, a trip that does not run that day) says so.
+  Nothing is published narrower or guessed.
+  """
+  @spec refuse_diagnostics([map()]) :: :ok | {:error, [field_error()]}
+  def refuse_diagnostics([]), do: :ok
+
+  def refuse_diagnostics(diagnostics) do
+    message =
+      if Enum.any?(diagnostics, &(&1.kind == :missing)),
+        do: unresolved_message(),
+        else: inapplicable_message()
+
+    {:error, [error(:scope, message)]}
+  end
+
+  @doc """
   Builds one accepted snapshot: the whole public intent of one alert, reduced to
   GTFS identities and absolute instants.
 
@@ -404,7 +425,13 @@ defmodule GtfsPlanner.Alerts.Publication do
   defp unresolved_trips(_trips), do: [[true]]
 
   defp unresolved_message do
-    "This alert names an identity its source no longer has. Retarget it before publishing."
+    "The active schedule does not have a route, stop or departure this alert names. " <>
+      "Repair its targets before publishing."
+  end
+
+  defp inapplicable_message do
+    "This alert names a stop, stretch or departure the active schedule does not run that way. " <>
+      "Repair its targets before publishing."
   end
 
   # A mode is expanded by the caller into the explicit routes the trusted source
@@ -441,7 +468,7 @@ defmodule GtfsPlanner.Alerts.Publication do
     Enum.map(entries, fn entry ->
       %{
         trip_id: entry["gtfs_id"],
-        start_date: entry["service_date"] && Date.from_iso8601(entry["service_date"]),
+        start_date: decode_date(entry["service_date"]),
         start_time: entry["start_time"]
       }
     end)
@@ -572,7 +599,7 @@ defmodule GtfsPlanner.Alerts.Publication do
     Enum.map(trips, fn trip ->
       %{
         trip_id: fetch!(trip, :trip_id),
-        start_date: decode_date(fetch(trip, :start_date)),
+        start_date: decode_date(fetch!(trip, :start_date)),
         start_time: fetch(trip, :start_time) |> ok()
       }
     end)
@@ -582,7 +609,12 @@ defmodule GtfsPlanner.Alerts.Publication do
 
   defp decode_date(%Date{} = date), do: date
 
-  defp decode_date(value) when is_binary(value), do: Date.from_iso8601(value)
+  defp decode_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date
+      {:error, _reason} -> nil
+    end
+  end
 
   defp decode_date(_value), do: nil
 

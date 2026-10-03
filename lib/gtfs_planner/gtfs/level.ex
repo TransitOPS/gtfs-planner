@@ -29,7 +29,9 @@ defmodule GtfsPlanner.Gtfs.Level do
 
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
-    has_many :stop_levels, GtfsPlanner.Gtfs.StopLevel
+    # `stop_levels.level_id` now holds this row's scoped GTFS level identifier
+    # rather than its row UUID, so the former automatic association is read
+    # through the scoped floorplan readers in `Gtfs` instead.
 
     timestamps(type: :utc_datetime_usec)
   end

@@ -9,7 +9,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
   import Ecto.Query
 
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Gtfs.{Stop, StopLevel, Level}
+  alias GtfsPlanner.Gtfs.{Stop, StopLevel}
   alias GtfsPlanner.Gtfs.Extensions.Manifest
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.DiagramStorage
@@ -65,23 +65,19 @@ defmodule GtfsPlanner.Gtfs.Extensions.Export do
 
   defp query_stop_levels(organization_id, gtfs_version_id) do
     from(sl in StopLevel,
-      join: s in Stop,
-      on: sl.stop_id == s.id,
-      join: l in Level,
-      on: sl.level_id == l.id,
       where:
         sl.organization_id == ^organization_id and
           sl.gtfs_version_id == ^gtfs_version_id,
       select: %{
-        stop_id: s.stop_id,
-        level_id: l.level_id,
+        stop_id: sl.stop_id,
+        level_id: sl.level_id,
         diagram_filename: sl.diagram_filename,
         scale_point_a: sl.scale_point_a,
         scale_point_b: sl.scale_point_b,
         scale_distance_meters: sl.scale_distance_meters,
         scale_meters_per_unit: sl.scale_meters_per_unit
       },
-      order_by: [s.stop_id, l.level_id]
+      order_by: [sl.stop_id, sl.level_id]
     )
     |> Repo.all()
     |> Enum.map(&serialize_stop_level/1)

@@ -1,11 +1,20 @@
 defmodule GtfsPlanner.VersionsTest do
   use GtfsPlanner.DataCase
 
+  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
   alias GtfsPlanner.Repo
 
+  import GtfsPlanner.ConcurrencyHelpers
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
+
+  @contention_timeout 10_000
+  @collect_timeout 15_000
 
   @published_status "published"
   @staging_status "staging"
@@ -738,7 +747,744 @@ defmodule GtfsPlanner.VersionsTest do
     end
   end
 
+  describe "active schedule: first usable version" do
+    test "an organization's default version is its first active schedule" do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+
+      assert selection(organization) == {first.id, 1}
+    end
+
+    test "the first usable creation selects once; staging, failed and later versions do not replace it" do
+      organization = organization_without_version_fixture()
+      {:ok, staged} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
+      {:ok, failing} = Versions.create_staging_gtfs_version(organization.id, %{name: "Failing"})
+      {:ok, _failed} = Versions.fail_unpublished_gtfs_version(organization.id, failing.id)
+
+      assert selection(organization) == {nil, 0}
+      assert {:error, _invalid} = Versions.create_gtfs_version(organization.id, %{name: nil})
+      assert selection(organization) == {nil, 0}
+
+      {:ok, first} = Versions.create_gtfs_version(organization.id, %{name: "First"})
+      assert selection(organization) == {first.id, 1}
+
+      {:ok, _later} = Versions.create_gtfs_version(organization.id, %{name: "Later"})
+      {:ok, _importing} = Versions.claim_staging_gtfs_version(organization.id, staged.id)
+      {:ok, _published} = Versions.publish_importing_gtfs_version(organization.id, staged.id)
+
+      assert selection(organization) == {first.id, 1}
+    end
+
+    test "publishing the first imported version selects it, and a refused publish selects nothing" do
+      organization = organization_without_version_fixture()
+      {:ok, staged} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staged"})
+
+      assert {:error, :invalid_status_transition} =
+               Versions.publish_importing_gtfs_version(organization.id, staged.id)
+
+      {:ok, _importing} = Versions.claim_staging_gtfs_version(organization.id, staged.id)
+      assert selection(organization) == {nil, 0}
+
+      {:ok, published} = Versions.publish_importing_gtfs_version(organization.id, staged.id)
+      assert selection(organization) == {published.id, 1}
+    end
+
+    test "a selection is announced when it changes and not when it does not" do
+      organization = organization_without_version_fixture()
+      subscribe(organization)
+
+      {:ok, first} = Versions.create_gtfs_version(organization.id, %{name: "First"})
+      first_id = first.id
+      assert_receive {:active_schedule_changed, %{version_id: ^first_id, revision: 1}}
+
+      {:ok, _later} = Versions.create_gtfs_version(organization.id, %{name: "Later"})
+      refute_receive {:active_schedule_changed, _token}, 50
+    end
+  end
+
+  describe "active_schedule/1" do
+    test "returns the active version with the token that identifies it" do
+      organization = organization_fixture()
+      scope = editor_scope(organization)
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      first_id = first.id
+
+      assert {:ok, %{version: %GtfsVersion{id: ^first_id}, token: token}} =
+               Versions.active_schedule(scope)
+
+      assert token == %{version_id: first_id, revision: 1}
+    end
+
+    test "reports an organization with no active schedule by a token with no version" do
+      organization = organization_without_version_fixture()
+
+      assert {:ok, %{version: nil, token: %{version_id: nil, revision: 0}}} =
+               Versions.active_schedule(editor_scope(organization))
+    end
+
+    test "refuses a revoked editor, a non-editor and an editor of another organization" do
+      organization = organization_fixture()
+      editor = editor_fixture(organization)
+      membership = Repo.get_by!(UserOrgMembership, user_id: editor.id)
+      scope = %{actor_id: editor.id, organization_id: organization.id}
+
+      admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+
+      assert {:error, :forbidden} =
+               Versions.active_schedule(%{actor_id: admin.id, organization_id: organization.id})
+
+      assert {:error, :forbidden} =
+               Versions.active_schedule(%{
+                 actor_id: editor.id,
+                 organization_id: organization_fixture().id
+               })
+
+      deactivate_membership_fixture(membership)
+      assert {:error, :forbidden} = Versions.active_schedule(scope)
+    end
+  end
+
+  describe "set_active_schedule/3" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+      scope = editor_scope(organization)
+      {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+      %{organization: organization, first: first, second: second, scope: scope, token: token}
+    end
+
+    test "selects a published version, advances the revision once and returns the new token", c do
+      second_id = c.second.id
+
+      assert {:ok, %{version: %GtfsVersion{id: ^second_id}, token: token}} =
+               Versions.set_active_schedule(c.scope, second_id, c.token)
+
+      assert token == %{version_id: second_id, revision: 2}
+      assert selection(c.organization) == {second_id, 2}
+    end
+
+    test "announces a change after it commits", c do
+      subscribe(c.organization)
+      second_id = c.second.id
+
+      {:ok, _active} = Versions.set_active_schedule(c.scope, second_id, c.token)
+
+      assert_receive {:active_schedule_changed, %{version_id: ^second_id, revision: 2}}
+    end
+
+    test "selecting the version that is already active changes and announces nothing", c do
+      subscribe(c.organization)
+
+      assert {:ok, %{token: token}} =
+               Versions.set_active_schedule(c.scope, c.first.id, c.token)
+
+      assert token == c.token
+      assert selection(c.organization) == {c.first.id, 1}
+      refute_receive {:active_schedule_changed, _token}, 50
+    end
+
+    test "selects from an organization whose pointer is empty using the empty token", c do
+      clear_pointer(c.organization)
+      {:ok, %{version: nil, token: empty}} = Versions.active_schedule(c.scope)
+      assert empty == %{version_id: nil, revision: 1}
+
+      assert {:ok, %{token: %{version_id: first_id, revision: 2}}} =
+               Versions.set_active_schedule(c.scope, c.first.id, empty)
+
+      assert first_id == c.first.id
+    end
+
+    test "a return to the same version still leaves an older token stale", c do
+      {:ok, %{token: moved}} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      {:ok, %{token: returned}} = Versions.set_active_schedule(c.scope, c.first.id, moved)
+
+      # `c.token` showed the first version at revision 1 and the first version is active again.
+      assert returned == %{version_id: c.first.id, revision: 3}
+
+      assert {:error, :stale_active} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      assert {:error, :stale_active} = Versions.set_active_schedule(c.scope, c.second.id, moved)
+      assert selection(c.organization) == {c.first.id, 3}
+
+      assert {:ok, %{token: %{revision: 4}}} =
+               Versions.set_active_schedule(c.scope, c.second.id, returned)
+    end
+
+    test "treats a forged or malformed expectation as stale and writes nothing", c do
+      first_id = c.first.id
+
+      for forged <- [
+            nil,
+            "token",
+            %{},
+            %{version_id: first_id},
+            %{version_id: first_id, revision: "1"},
+            %{version_id: c.second.id, revision: 1},
+            %{version_id: nil, revision: 1}
+          ] do
+        assert {:error, :stale_active} =
+                 Versions.set_active_schedule(c.scope, c.second.id, forged)
+      end
+
+      assert selection(c.organization) == {first_id, 1}
+    end
+
+    test "refuses staging, importing and failed versions", c do
+      {:ok, staging} = Versions.create_staging_gtfs_version(c.organization.id, %{name: "Staging"})
+      {:ok, importing} = Versions.create_staging_gtfs_version(c.organization.id, %{name: "Busy"})
+      {:ok, _} = Versions.claim_staging_gtfs_version(c.organization.id, importing.id)
+      {:ok, failed} = Versions.create_staging_gtfs_version(c.organization.id, %{name: "Failed"})
+      {:ok, _} = Versions.fail_unpublished_gtfs_version(c.organization.id, failed.id)
+
+      for unusable <- [staging, importing, failed] do
+        assert {:error, :not_usable} =
+                 Versions.set_active_schedule(c.scope, unusable.id, c.token)
+      end
+
+      assert selection(c.organization) == {c.first.id, 1}
+    end
+
+    test "treats another organization's version and a malformed id as not found", c do
+      foreign = gtfs_version_fixture(organization_fixture().id)
+
+      for missing <- [foreign.id, Ecto.UUID.generate(), "not-a-uuid", nil] do
+        assert {:error, :not_found} = Versions.set_active_schedule(c.scope, missing, c.token)
+      end
+
+      assert selection(c.organization) == {c.first.id, 1}
+    end
+
+    test "refuses a revoked editor, a non-editor and a scope without an actor", c do
+      editor = Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id)
+      admin = user_fixture()
+      organization_membership_fixture(admin, c.organization, ["pathways_studio_admin"])
+
+      assert {:error, :forbidden} =
+               Versions.set_active_schedule(
+                 %{actor_id: admin.id, organization_id: c.organization.id},
+                 c.second.id,
+                 c.token
+               )
+
+      assert {:error, :forbidden} =
+               Versions.set_active_schedule(
+                 %{actor_id: nil, organization_id: c.organization.id},
+                 c.second.id,
+                 c.token
+               )
+
+      assert {:error, :forbidden} = Versions.set_active_schedule(%{}, c.second.id, c.token)
+
+      deactivate_membership_fixture(editor)
+
+      assert {:error, :forbidden} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      assert selection(c.organization) == {c.first.id, 1}
+    end
+
+    test "an editor of another organization cannot select through a claimed organization", c do
+      other = organization_fixture()
+      other_scope = editor_scope(other)
+
+      assert {:error, :forbidden} =
+               Versions.set_active_schedule(
+                 %{other_scope | organization_id: c.organization.id},
+                 c.second.id,
+                 c.token
+               )
+
+      {:ok, %{token: other_token}} = Versions.active_schedule(other_scope)
+
+      assert {:error, :not_found} =
+               Versions.set_active_schedule(other_scope, c.second.id, other_token)
+
+      assert selection(c.organization) == {c.first.id, 1}
+      assert {_, 1} = selection(other)
+    end
+  end
+
+  describe "lock_active_schedule!/2" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+      scope = editor_scope(organization)
+      {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+      %{organization: organization, first: first, second: second, scope: scope, token: token}
+    end
+
+    test "returns the locked active version and its token inside a transaction", c do
+      first_id = c.first.id
+      token = c.token
+
+      assert {:ok, %{version: %GtfsVersion{id: ^first_id}, token: ^token}} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, c.token) end)
+    end
+
+    test "rolls the transaction back when the selection moved since the token was read", c do
+      {:ok, _active} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+
+      assert {:error, :stale_active} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, c.token) end)
+    end
+
+    test "`:current` locks whatever is active, and still refuses without an editor", c do
+      {:ok, %{token: moved}} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      second_id = c.second.id
+
+      assert {:ok, %{version: %GtfsVersion{id: ^second_id}, token: ^moved}} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, :current) end)
+
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id))
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, :current) end)
+    end
+
+    test "rolls the transaction back when nothing is selected", c do
+      clear_pointer(c.organization)
+      {:ok, %{token: empty}} = Versions.active_schedule(c.scope)
+
+      assert {:error, :no_active_schedule} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, empty) end)
+    end
+
+    test "rolls the transaction back for a revoked editor", c do
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id))
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, c.token) end)
+    end
+
+    test "must run inside a transaction", c do
+      assert_raise ArgumentError, ~r/inside Repo.transaction/, fn ->
+        Versions.lock_active_schedule!(c.scope, c.token)
+      end
+    end
+  end
+
+  describe "lock_schedule_for_write!/2" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+      scope = editor_scope(organization)
+      {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+      %{organization: organization, first: first, second: second, scope: scope, token: token}
+    end
+
+    test "reports a matching token without refusing", c do
+      first_id = c.first.id
+      token = c.token
+
+      assert {:ok, %{version: %GtfsVersion{id: ^first_id}, token: ^token, current?: true}} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, c.token) end)
+    end
+
+    test "locks and reports the current schedule when the token is stale, absent or forged", c do
+      {:ok, %{token: moved}} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      second_id = c.second.id
+
+      for expected <- [c.token, nil, %{c.token | version_id: c.second.id}] do
+        assert {:ok, %{version: %GtfsVersion{id: ^second_id}, token: ^moved, current?: false}} =
+                 Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, expected) end)
+      end
+    end
+
+    test "returns no version when nothing is selected", c do
+      clear_pointer(c.organization)
+      {:ok, %{token: empty}} = Versions.active_schedule(c.scope)
+
+      assert {:ok, %{version: nil, token: ^empty, current?: true}} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, empty) end)
+    end
+
+    test "still refuses a revoked editor and must run inside a transaction", c do
+      assert_raise ArgumentError, ~r/inside Repo.transaction/, fn ->
+        Versions.lock_schedule_for_write!(c.scope, c.token)
+      end
+
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id))
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Versions.lock_schedule_for_write!(c.scope, c.token) end)
+    end
+  end
+
+  describe "activate_full_publication!/3" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+
+      %{organization: organization, first: first, second: second}
+    end
+
+    test "selects a newer receipt's published source once, and a replay changes nothing", c do
+      second_id = c.second.id
+
+      assert {:ok, {:changed, %{version_id: ^second_id, revision: 2}}} =
+               receipt(c, 1, second_id)
+
+      assert receipt_state(c.organization) == {second_id, 2, 1}
+
+      assert {:ok, :unchanged} = receipt(c, 1, c.first.id)
+      assert receipt_state(c.organization) == {second_id, 2, 1}
+    end
+
+    test "consumes a newer receipt for the active version without a new revision, and ignores an older one",
+         c do
+      assert {:ok, :unchanged} = receipt(c, 3, c.first.id)
+      assert receipt_state(c.organization) == {c.first.id, 1, 3}
+
+      assert {:ok, :unchanged} = receipt(c, 2, c.second.id)
+      assert receipt_state(c.organization) == {c.first.id, 1, 3}
+    end
+
+    test "keeps the pointer for an unpublished, foreign, malformed or absent source but consumes the receipt",
+         c do
+      {:ok, staging} = Versions.create_staging_gtfs_version(c.organization.id, %{name: "Staging"})
+      foreign = gtfs_version_fixture(organization_fixture().id)
+
+      sources = [staging.id, foreign.id, "not-a-uuid", nil]
+
+      for {source, sequence} <- Enum.with_index(sources, 1) do
+        assert {:ok, :unavailable} = receipt(c, sequence, source)
+      end
+
+      assert receipt_state(c.organization) == {c.first.id, 1, 4}
+    end
+
+    test "must run inside a transaction", c do
+      assert_raise ArgumentError, ~r/inside Repo.transaction/, fn ->
+        Versions.activate_full_publication!(c.organization.id, 1, c.second.id)
+      end
+    end
+  end
+
+  describe "deleting versions" do
+    setup do
+      organization = organization_fixture()
+      [first] = Versions.list_published_gtfs_versions(organization.id)
+      {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+      scope = editor_scope(organization)
+      {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+      %{organization: organization, first: first, second: second, scope: scope, token: token}
+    end
+
+    test "the active version cannot be deleted until another one is selected", c do
+      assert_raise Postgrex.Error, ~r/organizations_active_gtfs_version_owner_fkey/, fn ->
+        Repo.delete_all(from(v in GtfsVersion, where: v.id == ^c.first.id), mode: :savepoint)
+      end
+
+      assert Repo.get(GtfsVersion, c.first.id)
+      assert selection(c.organization) == {c.first.id, 1}
+
+      {:ok, _active} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+
+      assert {1, _} = Repo.delete_all(from(v in GtfsVersion, where: v.id == ^c.first.id))
+      assert selection(c.organization) == {c.second.id, 2}
+    end
+
+    test "a version that is not active deletes without touching the selection", c do
+      assert {1, _} = Repo.delete_all(from(v in GtfsVersion, where: v.id == ^c.second.id))
+
+      assert selection(c.organization) == {c.first.id, 1}
+    end
+
+    test "the organization still deletes while a version is active", c do
+      assert {:ok, _deleted} = Organizations.delete_organization(c.organization)
+
+      refute Repo.get(Organization, c.organization.id)
+      assert [] = Repo.all(from(v in GtfsVersion, where: v.organization_id == ^c.organization.id))
+    end
+  end
+
+  describe "selection under concurrent writers" do
+    setup do
+      supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
+      %{supervisor: supervisor}
+    end
+
+    test "two first versions created at once leave one pointer and one revision", %{
+      supervisor: supervisor
+    } do
+      organization = unboxed(&organization_without_version_fixture/0)
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      commands =
+        for name <- ["First A", "First B"] do
+          start_command(supervisor, fn ->
+            Versions.create_gtfs_version(organization.id, %{name: name})
+          end)
+        end
+
+      Enum.each(commands, &send(&1.pid, :go))
+      results = Enum.map(commands, &Task.await(&1.task, @collect_timeout))
+
+      assert [{:ok, a}, {:ok, b}] = results
+      {pointer, revision} = unboxed(fn -> selection(organization) end)
+      assert revision == 1
+      assert pointer in [a.id, b.id]
+    end
+
+    test "a selection and a publication racing for an empty pointer leave one consistent winner",
+         %{supervisor: supervisor} do
+      %{organization: organization, scope: scope, second: second, importing: importing} =
+        unboxed(fn ->
+          organization = organization_fixture()
+          scope = editor_scope(organization)
+          {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+          {:ok, staged} = Versions.create_staging_gtfs_version(organization.id, %{name: "Third"})
+          {:ok, importing} = Versions.claim_staging_gtfs_version(organization.id, staged.id)
+          clear_pointer(organization)
+          %{organization: organization, scope: scope, second: second, importing: importing}
+        end)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+      empty = %{version_id: nil, revision: 1}
+
+      holder = start_organization_holder(supervisor, organization)
+
+      select =
+        start_command(supervisor, fn ->
+          Versions.set_active_schedule(scope, second.id, empty)
+        end)
+
+      publish =
+        start_command(supervisor, fn ->
+          Versions.publish_importing_gtfs_version(organization.id, importing.id)
+        end)
+
+      Enum.each([select, publish], &send(&1.pid, :go))
+      assert_waiting(select)
+      assert_waiting(publish)
+      send(holder.pid, :release)
+
+      assert {:ok, :held} = Task.await(holder.task, @collect_timeout)
+      select_result = Task.await(select.task, @collect_timeout)
+      assert {:ok, _published} = Task.await(publish.task, @collect_timeout)
+
+      # Whichever commits first wins and the other either keeps it or reports stale; the
+      # revision moved once, and a selection never overwrites the first writer's pointer.
+      final = unboxed(fn -> selection(organization) end)
+
+      case select_result do
+        {:ok, _active} -> assert final == {second.id, 2}
+        {:error, :stale_active} -> assert final == {importing.id, 2}
+      end
+    end
+
+    test "a held active-schedule lock makes a selection change wait", %{supervisor: supervisor} do
+      %{organization: organization, scope: scope, second: second, token: token} =
+        unboxed(fn ->
+          organization = organization_fixture()
+          scope = editor_scope(organization)
+          {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+          {:ok, %{token: token}} = Versions.active_schedule(scope)
+          %{organization: organization, scope: scope, second: second, token: token}
+        end)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      holder =
+        start_holder(supervisor, fn ->
+          Versions.lock_active_schedule!(scope, token)
+        end)
+
+      select =
+        start_command(supervisor, fn ->
+          Versions.set_active_schedule(scope, second.id, token)
+        end)
+
+      send(select.pid, :go)
+      assert_blocked_by(select, holder)
+      send(holder.task.pid, :release)
+
+      assert {:ok, :held} = Task.await(holder.task, @collect_timeout)
+      assert {:ok, %{token: %{revision: 2}}} = Task.await(select.task, @collect_timeout)
+    end
+
+    test "a membership command waiting on the editor's row does not deadlock with a selection",
+         %{supervisor: supervisor} do
+      %{organization: organization, scope: scope, second: second, token: token, admin: admin} =
+        unboxed(fn ->
+          organization = organization_fixture()
+          scope = editor_scope(organization)
+          admin = user_fixture()
+          organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+          {:ok, second} = Versions.create_gtfs_version(organization.id, %{name: "Second"})
+          {:ok, %{token: token}} = Versions.active_schedule(scope)
+
+          %{
+            organization: organization,
+            scope: scope,
+            second: second,
+            token: token,
+            admin: admin
+          }
+        end)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      # A membership command takes the organization row, then the member's row. It holds the
+      # organization here, so the selection waits for it before it holds anything.
+      command =
+        start_holder(
+          supervisor,
+          fn -> Authorization.lock_member_admin!(admin, organization.id) end,
+          fn ->
+            Repo.update_all(
+              from(m in UserOrgMembership,
+                where: m.user_id == ^scope.actor_id and m.organization_id == ^organization.id
+              ),
+              set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+            )
+          end
+        )
+
+      select =
+        start_command(supervisor, fn ->
+          Versions.set_active_schedule(scope, second.id, token)
+        end)
+
+      send(select.pid, :go)
+      assert_blocked_by(select, command)
+      send(command.pid, :release)
+
+      assert {:ok, :held} = Task.await(command.task, @collect_timeout)
+      assert {:error, :forbidden} = Task.await(select.task, @collect_timeout)
+      assert {_, 1} = unboxed(fn -> selection(organization) end)
+    end
+  end
+
   # --- helpers ---
+
+  defp editor_scope(organization) do
+    editor = editor_fixture(organization)
+    %{actor_id: editor.id, organization_id: organization.id}
+  end
+
+  defp selection(organization) do
+    organization = Repo.get!(Organization, organization.id)
+    {organization.active_gtfs_version_id, organization.active_gtfs_version_revision}
+  end
+
+  defp receipt(c, sequence, source_version_id) do
+    Repo.transaction(fn ->
+      Versions.activate_full_publication!(c.organization.id, sequence, source_version_id)
+    end)
+  end
+
+  defp receipt_state(organization) do
+    organization = Repo.get!(Organization, organization.id)
+
+    {organization.active_gtfs_version_id, organization.active_gtfs_version_revision,
+     organization.active_full_publication_sequence}
+  end
+
+  # The state of an organization that predates active selection.
+  defp clear_pointer(organization) do
+    from(o in Organization, where: o.id == ^organization.id)
+    |> Repo.update_all(set: [active_gtfs_version_id: nil])
+  end
+
+  defp subscribe(organization) do
+    Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Versions.active_schedule_topic(organization.id))
+  end
+
+  # A committing task parked until `:go`, so several commands can start together.
+  defp start_command(supervisor, command) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          send(parent, {:ready, self(), backend_pid()})
+
+          receive do
+            :go -> :ok
+          after
+            @contention_timeout -> raise "command was not released"
+          end
+
+          command.()
+        end)
+      end)
+
+    assert_receive {:ready, pid, backend}, @contention_timeout
+    assert pid == task.pid
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  # A transaction that holds whatever `acquire` locks until `:release`, then runs `finish`
+  # in the same transaction before it commits.
+  defp start_holder(supervisor, acquire, finish \\ fn -> :ok end) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn -> hold(parent, acquire, finish) end)
+      end)
+
+    assert_receive {:held, pid, backend}, @contention_timeout
+    assert pid == task.pid
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  defp hold(parent, acquire, finish) do
+    Repo.transaction(fn ->
+      acquire.()
+      send(parent, {:held, self(), backend_pid()})
+
+      receive do
+        :release -> :ok
+      after
+        @contention_timeout -> raise "holder was not released"
+      end
+
+      finish.()
+      :held
+    end)
+  end
+
+  defp start_organization_holder(supervisor, organization) do
+    start_holder(supervisor, fn -> Versions.lock_organization!(organization.id) end)
+  end
+
+  # The second writer queued behind the same row waits for the first writer, not the holder.
+  defp assert_waiting(waiting) do
+    deadline = System.monotonic_time(:millisecond) + @contention_timeout
+    assert :ok == unboxed(fn -> await_waiting(waiting.backend, deadline) end)
+  end
+
+  defp await_waiting(backend, deadline) do
+    %Postgrex.Result{rows: [[blockers]]} =
+      Repo.query!("SELECT cardinality(pg_blocking_pids($1))", [backend])
+
+    cond do
+      blockers > 0 ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :not_waiting}
+
+      true ->
+        receive do
+        after
+          10 -> await_waiting(backend, deadline)
+        end
+    end
+  end
+
+  defp assert_blocked_by(waiting, holder) do
+    deadline = System.monotonic_time(:millisecond) + @contention_timeout
+    assert :ok == unboxed(fn -> await_blocker(waiting.backend, holder.backend, deadline) end)
+  end
 
   defp organization_without_version_fixture do
     {:ok, org} =

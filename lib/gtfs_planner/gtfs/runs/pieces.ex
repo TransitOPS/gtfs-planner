@@ -62,8 +62,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
           stop: Checks.stop_ref() | nil,
           at_relief?: boolean(),
           side: :same | :origin | :destination | nil,
-          from_trip_id: Ecto.UUID.t(),
-          to_trip_id: Ecto.UUID.t(),
+          from_trip_id: String.t(),
+          to_trip_id: String.t(),
           from_run: String.t() | nil,
           to_run: String.t() | nil,
           block_id: String.t()
@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
           gaps: [GtfsPlanner.Gtfs.Blocking.Movements.gap()]
         }
 
-  @spec derive([block_input()], %{Ecto.UUID.t() => String.t()}) :: %{
+  @spec derive([block_input()], %{String.t() => String.t()}) :: %{
           pieces: [piece()],
           uncovered: [piece()],
           boundaries: [boundary()]
@@ -118,7 +118,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
       block.trips
       |> Checks.sequence()
       |> Enum.with_index()
-      |> Enum.chunk_by(fn {trip, _index} -> Map.get(assignments, trip.id) end)
+      |> Enum.chunk_by(fn {trip, _index} -> Map.get(assignments, trip.trip_id) end)
 
     case groups do
       [] ->
@@ -174,10 +174,10 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
     base = %{
       gap_index: gap_index,
       block_id: block.block_id,
-      from_trip_id: from_trip.id,
-      to_trip_id: to_trip.id,
-      from_run: Map.get(assignments, from_trip.id),
-      to_run: Map.get(assignments, to_trip.id)
+      from_trip_id: from_trip.trip_id,
+      to_trip_id: to_trip.trip_id,
+      from_run: Map.get(assignments, from_trip.trip_id),
+      to_run: Map.get(assignments, to_trip.trip_id)
     }
 
     case first_window(block.windows, gap_index) do
@@ -221,7 +221,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
     start_of(movements, trips, start_boundary)
     |> Map.merge(end_of(movements, trips, end_boundary))
     |> Map.merge(%{
-      run_id: Map.get(assignments, hd(trips).id),
+      run_id: Map.get(assignments, hd(trips).trip_id),
       block_id: block.block_id,
       garage_id: movements.garage_id,
       trips: trips,

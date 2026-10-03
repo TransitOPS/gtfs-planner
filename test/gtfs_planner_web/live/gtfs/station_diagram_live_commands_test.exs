@@ -30,8 +30,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveCommandsTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     child =

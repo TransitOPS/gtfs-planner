@@ -137,16 +137,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       # also uses (INV-1). Nothing about the save action itself changed: the
       # same button reads the row it finds.
       {:ok, answered} =
-        Alerts.save_draft(context.audit, alert.id, alert.revision, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]},
-          "timing" => %{
-            "start_date" => "2026-10-01",
-            "start_time" => "08:00",
-            "end_kind" => "unknown",
-            "check_in_at" => "2026-10-01 09:30:00"
+        Alerts.save_draft(
+          context.audit,
+          alert.id,
+          alert.revision,
+          %{
+            "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]},
+            "timing" => %{
+              "start_date" => "2026-10-01",
+              "start_time" => "08:00",
+              "end_kind" => "unknown",
+              "check_in_at" => "2026-10-01 09:30:00"
+            },
+            "message" => %{"header" => @header, "description" => @description}
           },
-          "message" => %{"header" => @header, "description" => @description}
-        })
+          schedule_opts(context.audit)
+        )
 
       assert answered.complete == true
 
@@ -272,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       "urgency" => "planned",
       "situation" => "delay",
       "cause" => "construction",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]},
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]},
       "timing" => %{
         "pattern" => "weekly",
         "first_date" => "2026-10-05",
@@ -298,8 +304,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReviewTest do
       "cause" => "construction",
       "scope" => %{
         "shape" => "stop_all_routes",
-        "stop_ids" => [context.first.id],
-        "route_ids" => [context.route.id]
+        "stop_ids" => [context.first.stop_id],
+        "route_ids" => [context.route.route_id]
       },
       "timing" => %{
         "start_date" => "2026-10-01",

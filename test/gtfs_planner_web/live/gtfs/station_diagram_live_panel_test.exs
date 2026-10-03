@@ -49,8 +49,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     {:ok, _} = put_stop_level_diagram(stop_level, "panel.png")
@@ -59,8 +59,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: empty_level.id
+        stop_id: station.stop_id,
+        level_id: empty_level.level_id
       })
 
     north =

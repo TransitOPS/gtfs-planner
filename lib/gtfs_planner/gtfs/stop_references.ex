@@ -35,6 +35,14 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     collides or becomes `(new, new)`.
   * `:refuse` — replace is refused while any row of this kind exists.
 
+  ## Not a stop reference
+
+  An organization's alerts name stops by feed ID inside `service_alerts.scope`
+  and its capture. They are retained external references and appear in neither
+  `all/0` nor `catalog/0`: replacing, renaming or deleting a stop never rewrites
+  an alert, and an alert whose stop is gone keeps the original ID and reads as
+  needing attention until an editor repairs it.
+
   ## Matching
 
   `via: :fk_uuid` entries match the stop's `stops.id` UUID. `via: :string`
@@ -219,7 +227,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
       kind: :blocking,
       replace: :refuse,
       label: "Floorplans for this station",
-      via: :fk_uuid,
+      via: :string,
       collision_key: nil
     },
     %{
@@ -518,10 +526,11 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   How many rows of each kind still name each of the given stop IDs.
 
   The import review holds natural keys before any row exists, so this takes stop
-  IDs rather than a `Stop` struct and cannot match the `via: :fk_uuid` entries —
-  those need a `stops.id` UUID that an unimported stop does not have yet. They
-  are absent from the result rather than reported as zero, because nothing is
-  counted for them rather than "nothing was found".
+  IDs rather than a `Stop` struct and cannot match the remaining `via: :fk_uuid`
+  entries — `journal_entries` and `editing_statuses` need a `stops.id` UUID that
+  an unimported stop does not have yet. They are absent from the result rather
+  than reported as zero, because nothing is counted for them rather than
+  "nothing was found".
 
   A stop ID nothing uses is absent from the map, matching
   `Gtfs.import_dependent_counts/4`. Kinds are reported under the names the
@@ -766,7 +775,15 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   defp detail_query(%{key: :route_pattern_stops} = ref, stop) do
     ref
     |> scope_query(stop)
-    |> join(:inner, [row], pattern in RoutePattern, on: pattern.id == row.route_pattern_id)
+    |> join(
+      :inner,
+      [row],
+      pattern in RoutePattern,
+      on:
+        pattern.route_pattern_id == row.route_pattern_id and
+          pattern.organization_id == row.organization_id and
+          pattern.gtfs_version_id == row.gtfs_version_id
+    )
     |> join(
       :left,
       [row, pattern],

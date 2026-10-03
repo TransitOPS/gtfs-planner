@@ -91,12 +91,12 @@ defmodule GtfsPlanner.Gtfs.Runs.Day do
   @doc """
   Composes one day's runs and figures.
 
-  `blocks` are the day's block inputs, `assignments` maps a trip's UUID to the
-  run that serves it, and `context` and `crew` are the version's own planning
+  `blocks` are the day's block inputs, `assignments` maps a trip's GTFS `trip_id` to
+  the run that serves it, and `context` and `crew` are the version's own planning
   inputs. An empty day is not an error: it has no runs, zero figures and no
   axis.
   """
-  @spec derive([map()], %{Ecto.UUID.t() => String.t()}, map(), map()) :: derived()
+  @spec derive([map()], %{String.t() => String.t()}, map(), map()) :: derived()
   def derive(blocks, assignments, context, crew) do
     %{pieces: pieces, uncovered: uncovered, boundaries: boundaries} =
       Pieces.derive(blocks, assignments)

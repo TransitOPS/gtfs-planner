@@ -15,18 +15,52 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   ## One writer, and one version
 
-  Every write here is `Alerts.create_alert/2`, `Alerts.save_draft/4` or
-  `Alerts.delete_alert/3` (INV-1). The audit context is built from the socket's
-  trusted assigns - the organization, the navbar's version when the organization
-  has one, and the signed-in user - so no identity comes from a param (CR-2).
-  The version is what the alert's answers are checked against: it is the
-  schedule the questions read and the alert's provenance is captured from, and
-  it is `nil` for an organization with no schedule, where a private
-  system-scope draft is still writable (AC-10). The alert is never read through
-  a version other than its own provenance, so an alert of another organization
-  - or no alert at all - redirects with an error (R1, R6). The reader of a
-  refusal learns nothing beyond it: `Alerts.version_name_for/2` is a read that
-  returns a version name and nothing else.
+  Every write here is `Alerts.create_alert/3`, `Alerts.save_draft/5`,
+  `Alerts.save_review/5`, `Alerts.retarget/5` or `Alerts.delete_alert/3` (INV-1).
+  The audit context is built from the socket's trusted assigns - the
+  organization, its active schedule and the signed-in user - so no identity comes
+  from a param (CR-2). The active schedule is what the alert's answers are
+  checked against: it is the schedule the questions read, the navbar's version
+  never decides it, and it is `nil` for an organization with none, which can
+  start no alert. The page reads the schedule's selection token when it opens
+  and passes it back with every command as `expected_schedule`. The alert is
+  never read through a version other than the active one, so an alert of another
+  organization - or no alert at all - redirects with an error (R1, R6). The
+  reader of a refusal learns nothing beyond it: `Alerts.version_name_for/2` is a
+  read that returns a version name and nothing else.
+
+  ## When the active schedule changes, or there is none
+
+  The page listens on the organization's active-schedule topic. A notice newer
+  than the token the page holds raises `#alert-active-changed` with **Reload
+  targets**, and a write the server refuses as `:stale_active` raises the same
+  notice when the broadcast never arrived. Nothing typed is touched: the form,
+  its pending save and the review's Publish checkbox stay as they were, and only
+  choosing routes, stops and departures is paused - the body of those questions
+  is a disabled fieldset and the handlers behind them refuse - because those
+  answers are checked against a schedule that is no longer the active one.
+  Message-only edits still save, since they never read the schedule. **Reload
+  targets** is the only thing that replaces the held token: it rereads the
+  active schedule, rebuilds every read from it, clears the search results of the
+  old one and leaves the saved targets and typed message alone.
+
+  With no active schedule, `/alerts/new` shows `#alert-editor-no-active` and
+  nothing else, so no draft can be started; an existing alert keeps its form,
+  Save and close and Delete alert, with target choices paused.
+
+  ## Targets the active schedule lacks
+
+  `Alerts.diagnostics_for/2` lists the saved selectors the active schedule cannot
+  honour. `#alert-target-repair` shows each one by its raw feed ID with
+  **Remove** and, for a route or stop, **Replace**. Those controls only stage a
+  change on the row. **Apply repaired targets** sends the whole proposed
+  selection to `Alerts.retarget/5`; a refusal keeps every staged change and names
+  what still does not fit. A replacement is chosen from a search of the active
+  schedule that runs under `start_async/3`, and a result or exit is accepted only
+  while its request is still the one the open picker made, so a search left behind
+  by a closed picker, a newer query or an active change is dropped. An unrelated
+  autosave never retargets: it keeps the original IDs, the retained zone and the
+  typed message.
 
   ## The step sequence
 
@@ -63,8 +97,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   The place, skipped-stops, shared-stop and boarding-alternative questions
   answer with identities, not with what an editor typed. Each combobox is a
   `LiveSelect` whose options come from `Alerts.search_stops/3` scoped to the
-  alert's own version, and every identity that reaches a handler is re-read
-  through `Alerts.stops_by_id/2` before it is stored: a UUID of another version
+  active schedule, and every identity that reaches a handler is re-read
+  through `Alerts.stops_by_id/2` before it is stored: a stop ID of another version
   is simply not there, so a forged event saves nothing (R1, R7, CR-4).
 
   Search text and stored identity are separate values, which is the whole of
@@ -84,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   `cancelled_trips`, and `Recurrence.date_range/1` reads the alert's own
   service dates.
 
-  The list is `Alerts.departures_on/4` over the alert's own version, so it
+  The list is `Alerts.departures_on/4` over the active schedule, so it
   offers only the trips whose service is active on the date being listed, with
   the direction the alert stores narrowing it and a clock past 24:00 saying so.
   Every trip that reaches the row is one this list offered for that date and a
@@ -135,28 +169,37 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   `/alerts/new` it shows the **Describe the situation** start card, because
   there is no draft to talk about yet and no alert to hold a conversation: the
   first note the reader sends is what creates the draft, through
-  `Alerts.create_alert/2`, and the editor then navigates to that row's own
+  `Alerts.create_alert/3`, and the editor then navigates to that row's own
   assistant URL, where `AgentPanel.open/1` attaches to the conversation the
   start card already began.
 
   Every edit route in assistant mode mounts `AgentPanel` with the `alerts` pack,
-  `auto_apply: true`, `organization_scoped: true` and this alert's own id as the
-  session's subject, and opens it. The conversation is bound to that alert and
-  to this organization, not to the version the navbar happens to name, so
-  selecting another version while the alert is open leaves this conversation —
-  and this alert — alone; the pack derives whatever schedule context it needs
-  from the alert's own retained source. Each settled prepared change arrives as
-  `{:agent_prepared, conversation_id, entry_id}`; a message naming another
-  conversation, or another alert's session, changes nothing. The change itself
-  is applied here and nowhere else: `Agents.prepared/3` returns the model's own
-  draft-shaped parameters, they go through `Alerts.save_draft/4` at the revision
-  this editor holds, and the entry is recorded applied with the exact command
-  that was written (CR-6, INV-1).
+  `auto_apply: true`, `organization_scoped: true`, this alert's own id as the
+  session's subject and the active-schedule token this page holds. The
+  conversation is bound to that alert, to this organization and to that token, not
+  to the version the navbar happens to name, so selecting another version while the
+  alert is open leaves this conversation - and this alert - alone, while a change of
+  the *active* schedule ends it: the pack reads the active schedule and refuses
+  every request, tool and delivered result once the organization's token is no
+  longer the one the conversation was opened under, including an A -> B -> A return.
+  When this page learns of a newer selection it stops the running turn, lets go of
+  the session and drops any change kept for **Apply changes**; **Reload targets**
+  opens a new conversation under the new token, from the alert as it is saved, and
+  nothing prepared under the old one is replayed. Each settled prepared change
+  arrives as `{:agent_prepared, conversation_id, entry_id}`; a message naming
+  another conversation, or another alert's session, changes nothing. The change
+  itself is applied here and nowhere else: `Agents.prepared/3` returns the model's
+  own draft-shaped parameters with the alert revision and token it was made
+  against, they go through `Alerts.save_draft/5` with exactly those expectations,
+  and the entry is recorded applied with the exact command that was written (CR-6,
+  INV-1). An auto-applied change is a private save: it never reads the
+  Publish/Republish checkbox and never accepts anything for publication.
 
   A change prepared against a revision this editor has since replaced is not
   dropped and not forced either: the editor keeps it as a candidate and offers
   **Apply changes**, which re-reads the alert and applies the same parameters at
-  whatever revision the row is at then.
+  whatever revision the row is at then, still under the token the helper was
+  opened under.
 
   The assistant is a convenience, never a dependency. When the provider cannot
   answer, the panel reports it and the mode control says so, while Form mode
@@ -181,6 +224,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   import GtfsPlannerWeb.Gtfs.AlertComponents,
     only: [
+      active_changed_banner: 1,
       alternative_question: 1,
       assistant_start: 1,
       change_question: 1,
@@ -190,6 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       mode_control: 1,
       mode_question: 1,
       message_question: 1,
+      no_active_banner: 1,
       place_question: 1,
       progress: 1,
       question_card: 1,
@@ -202,11 +247,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       shared_question: 1,
       situation_question: 1,
       stops_question: 1,
+      target_repair: 1,
       timing_question: 1,
       urgency_question: 1
     ]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, first_use: 1, message: 1]
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Agents
@@ -223,6 +269,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -237,6 +284,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # control that does not exist.
   @stop_searches %{"alert-place-stop" => :place, "alert-boarding-stop" => :alternative}
   @stop_search_kinds Map.new(@stop_searches, fn {id, kind} -> {kind, id} end)
+
+  # The questions whose controls choose or search targets, and the events behind
+  # them. While the schedule this page holds is not the active one, or there is no
+  # active schedule, the questions' bodies are disabled and these events are refused.
+  # Typed answers that read no schedule (the message, the timing, the reason) are not
+  # on the list, so they keep saving.
+  @target_steps [:mode, :routes, :direction, :place, :stops, :shared, :alternative, :departures]
+  @target_events ~w(search_routes toggle_route choose_system_scope choose_mode choose_direction
+                    toggle_stop all_stops_served choose_shared add_service_date remove_service_date
+                    toggle_departure live_select_change repair_replace repair_remove repair_undo
+                    repair_search repair_choose repair_apply)
 
   # The question each step asks, in the reader's words. The step *order* is
   # `steps_for/2`; this is only the wording, keyed by the same URL step keys so a
@@ -323,6 +381,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:alert_id, params["alert_id"])
      |> assign(:alert, nil)
+     |> assign(:active_schedule, active_schedule(socket))
+     |> assign(:pending_active, nil)
+     |> assign(:url_params, %{})
      |> assign(:loaded_revision, nil)
      |> assign(:preview, empty_preview())
      |> assign(:load_state, :loading)
@@ -373,16 +434,39 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:publication_errors, [])
      |> assign(:reference_version, nil)
      |> assign(:reference_missing?, false)
+     |> assign(:diagnostics, [])
+     |> assign(:repair_ops, %{})
+     |> assign(:repair_items, [])
+     |> assign(:repair_picker, nil)
+     |> assign(:repair_request, 0)
+     |> assign(:repair_error, nil)
+     |> assign(:repair_notice, nil)
      |> assign(:assistant_note_form, assistant_note_form())
      |> assign(:assistant_candidate, nil)
      |> assign(:assistant_filled?, false)
      |> assign(:form, draft_form(%Alert{}))
-     |> AgentPanel.mount("alerts", auto_apply: true, organization_scoped: true)}
+     |> put_target_lock()
+     |> subscribe_active()
+     |> then(
+       &AgentPanel.mount(&1, "alerts",
+         auto_apply: true,
+         organization_scoped: true,
+         schedule_token: held_token(&1)
+       )
+     )}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, load_editor(socket, params)}
+    {:noreply, socket |> assign(:url_params, params) |> then(&load_editor(&1, params))}
+  end
+
+  # A committed change of the active schedule, by anyone, is a hint that the targets
+  # this page reads are out of date. The page does not reread here: it only notes that
+  # a newer selection exists and pauses target choices until **Reload targets**.
+  @impl true
+  def handle_info({:active_schedule_changed, %{revision: _revision} = token}, socket) do
+    {:noreply, note_active_change(socket, token)}
   end
 
   # A settled assistant entry carrying a prepared change belongs to the
@@ -390,12 +474,33 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # alert this editor was showing a moment ago, or another editor's session -
   # changes nothing here, because the id the panel hands over is the only thing
   # that says whose change this is (R11, FH-28).
-  @impl true
   def handle_info({:agent_prepared, conversation_id, entry_id}, socket) do
     {:noreply, apply_prepared(socket, conversation_id, entry_id)}
   end
 
   def handle_info(_message, socket), do: {:noreply, socket}
+
+  # A replacement search settles here, and only while it is still the search the open
+  # picker made. LiveView hands over every task that ends, so a result or an exit of
+  # a search a closed picker, a newer query or an active change has left behind is
+  # dropped by its request number, not by who started it (AC-25).
+  @impl true
+  def handle_async({:repair_search, request}, result, socket) do
+    {:noreply, settle_repair_search(socket, request, result)}
+  end
+
+  # While the schedule this page holds is not the active one, choosing and searching
+  # targets is paused. The questions render disabled, so this refuses what a stale
+  # tab or a hand-made event would still send; the server's token check refuses it
+  # again if it ever got further (AC-22, AC-25).
+  @impl true
+  def handle_event(event, params, %{assigns: %{target_blocked?: true}} = socket)
+      when event in @target_events or
+             (event == "autosave" and
+                (is_map_key(params, "place") or is_map_key(params, "alternative") or
+                   is_map_key(params, "stretch"))) do
+    {:noreply, socket}
+  end
 
   # -- The assistant ------------------------------------------------------
 
@@ -683,8 +788,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # two selects are fields of the autosave form, so one change carries both ends;
   # a half pair stores nothing and waits for the other end.
   #
-  # The slice is taken from one route's own stop order, so a pair of UUIDs from
-  # another version, or two stops no chosen route serves together, resolves
+  # The slice is taken from one route's own stop order, so a pair of stop IDs
+  # from another version, or two stops no chosen route serves together, resolves
   # nothing at all.
   def handle_event("autosave", %{"stretch" => %{"from" => from, "to" => to}}, socket)
       when is_binary(from) and is_binary(to) do
@@ -810,7 +915,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   def handle_event("save_as_new", _params, socket) do
     case socket.assigns.pending_attrs do
       params when is_map(params) ->
-        case Alerts.create_alert(audit_context(socket), castable(params)) do
+        case Alerts.create_alert(audit_context(socket), castable(params), schedule_opts(socket)) do
           {:ok, created} ->
             {:noreply,
              socket
@@ -819,7 +924,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
              |> push_navigate(to: saved_path(socket, created, socket.assigns.step))}
 
           {:error, reason} ->
-            {:noreply, put_flash(socket, :error, write_error_message(reason))}
+            {:noreply, refuse_write(socket, reason)}
         end
 
       nil ->
@@ -916,7 +1021,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           }
         }
 
-        case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+        case Alerts.save_draft(
+               audit_context(socket),
+               alert.id,
+               alert.revision,
+               attrs,
+               schedule_opts(socket)
+             ) do
           {:ok, saved} ->
             {:noreply,
              socket
@@ -930,7 +1041,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             {:noreply, stale_conflict(socket, alert, current, attrs)}
 
           {:error, reason} ->
-            {:noreply, put_flash(socket, :error, write_error_message(reason))}
+            {:noreply, refuse_write(socket, reason)}
         end
     end
   end
@@ -1325,6 +1436,135 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:offset_choices, offset_choices_from(Map.get(params, "offset_choices")))}
   end
 
+  # -- Active schedule and target repair ---------------------------------
+
+  # The one thing that replaces the token this page holds. It rereads the active
+  # schedule, rebuilds every read from it and clears what the old schedule offered;
+  # the saved targets, the typed values, the pending save and the staged repairs stay.
+  def handle_event("reload_targets", _params, socket) do
+    case Versions.active_schedule(session_scope(socket)) do
+      {:ok, active} ->
+        socket =
+          socket
+          |> cancel_repair_search()
+          |> assign(:active_schedule, active)
+          |> assign(:pending_active, nil)
+          |> assign(:assistant_candidate, nil)
+          |> put_target_lock()
+          |> AgentPanel.set_schedule_token(active.token)
+          |> reload_questions()
+          |> then(&prepare_assistant(&1, &1.assigns.alert))
+
+        {:noreply, push_focus(socket, reload_focus(socket))}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+    end
+  end
+
+  def handle_event("repair_replace", %{"index" => index}, socket) do
+    case repair_item(socket, index) do
+      %{replaceable?: true} = item ->
+        request = socket.assigns.repair_request + 1
+
+        picker = %{
+          index: item.index,
+          type: item.type,
+          query: "",
+          state: :idle,
+          options: [],
+          request: request
+        }
+
+        {:noreply,
+         socket
+         |> assign(:repair_request, request)
+         |> assign(:repair_picker, picker)
+         |> assign(:repair_error, nil)
+         |> push_focus("alert-repair-search-#{item.index}")}
+
+      _not_replaceable ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("repair_search", %{"repair_query" => text}, socket) when is_binary(text) do
+    case socket.assigns.repair_picker do
+      nil -> {:noreply, socket}
+      picker -> {:noreply, search_replacements(socket, picker, String.trim(text))}
+    end
+  end
+
+  # Only an option the current search returned can be chosen: a forged id, a pick from
+  # a list a newer search replaced, or one that arrives after the picker closed is
+  # refused. The choice is staged, not applied.
+  def handle_event("repair_choose", %{"index" => index, "id" => id}, socket)
+      when is_binary(id) do
+    with %{state: :ready, options: options} = picker <- socket.assigns.repair_picker,
+         %{} = item <- repair_item(socket, index),
+         true <- item.index == picker.index,
+         %{} = option <- Enum.find(options, &(&1.id == id)) do
+      {:noreply,
+       socket
+       |> stage_repair(item, {:replace, option.id, option.label})
+       |> close_repair_picker()
+       |> push_focus("alert-repair-undo-#{item.index}")}
+    else
+      _not_offered -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("repair_remove", %{"index" => index}, socket) do
+    case repair_item(socket, index) do
+      %{} = item ->
+        {:noreply,
+         socket
+         |> stage_repair(item, :remove)
+         |> close_repair_picker()
+         |> push_focus("alert-repair-undo-#{item.index}")}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("repair_undo", %{"index" => index}, socket) do
+    case repair_item(socket, index) do
+      %{} = item ->
+        {:noreply,
+         socket
+         |> stage_repair(item, nil)
+         |> push_focus(
+           if(item.replaceable?,
+             do: "alert-repair-replace-#{item.index}",
+             else: "alert-repair-remove-#{item.index}"
+           )
+         )}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("repair_close", _params, socket) do
+    index = socket.assigns.repair_picker && socket.assigns.repair_picker.index
+
+    {:noreply,
+     socket
+     |> close_repair_picker()
+     |> push_focus(index && "alert-repair-replace-#{index}")}
+  end
+
+  def handle_event("repair_apply", _params, socket) do
+    case {socket.assigns.alert, socket.assigns.repair_ops} do
+      {%Alert{} = alert, ops} when map_size(ops) > 0 ->
+        {:noreply, apply_repair(socket, alert, ops)}
+
+      _nothing_staged ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # **Save alert** is the review's one action. The outstanding questions come
@@ -1361,6 +1601,444 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end)
   end
 
+  # -- The active schedule ------------------------------------------------
+
+  defp session_scope(socket) do
+    %{
+      actor_id: socket.assigns.current_user.id,
+      organization_id: socket.assigns.current_organization.id
+    }
+  end
+
+  defp subscribe_active(socket) do
+    with %{id: organization_id} <- socket.assigns[:current_organization],
+         true <- connected?(socket) do
+      Phoenix.PubSub.subscribe(
+        GtfsPlanner.PubSub,
+        Versions.active_schedule_topic(organization_id)
+      )
+    end
+
+    socket
+  end
+
+  defp no_active?(%{version: %{}}), do: false
+  defp no_active?(_active), do: true
+
+  # Choosing targets is paused when there is no active schedule, and when a newer
+  # selection exists than the one this page holds.
+  defp put_target_lock(socket) do
+    assign(
+      socket,
+      :target_blocked?,
+      no_active?(socket.assigns.active_schedule) or not is_nil(socket.assigns.pending_active)
+    )
+  end
+
+  defp held_token(socket) do
+    case socket.assigns.active_schedule do
+      %{token: token} -> token
+      _none -> nil
+    end
+  end
+
+  defp held_revision(socket) do
+    case held_token(socket) do
+      %{revision: revision} -> revision
+      _none -> -1
+    end
+  end
+
+  # A notice that is not newer than what the page already holds (or already knows of)
+  # changes nothing, so the page's own reload and a repeated broadcast are no-ops.
+  defp note_active_change(socket, %{revision: revision} = token) do
+    known = socket.assigns.pending_active
+
+    if revision > held_revision(socket) and (is_nil(known) or revision > known.revision) do
+      socket
+      |> cancel_repair_search()
+      |> assign(:pending_active, token)
+      |> put_target_lock()
+      |> end_helper_work()
+    else
+      socket
+    end
+  end
+
+  # The helper's conversation and anything it prepared belong to the schedule this
+  # page held. When a newer selection exists the running turn is stopped, the panel
+  # lets go of its session and a change kept for **Apply changes** is dropped. None
+  # of it is replayed after the reload: the helper starts again from the saved alert.
+  defp end_helper_work(socket) do
+    socket
+    |> assign(:assistant_candidate, nil)
+    |> AgentPanel.suspend(
+      "The active schedule changed. Reload targets to start a new conversation."
+    )
+  end
+
+  # The server refused a write as `:stale_active`, which is how a page that missed the
+  # broadcast finds out. The notice is the same one the broadcast raises.
+  defp note_stale_active(socket) do
+    held = held_revision(socket)
+
+    token =
+      case active_schedule(socket) do
+        %{token: %{revision: revision} = fresh} when revision > held -> fresh
+        _unchanged -> %{version_id: nil, revision: held + 1}
+      end
+
+    note_active_change(socket, token)
+  end
+
+  defp refuse_write(socket, :stale_active), do: note_stale_active(socket)
+  defp refuse_write(socket, reason), do: put_flash(socket, :error, write_error_message(reason))
+
+  # Everything the old schedule offered is dropped and read again from the new one.
+  # What the alert saved and what was typed are not read here, so they cannot change.
+  defp reload_questions(%{assigns: %{load_state: :no_active}} = socket),
+    do: load_editor(socket, socket.assigns.url_params)
+
+  defp reload_questions(socket) do
+    alert = socket.assigns.alert
+    step = socket.assigns.step
+
+    socket
+    |> assign(:route_query, "")
+    |> assign(:route_options, [])
+    |> assign(:mode_route_types, question_options(socket, alert, step, :mode_route_types))
+    |> assign(:directions, question_options(socket, alert, step, :directions))
+    |> clear_stop_options()
+    |> rebuild(alert)
+  end
+
+  # `LiveSelect` keeps the options it last received, so the old schedule's stops are
+  # emptied explicitly on the question that shows one.
+  defp clear_stop_options(%{assigns: %{step: step}} = socket)
+       when step in [:place, :alternative] do
+    send_update(LiveSelectComponent, id: Map.fetch!(@stop_search_kinds, step), options: [])
+    socket
+  end
+
+  defp clear_stop_options(socket), do: socket
+
+  defp reload_focus(socket) do
+    if socket.assigns.diagnostics == [], do: "alert-question-title", else: "alert-target-repair"
+  end
+
+  defp push_focus(socket, nil), do: socket
+  defp push_focus(socket, id), do: push_event(socket, "focus_scoped_target", %{id: id})
+
+  # -- Target repair ------------------------------------------------------
+
+  # A selector the active schedule cannot honour cannot become a public route, stop or
+  # trip, so the editor names it before the operator tries to publish rather than as a
+  # bare field refusal afterwards (AC-10, FH-13). These are the diagnostics the list
+  # flags as Needs attention. With no active schedule every selector would read as
+  # missing, which says nothing the no-active notice does not.
+  defp assign_diagnostics(socket, alert) do
+    diagnostics =
+      if is_nil(alert) or no_active?(socket.assigns.active_schedule),
+        do: [],
+        else: Alerts.diagnostics_for(audit_context(socket), alert)
+
+    socket
+    |> assign(:diagnostics, diagnostics)
+    |> assign(:reference_missing?, diagnostics != [])
+    |> assign_repair_items()
+  end
+
+  # Staged changes survive a rebuild only for a target that is still reported, so a
+  # target repaired some other way cannot leave a change behind to be applied.
+  defp assign_repair_items(socket) do
+    diagnostics = socket.assigns.diagnostics
+    ops = Map.take(socket.assigns.repair_ops, Enum.map(diagnostics, &repair_key/1))
+
+    socket
+    |> assign(:repair_ops, ops)
+    |> assign(:repair_items, repair_items(diagnostics, ops))
+  end
+
+  defp repair_items(diagnostics, ops) do
+    diagnostics
+    |> Enum.with_index()
+    |> Enum.map(fn {diagnostic, index} ->
+      key = repair_key(diagnostic)
+
+      %{
+        index: index,
+        key: key,
+        type: diagnostic.target_type,
+        noun: AlertComponents.target_type_label(diagnostic.target_type),
+        id: repair_label(diagnostic),
+        note: AlertComponents.target_note(diagnostic),
+        replaceable?: diagnostic.target_type in [:route, :stop],
+        op: Map.get(ops, key)
+      }
+    end)
+  end
+
+  defp repair_key(%{target_type: :route, id: id}), do: {:route, id}
+  defp repair_key(%{target_type: :stop, id: id}), do: {:stop, id}
+
+  defp repair_key(%{target_type: :trip, selector: selector}),
+    do: {:trip, selector.trip_id, selector.service_date, selector.start_time}
+
+  defp repair_key(%{target_type: :route_stop_pair, selector: selector}),
+    do: {:pair, selector.route_id, selector.stop_id}
+
+  defp repair_key(%{target_type: :stretch, selector: selector}),
+    do: {:stretch, selector.stretch_from_stop_id, selector.stretch_to_stop_id}
+
+  defp repair_key(%{target_type: type, id: id}), do: {type, id}
+
+  # The raw selection as the alert holds it, so the editor can find it in the feed.
+  defp repair_label(%{target_type: :trip, id: id, selector: selector}) do
+    [id, "on #{selector.service_date}", selector.start_time && "at #{selector.start_time}"]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp repair_label(%{target_type: :route_stop_pair, selector: selector}),
+    do: "#{selector.stop_id} on #{selector.route_id}"
+
+  defp repair_label(%{target_type: :stretch, selector: selector}),
+    do: "#{selector.stretch_from_stop_id} to #{selector.stretch_to_stop_id}"
+
+  defp repair_label(%{id: id}), do: id
+
+  defp repair_item(socket, index) when is_binary(index) do
+    case Integer.parse(index) do
+      {number, ""} -> Enum.find(socket.assigns.repair_items, &(&1.index == number))
+      _not_a_number -> nil
+    end
+  end
+
+  defp repair_item(_socket, _index), do: nil
+
+  defp stage_repair(socket, item, op) do
+    ops =
+      if op,
+        do: Map.put(socket.assigns.repair_ops, item.key, op),
+        else: Map.delete(socket.assigns.repair_ops, item.key)
+
+    socket
+    |> assign(:repair_ops, ops)
+    |> assign(:repair_error, nil)
+    |> assign(:repair_notice, nil)
+    |> assign_repair_items()
+  end
+
+  # Closing, reopening, a newer query and an active change each take a new request
+  # number, which is the whole of "this search is no longer the one on screen".
+  defp close_repair_picker(socket) do
+    socket
+    |> assign(:repair_request, socket.assigns.repair_request + 1)
+    |> assign(:repair_picker, nil)
+  end
+
+  # An active change also stops the task: nothing it could return is wanted.
+  defp cancel_repair_search(socket) do
+    case socket.assigns.repair_picker do
+      %{request: request} ->
+        socket |> cancel_async({:repair_search, request}) |> close_repair_picker()
+
+      nil ->
+        socket
+    end
+  end
+
+  defp search_replacements(socket, picker, "") do
+    request = socket.assigns.repair_request + 1
+
+    socket
+    |> assign(:repair_request, request)
+    |> assign(:repair_picker, %{picker | query: "", state: :idle, options: [], request: request})
+  end
+
+  defp search_replacements(socket, picker, text) do
+    request = socket.assigns.repair_request + 1
+    audit = audit_context(socket)
+    token = held_token(socket)
+    type = picker.type
+    text = String.slice(text, 0, 100)
+
+    socket
+    |> assign(:repair_request, request)
+    |> assign(:repair_picker, %{
+      picker
+      | query: text,
+        state: :loading,
+        options: [],
+        request: request
+    })
+    |> start_async({:repair_search, request}, fn ->
+      {token, replacement_options(type, audit, text)}
+    end)
+  end
+
+  defp replacement_options(:route, audit, text),
+    do: audit |> Alerts.search_routes(text) |> Enum.map(&%{id: &1.id, label: &1.label})
+
+  defp replacement_options(:stop, audit, text),
+    do: audit |> Alerts.search_stops(text) |> Enum.map(&%{id: &1.id, label: &1.label})
+
+  defp settle_repair_search(socket, request, result) do
+    case socket.assigns.repair_picker do
+      %{request: ^request} = picker ->
+        token = held_token(socket)
+
+        case result do
+          {:ok, {^token, options}} ->
+            assign(socket, :repair_picker, %{picker | state: :ready, options: options})
+
+          {:ok, _another_schedule} ->
+            socket
+
+          {:exit, _reason} ->
+            assign(socket, :repair_picker, %{picker | state: :failed, options: []})
+        end
+
+      _superseded ->
+        socket
+    end
+  end
+
+  # **Apply repaired targets** sends the whole proposed selection to `retarget/5`. A
+  # refusal changes nothing, keeps every staged change and says what still does not fit.
+  defp apply_repair(socket, alert, ops) do
+    attrs = repaired_scope(scope(alert), ops)
+    audit = audit_context(socket)
+
+    case Alerts.retarget(audit, alert.id, alert.revision, held_token(socket), attrs) do
+      {:ok, saved} ->
+        repaired(socket, saved)
+
+      {:error, %Ecto.Changeset{}} ->
+        socket
+        |> assign(:repair_error, remaining_problems(audit, alert, attrs))
+        |> push_focus("alert-repair-error")
+
+      {:error, :stale, current} ->
+        # Typed values that are still waiting keep their "Not saved" state and their
+        # Save as new alert; a repair alone has neither, only a newer row to load.
+        socket
+        |> assign(:conflict, current)
+        |> assign(
+          :save_state,
+          if(socket.assigns.pending_attrs, do: :error, else: socket.assigns.save_state)
+        )
+
+      {:error, reason} ->
+        refuse_write(socket, reason)
+    end
+  end
+
+  defp repaired(socket, saved) do
+    pending = socket.assigns.pending_attrs
+
+    socket =
+      socket
+      |> assign(:alert, saved)
+      |> assign(:repair_ops, %{})
+      |> assign(:repair_error, nil)
+      |> assign(:pending_attrs, pending && with_base(pending, saved.revision))
+      |> assign(:form, if(pending, do: socket.assigns.form, else: draft_form(saved)))
+      |> assign(:save_state, if(pending, do: socket.assigns.save_state, else: :saved))
+      |> close_repair_picker()
+      |> rebuild(saved)
+
+    socket
+    |> assign(:repair_notice, schedule_name(socket.assigns.active_schedule))
+    |> push_focus(reload_focus(socket))
+  end
+
+  defp remaining_problems(audit, alert, attrs) do
+    proposed =
+      alert |> Alert.draft_changeset(%{"scope" => attrs}) |> Ecto.Changeset.apply_changes()
+
+    case Alerts.diagnostics_for(audit, proposed) do
+      [] ->
+        "The targets were not applied. Check them against the active schedule and try again."
+
+      diagnostics ->
+        notes = diagnostics |> Enum.map(&AlertComponents.target_note/1) |> Enum.uniq()
+        "The targets were not applied. " <> Enum.join(notes, "; ") <> "."
+    end
+  end
+
+  # The alert's whole selection with each staged change made. A replacement stands in
+  # for the old ID wherever the alert holds it; a removal takes the ID, and anything
+  # that only made sense with it (its pairs, a stretch ending on it), out.
+  defp repaired_scope(scope, ops) do
+    pairs = Enum.flat_map(scope.route_stop_pairs || [], &repaired_pair(&1, ops))
+
+    stretch =
+      with nil <- Map.get(ops, {:stretch, scope.stretch_from_stop_id, scope.stretch_to_stop_id}),
+           {:ok, from} <- repaired_id(scope.stretch_from_stop_id, :stop, ops),
+           {:ok, to} <- repaired_id(scope.stretch_to_stop_id, :stop, ops) do
+        {from, to}
+      else
+        _removed -> {nil, nil}
+      end
+
+    alternative =
+      case repaired_id(scope.alternative_stop_id, :stop, ops) do
+        {:ok, id} -> id
+        :removed -> nil
+      end
+
+    trips =
+      scope.trips
+      |> Enum.reject(
+        &(Map.get(ops, {:trip, &1.trip_id, &1.service_date, &1.start_time}) == :remove)
+      )
+      |> trip_params()
+
+    %{
+      "route_ids" => repaired_ids(scope.route_ids, :route, ops),
+      "stop_ids" => repaired_ids(scope.stop_ids, :stop, ops),
+      "route_stop_pairs" => pairs,
+      "stretch_from_stop_id" => elem(stretch, 0),
+      "stretch_to_stop_id" => elem(stretch, 1),
+      "alternative_stop_id" => alternative,
+      "trips" => trips
+    }
+  end
+
+  defp repaired_ids(nil, _kind, _ops), do: nil
+
+  defp repaired_ids(ids, kind, ops) do
+    ids
+    |> Enum.flat_map(fn id ->
+      case repaired_id(id, kind, ops) do
+        {:ok, kept} -> [kept]
+        :removed -> []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp repaired_id(nil, _kind, _ops), do: {:ok, nil}
+
+  defp repaired_id(id, kind, ops) do
+    case Map.get(ops, {kind, id}) do
+      nil -> {:ok, id}
+      :remove -> :removed
+      {:replace, replacement, _label} -> {:ok, replacement}
+    end
+  end
+
+  defp repaired_pair(%{route_id: route_id, stop_id: stop_id}, ops) do
+    with nil <- Map.get(ops, {:pair, route_id, stop_id}),
+         {:ok, route} <- repaired_id(route_id, :route, ops),
+         {:ok, stop} <- repaired_id(stop_id, :stop, ops) do
+      [%{"route_id" => route, "stop_id" => stop}]
+    else
+      _removed -> []
+    end
+  end
+
   # -- Publication ---------------------------------------------------------
 
   # The accepted row, the manifest's own receipt, and whether this organization
@@ -1372,7 +2050,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     socket
     |> assign(:publication, prepare_publication(socket, alert))
     |> assign(:reference_version, reference_version(socket, alert))
-    |> assign(:reference_missing?, reference_missing?(alert))
+    |> assign_diagnostics(alert)
   end
 
   defp prepare_publication(_socket, nil), do: nil
@@ -1479,23 +2157,6 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  # An identity the capture could not resolve is a selector that cannot become
-  # a public route, stop or trip, so the note names it before the operator
-  # tries to publish rather than as a bare field refusal afterwards (AC-10,
-  # FH-13).
-  defp reference_missing?(nil), do: false
-
-  defp reference_missing?(%Alert{} = alert) do
-    selectors = get_in(alert.target_reference || %{}, ["selectors"]) || %{}
-
-    Enum.any?(["unresolved_routes", "unresolved_stops"], &present_ids?(Map.get(selectors, &1))) or
-      Enum.any?(Map.get(selectors, "route_stops") || [], &(not Map.get(&1, "resolved", false))) or
-      Enum.any?(Map.get(selectors, "trips") || [], &(not Map.get(&1, "resolved", false)))
-  end
-
-  defp present_ids?(ids) when is_list(ids), do: Enum.reject(ids, &(&1 in [nil, []])) != []
-  defp present_ids?(_ids), do: false
-
   defp offset_choices_from(nil), do: %{}
 
   defp offset_choices_from(choices) when is_map(choices) do
@@ -1559,8 +2220,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
            alert.id,
            base,
            castable(attrs),
-           publish?: true,
-           offset_choices: socket.assigns.offset_choices
+           [publish?: true, offset_choices: socket.assigns.offset_choices] ++
+             schedule_opts(socket)
          ) do
       {:ok, %{alert: saved} = result} ->
         {:noreply, apply_publication_result(socket, saved, Map.fetch!(result, :publication))}
@@ -1576,7 +2237,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, stale_conflict(socket, alert, current, with_base(attrs, base))}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        {:noreply, refuse_write(socket, reason)}
     end
   end
 
@@ -2017,7 +2678,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   # Whether the schedule really offers this trip on this date. Every offered
-  # departure is re-read from the alert's own version, so an identity from
+  # departure is re-read from the active schedule, so an identity from
   # another version, a trip that does not run that day, or a trip of a route the
   # alert does not name is absent from the answer and writes nothing (R1, CR-4).
   defp departure_offered?(socket, alert, trip_id, date) do
@@ -2037,8 +2698,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
-  defp trip_params(trips),
-    do: Enum.map(trips, &%{"trip_id" => &1.trip_id, "service_date" => &1.service_date})
+  # The frequency instance travels with its trip, so rewriting the list for one
+  # toggled departure cannot drop another departure's `start_time`.
+  defp trip_params(trips) do
+    Enum.map(trips, fn trip ->
+      %{
+        "trip_id" => trip.trip_id,
+        "service_date" => trip.service_date,
+        "start_time" => trip.start_time
+      }
+    end)
+  end
 
   # -- Timing answers ----------------------------------------------------
 
@@ -2300,7 +2970,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp store_message(socket, alert, script) do
     attrs = message_attrs(alert, script, message_labels(socket, alert))
 
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           schedule_opts(socket)
+         ) do
       {:ok, saved} -> {:ok, saved}
       # Another editor wrote between this load and the generation, so the
       # wording is left to the editor's own first save, which reports the
@@ -2454,7 +3130,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     base = base_revision(socket, params, alert)
     socket = assign(socket, :pending_attrs, with_base(params, base))
 
-    case Alerts.save_draft(audit_context(socket), alert.id, base, castable(params)) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           base,
+           castable(params),
+           schedule_opts(socket)
+         ) do
       {:ok, saved} ->
         {:noreply,
          socket
@@ -2490,7 +3172,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, write_error_message(reason))
+         |> refuse_write(reason)
          |> assign(:save_state, :error)}
     end
   end
@@ -2506,7 +3188,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
            audit_context(socket),
            alert.id,
            base_revision(socket, params, alert),
-           castable(params)
+           castable(params),
+           schedule_opts(socket)
          ) do
       {:ok, saved} ->
         {:ok,
@@ -2530,7 +3213,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
          )}
 
       {:error, reason} ->
-        {:refused, put_flash(socket, :error, write_error_message(reason))}
+        {:refused, refuse_write(socket, reason)}
     end
   end
 
@@ -2628,7 +3311,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp prepare_assistant(socket, alert) do
     socket = assign(socket, :agent_subject_id, alert && alert.id)
 
-    if socket.assigns.mode == :assistant and not is_nil(alert) do
+    # A newer selection than the one this page holds starts no conversation: a new
+    # one would be opened under a token the server has already moved past.
+    if socket.assigns.mode == :assistant and not is_nil(alert) and
+         is_nil(socket.assigns.pending_active) do
       AgentPanel.open(socket)
     else
       socket
@@ -2636,7 +3322,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp start_interview(socket, text) do
-    case Alerts.create_alert(audit_context(socket), %{}) do
+    case Alerts.create_alert(audit_context(socket), %{}, schedule_opts(socket)) do
       {:ok, alert} ->
         socket =
           socket
@@ -2651,7 +3337,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
       {:error, reason} ->
         socket
-        |> put_flash(:error, write_error_message(reason))
+        |> refuse_write(reason)
     end
   end
 
@@ -2664,10 +3350,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # A proposal is written only on the alert revision it was made against. When this
+  # editor holds a different revision the row moved after the helper read it, so the
+  # change is kept for **Apply changes** instead of landing on answers it never saw.
   defp apply_prepared(socket, conversation_id, entry_id) do
     case prepared_change(socket, conversation_id, entry_id) do
-      {:ok, alert, params} -> write_prepared(socket, alert, conversation_id, entry_id, params)
-      :foreign -> socket
+      {:ok, %{revision: revision} = alert, params, %{revision: revision} = bound} ->
+        write_prepared(socket, alert, conversation_id, entry_id, params, bound)
+
+      {:ok, _alert, params, bound} ->
+        offer_candidate(socket, conversation_id, entry_id, params, bound)
+
+      :foreign ->
+        socket
     end
   end
 
@@ -2676,18 +3371,36 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp prepared_change(socket, conversation_id, entry_id) do
     with true <- conversation_id == socket.assigns.agent_conversation_id,
          alert when not is_nil(alert) <- socket.assigns.alert,
-         {:ok, %{command: {:alert_changes, params}}} <-
+         {:ok, %{command: {:alert_changes, params}, bound_to: bound}} <-
            Agents.prepared(socket.assigns.agent_session, conversation_id, entry_id) do
-      {:ok, alert, params}
+      {:ok, alert, params, bound}
     else
       _other -> :foreign
     end
   end
 
-  defp write_prepared(socket, alert, conversation_id, entry_id, params) do
+  defp offer_candidate(socket, conversation_id, entry_id, params, bound) do
+    assign(socket, :assistant_candidate, %{
+      entry_id: entry_id,
+      conversation_id: conversation_id,
+      params: params,
+      bound: bound
+    })
+  end
+
+  # The write carries the selection token the helper was opened under, never the
+  # token this page holds now: a proposal made under a schedule that has since moved
+  # is refused as `:stale_active` with nothing saved, and its token is not refreshed.
+  defp write_prepared(socket, alert, conversation_id, entry_id, params, bound) do
     attrs = mark_prepared_wording(socket, alert, params)
 
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           expected_schedule: bound.schedule
+         ) do
       {:ok, saved} ->
         socket
         |> assign(:alert, saved)
@@ -2702,11 +3415,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       # change as **Apply changes** (AC-28).
       {:error, :stale, current} ->
         socket
-        |> assign(:assistant_candidate, %{
-          entry_id: entry_id,
-          conversation_id: conversation_id,
-          params: params
-        })
+        |> offer_candidate(conversation_id, entry_id, params, bound)
         |> assign(:conflict, current)
         |> assign(:save_state, :error)
 
@@ -2717,7 +3426,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
       {:error, reason} ->
         socket
-        |> put_flash(:error, write_error_message(reason))
+        |> refuse_write(reason)
         |> assign(:save_state, :error)
     end
   end
@@ -2762,14 +3471,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           latest,
           candidate.conversation_id,
           candidate.entry_id,
-          candidate.params
+          candidate.params,
+          candidate.bound
         )
         |> assign(:conflict, nil)
         |> assign(:assistant_candidate, nil)
 
       {:error, reason} ->
         socket
-        |> put_flash(:error, write_error_message(reason))
+        |> refuse_write(reason)
         |> assign(:assistant_candidate, nil)
     end
   end
@@ -2817,8 +3527,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     socket = assign(socket, :mode, mode_from(params, socket))
 
     case socket.assigns.live_action do
-      :new -> build(socket, nil, params)
-      :edit -> load_saved(socket, params)
+      # Nothing can be started without a schedule to check it against, so the page
+      # offers the way to choose one and writes no draft (AC-25).
+      :new ->
+        if no_active?(socket.assigns.active_schedule),
+          do: assign(socket, :load_state, :no_active),
+          else: build(socket, nil, params)
+
+      :edit ->
+        load_saved(socket, params)
     end
   end
 
@@ -2880,6 +3597,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:publish?, false)
     |> assign(:offset_choices, %{})
     |> assign(:publication_errors, [])
+    |> assign(:repair_notice, nil)
     |> assign_publication(alert)
     |> assign(:route_query, socket.assigns[:route_query] || "")
     |> assign(:route_options, socket.assigns[:route_options] || [])
@@ -2946,7 +3664,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # own stop list for the skipped-stop question, the routes that share the stops
   # the alert names, the combobox fields, the cancelled departures and this
   # step's expanded occurrences. Every read goes through the audit context, so
-  # all of them are the alert's own version's (CR-4).
+  # all of them are the active schedule's (CR-4).
   defp prepare_questions(socket, alert) do
     socket
     |> reset_stop_fields()
@@ -3036,7 +3754,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # options when the editor is actually on them: the mode question offers the
   # version's route types and the direction question the directions the routes
   # the alert already names run. Both reads go through the audit context, so
-  # they are the alert's own version's (CR-4).
+  # they are the active schedule's (CR-4).
   defp question_options(_socket, nil, _step, _kind), do: []
 
   defp question_options(socket, _alert, :mode, :mode_route_types) do
@@ -3078,8 +3796,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # The two facts about the version and the saved answers that change the
   # sequence. Both reads go through the audit context, which is scoped to the
-  # version in the URL - which, after the check above, is the alert's own version
-  # (CR-4).
+  # organization's active schedule (CR-4).
   defp editor_flags(socket, nil) do
     %{multimodal?: length(Alerts.route_types(audit_context(socket))) > 1, shared_routes?: false}
   end
@@ -3099,7 +3816,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # lists (`shared_route_options/2`): answering "yes" stores route and stop
   # pairs, and counting those routes as named would drop the question the
   # moment it is answered, leaving no way to change the answer. Both reads are
-  # the alert's own version's.
+  # the active schedule's.
   defp shared_routes?(audit, alert) do
     answer = scope(alert)
     chosen = MapSet.new(answer.route_ids || [])
@@ -3257,7 +3974,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp answer_and_advance(socket, answered, alert, attrs) do
-    case Alerts.save_draft(audit_context(socket), alert.id, alert.revision, attrs) do
+    case Alerts.save_draft(
+           audit_context(socket),
+           alert.id,
+           alert.revision,
+           attrs,
+           schedule_opts(socket)
+         ) do
       {:ok, saved} ->
         {:noreply, advance_without_writing(socket, saved, answered)}
 
@@ -3265,7 +3988,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
         {:noreply, stale_conflict(socket, alert, current, attrs)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        {:noreply, refuse_write(socket, reason)}
     end
   end
 
@@ -3299,13 +4022,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp search_query(_params), do: nil
 
   defp create_and_advance(socket, urgency) do
-    case Alerts.create_alert(audit_context(socket), %{"urgency" => urgency}) do
+    case Alerts.create_alert(
+           audit_context(socket),
+           %{"urgency" => urgency},
+           schedule_opts(socket)
+         ) do
       {:ok, alert} ->
         {:noreply,
          push_navigate(socket, to: saved_path(socket, alert, advance(alert, :urgency, socket)))}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, write_error_message(reason))}
+        {:noreply, refuse_write(socket, reason)}
     end
   end
 
@@ -3370,7 +4097,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
 
   # The preview reads saved answers only: the header the editor wrote, the When
   # sentence `Recurrence.summary/1` derived, and the route rows
-  # `Alerts.routes_for/2` read from the alert's own version (CR-4).
+  # `Alerts.routes_for/2` read from the active schedule (CR-4).
   defp empty_preview do
     %{
       alert: nil,
@@ -3388,7 +4115,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp preview(socket, alert) do
     audit = audit_context(socket)
     referenced = Listing.referenced_ids(alert)
-    routes = Alerts.routes_for(audit, [alert])
+    routes = audit |> Alerts.routes_for([alert]) |> Map.get(alert.id, %{})
 
     %{
       alert: alert,
@@ -3410,7 +4137,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       |> Enum.reject(&is_nil/1)
       |> Enum.map_join(", ", &AlertComponents.route_label/1)
 
-    names = if names == "", do: "Every route in this version", else: names
+    names = if names == "", do: "Every route in the active schedule", else: names
     names <> stop_phrase(stop_ids)
   end
 
@@ -3456,7 +4183,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp question_hint(:timing),
     do: "Say when this starts and ends, then check the dates it covers."
 
-  defp question_hint(:place), do: "Search this version's stops by name or number."
+  defp question_hint(:place), do: "Search the active schedule's stops by name or number."
 
   defp question_hint(:reason),
     do: "Choose the reason. Describe it in your own words if it is another one."
@@ -3465,7 +4192,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     do: "Add a headline and details, replace any fill-ins, and check text marked for review."
 
   defp question_hint(:review),
-    do: "Check what riders will see. Saving keeps the alert with this version."
+    do: "Check what riders will see. Saving keeps the alert."
 
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
@@ -3525,7 +4252,38 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp write_error_message(:stale),
     do: "This alert changed elsewhere. Reload it to see the current draft."
 
+  defp write_error_message(:stale_active) do
+    "The active schedule changed since this page opened. Reload the page to choose targets again."
+  end
+
+  defp write_error_message(:no_active_schedule) do
+    "Select an active schedule on the alerts page before writing an alert."
+  end
+
   defp write_error_message(_reason), do: "That change could not be saved."
+
+  # The active schedule and its token as the organization's editor read them when
+  # this page opened, or nil when there is none or the actor cannot read it. The
+  # token is held for the life of the page: a target-dependent write passes it back
+  # as an expectation and is refused once the selection has moved, so no event
+  # quietly replaces it with a fresh read.
+  defp active_schedule(socket) do
+    with %{id: organization_id} <- socket.assigns[:current_organization],
+         %{id: user_id} <- socket.assigns[:current_user],
+         {:ok, active} <-
+           Versions.active_schedule(%{actor_id: user_id, organization_id: organization_id}) do
+      active
+    else
+      _no_active_schedule -> nil
+    end
+  end
+
+  defp schedule_opts(socket) do
+    case socket.assigns.active_schedule do
+      %{token: token} -> [expected_schedule: token]
+      nil -> []
+    end
+  end
 
   defp audit_context(socket) do
     %AuditContext{
@@ -3537,13 +4295,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     }
   end
 
-  # The navbar's version when the organization has one, and `nil` when it does
-  # not. Every question here reads that version's schedule, so an organization
-  # with no schedule offers none of them and its draft is a private
-  # system-scope alert instead (AC-10).
+  # The organization's active schedule, and `nil` when it has none. Every
+  # question here reads that schedule, the one a target-dependent write is
+  # validated against, so the navbar's version never decides which stops and
+  # routes the editor offers.
   defp selected_version_id(socket) do
-    case socket.assigns[:current_gtfs_version] do
-      %{id: version_id} -> version_id
+    case socket.assigns[:active_schedule] do
+      %{version: %{id: version_id}} -> version_id
       _no_version -> nil
     end
   end
@@ -3551,13 +4309,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # The assistant's own scope line names the schedule this editor reads its
   # questions from, and the organization when there is no schedule to name.
   defp scope_line(assigns) do
-    case assigns[:current_gtfs_version] do
-      %{name: name} -> "Alerts · " <> name
+    case assigns[:active_schedule] do
+      %{version: %{name: name}} -> "Alerts · " <> name
       _no_version -> "Alerts · " <> organization_name(assigns)
     end
   end
 
   defp organization_name(assigns), do: assigns.current_organization.name
+
+  defp schedule_name(%{version: %{name: name}}), do: name
+  defp schedule_name(_active), do: nil
+
+  defp target_step?(step), do: step in @target_steps
 
   # -- Rendering ----------------------------------------------------------
 
@@ -3573,7 +4336,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="alert-editor" class="ds-page group/editor">
+      <div id="alert-editor" class="ds-page group/editor" phx-hook="FormErrorFocus">
         <.back_link id="alert-back-link" navigate={~p"/alerts"}>
           Alerts
         </.back_link>
@@ -3587,7 +4350,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           Choose an organization to write its alerts.
         </.message>
 
-        <%= if @load_state != :organization_required do %>
+        <%!-- A new alert with no active schedule has nothing to check its answers against,
+             so the page offers the way to choose one and shows no question, no mode
+             control and no save bar: opening it writes nothing. --%>
+        <.header :if={@load_state == :no_active}>
+          New alert
+          <:subtitle>
+            Choose what you know. We'll help with the rest.
+          </:subtitle>
+        </.header>
+
+        <.active_changed_banner :if={@load_state == :no_active and @pending_active} />
+
+        <.first_use
+          :if={@load_state == :no_active}
+          id="alert-editor-no-active"
+          title="No active schedule"
+          icon="hero-calendar-days"
+        >
+          Alerts check their routes, stops and departures against the active schedule. Choose
+          one on the Alerts page before you start an alert.
+          <:action>
+            <.button id="alert-choose-schedule" navigate={~p"/alerts"} variant="primary">
+              Choose schedule
+            </.button>
+          </:action>
+        </.first_use>
+
+        <%= if @load_state not in [:organization_required, :no_active] do %>
           <.header>
             {if @alert, do: "Update alert", else: "New alert"}
             <:subtitle>
@@ -3604,6 +4394,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
             </:actions>
           </.header>
 
+          <.active_changed_banner :if={@pending_active} />
+          <.no_active_banner :if={no_active?(@active_schedule)} />
+
           <%= if @mode == :assistant do %>
             <%!-- Assistant mode is the same draft in a second frame: the start card
                  before there is a row, then the conversation card beside the same
@@ -3613,6 +4406,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
               class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
             >
               <div class="min-w-0">
+                <.conflict_banner
+                  :if={@conflict}
+                  id="alert-conflict"
+                  save_new?={not is_nil(@pending_attrs)}
+                />
+
+                <.target_repair
+                  active_name={schedule_name(@active_schedule)}
+                  items={@repair_items}
+                  picker={@repair_picker}
+                  blocked?={@target_blocked?}
+                  error={@repair_error}
+                  notice={@repair_notice}
+                />
+
                 <.assistant_start
                   :if={is_nil(@alert)}
                   form={@assistant_note_form}
@@ -3676,7 +4484,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
               <div class="min-w-0">
                 <.progress steps={@steps} />
 
-                <.conflict_banner :if={@conflict} id="alert-conflict" />
+                <.conflict_banner
+                  :if={@conflict}
+                  id="alert-conflict"
+                  save_new?={not is_nil(@pending_attrs)}
+                />
+
+                <.target_repair
+                  active_name={schedule_name(@active_schedule)}
+                  items={@repair_items}
+                  picker={@repair_picker}
+                  blocked?={@target_blocked?}
+                  error={@repair_error}
+                  notice={@repair_notice}
+                />
 
                 <.form
                   for={@form}
@@ -3706,6 +4527,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     heading={question_for(@step, @alert)}
                     hint={question_hint(@step)}
                     back={back_patch(@steps, @step)}
+                    locked?={@target_blocked? and target_step?(@step)}
                   >
                     <.urgency_question
                       :if={@step == :urgency}

@@ -25,6 +25,14 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
   Two more interleavings use the same structure: a delete that commits while a
   save waits for the alert row's `FOR UPDATE`, and a second first guidelines save
   waiting on the settings table's unique index.
+
+  A target save also takes the organization's active schedule before it reads a
+  target (EV-10): a stop deleted by a schedule writer that holds the active version
+  commits before the save validates it, a deletion that starts while a save holds the
+  version waits until the save has committed, and a selection change that commits
+  while a save waits for the organization row makes the save's token stale. In each
+  case the schedule writer is a separate connection and the save is observed waiting
+  in `pg_stat_activity`.
   """
 
   use GtfsPlanner.DataCase, async: false
@@ -42,9 +50,13 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.AlertSettings
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   # Every case holds one lock open and observes another backend's wait, so the test
   # is bounded: EV-6's 120 s command deadline, and a 10 s self-release for any hold
@@ -142,6 +154,177 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
     end
   end
 
+  describe "a target save and the active schedule" do
+    test "a stop the schedule writer deleted first is refused, not stored" do
+      scope = committed_scope() |> add_stop!("s_1")
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+      token = unboxed(fn -> current_token!(scope.audit) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_stop_deletion(scope, parent) end)
+      assert_receive :active_version_locked, @receive_timeout
+
+      saver = Task.async(fn -> save_stop_on_own_connection(scope, parent, token) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+
+      # The save holds the organization row and the membership and waits for the
+      # active version the schedule writer owns.
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      # The deletion committed before the save read its targets, so the save
+      # validates against the schedule as it now is and stores nothing.
+      assert {:error, %Ecto.Changeset{} = changeset} = Task.await(saver, @task_timeout)
+      assert %{scope: ["Choose stops from this version."]} = errors_on(changeset)
+
+      stored = unboxed(fn -> Repo.get!(Alert, scope.alert.id) end)
+      assert stored.revision == scope.alert.revision
+      assert stored.scope.stop_ids == nil
+
+      assert unboxed(fn ->
+               Repo.get_by(Stop, organization_id: scope.organization_id, stop_id: "s_1")
+             end) == nil
+    end
+
+    test "a deletion that starts while a save holds the version waits until it committed" do
+      scope = committed_scope() |> add_stop!("s_1")
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+      token = unboxed(fn -> current_token!(scope.audit) end)
+
+      stop =
+        unboxed(fn ->
+          Repo.get_by!(Stop, organization_id: scope.organization_id, stop_id: "s_1")
+        end)
+
+      {:ok, review} = unboxed(fn -> StopEditing.delete_review(stop.id, scope.audit) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_alert_row(scope, parent) end)
+      assert_receive :alert_row_locked, @receive_timeout
+
+      saver = Task.async(fn -> save_stop_on_own_connection(scope, parent, token) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+
+      # The save has locked the active version and now waits for the alert row, so
+      # it has not yet validated or stored anything.
+      assert wait_until_locked(save_pid)
+
+      writer =
+        Task.async(fn ->
+          on_own_connection(
+            parent,
+            fn -> StopEditing.delete_stop(stop.id, review.fingerprint, scope.audit) end,
+            :writer_pid
+          )
+        end)
+
+      assert_receive {:writer_pid, writer_pid}, @receive_timeout
+      assert wait_until_locked(writer_pid)
+
+      assert unboxed(fn ->
+               Repo.get_by(Stop, organization_id: scope.organization_id, stop_id: "s_1")
+             end) != nil
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      # The save validated and stored the stop while it was still there; the
+      # deletion ran after that commit.
+      assert {:ok, saved} = Task.await(saver, @task_timeout)
+      assert saved.scope.stop_ids == ["s_1"]
+      assert {:ok, %{removed: _removed}} = Task.await(writer, @task_timeout)
+
+      assert unboxed(fn -> Repo.get!(Alert, scope.alert.id).scope.stop_ids end) == ["s_1"]
+
+      assert unboxed(fn ->
+               Repo.get_by(Stop, organization_id: scope.organization_id, stop_id: "s_1")
+             end) == nil
+    end
+
+    test "a committed role removal refuses a target save and stores no target" do
+      scope = committed_scope() |> add_stop!("s_1")
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+      token = unboxed(fn -> current_token!(scope.audit) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_role_removal(scope, parent) end)
+      assert_receive :editor_role_cleared, @receive_timeout
+
+      saver = Task.async(fn -> save_stop_on_own_connection(scope, parent, token) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      assert {:error, :forbidden} = Task.await(saver, @task_timeout)
+      assert unboxed(fn -> Repo.get!(Alert, scope.alert.id).scope.stop_ids end) == nil
+    end
+
+    test "a membership command holding the organization row does not deadlock with a target save" do
+      scope = committed_scope() |> add_stop!("s_1")
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+      token = unboxed(fn -> current_token!(scope.audit) end)
+
+      admin =
+        unboxed(fn ->
+          admin = user_fixture()
+
+          organization_membership_fixture(admin, %{id: scope.organization_id}, [
+            "pathways_studio_admin"
+          ])
+
+          admin
+        end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_membership_command(scope, admin, parent) end)
+      assert_receive :organization_locked, @receive_timeout
+
+      # A membership command takes the organization row and then the member's row. The
+      # save asks for the organization row before it holds anything, so the two cannot
+      # wait on each other.
+      saver = Task.async(fn -> save_stop_on_own_connection(scope, parent, token) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      assert {:error, :forbidden} = Task.await(saver, @task_timeout)
+      assert unboxed(fn -> Repo.get!(Alert, scope.alert.id).scope.stop_ids end) == nil
+    end
+
+    test "a selection change that commits while a save waits makes the save's token stale" do
+      scope = committed_scope() |> add_stop!("s_1")
+      on_exit(fn -> cleanup_committed_scope(scope) end)
+      token = unboxed(fn -> current_token!(scope.audit) end)
+      other = unboxed(fn -> gtfs_version_fixture(scope.organization_id) end)
+
+      parent = self()
+      holder = Task.async(fn -> hold_selection_change(scope, other, parent) end)
+      assert_receive :selection_changed, @receive_timeout
+
+      saver = Task.async(fn -> save_stop_on_own_connection(scope, parent, token) end)
+      assert_receive {:save_pid, save_pid}, @receive_timeout
+
+      # The save needs the organization row `FOR SHARE`, which the uncommitted
+      # selection change holds `FOR NO KEY UPDATE`.
+      assert wait_until_locked(save_pid)
+
+      send(holder.pid, :commit)
+      assert Task.await(holder, @task_timeout) == {:ok, :ok}
+
+      assert {:error, :stale_active} = Task.await(saver, @task_timeout)
+
+      stored = unboxed(fn -> Repo.get!(Alert, scope.alert.id) end)
+      assert stored.revision == scope.alert.revision
+      assert stored.scope.stop_ids == nil
+    end
+  end
+
   describe "a first guidelines save waiting on the unique index" do
     test "the editor who lost the race is told the guidelines are stale" do
       scope = committed_scope()
@@ -219,14 +402,108 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
 
   # Deletes exactly the rows `committed_scope/1` created, keyed to their own
   # organization, on an own connection so the deletion is not part of the SQL
-  # Sandbox transaction and runs even when the test failed. Deleting the
-  # organization removes its versions, agency, alerts, memberships and settings
-  # in one statement; deleting a version on its own would be refused while the
-  # agency row still names it (`agencies_version_owner_fkey`).
+  # Sandbox transaction and runs even when the test failed. The organization's
+  # rows go table by table (stops and other schedule rows do not cascade from the
+  # organization), with the active pointer cleared first, then the actor.
   defp cleanup_committed_scope(scope) do
     unboxed(fn ->
-      Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
+      GtfsPlanner.ConcurrencyHelpers.delete_committed_scope!([scope.organization_id])
       Repo.delete_all(from(u in User, where: u.id == ^scope.actor_id))
+    end)
+  end
+
+  # A committed stop in the scope's version, for the target a save adds.
+  defp add_stop!(scope, stop_id) do
+    unboxed(fn -> stop_fixture(scope.organization_id, scope.version_id, %{stop_id: stop_id}) end)
+    scope
+  end
+
+  # Locks the active version the way a cooperating schedule writer does, deletes the
+  # stop and holds both uncommitted.
+  defp hold_stop_deletion(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Versions.lock_for_exclusive_write!(scope.organization_id, scope.version_id)
+
+        {1, _} =
+          Repo.delete_all(
+            from(s in Stop,
+              where: s.organization_id == ^scope.organization_id and s.stop_id == "s_1"
+            )
+          )
+
+        hold_until_commit(parent, :active_version_locked)
+      end)
+    end)
+  end
+
+  # A membership command: the organization row `FOR NO KEY UPDATE`, held while the
+  # editor's membership is deactivated, committed together on release.
+  defp hold_membership_command(scope, admin, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Authorization.lock_member_admin!(admin, scope.organization_id)
+        send(parent, :organization_locked)
+
+        receive do
+          :commit -> :ok
+        after
+          @hold_timeout -> Repo.rollback(:timeout)
+        end
+
+        {1, _} =
+          Repo.update_all(
+            from(m in UserOrgMembership, where: m.id == ^scope.membership_id),
+            set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+          )
+
+        :ok
+      end)
+    end)
+  end
+
+  # Locks the alert row on an own connection and holds it, so a save that has
+  # already locked the schedule waits on the row.
+  defp hold_alert_row(scope, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Repo.one!(from(a in Alert, where: a.id == ^scope.alert.id, lock: "FOR UPDATE"))
+
+        hold_until_commit(parent, :alert_row_locked)
+      end)
+    end)
+  end
+
+  # Moves the active pointer to `other` exactly as `Versions.set_active_schedule/3`
+  # does, under the organization lock, and holds it uncommitted.
+  defp hold_selection_change(scope, other, parent) do
+    unboxed(fn ->
+      Repo.transaction(fn ->
+        Versions.lock_organization!(scope.organization_id)
+
+        {1, _} =
+          Repo.update_all(
+            from(o in Organization, where: o.id == ^scope.organization_id),
+            set: [active_gtfs_version_id: other.id],
+            inc: [active_gtfs_version_revision: 1]
+          )
+
+        hold_until_commit(parent, :selection_changed)
+      end)
+    end)
+  end
+
+  # A save that adds the committed stop to the alert's targets, so it depends on the
+  # active schedule, carrying the token the caller read earlier.
+  defp save_stop_on_own_connection(scope, parent, token) do
+    on_own_connection(parent, fn ->
+      Alerts.save_draft(
+        scope.audit,
+        scope.alert.id,
+        scope.alert.revision,
+        %{"scope" => %{"shape" => "stop_all_routes", "stop_ids" => ["s_1"]}},
+        expected_schedule: token
+      )
     end)
   end
 
@@ -304,10 +581,10 @@ defmodule GtfsPlanner.Alerts.ConcurrencyTest do
     end)
   end
 
-  defp on_own_connection(parent, fun) do
+  defp on_own_connection(parent, fun, tag \\ :save_pid) do
     unboxed(fn ->
       {:ok, %{rows: [[backend_pid]]}} = Repo.query("select pg_backend_pid()")
-      send(parent, {:save_pid, backend_pid})
+      send(parent, {tag, backend_pid})
       fun.()
     end)
   end

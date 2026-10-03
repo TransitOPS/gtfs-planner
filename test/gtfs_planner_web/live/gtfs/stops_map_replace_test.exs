@@ -330,7 +330,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapReplaceTest do
 
   defp pattern_visits(ctx, route_pattern_id) do
     from(rps in RoutePatternStop,
-      join: p in assoc(rps, :route_pattern),
+      join: p in GtfsPlanner.Gtfs.RoutePattern,
+      on:
+        p.route_pattern_id == rps.route_pattern_id and p.organization_id == rps.organization_id and
+          p.gtfs_version_id == rps.gtfs_version_id,
       where:
         p.organization_id == ^ctx.organization.id and p.gtfs_version_id == ^ctx.version.id and
           p.route_pattern_id == ^route_pattern_id,

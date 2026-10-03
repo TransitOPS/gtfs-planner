@@ -443,11 +443,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
     |> Enum.find(&(&1.position == position))
   end
 
-  defp occurrences(pattern_id) do
-    Repo.all(
-      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position)
-    )
-  end
+  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
   defp stamp_timing_rows(timing) do
     Repo.all(
@@ -538,7 +534,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
       Repo.delete_all(from(p in RoutePattern, where: p.organization_id == ^org_id))
       Repo.delete_all(from(r in Route, where: r.organization_id == ^org_id))
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^org_id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^org_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^org_id))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id == ^org_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^org_id))
       Repo.delete_all(from(u in User, where: u.id == ^actor_id))

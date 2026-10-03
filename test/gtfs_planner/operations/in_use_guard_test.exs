@@ -628,7 +628,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
     Repo.delete_all(from(t in VehicleType, where: t.organization_id == ^organization_id))
     Repo.delete_all(from(g in Garage, where: g.organization_id == ^organization_id))
 
-    Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+    delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
 
     editor_user_ids =
       Repo.all(

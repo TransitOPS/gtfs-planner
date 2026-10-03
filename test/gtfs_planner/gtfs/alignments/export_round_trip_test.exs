@@ -373,15 +373,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
     )
   end
 
-  defp visit_distances(pattern_id) do
-    Repo.all(
-      from(o in RoutePatternStop,
-        where: o.route_pattern_id == ^pattern_id,
-        order_by: [asc: o.position],
-        select: o.shape_dist_traveled
-      )
-    )
-  end
+  defp visit_distances(pattern_id),
+    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.shape_dist_traveled)
 
   defp trip_row(org_id, version_id, trip_id) do
     Repo.one!(
@@ -539,7 +532,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
       Repo.delete_all(from(t in TimedPattern, where: t.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))

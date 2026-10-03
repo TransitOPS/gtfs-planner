@@ -489,9 +489,14 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
   loses the race: only one of the two lock-and-write sequences can win (AC-5).
 
   The run's actor must still hold an active editor membership when the lease is
-  confirmed: the membership is locked after the run and before the version, and
-  a revoked actor returns `{:error, :forbidden}` with the version unpublished
-  and the run still `running`, so the caller can record the publication failure.
+  confirmed: the membership is locked after the run and the organization and
+  before the version, and a revoked actor returns `{:error, :forbidden}` with the
+  version unpublished and the run still `running`, so the caller can record the
+  publication failure.
+
+  The first version an organization publishes becomes its active schedule in the
+  same transaction, and the change is announced after the commit
+  (`Versions.active_schedule_topic/1`). A later import never replaces it.
   """
   @spec publish_import(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Result.t()) ::
           {:ok, Run.t(), GtfsVersion.t()} | {:error, term()}
@@ -504,6 +509,8 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         run ->
           case guard_lease(run, ~w(running), lease_token) do
             :ok ->
+              # Run, organization, then membership: see `Versions.lock_organization!/1`.
+              Versions.lock_organization!(organization_id)
               lock_actor!(organization_id, %{id: run.actor_id})
 
               case Versions.publish_importing_gtfs_version(organization_id, run.gtfs_version_id) do
@@ -537,6 +544,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           end
       end
     end)
+    |> announce_publication(organization_id)
   end
 
   @doc """
@@ -613,7 +621,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           | {:error, :not_found | :invalid_transition | :not_publishable | :forbidden}
   def retry_publication(organization_id, run_id, actor) do
     transaction(fn ->
-      case lock_run_as_editor(organization_id, run_id, actor) do
+      case lock_run_for_publication(organization_id, run_id, actor) do
         nil ->
           {:error, :not_found}
 
@@ -648,6 +656,7 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
           {:error, :invalid_transition}
       end
     end)
+    |> announce_publication(organization_id)
   end
 
   # --- cleanup claim / finish / fail ---------------------------------------
@@ -999,6 +1008,28 @@ defmodule GtfsPlanner.Gtfs.ImportRuns do
         run
     end
   end
+
+  # A publication can select the organization's first active schedule, so it takes the
+  # organization row between the run and the membership (see `Versions.lock_organization!/1`).
+  defp lock_run_for_publication(organization_id, run_id, actor) do
+    case lock_run(organization_id, run_id) do
+      nil ->
+        nil
+
+      run ->
+        Versions.lock_organization!(organization_id)
+        lock_actor!(organization_id, actor)
+        run
+    end
+  end
+
+  # The transaction has committed: tell watchers when this publication selected the version.
+  defp announce_publication({:ok, _run, %GtfsVersion{id: version_id}} = result, organization_id) do
+    Versions.announce_activation(organization_id, version_id)
+    result
+  end
+
+  defp announce_publication(result, _organization_id), do: result
 
   # Rolls the transaction back with `:forbidden` unless `actor` holds an active
   # editor membership in the organization. A nil `id` (a legacy run without an

@@ -427,13 +427,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
   end
 
   defp occurrences(pattern_id),
-    do:
-      Repo.all(
-        from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, select: o.id)
-      )
+    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.id)
 
-  defp timings(pattern_id),
-    do: Repo.all(from(t in TimedPattern, where: t.route_pattern_id == ^pattern_id, select: t))
+  defp timings(pattern_id), do: stored_timings(pattern_id)
 
   # --- fixture ---------------------------------------------------------------
 
@@ -645,7 +641,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
       Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
       Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id == ^organization_id))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id == ^organization_id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
     end)
   end

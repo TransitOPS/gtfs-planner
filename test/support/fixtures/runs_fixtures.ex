@@ -287,6 +287,7 @@ defmodule GtfsPlanner.RunsFixtures do
   end
 
   # A caller may name the trip by its UUID or by the trip struct it already holds.
-  defp trip_id(%{id: id}), do: id
-  defp trip_id(id) when is_binary(id), do: id
+  # A trip row, or its GTFS `trip_id`: assignments name the trip by GTFS ID.
+  defp trip_id(%{trip_id: trip_id}), do: trip_id
+  defp trip_id(trip_id) when is_binary(trip_id), do: trip_id
 end

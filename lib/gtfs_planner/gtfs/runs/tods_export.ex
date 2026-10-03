@@ -175,7 +175,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
     trips =
       day.uncovered
       |> Enum.flat_map(& &1.trips)
-      |> Enum.map(& &1.id)
+      |> Enum.map(& &1.trip_id)
       |> Enum.uniq()
 
     %{day_type: day_type, trips: length(trips)}

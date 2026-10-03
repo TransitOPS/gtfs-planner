@@ -292,7 +292,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
 
       settle(view)
 
-      stop = Repo.get_by!(Stop, stop_id: "1434")
+      stop = stop_in_scope!(ctx, "1434")
       assert stop.stop_desc == "By the post office"
 
       # The audit entry is written in the same transaction, and the
@@ -331,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
 
       settle(view)
 
-      assert Repo.get_by!(Stop, stop_id: "1434").stop_desc == "Second"
+      assert stop_in_scope!(ctx, "1434").stop_desc == "Second"
     end
 
     test "a stop ID posted with the form does not change the stop's ID", ctx do
@@ -347,8 +347,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
 
       settle(view)
 
-      assert Repo.get_by!(Stop, stop_id: "1434").stop_desc == "Renamed by a forged param"
-      refute Repo.get_by(Stop, stop_id: "9999")
+      assert stop_in_scope!(ctx, "1434").stop_desc == "Renamed by a forged param"
+      refute stop_in_scope(ctx, "9999")
     end
 
     test "a stale save shows the conflict and writes nothing", ctx do
@@ -369,7 +369,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       assert has_element?(view, "#stops-map-edit-conflict", other.email)
       # Their write is the one that stands, and the draft that asked to
       # overwrite it is still here rather than discarded.
-      assert Repo.get_by!(Stop, stop_id: "1434").stop_desc == "Northbound, by Post Office"
+      assert stop_in_scope!(ctx, "1434").stop_desc == "Northbound, by Post Office"
       assert has_element?(view, "#stops-map-edit-desc[value='Mine']")
     end
 
@@ -427,7 +427,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       assert has_element?(view, "#stops-map-edit-errors")
       assert has_element?(view, "#stops-map-edit-name[aria-invalid=true]")
       # The saved name is untouched and the draft that failed is still there.
-      assert Repo.get_by!(Stop, stop_id: "1434").stop_name == "US 101 & SE 1st St"
+      assert stop_in_scope!(ctx, "1434").stop_name == "US 101 & SE 1st St"
       assert has_element?(view, "#stops-map-edit-name[value='']")
     end
 
@@ -447,7 +447,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       settle(view)
 
       assert has_element?(view, "#stops-map-move-panel")
-      assert Decimal.to_float(Repo.get_by!(Stop, stop_id: "1434").stop_lat) == 44.63561
+      assert Decimal.to_float(stop_in_scope!(ctx, "1434").stop_lat) == 44.63561
     end
   end
 
@@ -486,6 +486,25 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
   # one road, a northbound pattern that visits the first of them, a station with
   # a bay, and an unserved stop. 1434 is served, so its move band is the served
   # one; 1531 is served by nothing, so it is a correction at any distance.
+  # A feed ID is only a natural ID inside one organization and version, so the
+  # assertions below read the seeded row through that scope rather than through
+  # a bare `stop_id`.
+  defp stop_in_scope(ctx, stop_id) do
+    Repo.get_by(Stop,
+      organization_id: ctx.organization.id,
+      gtfs_version_id: ctx.version.id,
+      stop_id: stop_id
+    )
+  end
+
+  defp stop_in_scope!(ctx, stop_id) do
+    Repo.get_by!(Stop,
+      organization_id: ctx.organization.id,
+      gtfs_version_id: ctx.version.id,
+      stop_id: stop_id
+    )
+  end
+
   defp seeded(ctx) do
     served =
       stop_fixture(ctx.organization.id, ctx.version.id, %{
@@ -628,7 +647,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapEditTest do
       roles: ["pathways_studio_editor"]
     })
 
-    stop = Repo.get_by!(Stop, stop_id: stop_id)
+    stop = stop_in_scope!(ctx, stop_id)
 
     audit = %AuditContext{
       organization_id: ctx.organization.id,

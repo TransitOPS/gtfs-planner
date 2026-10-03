@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.LabelRules
   alias GtfsPlanner.Repo
 
@@ -90,7 +91,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
 
     assert Repo.get(RoutePattern, owner.id)
     assert Repo.get(RoutePattern, child.id)
-    assert Repo.get!(RoutePattern, child.id).label_pattern_id == owner.id
+    assert Repo.get!(RoutePattern, child.id).label_pattern_id == owner.route_pattern_id
     assert count_audits(context) == audits_before
   end
 
@@ -119,7 +120,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
           order_by: [desc: log.inserted_at]
       )
 
-    assert log.changed_fields["before"]["to"]["label_pattern_id"] == owner.id
+    assert log.changed_fields["before"]["to"]["label_pattern_id"] == owner.route_pattern_id
     assert log.changed_fields["after"]["to"]["label_pattern_id"] == nil
   end
 
@@ -150,9 +151,69 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
       Repo.update_all(
         from(p in RoutePattern,
           where: p.id == ^pattern.id,
-          update: [set: [label_pattern_id: fragment("?", p.id)]]
+          update: [set: [label_pattern_id: fragment("?", p.route_pattern_id)]]
         ),
         []
+      )
+    end
+  end
+
+  test "an exported label resolves its owner inside the pattern's own scope", context do
+    owner = create_pattern(context, "Owner")
+    child = create_pattern(context, "Child")
+    label!(child, owner)
+
+    # The same pattern IDs exist in a sibling version and another organization,
+    # labelled the other way round. They must not add rows to this version's
+    # export nor change which owner the child exports under.
+    sibling_version = gtfs_version_fixture(context.organization.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+
+    for {organization, version} <- [
+          {context.organization, sibling_version},
+          {foreign_org, foreign_version}
+        ] do
+      route_pattern_fixture(organization.id, version.id, %{
+        route_pattern_id: owner.route_pattern_id,
+        route_id: owner.route_id
+      })
+
+      route_pattern_fixture(organization.id, version.id, %{
+        route_pattern_id: child.route_pattern_id,
+        route_id: owner.route_id
+      })
+    end
+
+    exported =
+      from(
+        p in subquery(
+          RoutePatterns.exported_pattern_ids(context.organization.id, context.version.id)
+        ),
+        select: {p.route_pattern_id, p.exported_id}
+      )
+      |> Repo.all()
+      |> Enum.sort()
+
+    assert exported ==
+             Enum.sort([
+               {owner.route_pattern_id, owner.route_pattern_id},
+               {child.route_pattern_id, owner.route_pattern_id}
+             ])
+  end
+
+  test "the database refuses a label owner that exists only in another version", context do
+    child = create_pattern(context, "Child")
+    sibling_version = gtfs_version_fixture(context.organization.id)
+
+    route_pattern_fixture(context.organization.id, sibling_version.id, %{
+      route_pattern_id: "ONLY-THERE",
+      route_id: child.route_id
+    })
+
+    assert_raise Postgrex.Error, ~r/route_patterns_label_pattern_id_fkey/, fn ->
+      Repo.update_all(from(p in RoutePattern, where: p.id == ^child.id),
+        set: [label_pattern_id: "ONLY-THERE"]
       )
     end
   end
@@ -180,7 +241,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelsTest do
     {1, nil} =
       Repo.update_all(
         from(p in RoutePattern, where: p.id == ^child.id),
-        set: [label_pattern_id: owner.id]
+        set: [label_pattern_id: owner.route_pattern_id]
       )
 
     Repo.get!(RoutePattern, child.id)

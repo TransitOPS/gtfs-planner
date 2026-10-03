@@ -580,7 +580,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
     alert_fixture(context.audit, %{
       "urgency" => "now",
       "situation" => "delay",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]}
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]}
     })
   end
 
@@ -588,7 +588,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
     alert_fixture(context.audit, %{
       "urgency" => "planned",
       "situation" => "delay",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]}
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]}
     })
   end
 

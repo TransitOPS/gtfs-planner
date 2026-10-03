@@ -699,8 +699,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp level_child_stop_markers(socket, %Stop{} = station, level_id) when is_binary(level_id) do
     level_stops =
-      station.id
-      |> Gtfs.list_child_stops_for_level(level_id)
+      station
+      |> Gtfs.list_child_stops_for_station_level(level_id)
       |> Enum.filter(& &1.on_active_level)
 
     badges_by_stop = other_level_badges(socket, station, level_id, level_stops)
@@ -760,11 +760,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @min_active_color_distance 100
 
   defp build_other_levels(socket) do
-    active_level_id =
-      case socket.assigns[:active_level] do
-        %{id: id} -> id
-        _ -> nil
-      end
+    active_level_id = active_floorplan_level_id(socket)
 
     station = socket.assigns[:station]
     floorplan_on = Map.get(socket.assigns, :other_levels_floorplan, MapSet.new())
@@ -779,11 +775,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp populate_other_level_caches(socket) do
-    active_level_id =
-      case socket.assigns[:active_level] do
-        %{id: id} -> id
-        _ -> nil
-      end
+    active_level_id = active_floorplan_level_id(socket)
 
     station = socket.assigns[:station]
 
@@ -799,6 +791,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> assign(:other_level_counts_cache, counts)
     |> assign(:other_level_markers_cache, %{})
+  end
+
+  # The floorplan cache and every other-level toggle key on the stored GTFS level
+  # identifier, so the active level is projected the same way before it is
+  # compared with or excluded from a floorplan row.
+  defp active_floorplan_level_id(socket) do
+    case socket.assigns[:active_level] do
+      %{level_id: level_id} -> level_id
+      _ -> nil
+    end
   end
 
   defp other_level_view(%StopLevel{} = stop_level, station, floorplan_on, stops_on, counts_cache) do
@@ -831,8 +833,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp other_level_stop_counts(%Stop{} = station, level_id) when is_binary(level_id) do
     stops =
-      station.id
-      |> Gtfs.list_child_stops_for_level(level_id)
+      station
+      |> Gtfs.list_child_stops_for_station_level(level_id)
       |> Enum.filter(& &1.on_active_level)
 
     geo =
@@ -7332,7 +7334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp finish_stop_level_save(socket, level_id) do
-    case scoped_level_in_version(socket, level_id) do
+    case scoped_level_by_level_id(socket, level_id) do
       %Gtfs.Level{} = level -> finish_level_save(socket, level)
       nil -> assign_level_outcome(socket, :not_found)
     end
@@ -7400,12 +7402,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:available_levels, available)
   end
 
-  defp scoped_level_in_version(socket, id) do
+  defp scoped_level_by_level_id(socket, level_id) do
     Gtfs.list_all_levels(
       socket.assigns.current_organization.id,
       socket.assigns.current_gtfs_version.id
     )
-    |> Enum.find(&(&1.id == id))
+    |> Enum.find(&(&1.level_id == level_id))
   end
 
   defp assign_level_outcome(socket, reason),

@@ -121,8 +121,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Cutter do
   `highest_numeric/1`, because a hand-made run has to sit above everything
   already in use.
   """
-  @spec run(scope(), [map()], %{Ecto.UUID.t() => String.t()}, map(), map()) :: %{
-          assignments: %{Ecto.UUID.t() => String.t()},
+  @spec run(scope(), [map()], %{String.t() => String.t()}, map(), map()) :: %{
+          assignments: %{String.t() => String.t()},
           new_run_ids: [String.t()]
         }
   def run(scope, blocks, assignments, context, crew) do
@@ -299,12 +299,12 @@ defmodule GtfsPlanner.Gtfs.Runs.Cutter do
 
     run_ids = Numbering.numeric_after(base, length(ordered))
 
-    # The assignment map is keyed by the trip's UUID, which is what the day load
-    # and `Runs.Day.derive/4` read.
+    # The assignment map is keyed by the trip's GTFS `trip_id`, which is what the
+    # day load and `Runs.Day.derive/4` read.
     written =
       Enum.zip(ordered, run_ids)
       |> Enum.flat_map(fn {group, run_id} ->
-        Enum.flat_map(group, fn piece -> Enum.map(piece.trips, &{&1.id, run_id}) end)
+        Enum.flat_map(group, fn piece -> Enum.map(piece.trips, &{&1.trip_id, run_id}) end)
       end)
 
     %{

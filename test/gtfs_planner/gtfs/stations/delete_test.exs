@@ -134,13 +134,17 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
       pathway_fixture(scope.organization.id, scope.version.id, other.stop_id, scope.child.stop_id)
 
     level =
-      Repo.get_by!(Level, organization_id: scope.organization.id, level_id: scope.child.level_id)
+      Repo.get_by!(Level,
+        organization_id: scope.organization.id,
+        gtfs_version_id: scope.version.id,
+        level_id: scope.child.level_id
+      )
 
     stop_level =
       %StopLevel{}
       |> StopLevel.changeset(%{
-        stop_id: scope.child.id,
-        level_id: level.id,
+        stop_id: scope.child.stop_id,
+        level_id: level.level_id,
         organization_id: scope.organization.id,
         gtfs_version_id: scope.version.id
       })

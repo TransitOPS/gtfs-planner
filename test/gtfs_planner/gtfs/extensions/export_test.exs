@@ -155,8 +155,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, sl} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_id,
           gtfs_version_id: version_id,
           diagram_filename: "test.png"
@@ -189,8 +189,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_id,
           gtfs_version_id: version_id,
           diagram_filename: "floor.png"
@@ -236,8 +236,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_id,
           gtfs_version_id: version_id,
           diagram_filename: "floor.png"
@@ -288,8 +288,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: historical_station.id,
-          level_id: historical_level.id,
+          stop_id: historical_station.stop_id,
+          level_id: historical_level.level_id,
           organization_id: org_id,
           gtfs_version_id: historical_version.id,
           diagram_filename: "retired.png"
@@ -322,8 +322,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_id,
           gtfs_version_id: version_id,
           diagram_filename: "missing.png"
@@ -347,8 +347,8 @@ defmodule GtfsPlanner.Gtfs.Extensions.ExportTest do
 
       {:ok, _} =
         insert_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: station.stop_id,
+          level_id: level.level_id,
           organization_id: org_id,
           gtfs_version_id: version_id,
           diagram_filename: "../secret.txt"

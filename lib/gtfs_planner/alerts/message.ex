@@ -165,7 +165,7 @@ defmodule GtfsPlanner.Alerts.Message do
   Builds the facts one alert offers a script's fill-ins.
 
   `labels` is the map `Alerts.labels_for/2` returns, whose `routes`, `stop` and
-  `trips` keys map a row UUID to its rider-facing label. It may also carry a
+  `trips` keys map a feed ID to its rider-facing label. It may also carry a
   `:direction` string - "to Lincoln City", the destination a rider would use -
   because the direction name lives on the route's trips, which a pure function
   over the alert cannot read; the caller that knows the direction passes it.

@@ -5,10 +5,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
 
   Three things are proved here, at the routes the reader actually uses.
 
-  First, an organization with no schedule at all can open `/alerts`, reach the
-  editor through ordinary navigation and create a private system alert. Nothing
-  in that path needs a version, and the row it writes carries the organization
-  rather than a version.
+  First, an organization with no schedule at all can open `/alerts` and reach the
+  editor through ordinary navigation, but it cannot start an alert: a draft is
+  written against the active schedule, so the editor stores nothing and says why.
 
   Second, a versioned bookmark redirects to the organization page and nothing
   else: the alert identity it named is the only thing carried across, a version
@@ -48,7 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       # versionless organization this suite is about must be built explicitly:
       # removing it is what makes AssignOrganization assign a nil
       # `current_gtfs_version`, which is the state the contract names.
-      Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^organization.id)
+      delete_versions!(from v in GtfsVersion, where: v.organization_id == ^organization.id)
 
       %{
         organization: organization,
@@ -57,12 +56,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       }
     end
 
-    test "the list opens without a version and offers the editor", context do
+    test "the list opens without a version and says there is no active schedule", context do
       assert {:ok, view, _html} = live(context.conn, "/alerts")
 
       assert has_element?(view, "#alerts-page")
-      assert has_element?(view, "#alerts-first-use", "No alerts yet")
-      assert has_element?(view, "#create-alert-first-use", "Create alert")
+
+      # Alerts resolve against the active schedule, and this organization has none,
+      # so the list offers neither rows nor a way to start one.
+      assert has_element?(view, "#alerts-no-active")
+      refute has_element?(view, "#alerts-first-use")
+      refute has_element?(view, "#create-alert-first-use")
+      refute has_element?(view, "#create-alert")
 
       # The organization's first task is Alerts, and it points at the
       # organization path rather than at a version this organization has not got.
@@ -72,59 +76,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       refute has_element?(view, "#gtfs-version-switcher")
     end
 
-    test "an editor creates a private system alert through ordinary navigation", context do
-      assert {:ok, view, _html} = live(context.conn, "/alerts")
-
-      # **Create alert** is a live navigation to the organization's editor, not a
-      # version's.
-      assert {:error, {:live_redirect, %{to: "/alerts/new"}}} =
-               view |> element("#create-alert-first-use") |> render_click()
-
-      assert {:ok, view, _html} = live(context.conn, "/alerts/new")
-      assert has_element?(view, "#alert-urgency-now", "Happening now")
-
-      assert view |> element("#alert-urgency-now") |> render_click()
-
-      assert [alert] = Repo.all(Alert)
-      assert alert.organization_id == context.organization.id
-      assert alert.created_by_id == context.actor.id
-      assert alert.source_gtfs_version_id == nil
-      assert alert.timezone == nil
-      assert alert.urgency == :now
-
-      # The draft the editor was sent to is the row's own URL, with no version.
-      assert_redirect(view, "/alerts/#{alert.id}?mode=form&step=situation")
-    end
-
-    test "a system-scope answer is the whole selection when there is no schedule", context do
+    test "an editor cannot start an alert and is told to choose an active schedule", context do
       assert {:ok, view, _html} = live(context.conn, "/alerts/new")
 
-      assert has_element?(view, "#alert-urgency-now", "Happening now")
+      # A draft is written against the active schedule, which this organization has
+      # not got, so the page offers the way to choose one and no question to answer.
+      assert has_element?(view, "#alert-editor-no-active", "No active schedule")
+      assert has_element?(view, "#alert-choose-schedule[href='/alerts']")
+      refute has_element?(view, "#alert-urgency-now")
 
-      # The start card is the urgency question. Answering it creates the private
-      # draft and sends the reader to the situation question, which is where the
-      # scope answer lives - it is not on this card.
-      assert view |> element("#alert-urgency-now") |> render_click()
+      # A hand-made answer is refused by the command, not only hidden by the page.
+      assert render_hook(view, "choose_urgency", %{"urgency" => "now"}) =~
+               "Select an active schedule"
 
-      assert [created] = Repo.all(Alert)
-      situation_path = "/alerts/#{created.id}?mode=form&step=situation"
-      assert_redirect(view, situation_path)
-
-      assert {:ok, view, _html} = live(context.conn, situation_path)
-      assert view |> element("#situation-delay") |> render_click()
-
-      # With no schedule there is no route to name, so the routes question offers
-      # the whole system, and that answer is the entire selection.
-      assert has_element?(view, "#alert-routes-system", "The whole system")
-      assert view |> element("#alert-routes-system") |> render_click()
-
-      # The delay is stored and the scope is the whole system, on a draft that
-      # still carries no version: the organization has none to carry.
-      assert [alert] = Repo.all(Alert)
-      assert alert.situation == :delay
-      assert alert.scope.shape == :system
-      assert alert.organization_id == context.organization.id
-      assert alert.source_gtfs_version_id == nil
+      assert Repo.all(Alert) == []
     end
 
     test "alert settings opens without a version", context do

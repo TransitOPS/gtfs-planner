@@ -7,6 +7,10 @@ defmodule GtfsPlanner.Agents do
   person on the same version for the same record share the conversation, while
   another person's, another version's or another record's panel never attaches to
   it (FH-3). A Calendar panel carries no subject, so its key is unchanged.
+  An Alerts conversation reads the organization's active schedule, so its key also
+  carries the selection token it was opened under: after the active schedule
+  changes, even back to the same version, the old conversation is never reattached
+  and a reload opens a new one. Every other pack's key keeps its shape.
   `open/1` re-reads the membership before it starts or attaches anything
   (INV-2), so a deactivated or de-roled membership cannot join even an
   already-running conversation.
@@ -26,9 +30,10 @@ defmodule GtfsPlanner.Agents do
   conversation while the same user on another route never does (INV-1).
   `subject_id` is `nil` for a pack with no subject record.
 
-  `packs/0` is the only function here that names a concrete pack (INV-1). The
-  Alerts pack is keyed by a subject: its tools read one alert of the scope's
-  organization and version and prepare answers for the editor to apply.
+  `packs/0` and the session key are the only places here that name a concrete
+  pack (INV-1). The Alerts pack is keyed by a subject: its tools read one alert of
+  the scope's organization and the active schedule it was opened under, and
+  prepare answers for the editor to apply.
   """
 
   alias GtfsPlanner.Agents.Pack
@@ -142,8 +147,16 @@ defmodule GtfsPlanner.Agents do
   end
 
   # The unique key is what keeps another person's, another version's or another
-  # route's panel from reaching this conversation (FH-3, INV-1).
-  defp key(%Scope{} = scope) do
+  # route's panel from reaching this conversation (FH-3, INV-1). Only the Alerts
+  # pack appends the active-schedule token.
+  defp key(%Scope{pack_id: "alerts"} = scope) do
+    base = base_key(scope)
+    Tuple.insert_at(base, tuple_size(base), scope.alert_schedule_token)
+  end
+
+  defp key(%Scope{} = scope), do: base_key(scope)
+
+  defp base_key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
      Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
   end

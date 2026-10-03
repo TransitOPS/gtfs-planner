@@ -14,8 +14,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -560,15 +558,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert created.route_pattern_typicality == 2
       assert created.route_pattern_sort_order == 4
 
-      assert Repo.all(
-               from(o in RoutePatternStop,
-                 where: o.route_pattern_id == ^created.id,
-                 order_by: o.position
-               )
-             )
-             |> Enum.map(& &1.stop_id) == Enum.map(Enum.take(stops, 2), & &1.stop_id)
+      assert stored_occurrences(created.id) |> Enum.map(& &1.stop_id) ==
+               Enum.map(Enum.take(stops, 2), & &1.stop_id)
 
-      timings = Repo.all(from(t in TimedPattern, where: t.route_pattern_id == ^created.id))
+      timings = stored_timings(created.id)
       assert [timing] = timings
       assert timing.name == "Timing A"
 
@@ -993,7 +986,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert Enum.all?(assigns.timings, fn summary ->
                not Ecto.assoc_loaded?(summary.timing.timed_pattern_stops) and
-                 not Ecto.assoc_loaded?(summary.timing.route_pattern)
+                 is_nil(summary.timing.route_pattern)
              end)
 
       assert assigns.selected_timing.id == selected.id

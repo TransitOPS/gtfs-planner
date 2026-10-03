@@ -69,21 +69,21 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert level.organization_id == scope.organization.id
     assert level.gtfs_version_id == scope.version.id
     assert level.lock_version == 1
-    assert stop_level.stop_id == scope.station.id
-    assert stop_level.level_id == level.id
+    assert stop_level.stop_id == scope.station.stop_id
+    assert stop_level.level_id == level.level_id
     assert stop_level.organization_id == scope.organization.id
     assert stop_level.gtfs_version_id == scope.version.id
     assert stop_level.lock_version == 1
     assert stop_level.diagram_filename == nil
     assert Repo.get!(Level, level.id).level_id == "L1"
-    assert Repo.get!(StopLevel, stop_level.id).level_id == level.id
+    assert Repo.get!(StopLevel, stop_level.id).level_id == level.level_id
     assert [%{action: "created", actor_id: actor_id}] = logs(scope.audit, :level, level.id)
     assert actor_id == scope.actor.id
 
     assert [%{action: "created", snapshot: snapshot}] =
              logs(scope.audit, :stop_level, stop_level.id)
 
-    assert snapshot["level_id"] == level.id
+    assert snapshot["level_id"] == level.level_id
   end
 
   test "existing level attach refuses foreign and absent UUIDs without revealing them", scope do
@@ -101,8 +101,8 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert station_level_count(scope) == 0
 
     assert {:ok, attached} = Stations.add_existing_level(scope.audit, existing.id)
-    assert attached.level_id == existing.id
-    assert attached.stop_id == scope.station.id
+    assert attached.level_id == existing.level_id
+    assert attached.stop_id == scope.station.stop_id
     assert [%{action: "created"}] = logs(scope.audit, :stop_level, attached.id)
 
     assert {:error, %Ecto.Changeset{}} =
@@ -156,7 +156,7 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert Repo.get!(Stop, untouched.id).level_id == "L1"
     assert Repo.get!(Translation, translation.id).record_id == "L2"
     assert Repo.get!(Translation, foreign_translation.id).record_id == "L1"
-    assert Repo.get!(StopLevel, attached.id).level_id == level.id
+    assert Repo.get!(StopLevel, attached.id).level_id == "L2"
     assert [%{action: "updated", changed_fields: fields}] = logs(scope.audit, :level, level.id)
     assert fields["level_id"] == ["L1", "L2"]
     assert fields["references"] == %{"stops" => 2, "translations" => 1}
@@ -387,7 +387,11 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
                %{}
              )
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "FAILED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "FAILED"
+           ) == nil
 
     assert {:error, %Ecto.Changeset{}} =
              Stations.update_level(invalid_audit, level.id, %{level_id: "FAILED"}, 1)
@@ -419,7 +423,12 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert {:error, :forbidden} =
              Stations.remove_level_from_station(scope.audit, level.id, attached.lock_version)
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "DENIED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "DENIED"
+           ) == nil
+
     assert Repo.get!(Level, level.id).level_name == level.level_name
     assert Repo.get!(StopLevel, attached.id)
   end
@@ -510,7 +519,7 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     Repo.delete_all(from row in Stop, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in Level, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in UserOrgMembership, where: row.organization_id == ^org_id)
-    Repo.delete_all(from row in GtfsVersion, where: row.organization_id == ^org_id)
+    delete_versions!(from row in GtfsVersion, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in Organization, where: row.id == ^org_id)
     Repo.delete_all(from row in User, where: row.id == ^scope.actor.id)
   end
@@ -548,8 +557,8 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
       insert_stop_level(%{
         organization_id: organization_id,
         gtfs_version_id: version_id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     %{station: station, level: level, child: child, stop_level: stop_level}
@@ -568,7 +577,7 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     from(sl in StopLevel,
       where:
         sl.organization_id == ^scope.organization.id and
-          sl.gtfs_version_id == ^scope.version.id and sl.stop_id == ^scope.station.id
+          sl.gtfs_version_id == ^scope.version.id and sl.stop_id == ^scope.station.stop_id
     )
     |> Repo.aggregate(:count)
   end

@@ -2468,7 +2468,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   defp trip_id(nil), do: "the end of this piece"
-  defp trip_id(trip), do: trip.id
+  defp trip_id(trip), do: trip.trip_id
 
   defp move_options(runs, next_run_id) do
     [{"New run (#{next_run_id})", @new_run_option} | Enum.map(runs, &move_option/1)]
@@ -2817,9 +2817,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   "where is the Undo" has one answer and the refusal message reads the same way
   whoever caused it.
 
-  `:toast` is `%{text:, kind:, token:}` or nil; `:undo` is `%{moves:, trips:}` or
-  nil. **Undo is not shown unless there is something to undo** — a toast that
-  offers Undo with nothing behind it is a control that does nothing.
+  `:toast` is `%{text:, kind:, token:}` or nil; `:undo` is `%{moves:, trips:}`, which
+  the page also stamps with a `format:`, or nil. **Undo is not shown unless there is
+  something to undo** — a toast that offers Undo with nothing behind it is a control
+  that does nothing.
 
   `data-token` carries the timer token. It is the one piece of internal state the
   DOM exposes, and it is there so the timer's contract can be tested: a stale

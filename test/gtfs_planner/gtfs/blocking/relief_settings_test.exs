@@ -809,7 +809,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
         Repo.delete_all(from(row in schema, where: row.organization_id == ^scope.organization_id))
       end
 
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^scope.organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization_id))
       Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
     end)

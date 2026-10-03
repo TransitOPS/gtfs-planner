@@ -55,17 +55,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
                )
              end)
 
-    assert RoutePatterns.next_free_timing_name(pattern.id, "Pasted Sep 28", []) ==
+    assert RoutePatterns.next_free_timing_name(pattern, "Pasted Sep 28", []) ==
              "Pasted Sep 28 · B"
   end
 
   test "pending names are skipped case-insensitively", context do
     pattern = create_pattern(context, ["A", "B"])
 
-    assert RoutePatterns.next_free_timing_name(pattern.id, "Pasted Sep 28", []) ==
+    assert RoutePatterns.next_free_timing_name(pattern, "Pasted Sep 28", []) ==
              "Pasted Sep 28 · A"
 
-    assert RoutePatterns.next_free_timing_name(pattern.id, "Pasted Sep 28", [
+    assert RoutePatterns.next_free_timing_name(pattern, "Pasted Sep 28", [
              "pasted sep 28 · a",
              "Pasted Sep 28 · B"
            ]) == "Pasted Sep 28 · C"
@@ -88,7 +88,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
                    context.audit
                  )
 
-               assert RoutePatterns.next_free_timing_name(locked.id, "Pasted Sep 28", []) ==
+               assert RoutePatterns.next_free_timing_name(locked, "Pasted Sep 28", []) ==
                         "Pasted Sep 28 · B"
 
                timing
@@ -109,10 +109,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
 
     assert stored == [{-60, 0, 1}, {300, 360, 0}, {600, 660, 1}]
 
-    assert Repo.aggregate(
-             from(t in TimedPattern, where: t.route_pattern_id == ^pattern.id),
-             :count
-           ) == 2
+    assert length(stored_timings(pattern.id)) == 2
   end
 
   test "the audit log entry exists for the created timing", context do
@@ -164,10 +161,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
                )
              end)
 
-    refute Repo.exists?(
-             from t in TimedPattern,
-               where: t.route_pattern_id == ^pattern.id and t.name == "Pasted Sep 28 · A"
-           )
+    refute pattern.id |> stored_timings() |> Enum.any?(&(&1.name == "Pasted Sep 28 · A"))
 
     refute Repo.exists?(
              from log in ChangeLog,
@@ -223,8 +217,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
                )
              end)
 
-    occurrence_ids =
-      Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, select: o.id)
+    occurrence_ids = pattern.id |> stored_occurrences() |> Enum.map(& &1.id)
 
     timing_occurrence_ids =
       Repo.all(
@@ -233,8 +226,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.PastedTimingTest do
           select: row.route_pattern_stop_id
       )
 
-    other_occurrence_ids =
-      Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^other.id, select: o.id)
+    other_occurrence_ids = other.id |> stored_occurrences() |> Enum.map(& &1.id)
 
     assert Enum.sort(timing_occurrence_ids) == Enum.sort(occurrence_ids)
     refute Enum.any?(timing_occurrence_ids, &(&1 in other_occurrence_ids))

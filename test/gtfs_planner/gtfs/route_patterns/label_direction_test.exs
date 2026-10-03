@@ -148,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelDirectionTest do
     {1, nil} =
       Repo.update_all(
         from(p in RoutePattern, where: p.id == ^child.id),
-        set: [label_pattern_id: owner.id]
+        set: [label_pattern_id: owner.route_pattern_id]
       )
 
     %{owner: owner, child: Repo.get!(RoutePattern, child.id)}

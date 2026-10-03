@@ -301,12 +301,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
         )
 
       rows =
-        Repo.all(
-          from(o in RoutePatternStop,
-            where: o.route_pattern_id == ^scope.bundle.pattern.id,
-            order_by: o.position
-          )
-        )
+        stored_occurrences(scope.bundle.pattern.id)
         |> Enum.zip(offsets)
         |> Enum.map(fn {occurrence, {arrival, departure}} ->
           %{
@@ -537,7 +532,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 

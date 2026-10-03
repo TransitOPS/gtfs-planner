@@ -20,13 +20,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
   use GtfsPlanner.DataCase, async: false
 
   import Ecto.Query
+  import GtfsPlanner.GtfsFixtures, only: [stored_occurrences: 1]
   import GtfsPlanner.OrganizationsFixtures
 
   alias GtfsPlanner.Gtfs.Import.{Run, Runner}
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.Trip
 
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
     assert stop_list(owner) == @all_stop_ids
 
     assert [child] = children(context, version_id, owner)
-    assert child.label_pattern_id == owner.id
+    assert child.label_pattern_id == owner.route_pattern_id
     assert child.direction_id == owner.direction_id
     assert stop_list(child) == @express_stop_ids
 
@@ -326,19 +326,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationLabelsTest do
     from(p in RoutePattern,
       where:
         p.organization_id == ^context.organization.id and p.gtfs_version_id == ^version_id and
-          p.label_pattern_id == ^owner.id,
+          p.label_pattern_id == ^owner.route_pattern_id,
       order_by: [asc: p.route_pattern_id]
     )
     |> Repo.all()
   end
 
   defp stop_list(pattern) do
-    from(o in RoutePatternStop,
-      where: o.route_pattern_id == ^pattern.id,
-      order_by: [asc: o.position],
-      select: o.stop_id
-    )
-    |> Repo.all()
+    pattern.id |> stored_occurrences() |> Enum.map(& &1.stop_id)
   end
 
   defp stop_list_hash(stop_ids) do

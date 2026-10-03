@@ -11,7 +11,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -49,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
     [a, b, c] = occurrences(pattern.id)
-    [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     set_timing_rows(timing, [{-60, 0}, {240, 300}, {600, 660}])
 
     trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
@@ -129,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
     [a, _b, c] = occurrences(pattern.id)
-    [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     set_timing_rows(timing, [{-60, 0}, {240, 300}, {600, 660}])
     trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
 
@@ -199,7 +198,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       )
 
     [a, b, c] = occurrences(pattern.id)
-    [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     set_timing_rows(timing, [{-60, 0}, {240, 300}, {600, 660}])
     trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
 
@@ -306,7 +305,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
     [a, b] = occurrences(pattern.id)
-    [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     set_timing_rows(timing, [{0, 0}, {600, 660}])
     trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
 
@@ -364,7 +363,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
       {:ok, pattern} =
         Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
-      [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+      [timing] = stored_timings(pattern.id)
       [a, b, c] = occurrences(pattern.id)
       set_timing_rows(timing, [{0, 0}, {300, 360}, {900, 900}])
 
@@ -506,9 +505,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
   defp pattern_attrs(stops),
     do: %{route_pattern_name: "Service", direction_id: 0, stops: Enum.map(stops, & &1.stop_id)}
 
-  defp occurrences(id),
-    do:
-      Repo.all(from o in RoutePatternStop, where: o.route_pattern_id == ^id, order_by: o.position)
+  defp occurrences(id), do: stored_occurrences(id)
 
   defp source_for(context, pattern) do
     {:ok, %{source_fingerprint: source}} =

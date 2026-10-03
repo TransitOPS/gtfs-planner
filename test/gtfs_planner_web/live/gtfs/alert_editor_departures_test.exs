@@ -74,20 +74,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       # one, which is running the next morning (AC-10).
       assert has_element?(
                view,
-               "label[for='alert-departure-2026-10-05-#{schedule.early.id}']",
+               "label[for='alert-departure-2026-10-05-#{schedule.early.trip_id}']",
                "8:15 AM to Lincoln City"
              )
 
-      assert has_element?(view, "#alert-departure-2026-10-05-#{schedule.late.id}")
-      refute has_element?(view, "#alert-departure-2026-10-05-#{schedule.weekend.id}")
+      assert has_element?(view, "#alert-departure-2026-10-05-#{schedule.late.trip_id}")
+      refute has_element?(view, "#alert-departure-2026-10-05-#{schedule.weekend.trip_id}")
 
       add_date(view, @saturday)
 
       # Saturday is weekend service: the one weekend trip, and not the two
       # weekday ones (AC-10).
-      assert has_element?(view, "#alert-departure-2026-10-10-#{schedule.weekend.id}")
-      refute has_element?(view, "#alert-departure-2026-10-10-#{schedule.early.id}")
-      refute has_element?(view, "#alert-departure-2026-10-10-#{schedule.late.id}")
+      assert has_element?(view, "#alert-departure-2026-10-10-#{schedule.weekend.trip_id}")
+      refute has_element?(view, "#alert-departure-2026-10-10-#{schedule.early.trip_id}")
+      refute has_element?(view, "#alert-departure-2026-10-10-#{schedule.late.trip_id}")
     end
 
     test "adding a date keeps the date the question opened on", context do
@@ -138,7 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       # than reading as an earlier departure (AC-10).
       assert has_element?(
                view,
-               "label[for='alert-departure-2026-10-05-#{schedule.night.id}']",
+               "label[for='alert-departure-2026-10-05-#{schedule.night.trip_id}']",
                "12:40 AM (next day) to Downtown"
              )
     end
@@ -152,26 +152,66 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
 
       add_date(view, @monday)
 
-      view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
-      view |> element("#alert-departure-2026-10-05-#{schedule.late.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.early.trip_id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.late.trip_id}") |> render_click()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.scope.shape == :trips
 
       assert saved.scope.trips |> Enum.map(&{&1.trip_id, &1.service_date}) |> Enum.sort() ==
-               Enum.sort([{schedule.early.id, @monday}, {schedule.late.id, @monday}])
+               Enum.sort([{schedule.early.trip_id, @monday}, {schedule.late.trip_id, @monday}])
 
       assert has_element?(
                view,
-               "#alert-departure-2026-10-05-#{schedule.early.id}[checked]"
+               "#alert-departure-2026-10-05-#{schedule.early.trip_id}[checked]"
              )
 
       # Choosing the same departure again takes it back out.
-      view |> element("#alert-departure-2026-10-05-#{schedule.late.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.late.trip_id}") |> render_click()
 
       assert {:ok, one} = Alerts.get_alert(context.audit, alert.id)
       assert [%{trip_id: trip_id, service_date: @monday}] = one.scope.trips
-      assert trip_id == schedule.early.id
+      assert trip_id == schedule.early.trip_id
+    end
+
+    test "choosing a departure keeps the frequency start time another departure stored",
+         context do
+      schedule = schedule(context)
+      alert = cancelled_alert(context, schedule.route)
+
+      {:ok, alert} =
+        Alerts.save_draft(
+          context.audit,
+          alert.id,
+          alert.revision,
+          %{
+            "scope" => %{
+              "shape" => "trips",
+              "trips" => [
+                %{
+                  "trip_id" => schedule.early.trip_id,
+                  "service_date" => "2026-10-05",
+                  "start_time" => "25:15:00"
+                }
+              ]
+            }
+          },
+          schedule_opts(context.audit)
+        )
+
+      {:ok, view, _html} = live(context.conn, edit_path(alert) <> "?step=departures")
+
+      view |> element("#alert-departure-2026-10-05-#{schedule.late.trip_id}") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+
+      assert saved.scope.trips
+             |> Enum.map(&{&1.trip_id, &1.service_date, &1.start_time})
+             |> Enum.sort() ==
+               Enum.sort([
+                 {schedule.early.trip_id, @monday, "25:15:00"},
+                 {schedule.late.trip_id, @monday, nil}
+               ])
     end
 
     test "a second date gets its own checklist and its own pairs", context do
@@ -182,26 +222,29 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
         live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
-      view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.early.trip_id}") |> render_click()
 
       add_date(view, @saturday)
-      view |> element("#alert-departure-2026-10-10-#{schedule.weekend.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-10-#{schedule.weekend.trip_id}") |> render_click()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
 
       assert saved.scope.trips |> Enum.map(&{&1.trip_id, &1.service_date}) |> Enum.sort() ==
-               Enum.sort([{schedule.early.id, @monday}, {schedule.weekend.id, @saturday}])
+               Enum.sort([
+                 {schedule.early.trip_id, @monday},
+                 {schedule.weekend.trip_id, @saturday}
+               ])
 
       # The selection belongs to the date it was made on, so Saturday's own
       # checklist shows only Saturday's choice as chosen.
       assert has_element?(
                view,
-               "#alert-departure-2026-10-05-#{schedule.early.id}[checked]"
+               "#alert-departure-2026-10-05-#{schedule.early.trip_id}[checked]"
              )
 
       assert has_element?(
                view,
-               "#alert-departure-2026-10-10-#{schedule.weekend.id}[checked]"
+               "#alert-departure-2026-10-10-#{schedule.weekend.trip_id}[checked]"
              )
     end
 
@@ -213,9 +256,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
         live(context.conn, edit_path(alert) <> "?step=departures")
 
       add_date(view, @monday)
-      view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.early.trip_id}") |> render_click()
       add_date(view, @saturday)
-      view |> element("#alert-departure-2026-10-10-#{schedule.weekend.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-10-#{schedule.weekend.trip_id}") |> render_click()
 
       view
       |> element("#alert-remove-date-2026-10-10")
@@ -223,7 +266,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert [%{trip_id: trip_id, service_date: @monday}] = saved.scope.trips
-      assert trip_id == schedule.early.id
+      assert trip_id == schedule.early.trip_id
 
       refute has_element?(view, "#alert-departures-2026-10-10")
       assert has_element?(view, "#alert-departures-2026-10-05")
@@ -257,7 +300,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       assert has_element?(view, "#alert-question-title", "Which departures will not run?")
 
       add_date(view, @monday)
-      view |> element("#alert-departure-2026-10-05-#{schedule.early.id}") |> render_click()
+      view |> element("#alert-departure-2026-10-05-#{schedule.early.trip_id}") |> render_click()
       view |> element("#alert-departures-continue") |> render_click()
 
       assert has_element?(view, "#alert-question-title", "Why is this happening?")
@@ -277,7 +320,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
       # nothing (AC-10, R1).
       view
       |> render_click("toggle_departure", %{
-        "trip_id" => schedule.weekend.id,
+        "trip_id" => schedule.weekend.trip_id,
         "date" => Date.to_iso8601(@monday)
       })
 
@@ -304,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
 
       view
       |> render_click("toggle_departure", %{
-        "trip_id" => other.id,
+        "trip_id" => other.trip_id,
         "date" => Date.to_iso8601(@monday)
       })
 
@@ -403,7 +446,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorDeparturesTest do
     alert_fixture(context.audit, %{
       "urgency" => "now",
       "situation" => "cancelled_trips",
-      "scope" => %{"shape" => "routes", "route_ids" => [route.id]}
+      "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]}
     })
   end
 

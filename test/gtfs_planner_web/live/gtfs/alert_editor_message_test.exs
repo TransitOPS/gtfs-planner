@@ -191,8 +191,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       render_patch(view, stops_path(alert))
       assert has_element?(view, "#alert-stops-list")
 
-      view |> element("#alert-stop-#{context.middle.id}") |> render_click()
-      view |> element("#alert-stop-#{context.first.id}") |> render_click()
+      view |> element("#alert-stop-#{context.middle.stop_id}") |> render_click()
+      view |> element("#alert-stop-#{context.first.stop_id}") |> render_click()
 
       render_patch(view, message_path(alert))
 
@@ -215,8 +215,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       })
 
       render_patch(view, stops_path(alert))
-      view |> element("#alert-stop-#{context.middle.id}") |> render_click()
-      view |> element("#alert-stop-#{context.first.id}") |> render_click()
+      view |> element("#alert-stop-#{context.middle.stop_id}") |> render_click()
+      view |> element("#alert-stop-#{context.first.stop_id}") |> render_click()
       render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
@@ -249,7 +249,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       })
 
       render_patch(view, stops_path(alert))
-      view |> element("#alert-stop-#{context.first.id}") |> render_click()
+      view |> element("#alert-stop-#{context.first.stop_id}") |> render_click()
       render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
@@ -265,7 +265,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
 
       # A later change asks again rather than being answered once for all.
       render_patch(view, stops_path(alert))
-      view |> element("#alert-stop-#{context.middle.id}") |> render_click()
+      view |> element("#alert-stop-#{context.middle.stop_id}") |> render_click()
       render_patch(view, message_path(alert))
 
       assert has_element?(view, "#review-wording")
@@ -282,9 +282,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       assert generated.message.customized == false
 
       assert {:ok, _changed} =
-               Alerts.save_draft(context.audit, alert.id, generated.revision, %{
-                 "scope" => %{"stop_ids" => [context.middle.id, context.last.id]}
-               })
+               Alerts.save_draft(
+                 context.audit,
+                 alert.id,
+                 generated.revision,
+                 %{
+                   "scope" => %{"stop_ids" => [context.middle.stop_id, context.last.stop_id]}
+                 },
+                 schedule_opts(context.audit)
+               )
 
       {:ok, reloaded, _html} = live(context.conn, message_path(alert))
 
@@ -434,8 +440,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
       "cause" => "construction",
       "scope" => %{
         "shape" => "route_stops",
-        "route_ids" => [context.route.id],
-        "stop_ids" => [context.first.id, context.last.id],
+        "route_ids" => [context.route.route_id],
+        "stop_ids" => [context.first.stop_id, context.last.stop_id],
         "direction_id" => 0
       },
       "timing" => %{
@@ -455,7 +461,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorMessageTest do
     alert_fixture(context.audit, %{
       "urgency" => "now",
       "situation" => "delay",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]}
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]}
     })
   end
 

@@ -171,6 +171,51 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       refute has_element?(view, "#paste-setup-empty")
     end
 
+    test "the pattern parameter is a row UUID even when another pattern's feed ID spells it",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+
+      # This pattern sorts before Main and its feed ID is Main's row UUID.
+      schedule_pattern_fixture(organization.id, version.id, %{
+        route_id: paste.route.route_id,
+        direction_id: 0,
+        route_pattern_id: paste.main.pattern.id,
+        route_pattern_name: "Aardvark",
+        route_pattern_typicality: 1,
+        timing_name: "Standard",
+        stops: [{"PASTE_S1", 0, 0, 1}, {"PASTE_S3", 660, 720, 1}]
+      })
+
+      canonical =
+        paste_path(version, paste.route, %{
+          "service_id" => paste.weekday,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+
+      {:ok, view, _html} = live(conn, canonical)
+
+      assert has_element?(view, "#paste-scope-pattern", "Main")
+      refute has_element?(view, "#paste-scope-pattern", "Aardvark")
+    end
+
+    test "a feed ID in the pattern parameter finds no pattern",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      assert {:error, {:live_redirect, %{to: to}}} =
+               live(
+                 conn,
+                 paste_path(version, paste.route, %{
+                   "service_id" => paste.weekday,
+                   "direction" => "0",
+                   "pattern" => "PASTE-MAIN"
+                 })
+               )
+
+      assert to == "/gtfs/#{version.id}/routes"
+    end
+
     test "missing, unknown and invalid values are canonicalized with a replace patch",
          %{conn: conn, version: version} = context do
       paste = paste_route(context)
@@ -2310,6 +2355,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
         transfer_type: 0
       })
 
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(other_organization.id)
+
+      for trip_id <- [
+            "PASTE28_T0700",
+            "PASTE28_T0800",
+            "PASTE28-0-PASTE28_WKD-0830",
+            "PASTE28-0-PASTE28_WKD-0900"
+          ] do
+        trip_fixture(other_organization.id, other_version.id, route.route_id, %{
+          trip_id: trip_id,
+          service_id: weekday
+        })
+      end
+
       %{route: route, weekday: weekday, main: main}
     end
 
@@ -2345,6 +2405,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
         ])
 
       "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"
+    end
+
+    # Natural-ID reads carry the fixture's organization and version: the apply
+    # setup repeats these trip IDs in another organization.
+    defp get_trip(%{organization: organization, version: version}, trip_id) do
+      Repo.get_by(Trip,
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        trip_id: trip_id
+      )
     end
 
     defp service_trip_count(organization, version, service_id) do
@@ -2443,7 +2513,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       render_click(view, "paste_replace_cancel")
       refute has_element?(view, "#paste-replace-confirm")
       assert has_element?(view, "#paste-review")
-      assert %Trip{} = Repo.get_by(Trip, trip_id: "PASTE28_T0800")
+      assert %Trip{} = get_trip(context, "PASTE28_T0800")
 
       # Confirming writes the removal and lands on Schedules.
       render_click(view, "paste_apply")
@@ -2451,7 +2521,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
 
       path = apply_redirect_path(version, setup.route, setup)
       assert {:error, {:live_redirect, %{to: ^path}}} = redirect
-      assert Repo.get_by(Trip, trip_id: "PASTE28_T0800") == nil
+      assert get_trip(context, "PASTE28_T0800") == nil
 
       {:ok, _schedules, html} = follow_redirect(redirect, conn)
       assert html =~ "Removed 1 trip"
@@ -2480,10 +2550,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert service_trip_count(organization, version, setup.weekday) == before + 2
 
       assert %Trip{trip_id: "PASTE28-0-PASTE28_WKD-0830"} =
-               Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830")
+               get_trip(context, "PASTE28-0-PASTE28_WKD-0830")
 
       assert %Trip{trip_id: "PASTE28-0-PASTE28_WKD-0900"} =
-               Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0900")
+               get_trip(context, "PASTE28-0-PASTE28_WKD-0900")
 
       {:ok, _schedules, html} = follow_redirect(redirect, conn)
       assert html =~ "Added 2 trips"
@@ -2551,7 +2621,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
              )
 
       assert service_trip_count(organization, version, setup.weekday) == before
-      assert Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830") == nil
+      assert get_trip(context, "PASTE28-0-PASTE28_WKD-0830") == nil
     end
 
     test "adds that would mix listed trips with frequency service show the refusal",
@@ -2744,7 +2814,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-open-schedules", "Open Schedules")
       assert has_element?(view, "#paste-unknown-review-again", "Review again")
       assert service_trip_count(organization, version, setup.weekday) == before
-      assert Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830") == nil
+      assert get_trip(context, "PASTE28-0-PASTE28_WKD-0830") == nil
     end
 
     test "form recovery without an apply in flight shows the reconnected notice",

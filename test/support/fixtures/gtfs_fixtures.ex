@@ -9,6 +9,8 @@ defmodule GtfsPlanner.GtfsFixtures do
   when the command itself is under test.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
@@ -338,7 +340,7 @@ defmodule GtfsPlanner.GtfsFixtures do
     attrs =
       Map.merge(
         %{
-          route_pattern_id: route_pattern.id,
+          route_pattern_id: route_pattern.route_pattern_id,
           route_pattern: route_pattern,
           organization_id: route_pattern.organization_id,
           gtfs_version_id: route_pattern.gtfs_version_id,
@@ -353,12 +355,47 @@ defmodule GtfsPlanner.GtfsFixtures do
     |> Repo.insert!()
   end
 
+  @doc """
+  Reads the stored occurrences of the pattern row `pattern_id`, in position order.
+
+  Rows are matched on the pattern's organization, version and GTFS `route_pattern_id`
+  together, because another scope can repeat the same `route_pattern_id`.
+  """
+  def stored_occurrences(pattern_id) do
+    pattern = Repo.get!(RoutePattern, pattern_id)
+
+    Repo.all(
+      from(o in RoutePatternStop,
+        where:
+          o.organization_id == ^pattern.organization_id and
+            o.gtfs_version_id == ^pattern.gtfs_version_id and
+            o.route_pattern_id == ^pattern.route_pattern_id,
+        order_by: [asc: o.position]
+      )
+    )
+  end
+
+  @doc "Reads the stored timings of the pattern row `pattern_id`, scoped like `stored_occurrences/1`."
+  def stored_timings(pattern_id) do
+    pattern = Repo.get!(RoutePattern, pattern_id)
+
+    Repo.all(
+      from(t in TimedPattern,
+        where:
+          t.organization_id == ^pattern.organization_id and
+            t.gtfs_version_id == ^pattern.gtfs_version_id and
+            t.route_pattern_id == ^pattern.route_pattern_id,
+        order_by: [asc: t.name, asc: t.id]
+      )
+    )
+  end
+
   @doc "Generate a named timing for a route pattern."
   def timed_pattern_fixture(route_pattern, attrs \\ %{}) do
     attrs =
       Map.merge(
         %{
-          route_pattern_id: route_pattern.id,
+          route_pattern_id: route_pattern.route_pattern_id,
           route_pattern: route_pattern,
           organization_id: route_pattern.organization_id,
           gtfs_version_id: route_pattern.gtfs_version_id,

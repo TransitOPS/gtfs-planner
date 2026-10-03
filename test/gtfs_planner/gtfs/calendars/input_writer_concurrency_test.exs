@@ -1156,7 +1156,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         )
       )
 
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
@@ -1346,8 +1346,8 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         insert_stop_level(%{
           organization_id: scope.organization.id,
           gtfs_version_id: scope.version.id,
-          stop_id: station.id,
-          level_id: level.id
+          stop_id: station.stop_id,
+          level_id: level.level_id
         })
 
       child =
@@ -1643,7 +1643,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         )
       )
 
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(u in User, where: u.id in ^actor_ids))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
 

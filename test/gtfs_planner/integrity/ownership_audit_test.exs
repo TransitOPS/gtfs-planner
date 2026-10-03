@@ -4,14 +4,24 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
   alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit
   alias GtfsPlanner.Operations.Operator
 
+  import Ecto.Query
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.VersionsFixtures
+
+  @pattern_parent_relationships [
+    "route_pattern_stops→route_patterns",
+    "timed_patterns→route_patterns",
+    "route_patterns.label_pattern_id→route_patterns"
+  ]
 
   @organization_parents [
     {"block_attributes", "garage_id", "garages"},
@@ -54,14 +64,14 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
              insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: version.id,
-               stop_id: station.id,
-               level_id: level.id
+               stop_id: station.stop_id,
+               level_id: level.level_id
              })
 
     route = route_fixture(org.id, version.id)
     route_pattern_fixture(org.id, version.id, %{route_id: route.route_id})
     trip = trip_fixture(org.id, version.id, route.route_id)
-    insert_trip_run!(org.id, version.id, trip.id, "R1")
+    insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
     insert_roster_day!(insert_roster_line!(org.id, version.id, insert_operator!(org.id).id))
 
     report = OwnershipAudit.run()
@@ -113,8 +123,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
              insert_stop_level(%{
                organization_id: org.id,
                gtfs_version_id: other_version.id,
-               stop_id: stop.id,
-               level_id: level.id
+               stop_id: stop.stop_id,
+               level_id: level.level_id
              })
 
     relationship =
@@ -124,22 +134,154 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     assert stop_level.id in relationship.samples
   end
 
-  test "trip assignments report version ownership and UUID trip scope independently" do
+  test "stop-level containment resolves parents by GTFS ID inside the floorplan's own scope" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+
+    local_station = stop_fixture(org.id, version.id, %{stop_id: "S1", location_type: 1})
+    local_level = level_fixture(org.id, version.id, %{level_id: "L1"})
+    stop_fixture(foreign_org.id, foreign_version.id, %{stop_id: "S1", location_type: 1})
+    level_fixture(foreign_org.id, foreign_version.id, %{level_id: "L1"})
+
+    foreign_only =
+      stop_fixture(foreign_org.id, foreign_version.id, %{stop_id: "S2", location_type: 1})
+
+    assert {:ok, _} =
+             insert_stop_level(%{
+               organization_id: org.id,
+               gtfs_version_id: version.id,
+               stop_id: local_station.stop_id,
+               level_id: local_level.level_id
+             })
+
+    # A foreign copy of the same IDs neither hides nor adds a finding.
+    assert %{anomalies: 0} = stop_level_relationship("stop_levels→stops")
+    assert %{anomalies: 0} = stop_level_relationship("stop_levels→levels")
+
+    # `S2` exists only in the foreign organization, so the local floorplan has no
+    # parent of its own; the audit reports it although the foreign row matches.
+    Repo.query!("ALTER TABLE stop_levels DROP CONSTRAINT stop_levels_stops_owner_fkey")
+
+    assert {:ok, orphaned} =
+             insert_stop_level(%{
+               organization_id: org.id,
+               gtfs_version_id: version.id,
+               stop_id: foreign_only.stop_id,
+               level_id: local_level.level_id
+             })
+
+    relationship = stop_level_relationship("stop_levels→stops")
+    assert relationship.anomalies == 1
+    assert relationship.samples == [orphaned.id]
+  end
+
+  test "pattern parent containment resolves by GTFS ID inside the row's own scope" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+
+    local = route_pattern_fixture(org.id, version.id, %{route_pattern_id: "P"})
+    owner = route_pattern_fixture(org.id, version.id, %{route_pattern_id: "OWNER"})
+    foreign = route_pattern_fixture(foreign_org.id, foreign_version.id, %{route_pattern_id: "P"})
+
+    foreign_only =
+      route_pattern_fixture(foreign_org.id, foreign_version.id, %{route_pattern_id: "Q"})
+
+    route_pattern_stop_fixture(local, "S1", 1)
+    timed_pattern_fixture(local)
+    label_pattern!(local, owner)
+
+    # A foreign copy of the same pattern ID neither hides nor adds a finding.
+    route_pattern_stop_fixture(foreign, "S1", 1)
+    timed_pattern_fixture(foreign)
+
+    for name <- @pattern_parent_relationships do
+      assert %{anomalies: 0} = relationship(name)
+    end
+
+    # `Q` exists only in the foreign organization, so a local row naming it has no
+    # parent of its own; the audit reports it although the foreign row matches.
+    for constraint <- [
+          "ALTER TABLE route_pattern_stops DROP CONSTRAINT route_pattern_stops_route_patterns_owner_fkey",
+          "ALTER TABLE timed_patterns DROP CONSTRAINT timed_patterns_route_patterns_owner_fkey",
+          "ALTER TABLE route_patterns DROP CONSTRAINT route_patterns_label_pattern_id_fkey"
+        ] do
+      Repo.query!(constraint)
+    end
+
+    orphan_occurrence = Ecto.UUID.generate()
+    orphan_timing = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    {1, _} =
+      Repo.insert_all(RoutePatternStop, [
+        %{
+          id: orphan_occurrence,
+          route_pattern_id: foreign_only.route_pattern_id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          stop_id: "S2",
+          position: 1,
+          inserted_at: now,
+          updated_at: now
+        }
+      ])
+
+    {1, _} =
+      Repo.insert_all(TimedPattern, [
+        %{
+          id: orphan_timing,
+          route_pattern_id: foreign_only.route_pattern_id,
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          name: "Orphan timing",
+          inserted_at: now,
+          updated_at: now
+        }
+      ])
+
+    label_pattern!(owner, foreign_only)
+
+    assert %{anomalies: 1, samples: [^orphan_occurrence]} =
+             relationship("route_pattern_stops→route_patterns")
+
+    assert %{anomalies: 1, samples: [^orphan_timing]} =
+             relationship("timed_patterns→route_patterns")
+
+    owner_id = owner.id
+
+    assert %{anomalies: 1, samples: [^owner_id]} =
+             relationship("route_patterns.label_pattern_id→route_patterns")
+  end
+
+  test "trip assignments report version ownership and scoped trip ID independently" do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     other_version = gtfs_version_fixture(org.id)
     foreign_org = organization_fixture()
     foreign_version = gtfs_version_fixture(foreign_org.id)
+    route = route_fixture(org.id, version.id)
     other_route = route_fixture(org.id, other_version.id)
     foreign_route = route_fixture(foreign_org.id, foreign_version.id)
     other_trip = trip_fixture(org.id, other_version.id, other_route.route_id)
     foreign_trip = trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id)
 
+    # A local trip whose ID also exists in a sibling version and another
+    # organization has a parent of its own, so the copies hide nothing and add
+    # nothing.
+    local_trip = trip_fixture(org.id, version.id, route.route_id, %{trip_id: "SHARED"})
+    trip_fixture(org.id, other_version.id, other_route.route_id, %{trip_id: "SHARED"})
+    trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id, %{trip_id: "SHARED"})
+    insert_trip_run!(org.id, version.id, local_trip.trip_id, "R0")
+
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
 
-    wrong_trip_id = insert_trip_run!(org.id, version.id, other_trip.id, "R1")
-    wrong_owner_id = insert_trip_run!(org.id, foreign_version.id, foreign_trip.id, "R2")
+    wrong_trip_id = insert_trip_run!(org.id, version.id, other_trip.trip_id, "R1")
+    wrong_owner_id = insert_trip_run!(org.id, foreign_version.id, foreign_trip.trip_id, "R2")
     before = fingerprint("trip_runs")
     report = OwnershipAudit.run()
 
@@ -149,7 +291,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     assert version_link.kind == :version_owner
     assert version_link.anomalies == 1
     assert version_link.samples == [wrong_owner_id]
-    assert trip_link.kind == :containment
+    assert trip_link.kind == :scoped_containment
     assert trip_link.anomalies == 2
     assert Enum.sort(trip_link.samples) == Enum.sort([wrong_trip_id, wrong_owner_id])
     assert fingerprint("trip_runs") == before
@@ -293,6 +435,21 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
     # The read-only setting must not leak into the surrounding sandbox transaction.
     route_fixture(org.id, version.id)
+  end
+
+  defp stop_level_relationship(name), do: relationship(name)
+
+  defp relationship(name) do
+    OwnershipAudit.run().relationships |> Enum.find(&(&1.name == name))
+  end
+
+  # `label_pattern_id` is deliberately not cast, so a fixture writes the pointer
+  # directly, the way derivation does.
+  defp label_pattern!(child, owner) do
+    {1, nil} =
+      Repo.update_all(from(p in RoutePattern, where: p.id == ^child.id),
+        set: [label_pattern_id: owner.route_pattern_id]
+      )
   end
 
   defp fingerprint(table) do

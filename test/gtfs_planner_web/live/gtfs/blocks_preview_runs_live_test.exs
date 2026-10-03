@@ -8,8 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
   #
   # The count is read from the domain in every case that asserts a number, so a
   # count that happened to match a hardcoded 2 would prove nothing. It is read
-  # over trip DB UUIDs (`move.trip.id`), not GTFS trip ids, because `TripRun`
-  # joins on the UUID.
+  # over GTFS trip ids (`move.trip.trip_id`), the value `TripRun` stores.
   #
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a plan.
@@ -217,7 +216,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
 
     refute is_nil(day_type_key), "the fixture must have a day type for #{context.trip.service_id}"
 
-    moves = [%{trip_id: context.trip.id, from: nil, to: :new}]
+    moves = [%{trip_id: context.trip.trip_id, from: nil, to: :new}]
 
     {:ok, _result} =
       Gtfs.apply_run_moves(
@@ -275,7 +274,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
       # The EXPECTED count, from the same plan and the same domain function the
       # page uses — so a hardcoded number cannot satisfy it.
       plan = assigns(view).plan_preview
-      trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()
+      trip_ids = plan.moves |> Enum.map(& &1.trip.trip_id) |> Enum.uniq()
       expected = Gtfs.count_runs_for_trips(context.organization.id, context.version.id, trip_ids)
 
       assert expected > 0,
@@ -314,7 +313,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
       count = attribute(view, "#suggestion-runs-touched", "data-runs")
 
       plan = assigns(view).plan_preview
-      trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()
+      trip_ids = plan.moves |> Enum.map(& &1.trip.trip_id) |> Enum.uniq()
 
       # Counted from the assignments, independently of the page's helper.
       #
@@ -325,7 +324,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
       # pieces of work on the page.
       expected =
         GtfsPlanner.Gtfs.TripRun
-        |> where([t], t.trip_id in ^trip_ids)
+        |> where(
+          [t],
+          t.organization_id == ^context.organization.id and
+            t.gtfs_version_id == ^context.version.id and t.trip_id in ^trip_ids
+        )
         |> select([t], {t.day_type_key, t.run_id})
         |> Repo.all()
         |> Enum.uniq()
@@ -344,7 +347,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
 
       distinct_run_ids =
         GtfsPlanner.Gtfs.TripRun
-        |> where([t], t.trip_id in ^trip_ids)
+        |> where(
+          [t],
+          t.organization_id == ^context.organization.id and
+            t.gtfs_version_id == ^context.version.id and t.trip_id in ^trip_ids
+        )
         |> select([t], t.run_id)
         |> Repo.all()
         |> Enum.uniq()

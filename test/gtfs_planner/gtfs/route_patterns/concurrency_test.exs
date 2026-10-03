@@ -109,13 +109,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
             {operation, fingerprint}
           end)
 
-        occurrence_ids =
-          Repo.all(
-            from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, select: o.id
-          )
-
-        timing_ids =
-          Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id, select: t.id)
+        occurrence_ids = pattern.id |> stored_occurrences() |> Enum.map(& &1.id)
+        timing_ids = pattern.id |> stored_timings() |> Enum.map(& &1.id)
 
         timing_stop_ids =
           Repo.all(
@@ -648,14 +643,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
       )
 
     timing_ids =
-      Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
+      Repo.all(
+        from t in TimedPattern, where: t.organization_id == ^fixture.organization.id, select: t.id
+      )
 
     %{
       patterns: Repo.all(from p in RoutePattern, where: p.id in ^pattern_ids, order_by: p.id),
       occurrences:
         Repo.all(
           from o in RoutePatternStop,
-            where: o.route_pattern_id in ^pattern_ids,
+            where: o.organization_id == ^fixture.organization.id,
             order_by: [asc: o.position, asc: o.id]
         ),
       timings: Repo.all(from t in TimedPattern, where: t.id in ^timing_ids, order_by: t.id),
@@ -684,11 +681,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
         )
 
       timing_ids =
-        Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
+        Repo.all(
+          from t in TimedPattern,
+            where: t.organization_id == ^fixture.organization.id,
+            select: t.id
+        )
 
       Repo.delete_all(from r in TimedPatternStop, where: r.timed_pattern_id in ^timing_ids)
       Repo.delete_all(from t in TimedPattern, where: t.id in ^timing_ids)
-      Repo.delete_all(from o in RoutePatternStop, where: o.route_pattern_id in ^pattern_ids)
+
+      Repo.delete_all(
+        from o in RoutePatternStop, where: o.organization_id == ^fixture.organization.id
+      )
+
       Repo.delete_all(from p in RoutePattern, where: p.id in ^pattern_ids)
       Repo.delete_all(from l in ChangeLog, where: l.organization_id == ^fixture.organization.id)
       Repo.delete_all(from r in Route, where: r.id == ^fixture.route.id)
@@ -699,7 +704,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
           where: m.organization_id == ^fixture.organization.id or m.user_id == ^fixture.actor.id
       )
 
-      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      delete_versions!(from v in GtfsVersion, where: v.id == ^fixture.version.id)
       Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
       :ok
@@ -707,19 +712,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   end
 
   defp persisted_state(pattern_id) do
-    timing_ids =
-      Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern_id, select: t.id)
+    pattern = Repo.get!(RoutePattern, pattern_id)
+    timings = pattern_id |> stored_timings() |> Enum.sort_by(& &1.id)
+    timing_ids = Enum.map(timings, & &1.id)
 
     %{
-      pattern: Repo.get!(RoutePattern, pattern_id),
-      occurrences:
-        Repo.all(
-          from o in RoutePatternStop,
-            where: o.route_pattern_id == ^pattern_id,
-            order_by: o.id
-        ),
-      timings:
-        Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern_id, order_by: t.id),
+      pattern: pattern,
+      occurrences: pattern_id |> stored_occurrences() |> Enum.sort_by(& &1.id),
+      timings: timings,
       timing_stops:
         Repo.all(
           from r in TimedPatternStop,
@@ -756,7 +756,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
       Repo.delete_all(from r in Route, where: r.id == ^fixture.route.id)
       Repo.delete_all(from s in Stop, where: s.id in ^Enum.map(fixture.stops, & &1.id))
       Repo.delete_all(from m in UserOrgMembership, where: m.id in ^fixture.membership_ids)
-      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      delete_versions!(from v in GtfsVersion, where: v.id == ^fixture.version.id)
       Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
 
@@ -816,7 +816,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
           audit
         )
 
-      [timing] = Repo.all(from(t in TimedPattern, where: t.route_pattern_id == ^pattern.id))
+      [timing] = stored_timings(pattern.id)
       set_timing_offsets(timing, [{0, 0}, {600, 660}])
 
       trip = linked_trip(organization.id, version.id, route.route_id, pattern, timing, stops)
@@ -927,11 +927,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
     end)
   end
 
-  defp pattern_occurrences(pattern_id) do
-    Repo.all(
-      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position)
-    )
-  end
+  defp pattern_occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
   defp stop_time_clocks(scope) do
     unboxed(fn ->
@@ -1104,7 +1100,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
         )
       )
 
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(u in User, where: u.id == ^scope.actor.id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
 

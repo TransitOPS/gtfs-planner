@@ -1762,8 +1762,8 @@ defmodule GtfsPlanner.Gtfs do
   def derive_child_stop_coords(%StopLevel{} = stop_level, image_w, image_h) do
     with {:ok, alignment} <- extract_alignment(stop_level),
          :ok <- validate_positive_image_dims(image_w, image_h) do
-      stop_level.stop_id
-      |> list_child_stops_for_level(stop_level.level_id)
+      stop_level
+      |> derive_scoped_child_stops()
       |> Enum.filter(& &1.on_active_level)
       |> Enum.reduce_while({:ok, []}, fn stop, {:ok, acc} ->
         case Coordinates.normalize_point(stop.diagram_coordinate) do
@@ -1786,6 +1786,15 @@ defmodule GtfsPlanner.Gtfs do
         {:error, _} = error -> error
       end
     end
+  end
+
+  defp derive_scoped_child_stops(%StopLevel{} = stop_level) do
+    list_child_stops_on_scoped_level(
+      stop_level.organization_id,
+      stop_level.gtfs_version_id,
+      stop_level.stop_id,
+      stop_level.level_id
+    )
   end
 
   defp extract_alignment(%StopLevel{} = stop_level) do
@@ -1970,47 +1979,36 @@ defmodule GtfsPlanner.Gtfs do
     do: Decimal.compare(current, Decimal.from_float(proposed)) != :eq
 
   defp count_unplaced_on_level(%StopLevel{} = stop_level, options) do
-    case level_scoped_descendants_base(stop_level, options) do
-      nil ->
-        0
-
-      base_query ->
-        base_query
-        |> Repo.all()
-        |> Enum.count(fn stop ->
-          is_nil(stop.diagram_coordinate) or
-            is_nil(Coordinates.normalize_point(stop.diagram_coordinate))
-        end)
-    end
+    stop_level
+    |> level_scoped_descendants_base(options)
+    |> Repo.all()
+    |> Enum.count(fn stop ->
+      is_nil(stop.diagram_coordinate) or
+        is_nil(Coordinates.normalize_point(stop.diagram_coordinate))
+    end)
   end
 
   defp level_scoped_descendants_base(%StopLevel{} = stop_level, options) do
-    case Repo.get(Stop, stop_level.stop_id) do
-      %Stop{} = station ->
-        descendants =
-          descendant_stop_ids_query(
-            station.organization_id,
-            station.gtfs_version_id,
-            station.stop_id
-          )
+    descendants =
+      descendant_stop_ids_query(
+        stop_level.organization_id,
+        stop_level.gtfs_version_id,
+        stop_level.stop_id
+      )
 
-        query =
-          from(stop in Stop,
-            where:
-              stop.stop_id in subquery(descendants) and
-                stop.organization_id == ^stop_level.organization_id and
-                stop.gtfs_version_id == ^stop_level.gtfs_version_id and
-                stop.level_id == ^level_external_id(stop_level.level_id),
-            order_by: [asc: stop.id]
-          )
+    query =
+      from(stop in Stop,
+        where:
+          stop.stop_id in subquery(descendants) and
+            stop.organization_id == ^stop_level.organization_id and
+            stop.gtfs_version_id == ^stop_level.gtfs_version_id and
+            stop.level_id == ^stop_level.level_id,
+        order_by: [asc: stop.id]
+      )
 
-        if Keyword.get(options, :lock) == "FOR UPDATE",
-          do: from(stop in query, lock: "FOR UPDATE"),
-          else: query
-
-      nil ->
-        nil
-    end
+    if Keyword.get(options, :lock) == "FOR UPDATE",
+      do: from(stop in query, lock: "FOR UPDATE"),
+      else: query
   end
 
   @doc """
@@ -2128,23 +2126,10 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp eligible_child_stops(%StopLevel{} = stop_level, options) do
-    case level_scoped_descendants_base(stop_level, options) do
-      nil ->
-        []
-
-      base_query ->
-        base_query
-        |> where([stop], not is_nil(stop.diagram_coordinate))
-        |> Repo.all()
-        |> Enum.filter(&(not is_nil(Coordinates.normalize_point(&1.diagram_coordinate))))
-    end
-  end
-
-  defp level_external_id(level_id) do
-    case Repo.get(Level, level_id) do
-      %Level{level_id: external_id} -> external_id
-      nil -> nil
-    end
+    level_scoped_descendants_base(stop_level, options)
+    |> where([stop], not is_nil(stop.diagram_coordinate))
+    |> Repo.all()
+    |> Enum.filter(&(not is_nil(Coordinates.normalize_point(&1.diagram_coordinate))))
   end
 
   defp preview_rows(stop_level, stops, image_w, image_h) do
@@ -2440,7 +2425,7 @@ defmodule GtfsPlanner.Gtfs do
 
     if is_nil(station), do: Repo.rollback(:not_found)
 
-    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx, station.id) do
+    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx, station.stop_id) do
       nil ->
         Repo.rollback(:not_found)
 
@@ -2516,12 +2501,17 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx, station_id) do
+  defp load_stop_level_for_update_scoped(
+         stop_level_id,
+         %AuditContext{} = audit_ctx,
+         station_stop_id
+       ) do
     from(sl in StopLevel,
       where:
         sl.id == ^stop_level_id and
           sl.organization_id == ^audit_ctx.organization_id and
-          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id and sl.stop_id == ^station_id,
+          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id and
+          sl.stop_id == ^station_stop_id,
       lock: "FOR UPDATE"
     )
     |> Repo.one()
@@ -2630,8 +2620,8 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp direct_candidates_for(%StopLevel{} = stop_level) do
-    stop_level.stop_id
-    |> list_child_stops_for_level(stop_level.level_id)
+    stop_level
+    |> derive_scoped_child_stops()
     |> Enum.filter(& &1.on_active_level)
     |> Enum.map(fn stop ->
       {sx, sy} = svg_xy_from_coordinate(stop.diagram_coordinate)
@@ -2648,7 +2638,7 @@ defmodule GtfsPlanner.Gtfs do
 
   defp cross_level_candidates_for(%StopLevel{} = stop_level) do
     pathways =
-      list_pathways_for_level(
+      list_scoped_pathways_for_level(
         stop_level.organization_id,
         stop_level.gtfs_version_id,
         stop_level.level_id,
@@ -2656,7 +2646,13 @@ defmodule GtfsPlanner.Gtfs do
       )
       |> Enum.filter(& &1.is_cross_level)
 
-    target_level = Repo.get!(Level, stop_level.level_id)
+    target_level =
+      get_scoped_level!(
+        stop_level.organization_id,
+        stop_level.gtfs_version_id,
+        stop_level.level_id
+      )
+
     partner_level_indexes = load_partner_level_indexes(pathways, stop_level, target_level)
 
     pathways
@@ -2753,6 +2749,8 @@ defmodule GtfsPlanner.Gtfs do
   records an "updated" pathway change log; run this inside the caller's transaction
   so a failed log or update rolls back the earlier writes.
 
+  `level_id` and `parent_station_stop_id` are GTFS identifiers, not row handles.
+
   Returns `{:ok, %{recalculated_count: n, kept_count: k}}`, where `k` counts pathways
   with a computable length that was left alone because it was not derived from the plan.
   """
@@ -2762,13 +2760,17 @@ defmodule GtfsPlanner.Gtfs do
         organization_id,
         gtfs_version_id,
         level_id,
-        parent_station_id,
+        parent_station_stop_id,
         %AuditContext{} = audit_ctx
       ) do
     initial_counts = %{recalculated_count: 0, kept_count: 0}
 
-    organization_id
-    |> list_pathways_for_level(gtfs_version_id, level_id, parent_station_id)
+    list_scoped_pathways_for_level(
+      organization_id,
+      gtfs_version_id,
+      level_id,
+      parent_station_stop_id
+    )
     |> Enum.reject(& &1.is_cross_level)
     |> Enum.sort_by(& &1.pathway_id, :asc)
     |> Enum.reduce_while({:ok, initial_counts}, fn pathway, {:ok, counts} ->
@@ -3571,13 +3573,17 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns child stops for a parent station, preloading level association.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_child_stops_for_parent(org_id, version_id, parent_id)
       [%Stop{level: %Level{}}, ...]
   """
   def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -3633,48 +3639,27 @@ defmodule GtfsPlanner.Gtfs do
   Returns the list of levels for a specific station with stop counts.
   Uses a hybrid approach: combines levels from child stops with levels from stop_levels table.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
       [%{level: %Level{}, stop_count: 5}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
 
-    # Query 1: Levels from child stops that have a level_id set
-    levels_from_stops =
-      from(s in Stop,
-        join: l in Level,
-        on:
-          l.level_id == s.level_id and
-            l.organization_id == ^organization_id and
-            l.gtfs_version_id == ^gtfs_version_id,
-        where:
-          s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.stop_id in subquery(descendants) and
-            not is_nil(s.level_id),
-        group_by: l.id,
-        select: %{level_id: l.id, stop_count: count(s.id)}
-      )
-      |> Repo.all()
-      |> Enum.into(%{}, fn %{level_id: id, stop_count: count} -> {id, count} end)
+    # Levels from child stops that have a level_id set
+    levels_from_stops = station_level_stop_counts(organization_id, gtfs_version_id, descendants)
 
-    # Query 2: Levels from stop_levels table (expressing intent)
+    # Levels from the stop_levels table (expressing intent)
     levels_from_stop_levels =
-      from(sl in StopLevel,
-        join: l in Level,
-        on: sl.level_id == l.id,
-        where:
-          sl.organization_id == ^organization_id and
-            sl.gtfs_version_id == ^gtfs_version_id and
-            sl.stop_id == ^parent_station_id,
-        select: %{level: l, stop_level: sl, diagram_filename: sl.diagram_filename}
-      )
-      |> Repo.all()
+      station_floorplan_levels(organization_id, gtfs_version_id, parent_station.stop_id)
 
     # Combine: unique list of level IDs from both sources
     all_level_ids =
@@ -3737,53 +3722,142 @@ defmodule GtfsPlanner.Gtfs do
     |> Enum.sort_by(& &1.level.level_index, :asc)
   end
 
-  @doc """
-  Lists stop_level rows for a station within an organization/version scope.
+  # Child stops' level row IDs mapped to how many descendants sit on each level.
+  defp station_level_stop_counts(organization_id, gtfs_version_id, descendants) do
+    from(s in Stop,
+      join: l in Level,
+      on:
+        l.level_id == s.level_id and
+          l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
+      where:
+        s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id and
+          s.stop_id in subquery(descendants) and
+          not is_nil(s.level_id),
+      group_by: l.id,
+      select: %{level_id: l.id, stop_count: count(s.id)}
+    )
+    |> Repo.all()
+    |> Enum.into(%{}, fn %{level_id: id, stop_count: count} -> {id, count} end)
+  end
 
-  Results are deterministically ordered by `level_index`, then `stop_levels.id`.
-  Each row preloads its associated `level` for adjacency and propagation logic.
-  """
-  @spec list_stop_levels_for_station(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
-          [StopLevel.t()]
-  def list_stop_levels_for_station(organization_id, gtfs_version_id, station_id) do
+  # Levels the station's floorplans name, joined inside the floorplan's own scope.
+  defp station_floorplan_levels(organization_id, gtfs_version_id, station_stop_id) do
     from(sl in StopLevel,
-      join: l in assoc(sl, :level),
+      join: l in Level,
+      on:
+        l.level_id == sl.level_id and
+          l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
       where:
         sl.organization_id == ^organization_id and
           sl.gtfs_version_id == ^gtfs_version_id and
-          sl.stop_id == ^station_id,
-      order_by: [asc: l.level_index, asc: sl.id],
-      preload: [level: l]
+          sl.stop_id == ^station_stop_id,
+      select: %{level: l, stop_level: sl, diagram_filename: sl.diagram_filename}
     )
     |> Repo.all()
   end
 
   @doc """
-  Gets a stop_level by stop_id and level_id.
+  Lists stop_level rows for a station within an organization/version scope.
+
+  `station_id` is the station's row handle. The row is resolved inside the
+  scope before its GTFS `stop_id` is used, because `stop_levels.stop_id` stores
+  the scoped GTFS identifier rather than a row UUID.
+
+  Results are deterministically ordered by `level_index`, then `stop_levels.id`.
+  Each row carries a scoped-loaded `level` projection for adjacency and
+  propagation logic.
   """
-  def get_stop_level(organization_id, gtfs_version_id, stop_id, level_id) do
+  @spec list_stop_levels_for_station(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          [StopLevel.t()]
+  def list_stop_levels_for_station(organization_id, gtfs_version_id, station_id) do
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, station_id)
+
     from(sl in StopLevel,
+      join: l in Level,
+      on:
+        l.level_id == sl.level_id and l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
       where:
         sl.organization_id == ^organization_id and
           sl.gtfs_version_id == ^gtfs_version_id and
-          sl.stop_id == ^stop_id and
-          sl.level_id == ^level_id
+          sl.stop_id == ^parent_station.stop_id,
+      order_by: [asc: l.level_index, asc: sl.id],
+      select: sl,
+      select_merge: %{level: l}
     )
-    |> Repo.one()
+    |> Repo.all()
   end
 
   @doc """
-  Returns true if the given level is associated with any station other than `station_id`.
+  Gets the stop_level row attached to `stop_id`/`level_id` row handles.
+
+  Both handles are station/level row UUIDs and are resolved inside the
+  organization/version scope before their GTFS identifiers are used to read the
+  floorplan row.
+  """
+  @spec get_stop_level(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          StopLevel.t() | nil
+  def get_stop_level(organization_id, gtfs_version_id, stop_id, level_id) do
+    stop = get_stop_by_id(organization_id, gtfs_version_id, stop_id)
+    level = get_level_by_id(organization_id, gtfs_version_id, level_id)
+
+    if is_nil(stop) or is_nil(level) do
+      nil
+    else
+      from(sl in StopLevel,
+        where:
+          sl.organization_id == ^organization_id and
+            sl.gtfs_version_id == ^gtfs_version_id and
+            sl.stop_id == ^stop.stop_id and
+            sl.level_id == ^level.level_id
+      )
+      |> Repo.one()
+    end
+  end
+
+  @doc """
+  Returns true if the given level row is associated with any station other than
+  the `station_id` row handle.
+
+  Both handles are resolved inside the organization/version scope before their
+  GTFS identifiers are used.
   """
   def level_used_by_other_stations?(organization_id, gtfs_version_id, level_id, station_id) do
-    from(sl in StopLevel,
-      where:
-        sl.organization_id == ^organization_id and
-          sl.gtfs_version_id == ^gtfs_version_id and
-          sl.level_id == ^level_id and
-          sl.stop_id != ^station_id
+    level = get_level_by_id(organization_id, gtfs_version_id, level_id)
+    station = get_stop_by_id(organization_id, gtfs_version_id, station_id)
+
+    if is_nil(level) or is_nil(station) do
+      false
+    else
+      from(sl in StopLevel,
+        where:
+          sl.organization_id == ^organization_id and
+            sl.gtfs_version_id == ^gtfs_version_id and
+            sl.level_id == ^level.level_id and
+            sl.stop_id != ^station.stop_id
+      )
+      |> Repo.exists?()
+    end
+  end
+
+  defp get_level_by_id(organization_id, gtfs_version_id, id) do
+    Repo.get_by(Level,
+      id: id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
     )
-    |> Repo.exists?()
+  end
+
+  defp get_scoped_level!(organization_id, gtfs_version_id, level_id) do
+    get_level_by_level_id(organization_id, gtfs_version_id, level_id) ||
+      raise Ecto.NoResultsError,
+        queryable: Level,
+        query:
+          "level #{inspect(level_id)} not found in organization " <>
+            "#{inspect(organization_id)} and gtfs version #{inspect(gtfs_version_id)}"
   end
 
   @doc """
@@ -3797,33 +3871,66 @@ defmodule GtfsPlanner.Gtfs do
   def list_child_stops_for_level(parent_station_id, level_id) do
     with %Stop{} = parent_station <- Repo.get(Stop, parent_station_id),
          %Level{} = level <- Repo.get(Level, level_id) do
-      descendants =
-        descendant_stop_ids_query(
-          parent_station.organization_id,
-          parent_station.gtfs_version_id,
-          parent_station.stop_id
-        )
-
-      from(s in Stop,
-        where:
-          s.stop_id in subquery(descendants) and
-            s.organization_id == ^parent_station.organization_id and
-            s.gtfs_version_id == ^parent_station.gtfs_version_id,
-        order_by: [asc: s.stop_name]
+      list_child_stops_on_scoped_level(
+        parent_station.organization_id,
+        parent_station.gtfs_version_id,
+        parent_station.stop_id,
+        level.level_id
       )
-      |> Repo.all()
-      |> Enum.map(fn stop ->
-        # Add a virtual field indicating if this stop is on the active level
-        Map.put(stop, :on_active_level, stop.level_id == level.level_id)
-      end)
     else
       _ -> []
     end
   end
 
   @doc """
+  Lists the parent station's descendant stops on `level_id`, a GTFS level
+  identifier.
+
+  The station row handle supplies the scope, so a row from another organization
+  or version contributes its own scope's descendants rather than being read
+  against the caller's.
+  """
+  @spec list_child_stops_for_station_level(Stop.t(), String.t()) :: [Stop.t() | map()]
+  def list_child_stops_for_station_level(%Stop{} = station, level_id) when is_binary(level_id) do
+    list_child_stops_on_scoped_level(
+      station.organization_id,
+      station.gtfs_version_id,
+      station.stop_id,
+      level_id
+    )
+  end
+
+  # Scoped reader for callers that already hold the station and level GTFS
+  # identifiers (floorplan rows, alignment projections) rather than row handles.
+  defp list_child_stops_on_scoped_level(
+         organization_id,
+         gtfs_version_id,
+         station_stop_id,
+         level_id
+       ) do
+    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
+
+    from(s in Stop,
+      where:
+        s.stop_id in subquery(descendants) and
+          s.organization_id == ^organization_id and
+          s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.stop_name]
+    )
+    |> Repo.all()
+    |> Enum.map(fn stop ->
+      # Add a virtual field indicating if this stop is on the active level
+      Map.put(stop, :on_active_level, stop.level_id == level_id)
+    end)
+  end
+
+  @doc """
   Returns pathways where the from_stop is on the specified level
   and both endpoints belong to the specified parent station.
+
+  `level_id` and `parent_station_id` are row handles, resolved inside the
+  organization/version scope before their GTFS identifiers are used. A handle
+  outside that scope returns `[]`.
 
   ## Examples
 
@@ -3831,12 +3938,52 @@ defmodule GtfsPlanner.Gtfs do
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_level(organization_id, gtfs_version_id, level_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
-    level = Repo.get!(Level, level_id)
+    with %Stop{} = parent_station <-
+           get_stop_by_id(organization_id, gtfs_version_id, parent_station_id),
+         %Level{} = level <- get_level_by_id(organization_id, gtfs_version_id, level_id) do
+      list_scoped_pathways_for_level(
+        organization_id,
+        gtfs_version_id,
+        level.level_id,
+        parent_station.stop_id
+      )
+    else
+      _ -> []
+    end
+  end
 
-    descendants =
-      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+  # Scoped reader for callers that already hold the station and level GTFS
+  # identifiers (floorplan rows) rather than row handles.
+  defp list_scoped_pathways_for_level(
+         organization_id,
+         gtfs_version_id,
+         level_id,
+         station_stop_id
+       ) do
+    organization_id
+    |> level_pathways_query(gtfs_version_id, level_id, station_stop_id)
+    |> Repo.all()
+    |> flag_cross_level(level_id)
+  end
 
+  # Pathways with an endpoint on `level_id` whose endpoints both descend from the
+  # station, with both endpoint stops merged in.
+  defp level_pathways_query(organization_id, gtfs_version_id, level_id, station_stop_id) do
+    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
+
+    organization_id
+    |> pathways_with_stops_query(gtfs_version_id)
+    |> where(
+      [_p, from_stop, to_stop],
+      from_stop.level_id == ^level_id or to_stop.level_id == ^level_id
+    )
+    |> where(
+      [_p, from_stop, to_stop],
+      from_stop.stop_id in subquery(descendants) and to_stop.stop_id in subquery(descendants)
+    )
+  end
+
+  defp pathways_with_stops_query(organization_id, gtfs_version_id) do
     from(p in Pathway,
       join: from_stop in Stop,
       on:
@@ -3848,25 +3995,21 @@ defmodule GtfsPlanner.Gtfs do
         p.to_stop_id == to_stop.stop_id and
           to_stop.organization_id == ^organization_id and
           to_stop.gtfs_version_id == ^gtfs_version_id,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
-          from_stop.stop_id in subquery(descendants) and
-          to_stop.stop_id in subquery(descendants),
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
       order_by: [asc: p.pathway_id],
       select: p,
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
-    |> Repo.all()
-    |> Enum.map(fn pathway ->
-      # Add flags indicating if this is a cross-level pathway
-      from_on_level = pathway.from_stop.level_id == level.level_id
-      to_on_level = pathway.to_stop.level_id == level.level_id
-      is_cross_level = from_on_level != to_on_level
+  end
+
+  # Adds flags indicating whether each pathway crosses levels.
+  defp flag_cross_level(pathways, level_id) do
+    Enum.map(pathways, fn pathway ->
+      from_on_level = pathway.from_stop.level_id == level_id
+      to_on_level = pathway.to_stop.level_id == level_id
 
       Map.merge(pathway, %{
-        is_cross_level: is_cross_level,
+        is_cross_level: from_on_level != to_on_level,
         from_on_active_level: from_on_level,
         to_on_active_level: to_on_level
       })
@@ -3901,51 +4044,40 @@ defmodule GtfsPlanner.Gtfs do
         parent_station_id,
         stop_id
       ) do
-    parent_station = Repo.get!(Stop, parent_station_id)
-    level = Repo.get!(Level, level_id)
+    with %Stop{} = parent_station <-
+           get_stop_by_id(organization_id, gtfs_version_id, parent_station_id),
+         %Level{} = level <- get_level_by_id(organization_id, gtfs_version_id, level_id) do
+      scoped_pathways_for_stop_on_level(
+        organization_id,
+        gtfs_version_id,
+        level.level_id,
+        parent_station.stop_id,
+        stop_id
+      )
+    else
+      _ -> []
+    end
+  end
 
-    descendants =
-      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
-
-    from(p in Pathway,
-      join: from_stop in Stop,
-      on:
-        p.from_stop_id == from_stop.stop_id and
-          from_stop.organization_id == ^organization_id and
-          from_stop.gtfs_version_id == ^gtfs_version_id,
-      join: to_stop in Stop,
-      on:
-        p.to_stop_id == to_stop.stop_id and
-          to_stop.organization_id == ^organization_id and
-          to_stop.gtfs_version_id == ^gtfs_version_id,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id) and
-          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
-          from_stop.stop_id in subquery(descendants) and
-          to_stop.stop_id in subquery(descendants),
-      order_by: [asc: p.pathway_id],
-      select: p,
-      select_merge: %{from_stop: from_stop, to_stop: to_stop}
-    )
+  defp scoped_pathways_for_stop_on_level(
+         organization_id,
+         gtfs_version_id,
+         level_id,
+         station_stop_id,
+         stop_id
+       ) do
+    organization_id
+    |> level_pathways_query(gtfs_version_id, level_id, station_stop_id)
+    |> where([p], p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
     |> Repo.all()
-    |> Enum.map(fn pathway ->
-      # Add flags indicating if this is a cross-level pathway
-      from_on_level = pathway.from_stop.level_id == level.level_id
-      to_on_level = pathway.to_stop.level_id == level.level_id
-      is_cross_level = from_on_level != to_on_level
-
-      Map.merge(pathway, %{
-        is_cross_level: is_cross_level,
-        from_on_active_level: from_on_level,
-        to_on_active_level: to_on_level
-      })
-    end)
+    |> flag_cross_level(level_id)
   end
 
   @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
+
+  `parent_station_id` is a row handle resolved inside the organization/version
+  scope; a row outside it raises `Ecto.NoResultsError`.
 
   ## Examples
 
@@ -3953,7 +4085,7 @@ defmodule GtfsPlanner.Gtfs do
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -5091,6 +5223,23 @@ defmodule GtfsPlanner.Gtfs do
     )
   end
 
+  # Station readers take a row handle, so the handle is only a translation input
+  # after ownership is proven. A row outside the scope raises the same
+  # not-found error an absent row would.
+  defp get_scoped_station!(organization_id, gtfs_version_id, station_id) do
+    case get_stop_by_id(organization_id, gtfs_version_id, station_id) do
+      nil ->
+        raise Ecto.NoResultsError,
+          queryable: Stop,
+          query:
+            "station #{inspect(station_id)} not found in organization #{inspect(organization_id)} " <>
+              "and gtfs version #{inspect(gtfs_version_id)}"
+
+      station ->
+        station
+    end
+  end
+
   defp paginate(query, nil, _per_page), do: paginate(query, 1, 25)
   defp paginate(query, _page, nil), do: paginate(query, 1, 25)
 
@@ -5169,7 +5318,8 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Writes manual run moves and returns an undo.
 
-  Each move is `%{trip_id:, from:, to:}`, where `to` is a run ID, `nil` to
+  Each move is `%{trip_id:, from:, to:}`, where `trip_id` is the trip's GTFS
+  `trip_id` in the audited organization and version, `to` is a run ID, `nil` to
   unassign the trip, or `:new` to create a run. Every `:new` in one call creates
   **one** run, returned as `new_run_id`.
 
@@ -5183,7 +5333,7 @@ defmodule GtfsPlanner.Gtfs do
   @spec apply_run_moves(
           AuditContext.t(),
           String.t(),
-          [%{trip_id: Ecto.UUID.t(), from: String.t() | nil, to: String.t() | nil | :new}]
+          [%{trip_id: String.t(), from: String.t() | nil, to: String.t() | nil | :new}]
         ) ::
           {:ok,
            %{
@@ -5195,7 +5345,7 @@ defmodule GtfsPlanner.Gtfs do
              :forbidden
              | :not_found
              | :stale_moves
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | {:invalid_run_id, term()}}
   def apply_run_moves(%AuditContext{} = audit, day_type_key, moves) do
     Runs.apply_moves(audit, day_type_key, moves)
@@ -5286,7 +5436,7 @@ defmodule GtfsPlanner.Gtfs do
              :forbidden
              | :not_found
              | :stale_plan
-             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_trips, [String.t()]}
              | :write_failed}
   def apply_run_plan(%AuditContext{} = audit, plan) do
     Runs.apply_run_plan(audit, plan)
@@ -5324,10 +5474,11 @@ defmodule GtfsPlanner.Gtfs do
   list counts 0, as do trips held by no run, and rows belonging to another
   organization or version.
 
-  The trips are named by **UUID** (`Trip.id`), not by GTFS trip ID, because
-  that is what `trip_runs.trip_id` stores.
+  The trips are named by their GTFS `trip_id` (not `Trip.id`), which is what
+  `trip_runs.trip_id` stores, and are matched inside the given organization and
+  version only.
   """
-  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: non_neg_integer()
+  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: non_neg_integer()
   def count_runs_for_trips(organization_id, gtfs_version_id, trip_ids) do
     Runs.count_runs_for_trips(organization_id, gtfs_version_id, trip_ids)
   end

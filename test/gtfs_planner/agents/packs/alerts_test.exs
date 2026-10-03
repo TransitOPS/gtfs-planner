@@ -171,27 +171,43 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
-    test "reads a subject alert of this organization written against another version", context do
-      sibling_route =
-        route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
+    test "reads the active schedule for an alert written against another version", context do
+      _source_route =
+        route_fixture(
+          context.organization.id,
+          context.sibling.id,
+          route_attrs("r12-source", "12")
+        )
 
-      _scope_route =
-        route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+      active_route =
+        route_fixture(
+          context.organization.id,
+          context.version.id,
+          route_attrs("r12-active", "12")
+        )
 
+      # The alert's source is the sibling; the organization then selects the scope's
+      # version again, and the conversation is opened under that selection.
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
-      scope = %{context.scope | subject_id: elsewhere.id}
+      activate_version!(context.organization, context.version, context.actor)
+
+      scope = %{
+        context.scope
+        | subject_id: elsewhere.id,
+          alert_schedule_token: current_token!(context.audit)
+      }
 
       assert {:ok, %{"urgency" => "planned"}} =
                Dispatch.call(AlertsPack, scope, "get_draft", "{}")
 
       assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") != {:error, :unavailable}
 
-      # The tools read the alert's own retained source version, not the version
-      # this scope carries.
+      # The tools read the active schedule, not the alert's retained source version
+      # and not the version this scope carries.
       assert {:ok, %{"routes" => routes}} =
                Dispatch.call(AlertsPack, scope, "search_routes", ~s|{"query":"12"}|)
 
-      assert Enum.map(routes, & &1["id"]) == [sibling_route.id]
+      assert Enum.map(routes, & &1["id"]) == [active_route.route_id]
     end
 
     test "refuses a subject alert of another organization", context do
@@ -218,7 +234,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
     test "the subject is this organization's alert whichever version wrote it", context do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
-      scope = %{context.scope | subject_id: elsewhere.id}
+
+      scope = %{
+        context.scope
+        | subject_id: elsewhere.id,
+          alert_schedule_token: current_token!(context.sibling_audit)
+      }
 
       assert {:ok, %{"urgency" => "planned"}} = AlertsPack.call("get_draft", %{}, scope)
     end
@@ -247,16 +268,22 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       stop = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Elm St"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "situation" => "detour",
-          "scope" => %{
-            "shape" => "route_stops",
-            "route_ids" => [route.id],
-            "stop_ids" => [stop.id]
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{
+            "situation" => "detour",
+            "scope" => %{
+              "shape" => "route_stops",
+              "route_ids" => [route.route_id],
+              "stop_ids" => [stop.stop_id]
+            },
+            "timing" => %{"start_date" => "2026-10-05", "start_time" => "08:00:00"},
+            "message" => %{"header" => "Route 12 detour"}
           },
-          "timing" => %{"start_date" => "2026-10-05", "start_time" => "08:00:00"},
-          "message" => %{"header" => "Route 12 detour"}
-        })
+          schedule_opts(context.audit)
+        )
 
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
 
@@ -265,15 +292,15 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["situation"] == "detour"
       assert draft["effect"] == "detour"
       assert draft["scope"]["shape"] == "route_stops"
-      assert draft["scope"]["route_ids"] == [route.id]
+      assert draft["scope"]["route_ids"] == [route.route_id]
       assert draft["timing"]["start_date"] == "2026-10-05"
       assert draft["timing"]["start_time"] == "08:00:00"
       assert draft["message"]["header"] == "Route 12 detour"
-      assert draft["labels"]["routes"][route.id] =~ "12"
-      assert draft["labels"]["stops"][stop.id] =~ "Elm St"
+      assert draft["labels"]["routes"][route.route_id] =~ "12"
+      assert draft["labels"]["stops"][stop.stop_id] =~ "Elm St"
     end
 
-    test "reads a draft in another version only through that version's scope", context do
+    test "reads a draft written in another version through the active schedule", context do
       sibling_route =
         route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
 
@@ -282,25 +309,30 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
 
       {:ok, _saved} =
-        Alerts.save_draft(context.sibling_audit, elsewhere.id, elsewhere.revision, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [sibling_route.id]}
-        })
+        Alerts.save_draft(
+          context.sibling_audit,
+          elsewhere.id,
+          elsewhere.revision,
+          %{"scope" => %{"shape" => "routes", "route_ids" => [sibling_route.route_id]}},
+          schedule_opts(context.sibling_audit)
+        )
 
       sibling_scope =
         scope_fixture(context.actor, context.organization, context.sibling, elsewhere.id)
 
       assert {:ok, draft} = call("get_draft", %{}, sibling_scope)
       assert draft["urgency"] == "planned"
-      assert draft["scope"]["route_ids"] == [sibling_route.id]
+      assert draft["scope"]["route_ids"] == [sibling_route.route_id]
 
       # The alert is the subject and the organization owns it, so a scope naming
-      # another of the organization's versions reads the same draft: the version
-      # supplies lookup context, never the identity of the subject (step 9). The
-      # editor still refuses another organization, which its own cases prove.
+      # another of the organization's versions reads the same draft: the scope's
+      # version is neither the identity of the subject nor the lookup context,
+      # which is the active schedule. The editor still refuses another
+      # organization, which its own cases prove.
       other_version_scope = %{sibling_scope | gtfs_version_id: context.version.id}
 
       assert {:ok, same_draft} = Dispatch.call(AlertsPack, other_version_scope, "get_draft", "{}")
-      assert same_draft["scope"]["route_ids"] == [sibling_route.id]
+      assert same_draft["scope"]["route_ids"] == [sibling_route.route_id]
     end
   end
 
@@ -325,7 +357,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:ok, %{"stops" => [option]}} =
                call("search_stops", %{"query" => "S1"}, context.scope)
 
-      assert option["id"] == mine.id
+      assert option["id"] == mine.stop_id
       assert option["label"] == "Elm St"
     end
 
@@ -353,20 +385,20 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:ok, %{"stops" => [first, second]}} =
                call(
                  "search_stops",
-                 %{"query" => "Elm", "prefer_route_ids" => [route.id]},
+                 %{"query" => "Elm", "prefer_route_ids" => [route.route_id]},
                  context.scope
                )
 
-      assert Enum.map([first, second], & &1["id"]) == [served.id, other.id]
+      assert Enum.map([first, second], & &1["id"]) == [served.stop_id, other.stop_id]
 
       assert {:ok, %{"stops" => [only]}} =
                call(
                  "search_stops",
-                 %{"query" => "Elm", "exclude_stop_ids" => [served.id]},
+                 %{"query" => "Elm", "exclude_stop_ids" => [served.stop_id]},
                  context.scope
                )
 
-      assert only["id"] == other.id
+      assert only["id"] == other.stop_id
     end
 
     test "search_routes, route_stops and departures_on read this version", context do
@@ -400,22 +432,22 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:ok, %{"routes" => [only_route]}} =
                call("search_routes", %{"query" => "12"}, context.scope)
 
-      assert only_route["id"] == route.id
+      assert only_route["id"] == route.route_id
       assert only_route["route_id"] == "r12"
 
       assert {:ok, %{"stops" => [only_stop]}} =
-               call("route_stops", %{"route_id" => route.id}, context.scope)
+               call("route_stops", %{"route_id" => route.route_id}, context.scope)
 
-      assert only_stop["id"] == stop.id
+      assert only_stop["id"] == stop.stop_id
 
       assert {:ok, %{"departures" => [departure]}} =
                call(
                  "departures_on",
-                 %{"route_id" => route.id, "date" => "2026-10-05", "direction_id" => 0},
+                 %{"route_id" => route.route_id, "date" => "2026-10-05", "direction_id" => 0},
                  context.scope
                )
 
-      assert departure["trip_id"] == trip.id
+      assert departure["trip_id"] == trip.trip_id
       assert departure["label"] == "8:15 AM to Depot"
     end
 
@@ -428,12 +460,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
         )
 
       assert {:ok, %{"stops" => []}} =
-               call("route_stops", %{"route_id" => foreign_route.id}, context.scope)
+               call("route_stops", %{"route_id" => foreign_route.route_id}, context.scope)
 
       assert {:ok, %{"departures" => []}} =
                call(
                  "departures_on",
-                 %{"route_id" => foreign_route.id, "date" => "2026-10-05"},
+                 %{"route_id" => foreign_route.route_id, "date" => "2026-10-05"},
                  context.scope
                )
     end
@@ -442,12 +474,16 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
          context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
-      assert call("departures_on", %{"route_id" => route.id, "date" => "sometime"}, context.scope) ==
+      assert call(
+               "departures_on",
+               %{"route_id" => route.route_id, "date" => "sometime"},
+               context.scope
+             ) ==
                {:tool_error, "Invalid date: sometime. Use a date like 2026-10-12."}
 
       assert call(
                "departures_on",
-               %{"route_id" => route.id, "date" => @monday, "direction_id" => 4},
+               %{"route_id" => route.route_id, "date" => @monday, "direction_id" => 4},
                context.scope
              ) ==
                {:tool_error, "Invalid direction: 4."}
@@ -496,20 +532,26 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "situation" => "delay",
-          "scope" => %{"shape" => "routes", "route_ids" => [route.id]},
-          "timing" => %{
-            "start_date" => "2026-10-05",
-            "start_time" => "08:00:00",
-            "end_kind" => "unknown",
-            "check_in_at" => "2026-10-05 10:00:00"
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{
+            "situation" => "delay",
+            "scope" => %{"shape" => "routes", "route_ids" => [route.route_id]},
+            "timing" => %{
+              "start_date" => "2026-10-05",
+              "start_time" => "08:00:00",
+              "end_kind" => "unknown",
+              "check_in_at" => "2026-10-05 10:00:00"
+            },
+            "message" => %{
+              "header" => "Route 12 delayed",
+              "description" => "Route 12 buses are running late. Allow extra time."
+            }
           },
-          "message" => %{
-            "header" => "Route 12 delayed",
-            "description" => "Route 12 buses are running late. Allow extra time."
-          }
-        })
+          schedule_opts(context.audit)
+        )
 
       assert {:ok, check} = call("check_draft", %{}, context.scope)
 
@@ -527,16 +569,22 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:prepared, prepared, %{"status" => "prepared"}} =
                call(
                  "propose_changes",
-                 %{"situation" => "detour", "scope" => %{"route_ids" => [route.id]}},
+                 %{"situation" => "detour", "scope" => %{"route_ids" => [route.route_id]}},
                  context.scope
                )
 
       assert prepared.command ==
                {:alert_changes,
-                %{"situation" => "detour", "scope" => %{"route_ids" => [route.id]}}}
+                %{"situation" => "detour", "scope" => %{"route_ids" => [route.route_id]}}}
 
       assert prepared.summary.title == "Update this alert"
       assert "Situation · Detour" in prepared.summary.lines
+
+      # The proposal records the alert revision and the selection it was made under.
+      assert prepared.bound_to == %{
+               revision: context.alert.revision,
+               schedule: context.scope.alert_schedule_token
+             }
 
       # Preparing wrote nothing: the draft is still the one the fixture made.
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
@@ -558,15 +606,15 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
         "scope" => %{
           "shape" => "route_stops",
           "mode_route_type" => 3,
-          "route_ids" => [route.id],
-          "stop_ids" => [stop.id],
-          "route_stop_pairs" => [%{"route_id" => route.id, "stop_id" => stop.id}],
-          "trips" => [%{"trip_id" => trip.id, "service_date" => "2026-10-05"}],
+          "route_ids" => [route.route_id],
+          "stop_ids" => [stop.stop_id],
+          "route_stop_pairs" => [%{"route_id" => route.route_id, "stop_id" => stop.stop_id}],
+          "trips" => [%{"trip_id" => trip.trip_id, "service_date" => "2026-10-05"}],
           "direction_id" => 1,
           "all_routes_at_stops" => true,
-          "stretch_from_stop_id" => stop.id,
-          "stretch_to_stop_id" => stop.id,
-          "alternative_stop_id" => stop.id,
+          "stretch_from_stop_id" => stop.stop_id,
+          "stretch_to_stop_id" => stop.stop_id,
+          "alternative_stop_id" => stop.stop_id,
           "alternative_directions" => "Board at Elm St.",
           "facility" => "Elevator"
         },
@@ -604,7 +652,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
     test "prepares the arguments the scripted browser provider sends", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
-      arguments = scripted_propose_arguments(route.id)
+      arguments = scripted_propose_arguments(route.route_id)
 
       assert {:prepared, prepared, %{"status" => "prepared"}} =
                Dispatch.call(AlertsPack, context.scope, "propose_changes", arguments)
@@ -612,7 +660,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:alert_changes, %{"situation" => "detour"}} = prepared.command
     end
 
-    test "refuses a route, stop and departure this alert's version does not have", context do
+    test "refuses a route, stop and departure the active schedule does not have", context do
       sibling_route =
         route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
 
@@ -620,11 +668,11 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       assert call(
                "propose_changes",
-               %{"scope" => %{"route_ids" => [sibling_route.id]}},
+               %{"scope" => %{"route_ids" => [sibling_route.route_id]}},
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: route #{sibling_route.id}. " <>
+                "Not in the active schedule: route #{sibling_route.route_id}. " <>
                   "Use ids the search tools returned."}
 
       assert call(
@@ -633,7 +681,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: stop #{missing}, stop 12. " <>
+                "Not in the active schedule: stop #{missing}, stop 12. " <>
                   "Use ids the search tools returned."}
 
       assert call(
@@ -646,13 +694,13 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: trip #{missing}. Use ids the search tools returned."}
+                "Not in the active schedule: trip #{missing}. Use ids the search tools returned."}
 
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
       assert draft["revision"] == 1
     end
 
-    test "accepts a route type the version has and refuses one it does not", context do
+    test "accepts a route type the active schedule has and refuses one it does not", context do
       route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       assert {:prepared, prepared, _result} =
@@ -662,23 +710,27 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       assert call("propose_changes", %{"scope" => %{"mode_route_type" => 11}}, context.scope) ==
                {:tool_error,
-                "Not in this service version: route type 11. Use ids the search tools returned."}
+                "Not in the active schedule: route type 11. Use ids the search tools returned."}
     end
 
     test "keeps a target the stored alert already names after the version dropped it", context do
       route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       {:ok, _saved} =
-        Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
-          "scope" => %{"shape" => "routes", "route_ids" => [route.id]}
-        })
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{"scope" => %{"shape" => "routes", "route_ids" => [route.route_id]}},
+          schedule_opts(context.audit)
+        )
 
       Repo.delete!(route)
 
       assert {:prepared, _prepared, %{"status" => "prepared"}} =
                call(
                  "propose_changes",
-                 %{"situation" => "delay", "scope" => %{"route_ids" => [route.id]}},
+                 %{"situation" => "delay", "scope" => %{"route_ids" => [route.route_id]}},
                  context.scope
                )
     end
@@ -766,7 +818,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:ok, _} = call("get_draft", %{}, context.scope)
       assert {:ok, _} = call("search_routes", %{"query" => "12"}, context.scope)
       assert {:ok, _} = call("search_stops", %{"query" => "Elm"}, context.scope)
-      assert {:ok, _} = call("route_stops", %{"route_id" => route.id}, context.scope)
+      assert {:ok, _} = call("route_stops", %{"route_id" => route.route_id}, context.scope)
       assert {:ok, _} = call("list_scripts", %{}, context.scope)
       assert {:ok, _} = call("get_guidelines", %{}, context.scope)
       assert {:ok, _} = call("check_draft", %{}, context.scope)
@@ -778,8 +830,8 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                    "situation" => "detour",
                    "scope" => %{
                      "shape" => "route_stops",
-                     "route_ids" => [route.id],
-                     "stop_ids" => [stop.id]
+                     "route_ids" => [route.route_id],
+                     "stop_ids" => [stop.stop_id]
                    },
                    "message" => %{"header" => "Route 12 detour"}
                  },
@@ -862,6 +914,8 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
     Repo.aggregate(from(row in schema, where: row.organization_id == ^organization_id), :count)
   end
 
+  # The scope is bound to the selection token the organization holds when it is
+  # built, as the editor's panel binds it when the conversation opens.
   defp scope_fixture(user, organization, version, subject_id) do
     %Scope{
       organization_id: organization.id,
@@ -870,7 +924,8 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       user_email: user.email,
       pack_id: "alerts",
       version_name: version.name,
-      subject_id: subject_id
+      subject_id: subject_id,
+      alert_schedule_token: current_token!(audit_context(organization, version, user))
     }
   end
 

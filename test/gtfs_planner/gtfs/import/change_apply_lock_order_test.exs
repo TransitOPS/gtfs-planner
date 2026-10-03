@@ -330,7 +330,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeApplyLockOrderTest do
     Repo.delete_all(from(row in ChangeLog, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in Level, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in UserOrgMembership, where: row.organization_id == ^org_id))
-    Repo.delete_all(from(row in GtfsVersion, where: row.organization_id == ^org_id))
+    delete_versions!(from(row in GtfsVersion, where: row.organization_id == ^org_id))
     Repo.delete_all(from(row in Organization, where: row.id == ^org_id))
     Repo.delete_all(from(row in User, where: row.id in ^user_ids))
   end

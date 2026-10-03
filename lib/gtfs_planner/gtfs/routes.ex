@@ -1771,13 +1771,15 @@ defmodule GtfsPlanner.Gtfs.Routes do
     }
   end
 
-  # The reviewed cascade's sorted ID scope, recomputed on the locked rows.
+  # The reviewed cascade's ID scope, recomputed on the locked rows. Occurrences
+  # and timings reference a pattern by its GTFS `route_pattern_id`, which the
+  # callers match within this same organization and version.
   defp deletion_pattern_ids(org_id, version_id, route_id) do
     Repo.all(
       from(p in RoutePattern,
         where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
         where: p.route_id == ^route_id,
-        select: p.id
+        select: p.route_pattern_id
       )
     )
   end
@@ -2171,7 +2173,9 @@ defmodule GtfsPlanner.Gtfs.Routes do
         join: tp in TimedPattern,
         on: tp.id == t.timed_pattern_id,
         join: p in RoutePattern,
-        on: p.id == tp.route_pattern_id,
+        on:
+          p.route_pattern_id == tp.route_pattern_id and p.organization_id == tp.organization_id and
+            p.gtfs_version_id == tp.gtfs_version_id,
         where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
         where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
         where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
@@ -2188,11 +2192,17 @@ defmodule GtfsPlanner.Gtfs.Routes do
         join: tp in TimedPattern,
         on: tp.id == tps.timed_pattern_id,
         join: owning in RoutePattern,
-        on: owning.id == tp.route_pattern_id,
+        on:
+          owning.route_pattern_id == tp.route_pattern_id and
+            owning.organization_id == tp.organization_id and
+            owning.gtfs_version_id == tp.gtfs_version_id,
         join: rps in RoutePatternStop,
         on: rps.id == tps.route_pattern_stop_id,
         join: visited in RoutePattern,
-        on: visited.id == rps.route_pattern_id,
+        on:
+          visited.route_pattern_id == rps.route_pattern_id and
+            visited.organization_id == rps.organization_id and
+            visited.gtfs_version_id == rps.gtfs_version_id,
         where: owning.organization_id == ^org_id and owning.gtfs_version_id == ^version_id,
         where: visited.organization_id == ^org_id and visited.gtfs_version_id == ^version_id,
         where: owning.route_id != visited.route_id,

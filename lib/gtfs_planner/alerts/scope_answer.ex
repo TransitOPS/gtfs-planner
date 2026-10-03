@@ -6,16 +6,17 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
   the values that shape needs. The alert stores intent rather than compiled
   informed entities, so nothing here is written for a consumer directly (R3).
 
-  Every target is a row UUID from the alert's version, never a GTFS feed ID: a
-  feed ID rename on import keeps the UUID and cannot orphan the alert (R8).
-  `mode_route_type` is the only selector that is not a row identity, and it is a
-  deliberate expansion of "every <mode> route" rather than a stored `route_type`
-  selector.
+  Every target is the exact GTFS feed ID of a route, stop or trip, compared
+  byte for byte: `ABCDEF00-0000-0000-0000-000000000000` is a legitimate feed
+  string and keeps its case, so nothing here casts an identity to a UUID. An
+  alert names the schedule's entities, not its rows, so an edit to the schedule
+  never rewrites who an alert is about; a target the schedule no longer holds
+  reads as needing attention until an editor repairs it. `mode_route_type` is
+  the only selector that is not a feed ID, and it is a deliberate expansion of
+  "every <mode> route" rather than a stored `route_type` selector.
 
-  Target fields are `:string` rather than `:binary_id` because this whole schema
-  is stored in the `scope` jsonb column: a dumped `:binary_id` is a raw 16-byte
-  binary, which the JSON encoder cannot write. The stored value is still the
-  canonical UUID text the target schemas' `id` fields hold.
+  Target fields are `:string` because this whole schema is stored in the `scope`
+  jsonb column.
   """
 
   use Ecto.Schema
@@ -55,15 +56,15 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
           shape:
             :system | :routes | :route_direction | :stop_all_routes | :route_stops | :trips | nil,
           mode_route_type: integer() | nil,
-          route_ids: [Ecto.UUID.t()] | nil,
-          stop_ids: [Ecto.UUID.t()] | nil,
+          route_ids: [String.t()] | nil,
+          stop_ids: [String.t()] | nil,
           route_stop_pairs: [RouteStopPair.t()],
           trips: [TripTarget.t()],
           direction_id: 0 | 1 | nil,
           all_routes_at_stops: boolean() | nil,
-          stretch_from_stop_id: Ecto.UUID.t() | nil,
-          stretch_to_stop_id: Ecto.UUID.t() | nil,
-          alternative_stop_id: Ecto.UUID.t() | nil,
+          stretch_from_stop_id: String.t() | nil,
+          stretch_to_stop_id: String.t() | nil,
+          alternative_stop_id: String.t() | nil,
           alternative_directions: String.t() | nil,
           facility: String.t() | nil
         }
@@ -107,32 +108,22 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer do
     |> Base.encode16(case: :lower)
   end
 
-  # An identity list and a set mean the same selection, so the digest sorts it
-  # and casts it: the same routes in another order, or with an upper-case
-  # spelling of the same UUID, are the same target selection.
+  # An identity list and a set mean the same selection, so the digest sorts it:
+  # the same routes in another order are the same target selection. Feed IDs are
+  # compared exactly, so two spellings that differ only in case are two targets.
   defp normalized(_key, nil), do: nil
-  defp normalized(_key, ids) when is_list(ids), do: ids |> Enum.map(&canonical/1) |> Enum.sort()
-  defp normalized(:direction_id, value) when is_integer(value), do: value
+  defp normalized(_key, ids) when is_list(ids), do: Enum.sort(ids)
   defp normalized(_key, value), do: value
-
-  defp canonical(id) when is_binary(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, uuid} -> uuid
-      :error -> id
-    end
-  end
-
-  defp canonical(id), do: id
 
   defp pairs_digest(pairs) do
     pairs
-    |> Enum.map(&{canonical(&1.route_id), canonical(&1.stop_id)})
+    |> Enum.map(&{&1.route_id, &1.stop_id})
     |> Enum.sort()
   end
 
   defp trips_digest(trips) do
     trips
-    |> Enum.map(&{canonical(&1.trip_id), &1.service_date, &1.start_time})
+    |> Enum.map(&{&1.trip_id, &1.service_date, &1.start_time})
     |> Enum.sort()
   end
 

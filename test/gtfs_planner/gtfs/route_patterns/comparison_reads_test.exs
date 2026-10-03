@@ -85,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ComparisonReadsTest do
   end
 
   test "timing_rows/2 returns the timing's rows ordered by position without :stop", context do
-    rows = RoutePatterns.timing_rows(context.pattern.id, context.timing.id)
+    rows = RoutePatterns.timing_rows(context.pattern, context.timing.id)
 
     assert Enum.map(rows, & &1.position) == [1, 2, 3]
 
@@ -145,10 +145,34 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ComparisonReadsTest do
 
     # The other timing's row exists, so the [] below cannot pass vacuously.
     assert [%{stop_id: "stop_other"}] =
-             RoutePatterns.timing_rows(other_pattern.id, other_timing.id)
+             RoutePatterns.timing_rows(other_pattern, other_timing.id)
 
-    assert RoutePatterns.timing_rows(context.pattern.id, other_timing.id) == []
-    assert RoutePatterns.timing_rows(other_pattern.id, context.timing.id) == []
+    assert RoutePatterns.timing_rows(context.pattern, other_timing.id) == []
+    assert RoutePatterns.timing_rows(other_pattern, context.timing.id) == []
+  end
+
+  test "timing_rows/2 does not read a timing through a pattern with the same ID in another scope",
+       context do
+    sibling_version = gtfs_version_fixture(context.organization.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+
+    for {organization, version} <- [
+          {context.organization, sibling_version},
+          {foreign_org, foreign_version}
+        ] do
+      duplicate =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_id: context.route.route_id,
+          route_pattern_id: context.pattern.route_pattern_id
+        })
+
+      route_pattern_stop_fixture(duplicate, "stop_alpha", 1)
+
+      # The duplicate has the same pattern ID, so only its organization and
+      # version keep it from reading the first scope's timing.
+      assert RoutePatterns.timing_rows(duplicate, context.timing.id) == []
+    end
   end
 
   test "get_scoped_pattern/3 finds a pattern on a second published route of the version",

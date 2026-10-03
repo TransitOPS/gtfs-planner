@@ -1,7 +1,6 @@
 defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   use GtfsPlanner.DataCase, async: false
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Gtfs.Import.Run
@@ -22,16 +21,11 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   import GtfsPlanner.VersionsFixtures
 
   @containment [
-    {"stop_levels", "stop_id", "stops"},
-    {"stop_levels", "level_id", "levels"},
-    {"route_pattern_stops", "route_pattern_id", "route_patterns"},
-    {"timed_patterns", "route_pattern_id", "route_patterns"},
     {"trips", "timed_pattern_id", "timed_patterns"},
     {"alignment_segments", "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries", "station_id", "stops"},
-    {"station_editing_statuses", "station_id", "stops"},
-    {"trip_runs", "trip_id", "trips"}
+    {"station_editing_statuses", "station_id", "stops"}
   ]
 
   @organization_parents [
@@ -93,6 +87,36 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       assert definition =~ "REFERENCES #{parent}(id, organization_id)"
     end
 
+    # `stop_levels`, the pattern occurrences and timings and the trip assignments store
+    # their parents' GTFS identifiers, so their containment is a natural composite key
+    # that follows a parent rename and deletes with the parent.
+    for {child, parent, name, column} <- [
+          {"stop_levels", "stops", "stop_levels_stops_owner_fkey", "stop_id"},
+          {"stop_levels", "levels", "stop_levels_levels_owner_fkey", "level_id"},
+          {"route_pattern_stops", "route_patterns",
+           "route_pattern_stops_route_patterns_owner_fkey", "route_pattern_id"},
+          {"timed_patterns", "route_patterns", "timed_patterns_route_patterns_owner_fkey",
+           "route_pattern_id"},
+          {"trip_runs", "trips", "trip_runs_trips_owner_fkey", "trip_id"}
+        ] do
+      assert {^child, ^parent, definition, "c"} = Map.fetch!(constraints, name)
+
+      assert definition =~ "FOREIGN KEY (organization_id, gtfs_version_id, #{column})"
+      assert definition =~ "REFERENCES #{parent}(organization_id, gtfs_version_id, #{column})"
+      assert definition =~ "ON UPDATE CASCADE ON DELETE CASCADE"
+    end
+
+    # A label is optional and blocks deleting its owner, so only the update follows.
+    assert {"route_patterns", "route_patterns", label_definition, "r"} =
+             Map.fetch!(constraints, "route_patterns_label_pattern_id_fkey")
+
+    assert label_definition =~ "FOREIGN KEY (organization_id, gtfs_version_id, label_pattern_id)"
+
+    assert label_definition =~
+             "REFERENCES route_patterns(organization_id, gtfs_version_id, route_pattern_id)"
+
+    assert label_definition =~ "ON UPDATE CASCADE ON DELETE RESTRICT"
+
     refute Enum.any?(constraints, fn {_name, {child, parent, _definition, _delete_rule}} ->
              child == "gtfs_import_runs" and parent == "gtfs_versions"
            end)
@@ -125,8 +149,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
     for {column, parent} <- [
           {"organization_id", "organizations"},
-          {"gtfs_version_id", "gtfs_versions"},
-          {"trip_id", "trips"}
+          {"gtfs_version_id", "gtfs_versions"}
         ] do
       assert {"trip_runs", ^parent, definition, "c"} =
                Map.fetch!(constraints, "trip_runs_#{column}_fkey")
@@ -213,10 +236,10 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
 
     assert_fk_violation!("trip_runs_version_owner_fkey", fn ->
-      insert_trip_run!(org.id, foreign_version.id, trip.id, "R2")
+      insert_trip_run!(org.id, foreign_version.id, trip.trip_id, "R2")
     end)
 
-    id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+    id = insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
 
     assert_fk_violation!("trip_runs_version_owner_fkey", fn ->
       Repo.query!("UPDATE trip_runs SET gtfs_version_id = $1 WHERE id = $2", [
@@ -243,29 +266,30 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
     for bad_trip <- [other_trip, foreign_trip] do
       assert_fk_violation!("trip_runs_trips_owner_fkey", fn ->
-        insert_trip_run!(org.id, version.id, bad_trip.id, "R2")
+        insert_trip_run!(org.id, version.id, bad_trip.trip_id, "R2")
       end)
     end
 
-    id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+    id = insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
 
     for bad_trip <- [other_trip, foreign_trip] do
       assert_fk_violation!("trip_runs_trips_owner_fkey", fn ->
         Repo.query!("UPDATE trip_runs SET trip_id = $1 WHERE id = $2", [
-          Ecto.UUID.dump!(bad_trip.id),
+          bad_trip.trip_id,
           Ecto.UUID.dump!(id)
         ])
       end)
     end
 
-    assert Repo.get!(TripRun, id).trip_id == trip.id
+    assert Repo.get!(TripRun, id).trip_id == trip.trip_id
   end
 
-  test "trip deletion cascades and populated version deletion still refuses before and after scoped keys" do
+  test "trip deletion cascades and populated version deletion still refuses before and after the version key" do
     # Keep the named savepoint outside the Sandbox's per-query savepoint wrapper.
+    # The natural trip key is the only reference from an assignment to its trip, so
+    # only the version key is absent in the first pass.
     Repo.query!("SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
-    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
     assert_trip_and_version_cascades!()
     Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
     Repo.query!("RELEASE SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
@@ -273,7 +297,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert_trip_and_version_cascades!()
   end
 
-  test "new stop levels reject a parent from another version of the same organization" do
+  test "new stop levels reject a parent GTFS ID that exists only in another version" do
     org = organization_fixture()
     first = gtfs_version_fixture(org.id)
     second = gtfs_version_fixture(org.id)
@@ -291,8 +315,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
             """,
             [
               Ecto.UUID.dump!(Ecto.UUID.generate()),
-              Ecto.UUID.dump!(foreign_stop.id),
-              Ecto.UUID.dump!(level.id),
+              foreign_stop.stop_id,
+              level.level_id,
               Ecto.UUID.dump!(org.id),
               Ecto.UUID.dump!(second.id)
             ]
@@ -381,7 +405,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
                }
              ])
 
-    run_id = insert_trip_run!(org.id, version.id, trip_id, "R1")
+    run_id = insert_trip_run!(org.id, version.id, "T1", "R1")
 
     Repo.query!(
       """
@@ -425,7 +449,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     version = gtfs_version_fixture(org.id)
     route = route_fixture(org.id, version.id)
     trip = trip_fixture(org.id, version.id, route.route_id)
-    run_id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+    run_id = insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
     log_id = Ecto.UUID.generate()
 
     Repo.query!(
@@ -574,7 +598,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       |> Enum.find(&(&1.organization_id == org.id and &1.gtfs_version_id == version.id))
 
     assert trip
-    run_id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+    run_id = insert_trip_run!(org.id, version.id, trip.trip_id, "R1")
 
     assert result.counts
            |> Map.drop([:patterns_created, :timings_created, :trips_linked, :trips_custom])
@@ -726,8 +750,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     route = route_fixture(org.id, version.id)
     first = trip_fixture(org.id, version.id, route.route_id)
     second = trip_fixture(org.id, version.id, route.route_id)
-    first_run = insert_trip_run!(org.id, version.id, first.id, "R1")
-    second_run = insert_trip_run!(org.id, version.id, second.id, "R2")
+    first_run = insert_trip_run!(org.id, version.id, first.trip_id, "R1")
+    second_run = insert_trip_run!(org.id, version.id, second.trip_id, "R2")
     log_id = Ecto.UUID.generate()
 
     Repo.query!(

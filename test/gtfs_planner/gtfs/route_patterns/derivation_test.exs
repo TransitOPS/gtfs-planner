@@ -955,6 +955,163 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     refute Enum.any?(queries, &String.contains?(&1, ">="))
   end
 
+  describe "a pattern ID repeated in another version and organization" do
+    test "derivation links A-B-A occurrences and timings only inside its own scope", context do
+      org = context.organization
+      route_fixture(org.id, context.version.id, %{route_id: "Loop"})
+      stops = stops_fixture(context, [{"A", "Alpine"}, {"B", "Birch"}])
+      [a, b] = [stops["A"], stops["B"]]
+
+      # The same `LOOP-P` exists, with other stops and a timing of its own, in a
+      # sibling version of the organization and in another organization.
+      sibling_version = gtfs_version_fixture(org.id)
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+
+      duplicates =
+        for {duplicate_org, duplicate_version} <- [
+              {org, sibling_version},
+              {foreign_org, foreign_version}
+            ] do
+          duplicate = duplicate_pattern(duplicate_org, duplicate_version, ["X", "Y"])
+          {duplicate, stored_occurrences(duplicate.id), stored_timings(duplicate.id)}
+        end
+
+      local =
+        route_pattern_fixture(org.id, context.version.id, %{
+          route_pattern_id: "LOOP-P",
+          route_id: "Loop",
+          direction_id: 0
+        })
+
+      imported_trip(context, "Loop", "loop-1", %{
+        direction_id: 0,
+        route_pattern_id: "LOOP-P",
+        rows: [
+          time_row(a, "08:00:00", "08:00:00", 1),
+          time_row(b, "08:05:00", "08:05:00", 2),
+          time_row(a, "08:10:00", "08:10:00", 3)
+        ]
+      })
+
+      assert {:ok, %{trips_linked: 1, timings_created: 1}} = derive_route(context, "Loop")
+
+      # The loop keeps three visits, two of them at `A`, each its own row.
+      occurrences = stored_occurrences(local.id)
+      assert Enum.map(occurrences, &{&1.position, &1.stop_id}) == [{1, "A"}, {2, "B"}, {3, "A"}]
+      assert occurrences |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 3
+
+      [timing] = stored_timings(local.id)
+
+      assert Repo.all(
+               from(row in TimedPatternStop,
+                 where: row.timed_pattern_id == ^timing.id,
+                 select: row.route_pattern_stop_id
+               )
+             )
+             |> Enum.sort() == occurrences |> Enum.map(& &1.id) |> Enum.sort()
+
+      # The repeated pattern IDs elsewhere keep exactly the occurrences and timings
+      # they had: none of them became the linked timing's parent.
+      for {duplicate, duplicate_occurrences, duplicate_timings} <- duplicates do
+        assert stored_occurrences(duplicate.id) == duplicate_occurrences
+        assert stored_timings(duplicate.id) == duplicate_timings
+        refute timing.id in Enum.map(stored_timings(duplicate.id), & &1.id)
+      end
+    end
+
+    test "a timing row refuses an occurrence of the same pattern ID in another scope", context do
+      org = context.organization
+      sibling_version = gtfs_version_fixture(org.id)
+      foreign_org = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign_org.id)
+
+      local = duplicate_pattern(org, context.version, ["A"])
+      [local_occurrence] = stored_occurrences(local.id)
+      [local_timing] = stored_timings(local.id)
+
+      for {duplicate_org, duplicate_version} <- [
+            {org, sibling_version},
+            {foreign_org, foreign_version}
+          ] do
+        duplicate = duplicate_pattern(duplicate_org, duplicate_version, ["A"])
+        [duplicate_occurrence] = stored_occurrences(duplicate.id)
+
+        # Ordinary path: the changeset compares organization, version and pattern ID.
+        changeset =
+          TimedPatternStop.changeset(%TimedPatternStop{}, %{
+            timed_pattern_id: local_timing.id,
+            route_pattern_stop_id: duplicate_occurrence.id,
+            timed_pattern: local_timing,
+            route_pattern_stop: duplicate_occurrence,
+            arrival_offset: 0,
+            departure_offset: 0
+          })
+
+        assert {"must belong to the timed pattern's route pattern", _} =
+                 changeset.errors[:route_pattern_stop_id]
+
+        # Bulk path: derivation checks its occurrences with the same predicate
+        # before it inserts timing rows without a changeset.
+        refute TimedPatternStop.same_pattern?(local_timing, duplicate_occurrence)
+      end
+
+      assert TimedPatternStop.same_pattern?(local_timing, local_occurrence)
+
+      # A parent missing any component of the tuple cannot be verified.
+      refute TimedPatternStop.same_pattern?(
+               %{local_timing | organization_id: nil},
+               %{local_occurrence | organization_id: nil}
+             )
+    end
+
+    test "occurrences and timings are stored under the pattern's own scope", context do
+      org = context.organization
+      sibling_version = gtfs_version_fixture(org.id)
+
+      local = duplicate_pattern(org, context.version, ["A"])
+      sibling = duplicate_pattern(org, sibling_version, ["A"])
+
+      # A loaded parent from another scope fails the changeset's scope check even
+      # though the pattern ID is equal.
+      changeset =
+        RoutePatternStop.changeset(%RoutePatternStop{}, %{
+          route_pattern_id: sibling.route_pattern_id,
+          route_pattern: sibling,
+          organization_id: org.id,
+          gtfs_version_id: context.version.id,
+          stop_id: "B",
+          position: 2
+        })
+
+      assert {"must match the route pattern scope", _} = changeset.errors[:gtfs_version_id]
+
+      # Bulk insertion cannot name a pattern ID that exists only in another scope.
+      only_elsewhere =
+        route_pattern_fixture(org.id, sibling_version.id, %{route_pattern_id: "ONLY-THERE"})
+
+      now = DateTime.utc_now()
+
+      assert_raise Postgrex.Error, ~r/route_pattern_stops_route_patterns_owner_fkey/, fn ->
+        Repo.insert_all(RoutePatternStop, [
+          %{
+            id: Ecto.UUID.generate(),
+            route_pattern_id: only_elsewhere.route_pattern_id,
+            organization_id: org.id,
+            gtfs_version_id: context.version.id,
+            stop_id: "B",
+            position: 2,
+            inserted_at: now,
+            updated_at: now
+          }
+        ])
+      end
+
+      assert [%{stop_id: "A"}] = stored_occurrences(local.id)
+      assert [%{stop_id: "A"}] = stored_occurrences(sibling.id)
+    end
+  end
+
   defp collect_page_queries(acc) do
     receive do
       {:page_query, query} -> collect_page_queries([query | acc])
@@ -964,6 +1121,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
   end
 
   # --- helpers --------------------------------------------------------------
+
+  # A pattern `LOOP-P` with one occurrence per stop and a Timing A, written for a
+  # scope other than the one under test.
+  defp duplicate_pattern(organization, version, stop_ids) do
+    pattern =
+      route_pattern_fixture(organization.id, version.id, %{
+        route_pattern_id: "LOOP-P",
+        route_id: "Loop",
+        direction_id: 0
+      })
+
+    occurrences =
+      stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        route_pattern_stop_fixture(pattern, stop_id, position)
+      end)
+
+    timing = timed_pattern_fixture(pattern, %{name: "Timing A"})
+    Enum.each(occurrences, &timed_pattern_stop_fixture(timing, &1))
+
+    pattern
+  end
 
   defp derive_route(context, route_id) do
     Derivation.derive_route(
@@ -1166,25 +1346,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationTest do
     Repo.get_by!(RoutePattern,
       organization_id: context.organization.id,
       gtfs_version_id: context.version.id,
-      label_pattern_id: owner.id
+      label_pattern_id: owner.route_pattern_id
     )
   end
 
-  defp occurrences(pattern_id) do
-    from(o in RoutePatternStop,
-      where: o.route_pattern_id == ^pattern_id,
-      order_by: [asc: o.position]
-    )
-    |> Repo.all()
-  end
+  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
-  defp timings(pattern_id) do
-    from(t in TimedPattern,
-      where: t.route_pattern_id == ^pattern_id,
-      order_by: [asc: t.name, asc: t.id]
-    )
-    |> Repo.all()
-  end
+  defp timings(pattern_id), do: stored_timings(pattern_id)
 
   defp timing_rows(timing_id) do
     from(row in TimedPatternStop,

@@ -89,8 +89,8 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
           insert_stop_level(%{
             organization_id: organization.id,
             gtfs_version_id: gtfs_version.id,
-            stop_id: station.id,
-            level_id: level.id
+            stop_id: station.stop_id,
+            level_id: level.level_id
           })
 
         child =
@@ -383,7 +383,7 @@ defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.RepoTest do
       from(membership in UserOrgMembership, where: membership.organization_id == ^organization_id)
     )
 
-    Repo.delete_all(
+    delete_versions!(
       from(version in GtfsVersion, where: version.organization_id == ^organization_id)
     )
 

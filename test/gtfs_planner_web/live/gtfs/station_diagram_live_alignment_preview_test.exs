@@ -130,8 +130,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
       insert_stop_level(%{
         organization_id: organization.id,
         gtfs_version_id: gtfs_version.id,
-        stop_id: station.id,
-        level_id: level.id
+        stop_id: station.stop_id,
+        level_id: level.level_id
       })
 
     {:ok, _} = put_stop_level_diagram(stop_level, "align-diagram.png")
@@ -980,8 +980,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveAlignmentPreviewTest do
         insert_stop_level(%{
           organization_id: organization.id,
           gtfs_version_id: gtfs_version.id,
-          stop_id: station.id,
-          level_id: level2.id,
+          stop_id: station.stop_id,
+          level_id: level2.level_id,
           diagram_filename: "align-diagram-2.png"
         })
 

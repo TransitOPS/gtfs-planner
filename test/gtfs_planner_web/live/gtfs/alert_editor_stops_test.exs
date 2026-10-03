@@ -71,22 +71,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       view
       |> render_change("autosave", %{
         "alert" => %{"revision" => Integer.to_string(alert.revision)},
-        "place" => %{"stop_id" => depot.id}
+        "place" => %{"stop_id" => depot.stop_id}
       })
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stop_ids == [depot.id]
+      assert saved.scope.stop_ids == [depot.stop_id]
       assert saved.scope.shape == :stop_all_routes
 
       # The routes that call at the chosen place are preselected, so the routes
       # question lists what the place actually has.
-      serving = Alerts.routes_at_stops(context.audit, [depot.id])
+      serving = Alerts.routes_at_stops(context.audit, [depot.stop_id])
       assert Enum.sort(saved.scope.route_ids) == Enum.sort(Enum.map(serving, & &1.id))
       assert length(serving) == 2
 
       # The widget's own field holds the chosen identity, and the summary says
       # the place by name rather than by what was searched for.
-      assert has_element?(view, "input#place_stop_id[value='#{depot.id}']")
+      assert has_element?(view, "input#place_stop_id[value='#{depot.stop_id}']")
       assert render(view) =~ depot.stop_name
     end
 
@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "stop_moved",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.stop_id]}
         })
 
       {:ok, view, _html} =
@@ -158,13 +158,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
 
       revision = alert.revision
 
-      view |> render_change("autosave", %{"place" => %{"stop_id" => other.id}})
-      view |> render_change("autosave", %{"place" => %{"stop_id" => coast.id}})
+      view |> render_change("autosave", %{"place" => %{"stop_id" => other.stop_id}})
+      view |> render_change("autosave", %{"place" => %{"stop_id" => coast.stop_id}})
 
       # The stop of the sibling version is not in this version's lookup, so it
       # stored nothing; the stop of this version did (R1, CR-4).
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stop_ids == [coast.id]
+      assert saved.scope.stop_ids == [coast.stop_id]
       assert saved.revision == revision + 1
     end
 
@@ -179,14 +179,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
 
       assert has_element?(view, "#alert-place-continue")
 
-      view |> render_change("autosave", %{"place" => %{"stop_id" => depot.id}})
+      view |> render_change("autosave", %{"place" => %{"stop_id" => depot.stop_id}})
       view |> element("#alert-place-continue") |> render_click()
 
       # The place preselects the routes that call at it, so the reader arrives
       # at the routes question with something already pressed (AC-18).
       assert has_element?(view, "#alert-question-title", "Which routes are affected?")
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stop_ids == [depot.id]
+      assert saved.scope.stop_ids == [depot.stop_id]
     end
 
     test "Continue with no place chosen says so and writes nothing", context do
@@ -236,22 +236,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       # question the next one once that stop is chosen.
       _other_route = pattern(context, "R12", [{"S_HARBOR", 0}, {"S_NYE", 600}])
 
-      alert = detour_alert(context, coast_route.id)
+      alert = detour_alert(context, coast_route.route_id)
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=stops")
 
       # The list is the chosen route's own stops, in the order riders meet them.
       assert has_element?(view, "#alert-question-title", "Which stops will buses skip?")
-      assert has_element?(view, "#alert-stop-#{coast.id}", "Newport Transit Center")
-      assert has_element?(view, "#alert-stop-#{depot.id}", "Depot Street")
-      assert has_element?(view, "#alert-stop-#{harbor.id}", "Harbor Street")
+      assert has_element?(view, "#alert-stop-#{coast.stop_id}", "Newport Transit Center")
+      assert has_element?(view, "#alert-stop-#{depot.stop_id}", "Depot Street")
+      assert has_element?(view, "#alert-stop-#{harbor.stop_id}", "Harbor Street")
 
-      view |> element("#alert-stop-#{harbor.id}") |> render_click()
+      view |> element("#alert-stop-#{harbor.stop_id}") |> render_click()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stop_ids == [harbor.id]
-      assert has_element?(view, "#alert-stop-#{harbor.id}[aria-pressed='true']")
+      assert saved.scope.stop_ids == [harbor.stop_id]
+      assert has_element?(view, "#alert-stop-#{harbor.stop_id}[aria-pressed='true']")
 
       view |> element("#alert-stops-continue") |> render_click()
 
@@ -262,13 +262,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
              )
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stop_ids == [harbor.id]
+      assert saved.scope.stop_ids == [harbor.stop_id]
     end
 
     test "Continue with nothing chosen says so and writes nothing", context do
       %{coast: _coast} = stops(context)
       coast_route = pattern(context, "R1", [{"S_COAST", 0}])
-      alert = detour_alert(context, coast_route.id)
+      alert = detour_alert(context, coast_route.route_id)
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=stops")
@@ -287,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       %{depot: depot, harbor: harbor} = stops(context)
       coast_route = pattern(context, "R1", [{"S_COAST", 0}, {"S_DEPOT", 600}, {"S_HARBOR", 1200}])
 
-      alert = detour_alert(context, coast_route.id)
+      alert = detour_alert(context, coast_route.route_id)
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=stops")
@@ -295,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       # The two selects are fields of the autosave form, so a change carries the
       # whole form the way the browser sends it. One end alone stores nothing.
       view
-      |> form("#alert-form", %{"stretch" => %{"from" => depot.id}})
+      |> form("#alert-form", %{"stretch" => %{"from" => depot.stop_id}})
       |> render_change()
 
       assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
@@ -303,14 +303,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert unchanged.revision == alert.revision
 
       view
-      |> form("#alert-form", %{"stretch" => %{"from" => depot.id, "to" => harbor.id}})
+      |> form("#alert-form", %{"stretch" => %{"from" => depot.stop_id, "to" => harbor.stop_id}})
       |> render_change()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.stretch_from_stop_id == depot.id
-      assert saved.scope.stretch_to_stop_id == harbor.id
-      assert saved.scope.stop_ids == [depot.id, harbor.id]
-      refute saved.scope.stop_ids == [harbor.id, depot.id]
+      assert saved.scope.stretch_from_stop_id == depot.stop_id
+      assert saved.scope.stretch_to_stop_id == harbor.stop_id
+      assert saved.scope.stop_ids == [depot.stop_id, harbor.stop_id]
+      refute saved.scope.stop_ids == [harbor.stop_id, depot.stop_id]
       assert saved.scope.shape == :route_stops
     end
 
@@ -323,7 +323,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "detour",
-          "scope" => %{"shape" => "routes", "route_ids" => [coast_route.id, nye_route.id]}
+          "scope" => %{
+            "shape" => "routes",
+            "route_ids" => [coast_route.route_id, nye_route.route_id]
+          }
         })
 
       {:ok, view, _html} =
@@ -332,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       # The union of the two routes' stops lists both ends, but no one route
       # runs from one to the other, so there is no stretch to skip.
       view
-      |> form("#alert-form", %{"stretch" => %{"from" => coast.id, "to" => nye.id}})
+      |> form("#alert-form", %{"stretch" => %{"from" => coast.stop_id, "to" => nye.stop_id}})
       |> render_change()
 
       assert has_element?(view, "#alert-stops-error", "same route")
@@ -344,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
     test "all stops still served changes the situation to a delay", context do
       %{harbor: _harbor} = stops(context)
       coast_route = pattern(context, "R1", [{"S_HARBOR", 0}])
-      alert = detour_alert(context, coast_route.id)
+      alert = detour_alert(context, coast_route.route_id)
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=stops")
@@ -363,7 +366,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
     test "shows the conflict instead of changing the situation", context do
       %{harbor: _harbor} = stops(context)
       coast_route = pattern(context, "R1", [{"S_HARBOR", 0}])
-      alert = detour_alert(context, coast_route.id)
+      alert = detour_alert(context, coast_route.route_id)
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=stops")
@@ -396,8 +399,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
@@ -405,7 +408,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         live(context.conn, edit_path(alert) <> "?step=shared")
 
       other =
-        Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
+        Alerts.routes_at_stops(context.audit, [depot.stop_id])
+        |> Enum.find(&(&1.id != coast_route.route_id))
 
       assert other != nil
 
@@ -434,13 +438,14 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
       other =
-        Alerts.routes_at_stops(context.audit, [depot.id]) |> Enum.find(&(&1.id != coast_route.id))
+        Alerts.routes_at_stops(context.audit, [depot.stop_id])
+        |> Enum.find(&(&1.id != coast_route.route_id))
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=shared")
@@ -451,7 +456,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       assert saved.scope.all_routes_at_stops == true
       assert [%{route_id: route_id, stop_id: stop_id}] = saved.scope.route_stop_pairs
       assert route_id == other.id
-      assert stop_id == depot.id
+      assert stop_id == depot.stop_id
 
       # The answer advanced to the next question this alert asks.
       assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
@@ -468,8 +473,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
@@ -494,8 +499,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
@@ -526,15 +531,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=shared")
 
-      view |> element("#alert-shared-#{other_route.id}-yes") |> render_click()
+      view |> element("#alert-shared-#{other_route.route_id}-yes") |> render_click()
 
       assert has_element?(view, "#alert-question-title", "Where should riders board instead?")
       assert has_element?(view, "#alert-step-shared")
@@ -544,9 +549,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       view |> element("#alert-question-back") |> render_click()
 
       assert has_element?(view, "#alert-shared")
-      assert has_element?(view, "#alert-shared-#{other_route.id}-yes[aria-pressed='true']")
+      assert has_element?(view, "#alert-shared-#{other_route.route_id}-yes[aria-pressed='true']")
 
-      view |> element("#alert-shared-#{other_route.id}-no") |> render_click()
+      view |> element("#alert-shared-#{other_route.route_id}-no") |> render_click()
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.scope.all_routes_at_stops == false
@@ -563,8 +568,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [coast.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [coast.stop_id]
           }
         })
 
@@ -594,8 +599,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "detour",
           "scope" => %{
             "shape" => "route_stops",
-            "route_ids" => [coast_route.id],
-            "stop_ids" => [depot.id]
+            "route_ids" => [coast_route.route_id],
+            "stop_ids" => [depot.stop_id]
           }
         })
 
@@ -641,7 +646,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "stop_moved",
           "scope" => %{
             "shape" => "stop_all_routes",
-            "stop_ids" => [depot.id],
+            "stop_ids" => [depot.stop_id],
             "alternative_directions" => "Board on the corner."
           }
         })
@@ -654,11 +659,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
       view
       |> render_change("autosave", %{
         "alert" => %{"revision" => Integer.to_string(alert.revision)},
-        "alternative" => %{"stop_id" => harbor.id}
+        "alternative" => %{"stop_id" => harbor.stop_id}
       })
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
-      assert saved.scope.alternative_stop_id == harbor.id
+      assert saved.scope.alternative_stop_id == harbor.stop_id
       assert saved.scope.alternative_directions == nil
       _ = coast
     end
@@ -671,13 +676,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "stop_moved",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.stop_id]}
         })
 
       {:ok, view, _html} =
         live(context.conn, edit_path(alert) <> "?step=alternative")
 
-      view |> render_change("autosave", %{"alternative" => %{"stop_id" => harbor.id}})
+      view |> render_change("autosave", %{"alternative" => %{"stop_id" => harbor.stop_id}})
 
       view |> element("#write-directions") |> render_click()
 
@@ -705,7 +710,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "stop_moved",
           "scope" => %{
             "shape" => "stop_all_routes",
-            "stop_ids" => [depot.id],
+            "stop_ids" => [depot.stop_id],
             "alternative_directions" => "Board on the corner."
           }
         })
@@ -724,7 +729,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "stop_moved",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.stop_id]}
         })
 
       {:ok, view, _html} =
@@ -758,8 +763,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "situation" => "accessibility",
           "scope" => %{
             "shape" => "stop_all_routes",
-            "stop_ids" => [depot.id],
-            "alternative_stop_id" => harbor.id
+            "stop_ids" => [depot.stop_id],
+            "alternative_stop_id" => harbor.stop_id
           }
         })
 
@@ -772,12 +777,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
           "revision" => Integer.to_string(alert.revision),
           "scope" => %{"facility" => "North entrance ramp"}
         },
-        "alternative" => %{"stop_id" => harbor.id}
+        "alternative" => %{"stop_id" => harbor.stop_id}
       })
 
       assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
       assert saved.scope.facility == "North entrance ramp"
-      assert saved.scope.alternative_stop_id == harbor.id
+      assert saved.scope.alternative_stop_id == harbor.stop_id
     end
 
     test "a moved stop cannot advance without a stop or written directions", context do
@@ -788,7 +793,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "stop_moved",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.stop_id]}
         })
 
       {:ok, view, _html} =
@@ -817,7 +822,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorStopsTest do
         alert_with(context, %{
           "urgency" => "now",
           "situation" => "accessibility",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.id]}
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [depot.stop_id]}
         })
 
       {:ok, view, _html} =

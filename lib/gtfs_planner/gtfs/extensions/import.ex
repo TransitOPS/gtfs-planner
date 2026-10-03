@@ -163,7 +163,7 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
         coord_count = update_stop_coordinates(manifest.stop_diagram_coordinates, lookups)
 
         sl_count =
-          upsert_stop_levels(organization_id, gtfs_version_id, manifest.stop_levels, lookups, now)
+          upsert_stop_levels(organization_id, gtfs_version_id, manifest.stop_levels, now)
 
         flag_count = update_route_flags(manifest.route_active_flags, lookups)
 
@@ -215,14 +215,13 @@ defmodule GtfsPlanner.Gtfs.Extensions.Import do
     end)
   end
 
-  defp upsert_stop_levels(organization_id, gtfs_version_id, stop_levels, lookups, now) do
+  defp upsert_stop_levels(organization_id, gtfs_version_id, stop_levels, now) do
+    # `validate_references/2` already refused a manifest naming a stop or level
+    # absent from this scope, and `stop_levels` stores those GTFS identifiers.
     Enum.count(stop_levels, fn sl ->
-      stop_uuid = Map.fetch!(lookups.stop_id_to_uuid, sl.stop_id)
-      level_uuid = Map.fetch!(lookups.level_id_to_uuid, sl.level_id)
-
       attrs = %{
-        stop_id: stop_uuid,
-        level_id: level_uuid,
+        stop_id: sl.stop_id,
+        level_id: sl.level_id,
         organization_id: organization_id,
         gtfs_version_id: gtfs_version_id,
         diagram_filename: sl.diagram_filename,

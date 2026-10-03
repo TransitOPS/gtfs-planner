@@ -13,7 +13,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
         severity:  :error | :warning | :notice,
         run_ids:   [String.t()],
         block_id:  String.t() | nil,
-        trip_ids:  [Ecto.UUID.t()],
+        trip_ids:  [String.t()],
         detail:    map()
       }
 
@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
           severity: :error | :warning | :notice,
           run_ids: [String.t()],
           block_id: String.t() | nil,
-          trip_ids: [Ecto.UUID.t()],
+          trip_ids: [String.t()],
           detail: map()
         }
 

@@ -181,7 +181,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLinkOfferTest do
       # own column carries the pattern's natural ID, which is what proves which
       # pattern took them.
       pattern_id = created_pattern_id(organization, "LNK6")
-      pattern_uuid = created_pattern_uuid(organization, "LNK6")
 
       assert linked(organization, "full") == %{0 => @full_trips, :pattern_id => @full_trips}
       # The short order's trips were not in the confirmed group, so none of them
@@ -190,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLinkOfferTest do
       assert trips_point_at(organization, "full", pattern_id)
 
       # Rule 6 named the new timing after the one service the trips run on.
-      timings = timing_names(organization, pattern_uuid)
+      timings = timing_names(organization, pattern_id)
 
       assert @service_description in timings
 
@@ -341,11 +340,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLinkOfferTest do
     )
   end
 
-  defp timing_names(organization, route_pattern_uuid) do
+  defp timing_names(organization, route_pattern_id) do
     Repo.all(
       from(tp in GtfsPlanner.Gtfs.TimedPattern,
         where:
-          tp.organization_id == ^organization.id and tp.route_pattern_id == ^route_pattern_uuid,
+          tp.organization_id == ^organization.id and tp.route_pattern_id == ^route_pattern_id,
         select: tp.name
       )
     )
