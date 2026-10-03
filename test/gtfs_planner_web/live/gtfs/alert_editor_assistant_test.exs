@@ -601,6 +601,62 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     end
   end
 
+  describe "a target repair in assistant mode" do
+    setup :log_in_editor
+
+    test "an apply over a newer revision names the conflict and keeps the staged removal",
+         context do
+      [old] = stops(context.organization, context.version, [{"OLD_ANNEX", "Annex"}])
+
+      alert =
+        alert_fixture(context.audit, %{
+          "urgency" => "now",
+          "situation" => "stop_closed",
+          "cause" => "construction",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => ["OLD_ANNEX"]},
+          "message" => %{"header" => "Annex closed", "description" => "Use the next stop."}
+        })
+
+      Repo.delete!(old)
+
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
+      assert has_element?(view, "#alert-assistant #alert-repair-0", "OLD_ANNEX")
+
+      view |> element("#alert-repair-remove-0") |> render_click()
+
+      # Another editor saves the alert while the removal is staged.
+      assert {:ok, newer} =
+               Alerts.save_draft(
+                 context.audit,
+                 alert.id,
+                 alert.revision,
+                 %{"message" => %{"header" => "Annex closed for work"}},
+                 schedule_opts(context.audit)
+               )
+
+      view |> element("#alert-repair-apply") |> render_click()
+
+      # The refusal is visible in this frame, with its way out, and nothing was written.
+      assert has_element?(view, "#alert-assistant #alert-conflict")
+      assert has_element?(view, "#alert-assistant #conflict-load-latest")
+      refute has_element?(view, "#conflict-save-new")
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, alert.id)
+      assert unchanged.scope.stop_ids == ["OLD_ANNEX"]
+      assert unchanged.revision == newer.revision
+
+      view |> element("#conflict-load-latest") |> render_click()
+
+      refute has_element?(view, "#alert-conflict")
+      assert has_element?(view, "#alert-repair-0-staged", "Will be removed")
+
+      view |> element("#alert-repair-apply") |> render_click()
+
+      assert {:ok, repaired} = Alerts.get_alert(context.audit, alert.id)
+      assert repaired.scope.stop_ids == []
+    end
+  end
+
   describe "when the provider cannot answer" do
     setup :log_in_editor
 

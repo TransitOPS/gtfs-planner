@@ -4406,6 +4406,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
               class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
             >
               <div class="min-w-0">
+                <.conflict_banner
+                  :if={@conflict}
+                  id="alert-conflict"
+                  save_new?={not is_nil(@pending_attrs)}
+                />
+
                 <.target_repair
                   active_name={schedule_name(@active_schedule)}
                   items={@repair_items}
