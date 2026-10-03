@@ -1433,7 +1433,7 @@ case Accounts.register_first_admin(%{
         organization_id: org.id,
         gtfs_version_id: diagram_version.id
       })
-      |> Ecto.Changeset.change(label_pattern_id: label_owner.route_pattern_id)
+      |> Ecto.Changeset.change(label_pattern_id: label_owner.id)
       |> Repo.insert!()
 
     IO.puts("Browser seed: BROWSER_SHAPES route with #{length(shapes_stop_ids)} stops")
@@ -1560,7 +1560,7 @@ case Accounts.register_first_admin(%{
       )
       |> Enum.sort_by(& &1.route_pattern_id)
 
-    true = stored_child.label_pattern_id == stored_owner.route_pattern_id
+    true = stored_child.label_pattern_id == stored_owner.id
     true = is_nil(stored_owner.label_pattern_id)
 
     IO.puts(
@@ -4264,7 +4264,7 @@ case Accounts.register_first_admin(%{
           Enum.map(stops, fn {stop_id, position, distance} ->
             %{
               id: flex_id.(),
-              route_pattern_id: pattern.route_pattern_id,
+              route_pattern_id: pattern.id,
               organization_id: org.id,
               gtfs_version_id: flex_version.id,
               stop_id: stop_id,
@@ -11086,10 +11086,12 @@ case Accounts.register_first_admin(%{
           | stops
         ]
 
+        pattern_id = Map.fetch!(workload_pattern_ids, i)
+
         new_occurrences = [
           %{
             id: Ecto.UUID.generate(),
-            route_pattern_id: "BROWSER_MW_P_#{padded}",
+            route_pattern_id: pattern_id,
             organization_id: org.id,
             gtfs_version_id: workload_version.id,
             stop_id: "BROWSER_MW_STOP_#{padded}_A",
@@ -11099,7 +11101,7 @@ case Accounts.register_first_admin(%{
           },
           %{
             id: Ecto.UUID.generate(),
-            route_pattern_id: "BROWSER_MW_P_#{padded}",
+            route_pattern_id: pattern_id,
             organization_id: org.id,
             gtfs_version_id: workload_version.id,
             stop_id: "BROWSER_MW_STOP_#{padded}_B",
@@ -11824,7 +11826,7 @@ case Accounts.register_first_admin(%{
 
             %{
               id: stops_map_id.(),
-              route_pattern_id: pattern.route_pattern_id,
+              route_pattern_id: pattern.id,
               organization_id: stops_map_org.id,
               gtfs_version_id: stops_map_version.id,
               stop_id: stop_id,

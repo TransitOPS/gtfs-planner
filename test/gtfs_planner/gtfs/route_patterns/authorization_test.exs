@@ -227,7 +227,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuthorizationTest do
     {1, nil} =
       Repo.update_all(
         from(p in RoutePattern, where: p.id == ^child.id),
-        set: [label_pattern_id: owner.route_pattern_id]
+        set: [label_pattern_id: owner.id]
       )
 
     before_child = Repo.reload!(child)

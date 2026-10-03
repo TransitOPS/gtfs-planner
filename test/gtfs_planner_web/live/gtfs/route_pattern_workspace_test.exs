@@ -367,7 +367,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternWorkspaceTest do
          %{conn: conn, organization: organization, version: version} do
       context = pattern_context(organization, version, "LIST2")
 
-      [timing] = stored_timings(context.pattern.id)
+      timing =
+        GtfsPlanner.Repo.get_by!(GtfsPlanner.Gtfs.TimedPattern,
+          route_pattern_id: context.pattern.id
+        )
 
       trip =
         trip_fixture(organization.id, version.id, context.route.route_id, %{trip_id: "LIST2_T"})

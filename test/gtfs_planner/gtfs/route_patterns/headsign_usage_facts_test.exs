@@ -64,7 +64,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignUsageFactsTest do
     %{pattern: pattern, differing_trip: interlined} =
       block_scenario(context, successor_route_id: "20")
 
-    [weekday] = stored_timings(pattern.id)
+    weekday = Repo.get_by!(GtfsPlanner.Gtfs.TimedPattern, route_pattern_id: pattern.id)
 
     unblocked =
       trip_fixture(context.organization.id, context.version.id, context.route_10.route_id,

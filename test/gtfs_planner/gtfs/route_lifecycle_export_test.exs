@@ -588,7 +588,7 @@ defmodule GtfsPlanner.Gtfs.RouteLifecycleExportTest do
     Repo.delete_all(from s in StopTime, where: s.trip_id in ^trip_ids)
     Repo.delete_all(from f in Frequency, where: f.trip_id in ^trip_ids)
     Repo.delete_all(from t in Trip, where: t.trip_id in ^trip_ids)
-    Repo.delete_all(from o in RoutePatternStop, where: o.organization_id == ^org_id)
+    Repo.delete_all(from o in RoutePatternStop, where: o.route_pattern_id in ^pattern_ids)
     Repo.delete_all(from p in RoutePattern, where: p.id in ^pattern_ids)
     Repo.delete_all(from t in Transfer, where: t.organization_id == ^org_id)
     Repo.delete_all(from f in FareRule, where: f.organization_id == ^org_id)

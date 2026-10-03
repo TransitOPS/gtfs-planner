@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
           {:calendar, service_id :: String.t()}
           | {:route_patterns, route_id :: String.t()}
           | {:route_pattern, route_id :: String.t() | nil, route_pattern_id :: String.t()}
-          | {:timed_pattern, route_pattern_id :: String.t()}
+          | {:timed_pattern, route_pattern_uuid :: Ecto.UUID.t()}
           | {:schedules, route_id :: String.t(), service_id :: String.t()}
           | {:station, station_stop_id :: String.t(), level_id :: String.t() | nil}
           | {:stop, stop_id :: String.t()}
@@ -336,7 +336,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
         {:route_pattern, nil, snapshot_field(log, "route_pattern_id")}
 
       log.entity_type == "timed_pattern" ->
-        {:timed_pattern, timing_pattern_id(log)}
+        {:timed_pattern, snapshot_field(log, "route_pattern_id")}
 
       log.entity_type == "trip" ->
         {:schedules, trip_field(log, "route_id"), trip_field(log, "service_id")}
@@ -374,19 +374,6 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
         nil
     end
   end
-
-  # A timing's `entity_external_id` is "<timing row id>:<route_pattern_id>" (see
-  # `Audit`), so the pattern's GTFS ID is whatever follows the first colon. Older
-  # entries kept a pattern row id in the snapshot; this field never did.
-  defp timing_pattern_id(%ChangeLog{entity_external_id: external_id})
-       when is_binary(external_id) do
-    case String.split(external_id, ":", parts: 2) do
-      [_timing_id, route_pattern_id] -> route_pattern_id
-      _ -> nil
-    end
-  end
-
-  defp timing_pattern_id(%ChangeLog{}), do: nil
 
   defp snapshot_field(%ChangeLog{snapshot: %{} = snapshot}, field), do: Map.get(snapshot, field)
   defp snapshot_field(%ChangeLog{}, _field), do: nil

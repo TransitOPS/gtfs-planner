@@ -443,7 +443,11 @@ defmodule GtfsPlanner.Gtfs.Alignments.ConcurrencyTest do
     |> Enum.find(&(&1.position == position))
   end
 
-  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
+  defp occurrences(pattern_id) do
+    Repo.all(
+      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position)
+    )
+  end
 
   defp stamp_timing_rows(timing) do
     Repo.all(

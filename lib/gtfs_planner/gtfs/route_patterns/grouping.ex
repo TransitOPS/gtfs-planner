@@ -41,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
           stop_ids: [String.t()],
           derivation_key: String.t() | nil,
           linked_trip_count: non_neg_integer(),
-          label_pattern_id: String.t() | nil
+          label_pattern_id: Ecto.UUID.t() | nil
         }
 
   @type group :: %{
@@ -199,14 +199,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Grouping do
   end
 
   # A labelled child is answered by its owner, so one pattern never produces two
-  # answers. The child stands in only when its owner is not on offer. The label
-  # holds the owner's `route_pattern_id`; the refs are one route's patterns, so
-  # that ID names one of them.
+  # answers. The child stands in only when its owner is not on offer.
   defp answering_patterns(pattern_refs, stop_ids) do
     answering =
       Enum.filter(pattern_refs, &(same_endpoints?(&1, stop_ids) or within?(&1, stop_ids)))
 
-    offered = MapSet.new(answering, & &1.route_pattern_id)
+    offered = MapSet.new(answering, & &1.id)
 
     Enum.reject(answering, fn pattern ->
       not is_nil(pattern.label_pattern_id) and MapSet.member?(offered, pattern.label_pattern_id)

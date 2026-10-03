@@ -27,12 +27,10 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
 
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
 
-    # The label owner's `route_pattern_id`, scoped to this pattern's organization
-    # and version by a composite foreign key. It is not an automatic association:
-    # a single-column join on a GTFS ID would match every scope's owner. The owner
-    # is resolved from a pattern the editor already chose, never from submitted
-    # parameters, so it is deliberately absent from the cast list in `changeset/2`.
-    field :label_pattern_id, :string
+    # The label owner is resolved from a pattern the editor already chose, never
+    # from submitted parameters, so it is deliberately absent from the cast list
+    # in `changeset/2`.
+    belongs_to :label_pattern, __MODULE__, foreign_key: :label_pattern_id
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -55,7 +53,7 @@ defmodule GtfsPlanner.Gtfs.RoutePattern do
           active: boolean(),
           shape_id: String.t() | nil,
           alignment_digest: String.t() | nil,
-          label_pattern_id: String.t() | nil,
+          label_pattern_id: Ecto.UUID.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }

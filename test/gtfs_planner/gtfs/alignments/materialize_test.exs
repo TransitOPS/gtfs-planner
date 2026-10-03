@@ -11,6 +11,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializeTest do
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Repo
@@ -157,8 +158,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.MaterializeTest do
     |> Repo.all()
   end
 
-  defp visit_distances(pattern),
-    do: pattern.id |> stored_occurrences() |> Enum.map(& &1.shape_dist_traveled)
+  defp visit_distances(pattern) do
+    from(o in RoutePatternStop,
+      where: o.route_pattern_id == ^pattern.id,
+      order_by: [asc: o.position],
+      select: o.shape_dist_traveled
+    )
+    |> Repo.all()
+  end
 
   defp trip_stop_distances(organization, version, trip_id) do
     from(st in StopTime,

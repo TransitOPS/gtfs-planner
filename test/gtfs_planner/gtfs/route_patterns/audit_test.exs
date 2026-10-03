@@ -162,7 +162,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
 
     assert {:ok, _} = Gtfs.apply_review(pattern.id, operation, reviewed, context.audit)
 
-    timing = pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Timing B"))
+    timing =
+      Repo.one!(
+        from(timing in TimedPattern,
+          where: timing.route_pattern_id == ^pattern.id and timing.name == "Timing B"
+        )
+      )
 
     [created_log] =
       Repo.all(
@@ -291,7 +296,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     assert {:ok, pattern} =
              Gtfs.create_pattern(context.route.route_id, attrs(context.stops), context.audit)
 
-    [timing] = stored_timings(pattern.id)
+    [timing] =
+      Repo.all(from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id))
 
     before_pattern = Repo.get!(RoutePattern, pattern.id)
     before_timing = Repo.get!(TimedPattern, timing.id)
@@ -332,7 +338,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.AuditTest do
     |> Enum.map(&snapshot_value(&1, "stop_id"))
   end
 
-  defp occurrences(pattern), do: stored_occurrences(pattern.id)
+  defp occurrences(pattern) do
+    Repo.all(
+      from(occurrence in RoutePatternStop,
+        where: occurrence.route_pattern_id == ^pattern.id,
+        order_by: [asc: occurrence.position]
+      )
+    )
+  end
 
   defp timing_row_values(timing_id) do
     Repo.all(

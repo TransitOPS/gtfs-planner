@@ -774,15 +774,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   defp detail_query(%{key: :route_pattern_stops} = ref, stop) do
     ref
     |> scope_query(stop)
-    |> join(
-      :inner,
-      [row],
-      pattern in RoutePattern,
-      on:
-        pattern.route_pattern_id == row.route_pattern_id and
-          pattern.organization_id == row.organization_id and
-          pattern.gtfs_version_id == row.gtfs_version_id
-    )
+    |> join(:inner, [row], pattern in RoutePattern, on: pattern.id == row.route_pattern_id)
     |> join(
       :left,
       [row, pattern],

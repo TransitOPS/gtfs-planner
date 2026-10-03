@@ -310,7 +310,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   @detour_zones_cte """
   WITH RECURSIVE
   patterns AS (
-    SELECT p.route_pattern_id AS pattern_id, p.shape_id
+    SELECT p.id AS pattern_id, p.shape_id
     FROM route_patterns p
     WHERE p.organization_id = $1
       AND p.gtfs_version_id = $2

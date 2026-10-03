@@ -189,15 +189,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingPreviewTest do
       end
 
     owner = insert_order_pattern(org_id, version_id, "pattern_owner", nil, stop_ids, nil)
-
-    insert_order_pattern(
-      org_id,
-      version_id,
-      "pattern_child",
-      "d0-child",
-      stop_ids,
-      owner.route_pattern_id
-    )
+    insert_order_pattern(org_id, version_id, "pattern_child", "d0-child", stop_ids, owner.id)
 
     calendar_attribute_fixture(org_id, version_id, %{
       service_id: "LB1",

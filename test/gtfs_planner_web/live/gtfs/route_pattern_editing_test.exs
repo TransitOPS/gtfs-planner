@@ -159,7 +159,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
   end
 
   defp occurrence_rows(pattern) do
-    stored_occurrences(pattern.id)
+    Repo.all(
+      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, order_by: o.position)
+    )
   end
 
   defp timing_rows(timing) do
@@ -1024,7 +1026,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       render_click(view, "confirm_timing_dialog")
 
-      copied = pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Weekend"))
+      copied = Repo.get_by!(TimedPattern, route_pattern_id: pattern.id, name: "Weekend")
 
       assert timing_rows(copied) |> Enum.map(&{&1.arrival_offset, &1.departure_offset}) == [
                {0, 0},
@@ -1078,7 +1080,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       render_click(view, "confirm_timing_dialog")
 
-      blank = pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Blank"))
+      blank = Repo.get_by!(TimedPattern, route_pattern_id: pattern.id, name: "Blank")
 
       assert timing_rows(blank) |> Enum.map(&{&1.arrival_offset, &1.departure_offset}) ==
                [{0, 0}, {0, 0}, {0, 0}]
@@ -1476,7 +1478,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       assert copied.id != pattern.id
       assert length(occurrence_rows(copied)) == 3
-      [copied_timing] = stored_timings(copied.id)
+      copied_timing = Repo.one!(from(t in TimedPattern, where: t.route_pattern_id == ^copied.id))
       assert length(timing_rows(copied_timing)) == 3
 
       assert Repo.aggregate(

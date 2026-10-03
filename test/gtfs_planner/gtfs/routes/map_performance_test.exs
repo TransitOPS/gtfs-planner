@@ -354,7 +354,7 @@ defmodule GtfsPlanner.Gtfs.Routes.MapPerformanceTest do
 
     occurrence_rows =
       Enum.flat_map(1..@context_routes, fn i ->
-        context_occurrence_rows(org, version, i, now)
+        context_occurrence_rows(org, version, i, now, Map.fetch!(pattern_ids, i))
       end)
 
     shape_rows = Enum.flat_map(1..@context_routes, &context_shape_rows(org, version, &1, now))
@@ -457,11 +457,11 @@ defmodule GtfsPlanner.Gtfs.Routes.MapPerformanceTest do
     ]
   end
 
-  defp context_occurrence_rows(org, version, i, now) do
+  defp context_occurrence_rows(org, version, i, now, pattern_id) do
     [
       %{
         id: Ecto.UUID.generate(),
-        route_pattern_id: "mw_p_#{pad(i)}",
+        route_pattern_id: pattern_id,
         organization_id: org.id,
         gtfs_version_id: version.id,
         stop_id: "mw_stop_#{pad(i)}_a",
@@ -471,7 +471,7 @@ defmodule GtfsPlanner.Gtfs.Routes.MapPerformanceTest do
       },
       %{
         id: Ecto.UUID.generate(),
-        route_pattern_id: "mw_p_#{pad(i)}",
+        route_pattern_id: pattern_id,
         organization_id: org.id,
         gtfs_version_id: version.id,
         stop_id: "mw_stop_#{pad(i)}_b",

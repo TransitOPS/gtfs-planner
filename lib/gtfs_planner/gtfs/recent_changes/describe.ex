@@ -96,16 +96,18 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     route_ids = destination_keys(groups, &route_key/1)
     service_ids = destination_keys(groups, &service_key/1)
     pattern_ids = destination_keys(groups, &pattern_key/1)
+    pattern_uuids = destination_keys(groups, &timed_pattern_key/1)
     stop_ids = destination_keys(groups, &stop_key/1)
     level_ids = destination_keys(groups, &level_key/1)
 
-    patterns = route_patterns(organization_id, version_id, pattern_ids)
+    patterns = route_patterns(organization_id, version_id, pattern_ids, pattern_uuids)
 
     %{
       routes: routes(organization_id, version_id, route_ids),
       calendars: calendars(organization_id, version_id, service_ids),
       services: services(organization_id, version_id, service_ids),
       patterns: Map.new(patterns, &{&1.route_pattern_id, &1}),
+      pattern_uuids: Map.new(patterns, &{&1.id, &1}),
       stops: stops(organization_id, version_id, stop_ids),
       levels: levels(organization_id, version_id, level_ids)
     }
@@ -129,8 +131,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   defp service_key(_destination), do: nil
 
   defp pattern_key({:route_pattern, _route_id, route_pattern_id}), do: route_pattern_id
-  defp pattern_key({:timed_pattern, route_pattern_id}), do: route_pattern_id
   defp pattern_key(_destination), do: nil
+
+  defp timed_pattern_key({:timed_pattern, route_pattern_uuid}), do: route_pattern_uuid
+  defp timed_pattern_key(_destination), do: nil
 
   defp stop_key({:station, station_stop_id, _level_id}), do: station_stop_id
   defp stop_key({:stop, stop_id}), do: stop_id
@@ -186,9 +190,9 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     |> MapSet.new()
   end
 
-  defp route_patterns(_organization_id, _version_id, []), do: []
+  defp route_patterns(_organization_id, _version_id, [], []), do: []
 
-  defp route_patterns(organization_id, version_id, pattern_ids) do
+  defp route_patterns(organization_id, version_id, pattern_ids, pattern_uuids) do
     RoutePattern
     |> join(:inner, [rp], r in Route,
       on:
@@ -196,8 +200,9 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
           r.route_id == rp.route_id
     )
     |> where([rp], rp.organization_id == ^organization_id and rp.gtfs_version_id == ^version_id)
-    |> where([rp], rp.route_pattern_id in ^pattern_ids)
+    |> filter_pattern_keys(pattern_ids, pattern_uuids)
     |> select([rp, r], %{
+      id: rp.id,
       route_pattern_id: rp.route_pattern_id,
       route_id: rp.route_id,
       route_short_name: r.route_short_name,
@@ -206,6 +211,16 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
       route_text_color: r.route_text_color
     })
     |> Repo.all()
+  end
+
+  defp filter_pattern_keys(query, [], pattern_uuids),
+    do: where(query, [rp, _r], rp.id in ^pattern_uuids)
+
+  defp filter_pattern_keys(query, pattern_ids, []),
+    do: where(query, [rp, _r], rp.route_pattern_id in ^pattern_ids)
+
+  defp filter_pattern_keys(query, pattern_ids, pattern_uuids) do
+    where(query, [rp, _r], rp.route_pattern_id in ^pattern_ids or rp.id in ^pattern_uuids)
   end
 
   defp stops(_organization_id, _version_id, []), do: %{}
@@ -300,13 +315,13 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     )
   end
 
-  defp resolve(%{destination: {:timed_pattern, route_pattern_id}} = group, lookups) do
-    pattern = Map.get(lookups.patterns, route_pattern_id)
+  defp resolve(%{destination: {:timed_pattern, route_pattern_uuid}} = group, lookups) do
+    pattern = Map.get(lookups.pattern_uuids, route_pattern_uuid)
 
     base_item(
       :route_pattern,
       "Pattern",
-      route_title(pattern, route_pattern_id),
+      route_title(pattern, route_pattern_uuid),
       pattern_detail(group),
       exists?: not is_nil(pattern),
       route: route_badge(pattern),

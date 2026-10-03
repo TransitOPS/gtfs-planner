@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.StopEditDistancesTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Repo
 
   defp audit(organization, version) do
@@ -65,9 +66,15 @@ defmodule GtfsPlanner.Gtfs.Alignments.StopEditDistancesTest do
     |> Repo.insert!()
   end
 
-  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
+  defp occurrences(pattern_id) do
+    Repo.all(
+      from o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position
+    )
+  end
 
-  defp timing_for(pattern_id), do: pattern_id |> stored_timings() |> hd()
+  defp timing_for(pattern_id) do
+    Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^pattern_id)
+  end
 
   defp source_for(context, pattern) do
     {:ok, %{source_fingerprint: source}} =
@@ -81,8 +88,14 @@ defmodule GtfsPlanner.Gtfs.Alignments.StopEditDistancesTest do
     source
   end
 
-  defp visit_distances(pattern_id),
-    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.shape_dist_traveled)
+  defp visit_distances(pattern_id) do
+    Repo.all(
+      from o in RoutePatternStop,
+        where: o.route_pattern_id == ^pattern_id,
+        order_by: [asc: o.position],
+        select: o.shape_dist_traveled
+    )
+  end
 
   defp trip_distances(organization, version, trip_id) do
     Repo.all(

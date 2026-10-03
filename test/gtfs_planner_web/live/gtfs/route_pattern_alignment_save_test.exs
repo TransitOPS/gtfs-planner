@@ -519,10 +519,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentSaveTest do
       # next visit no longer matches the drafted identity.
       Repo.update_all(
         from(o in GtfsPlanner.Gtfs.RoutePatternStop,
-          where:
-            o.organization_id == ^moving.organization_id and
-              o.gtfs_version_id == ^moving.gtfs_version_id and
-              o.route_pattern_id == ^moving.route_pattern_id and o.position == 2
+          where: o.route_pattern_id == ^moving.id and o.position == 2
         ),
         set: [stop_id: "S1"]
       )

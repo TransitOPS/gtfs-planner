@@ -165,7 +165,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
          route_id: route.route_id,
          status: :ok,
          saved_alignment: :unavailable,
-         patterns: Enum.map(patterns, &pattern_map(&1, Map.get(visits, &1.route_pattern_id, []))),
+         patterns: Enum.map(patterns, &pattern_map(&1, Map.get(visits, &1.id, []))),
          imported_shape_variants: load_shape_variants(route)
        }}
     end
@@ -240,20 +240,10 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
     |> Repo.all()
   end
 
-  # Patterns joined to their occurrences: the GTFS `route_pattern_id` repeats across
-  # organizations and versions, so the join carries the scope.
-  defp pattern_visits do
+  defp context_stops_in_bounds(box) do
     from(pattern in RoutePattern,
       join: occurrence in RoutePatternStop,
-      on:
-        occurrence.organization_id == pattern.organization_id and
-          occurrence.gtfs_version_id == pattern.gtfs_version_id and
-          occurrence.route_pattern_id == pattern.route_pattern_id
-    )
-  end
-
-  defp context_stops_in_bounds(box) do
-    from([pattern, occurrence] in pattern_visits(),
+      on: occurrence.route_pattern_id == pattern.id,
       join: stop in Stop,
       on:
         stop.stop_id == occurrence.stop_id and
@@ -391,7 +381,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   # failing the whole page.
   defp context_sections(patterns, visits) do
     patterns
-    |> Enum.flat_map(&connector_sections(Map.get(visits, &1.route_pattern_id, [])))
+    |> Enum.flat_map(&connector_sections(Map.get(visits, &1.id, [])))
     |> Enum.uniq_by(&{&1.source, &1.status, Map.get(&1, :coordinates), Map.get(&1, :unlocated)})
   end
 
@@ -454,7 +444,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   defp load_visits(_route, []), do: %{}
 
   defp load_visits(route, patterns) do
-    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+    pattern_ids = Enum.map(patterns, & &1.id)
 
     from(occurrence in RoutePatternStop,
       left_join: stop in Stop,
@@ -464,7 +454,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
       where:
         occurrence.organization_id == ^route.organization_id and
           occurrence.gtfs_version_id == ^route.gtfs_version_id and
-          occurrence.route_pattern_id in ^route_pattern_ids,
+          occurrence.route_pattern_id in ^pattern_ids,
       order_by: [asc: occurrence.route_pattern_id, asc: occurrence.position],
       select: %{
         route_pattern_id: occurrence.route_pattern_id,

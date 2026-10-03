@@ -427,9 +427,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.GroupingApplyTest do
   end
 
   defp occurrences(pattern_id),
-    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.id)
+    do:
+      Repo.all(
+        from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, select: o.id)
+      )
 
-  defp timings(pattern_id), do: stored_timings(pattern_id)
+  defp timings(pattern_id),
+    do: Repo.all(from(t in TimedPattern, where: t.route_pattern_id == ^pattern_id, select: t))
 
   # --- fixture ---------------------------------------------------------------
 

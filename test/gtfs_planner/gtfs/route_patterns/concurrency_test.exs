@@ -109,8 +109,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
             {operation, fingerprint}
           end)
 
-        occurrence_ids = pattern.id |> stored_occurrences() |> Enum.map(& &1.id)
-        timing_ids = pattern.id |> stored_timings() |> Enum.map(& &1.id)
+        occurrence_ids =
+          Repo.all(
+            from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, select: o.id
+          )
+
+        timing_ids =
+          Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id, select: t.id)
 
         timing_stop_ids =
           Repo.all(
@@ -643,16 +648,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
       )
 
     timing_ids =
-      Repo.all(
-        from t in TimedPattern, where: t.organization_id == ^fixture.organization.id, select: t.id
-      )
+      Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
 
     %{
       patterns: Repo.all(from p in RoutePattern, where: p.id in ^pattern_ids, order_by: p.id),
       occurrences:
         Repo.all(
           from o in RoutePatternStop,
-            where: o.organization_id == ^fixture.organization.id,
+            where: o.route_pattern_id in ^pattern_ids,
             order_by: [asc: o.position, asc: o.id]
         ),
       timings: Repo.all(from t in TimedPattern, where: t.id in ^timing_ids, order_by: t.id),
@@ -681,19 +684,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
         )
 
       timing_ids =
-        Repo.all(
-          from t in TimedPattern,
-            where: t.organization_id == ^fixture.organization.id,
-            select: t.id
-        )
+        Repo.all(from t in TimedPattern, where: t.route_pattern_id in ^pattern_ids, select: t.id)
 
       Repo.delete_all(from r in TimedPatternStop, where: r.timed_pattern_id in ^timing_ids)
       Repo.delete_all(from t in TimedPattern, where: t.id in ^timing_ids)
-
-      Repo.delete_all(
-        from o in RoutePatternStop, where: o.organization_id == ^fixture.organization.id
-      )
-
+      Repo.delete_all(from o in RoutePatternStop, where: o.route_pattern_id in ^pattern_ids)
       Repo.delete_all(from p in RoutePattern, where: p.id in ^pattern_ids)
       Repo.delete_all(from l in ChangeLog, where: l.organization_id == ^fixture.organization.id)
       Repo.delete_all(from r in Route, where: r.id == ^fixture.route.id)
@@ -712,14 +707,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   end
 
   defp persisted_state(pattern_id) do
-    pattern = Repo.get!(RoutePattern, pattern_id)
-    timings = pattern_id |> stored_timings() |> Enum.sort_by(& &1.id)
-    timing_ids = Enum.map(timings, & &1.id)
+    timing_ids =
+      Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern_id, select: t.id)
 
     %{
-      pattern: pattern,
-      occurrences: pattern_id |> stored_occurrences() |> Enum.sort_by(& &1.id),
-      timings: timings,
+      pattern: Repo.get!(RoutePattern, pattern_id),
+      occurrences:
+        Repo.all(
+          from o in RoutePatternStop,
+            where: o.route_pattern_id == ^pattern_id,
+            order_by: o.id
+        ),
+      timings:
+        Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern_id, order_by: t.id),
       timing_stops:
         Repo.all(
           from r in TimedPatternStop,
@@ -816,7 +816,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
           audit
         )
 
-      [timing] = stored_timings(pattern.id)
+      [timing] = Repo.all(from(t in TimedPattern, where: t.route_pattern_id == ^pattern.id))
       set_timing_offsets(timing, [{0, 0}, {600, 660}])
 
       trip = linked_trip(organization.id, version.id, route.route_id, pattern, timing, stops)
@@ -927,7 +927,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
     end)
   end
 
-  defp pattern_occurrences(pattern_id), do: stored_occurrences(pattern_id)
+  defp pattern_occurrences(pattern_id) do
+    Repo.all(
+      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position)
+    )
+  end
 
   defp stop_time_clocks(scope) do
     unboxed(fn ->

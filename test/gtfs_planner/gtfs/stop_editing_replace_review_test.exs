@@ -97,7 +97,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingReplaceReviewTest do
 
       assert {:error, {:refused, reasons}} = review(fixture, "1433", "1391")
       assert {:consecutive_pattern, [id]} = reason(reasons, :consecutive_pattern)
-      assert id == pattern.route_pattern_id
+      assert id == pattern.id
 
       # The same pattern, a replacement that is *not* adjacent, is allowed. An
       # adjacency check that ignored `position` and compared IDs would refuse

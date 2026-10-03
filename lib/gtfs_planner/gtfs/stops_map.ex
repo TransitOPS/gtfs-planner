@@ -192,10 +192,7 @@ defmodule GtfsPlanner.Gtfs.StopsMap do
           route.organization_id == pattern.organization_id and
           route.gtfs_version_id == pattern.gtfs_version_id,
       left_join: occurrence in RoutePatternStop,
-      on:
-        occurrence.organization_id == pattern.organization_id and
-          occurrence.gtfs_version_id == pattern.gtfs_version_id and
-          occurrence.route_pattern_id == pattern.route_pattern_id,
+      on: occurrence.route_pattern_id == pattern.id,
       where:
         pattern.organization_id == ^organization_id and
           pattern.gtfs_version_id == ^gtfs_version_id,

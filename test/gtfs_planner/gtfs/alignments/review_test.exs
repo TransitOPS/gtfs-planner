@@ -190,7 +190,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
     base_stops(organization, version)
     pattern = routed_pattern(organization, version, "R1", "P1", ["A", "B", "C"])
 
-    [first | _] = stored_occurrences(pattern.id)
+    [first | _] =
+      Repo.all(
+        Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop,
+          where: o.route_pattern_id == ^pattern.id,
+          order_by: [asc: o.position]
+        )
+      )
 
     insert_override(organization, version, first, "A", "B", [[-74.0055, 40.7131]])
     insert_shared(organization, version, "B", "C", [])
@@ -219,7 +225,13 @@ defmodule GtfsPlanner.Gtfs.Alignments.ReviewTest do
 
     insert_shared(organization, version, "A", "B", [[-74.0057, 40.7130]])
 
-    [custom_first | _] = stored_occurrences(custom.id)
+    [custom_first | _] =
+      Repo.all(
+        Ecto.Query.from(o in GtfsPlanner.Gtfs.RoutePatternStop,
+          where: o.route_pattern_id == ^custom.id,
+          order_by: [asc: o.position]
+        )
+      )
 
     insert_override(organization, version, custom_first, "A", "B", [[-74.0051, 40.7135]])
 

@@ -5,9 +5,6 @@ defmodule GtfsPlanner.Gtfs.TimedPatternStop do
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
 
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.TimedPattern
-
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -113,43 +110,23 @@ defmodule GtfsPlanner.Gtfs.TimedPatternStop do
 
   defp put_loaded_assoc(changeset, _association, _value), do: changeset
 
-  @doc """
-  Whether `timing` and `occurrence` belong to the same route pattern.
-
-  A pattern is identified by its organization, version and GTFS `route_pattern_id`
-  together: another scope can repeat the same `route_pattern_id`. Any missing
-  component leaves the parent unverifiable, so it does not match. Callers that
-  insert rows without this module's changeset check their parents with this
-  function.
-  """
-  @spec same_pattern?(TimedPattern.t(), RoutePatternStop.t()) :: boolean()
-  def same_pattern?(%TimedPattern{} = timing, %RoutePatternStop{} = occurrence) do
-    scope = pattern_scope(timing)
-    scope == pattern_scope(occurrence) and not Enum.any?(Tuple.to_list(scope), &is_nil/1)
-  end
-
-  defp pattern_scope(%{
-         organization_id: organization_id,
-         gtfs_version_id: gtfs_version_id,
-         route_pattern_id: route_pattern_id
-       }),
-       do: {organization_id, gtfs_version_id, route_pattern_id}
-
   defp validate_occurrence_parent(changeset) do
     case {
       get_assoc(changeset, :timed_pattern, :struct),
       get_assoc(changeset, :route_pattern_stop, :struct)
     } do
-      {%TimedPattern{} = timing, %RoutePatternStop{} = occurrence} ->
-        if same_pattern?(timing, occurrence) do
-          changeset
-        else
-          add_error(
-            changeset,
-            :route_pattern_stop_id,
-            "must belong to the timed pattern's route pattern"
-          )
-        end
+      {%GtfsPlanner.Gtfs.TimedPattern{route_pattern_id: pattern_id},
+       %GtfsPlanner.Gtfs.RoutePatternStop{route_pattern_id: occurrence_pattern_id}}
+      when not is_nil(pattern_id) and not is_nil(occurrence_pattern_id) and
+             pattern_id != occurrence_pattern_id ->
+        add_error(
+          changeset,
+          :route_pattern_stop_id,
+          "must belong to the timed pattern's route pattern"
+        )
+
+      {%GtfsPlanner.Gtfs.TimedPattern{}, %GtfsPlanner.Gtfs.RoutePatternStop{}} ->
+        changeset
 
       _ ->
         add_error(

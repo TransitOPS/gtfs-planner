@@ -488,7 +488,7 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
     {1, nil} =
       Repo.update_all(
         from(p in RoutePattern, where: p.id == ^child.id),
-        set: [label_pattern_id: owner.route_pattern_id, updated_at: DateTime.utc_now()]
+        set: [label_pattern_id: owner.id, updated_at: DateTime.utc_now()]
       )
 
     Repo.get!(RoutePattern, child.id)

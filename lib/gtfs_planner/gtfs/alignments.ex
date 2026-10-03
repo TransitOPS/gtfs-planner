@@ -220,13 +220,13 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       )
       |> Repo.all()
 
-    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
-    visit_rows = load_route_visits(organization_id, gtfs_version_id, route_pattern_ids)
+    pattern_ids = Enum.map(patterns, & &1.id)
+    visit_rows = load_route_visits(organization_id, gtfs_version_id, pattern_ids)
 
     visits_by_pattern =
       visit_rows
       |> Enum.group_by(& &1.route_pattern_id)
-      |> Map.new(fn {route_pattern_id, rows} -> {route_pattern_id, rows_to_visits(rows)} end)
+      |> Map.new(fn {pattern_id, rows} -> {pattern_id, rows_to_visits(rows)} end)
 
     occurrence_ids = Enum.map(visit_rows, & &1.occurrence_id)
 
@@ -245,7 +245,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     imported_by_pattern = route_imported_by_pattern(organization_id, gtfs_version_id, route_id)
 
     Map.new(patterns, fn pattern ->
-      visits = Map.get(visits_by_pattern, pattern.route_pattern_id, [])
+      visits = Map.get(visits_by_pattern, pattern.id, [])
       {sections, digest} = resolve_sections(visits, overrides_by_key, shared_by_pair)
       summary = summarize_sections(sections)
 
@@ -401,7 +401,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     from(q in subquery(stops_with_next),
       join: rp in RoutePattern,
       on:
-        rp.route_pattern_id == q.route_pattern_id and
+        rp.id == q.route_pattern_id and
           rp.organization_id == ^organization_id and
           rp.gtfs_version_id == ^gtfs_version_id,
       left_join: r in Route,
@@ -1054,7 +1054,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     distances =
       from(o in RoutePatternStop,
         where:
-          o.route_pattern_id == ^pattern.route_pattern_id and
+          o.route_pattern_id == ^pattern.id and
             o.organization_id == ^pattern.organization_id and
             o.gtfs_version_id == ^pattern.gtfs_version_id,
         order_by: [asc: o.position, asc: o.id],
@@ -1088,7 +1088,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     Repo.update_all(
       from(o in RoutePatternStop,
         where:
-          o.route_pattern_id == ^pattern.route_pattern_id and
+          o.route_pattern_id == ^pattern.id and
             o.organization_id == ^pattern.organization_id and
             o.gtfs_version_id == ^pattern.gtfs_version_id
       ),
@@ -2507,10 +2507,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp load_visits(%RoutePattern{} = pattern) do
     rows =
       from(o in RoutePatternStop,
-        where:
-          o.organization_id == ^pattern.organization_id and
-            o.gtfs_version_id == ^pattern.gtfs_version_id and
-            o.route_pattern_id == ^pattern.route_pattern_id,
+        where: o.route_pattern_id == ^pattern.id,
         order_by: [asc: o.position],
         left_join: s in Stop,
         on:
@@ -2530,11 +2527,9 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     rows_to_visits(rows)
   end
 
-  defp load_route_visits(organization_id, gtfs_version_id, route_pattern_ids) do
+  defp load_route_visits(organization_id, gtfs_version_id, pattern_ids) do
     from(o in RoutePatternStop,
-      where:
-        o.organization_id == ^organization_id and o.gtfs_version_id == ^gtfs_version_id and
-          o.route_pattern_id in ^route_pattern_ids,
+      where: o.route_pattern_id in ^pattern_ids,
       order_by: [asc: o.route_pattern_id, asc: o.position],
       left_join: s in Stop,
       on:

@@ -221,11 +221,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
         entity_type: "timed_pattern",
         entity_external_id: "#{timing.id}:RP-7",
         action: "updated",
-        snapshot: %{"route_pattern_id" => "RP-7", "name" => timing.name}
+        snapshot: %{"route_pattern_id" => pattern.id, "name" => timing.name}
       })
 
-    assert [item] =
-             describe_groups(context, [group({:timed_pattern, pattern.route_pattern_id}, [[row]])])
+    assert [item] = describe_groups(context, [group({:timed_pattern, pattern.id}, [[row]])])
 
     assert item.kind == :route_pattern
     assert item.title == "Harbor Loop"

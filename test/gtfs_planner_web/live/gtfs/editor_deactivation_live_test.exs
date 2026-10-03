@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.EditorDeactivationLiveTest do
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -138,7 +139,13 @@ defmodule GtfsPlannerWeb.Gtfs.EditorDeactivationLiveTest do
   end
 
   defp pattern_stops(pattern) do
-    pattern.id |> stored_occurrences() |> Enum.map(&{&1.position, &1.stop_id})
+    Repo.all(
+      from(o in RoutePatternStop,
+        where: o.route_pattern_id == ^pattern.id,
+        order_by: o.position,
+        select: {o.position, o.stop_id}
+      )
+    )
   end
 
   # --- paste page fixtures ---------------------------------------------------

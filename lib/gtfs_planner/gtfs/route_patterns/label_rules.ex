@@ -11,7 +11,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.LabelRules do
   The module is pure: it reads only the scope and label keys of the two
   patterns and never reaches for the database. The callers hold the locks and
   resolve the owner, so the rule stays a decision rather than a lookup. The
-  `label_pattern_id IS NULL OR label_pattern_id <> route_pattern_id` check constraint in the
+  `label_pattern_id IS NULL OR label_pattern_id <> id` check constraint in the
   database is the backstop for a self-reference; every other rule is only
   enforced here.
   """

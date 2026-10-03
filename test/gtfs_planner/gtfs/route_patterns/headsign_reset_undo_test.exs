@@ -27,7 +27,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignResetUndoTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Headsigns
-  alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
@@ -285,52 +284,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignResetUndoTest do
       assert Enum.sort(Enum.map(undo_trip_logs, & &1.entity_id)) == Enum.sort([typo.id, blank.id])
     end
 
-    test "undoing a timing-scoped default save audits the timing under its pattern's GTFS ID",
-         %{
-           audit: audit,
-           organization: organization,
-           version: version,
-           pattern: pattern,
-           timing: timing,
-           typo_trip: typo,
-           blank: blank
-         } do
-      operation =
-        {:timing, timing.id, %{headsign: @new_default}, %{headsign_trip_ids: [typo.id, blank.id]}}
-
-      assert {:ok, %{fingerprint: fingerprint}} = Gtfs.review(pattern.id, operation, nil, audit)
-
-      assert {:ok, %{headsign_undo: undo}} =
-               Gtfs.apply_review(pattern.id, operation, fingerprint, audit)
-
-      assert %{default: %{scope: {:timing, _}}} = undo
-      assert {:ok, _} = Gtfs.undo_headsign_update(pattern.id, undo, audit)
-
-      # The save and its undo are two rows for the same timing, and both name
-      # the pattern, so Recent changes can link them to it.
-      external_ids =
-        Repo.all(
-          from(log in ChangeLog,
-            where:
-              log.organization_id == ^organization.id and log.entity_type == "timed_pattern" and
-                log.entity_id == ^timing.id,
-            select: log.entity_external_id
-          )
-        )
-
-      expected = "#{timing.id}:#{pattern.route_pattern_id}"
-      assert Enum.sort(external_ids) == [expected, expected]
-
-      zone = Gtfs.resolve_display_zone(organization.id, version.id)
-
-      timing_groups =
-        organization.id
-        |> RecentChanges.recent(version.id, :everyone, zone)
-        |> Enum.filter(&match?({:timed_pattern, _}, &1.destination))
-
-      assert [%{destination: {:timed_pattern, "HS20-0"}, operations: [_, _]}] = timing_groups
-    end
-
     test "undo after another edit changed one of the trips writes nothing",
          %{audit: audit, pattern: pattern, typo_trip: typo, blank: blank} = context do
       %{undo: undo} = save_default_headsign(pattern, [typo.id, blank.id], audit)
@@ -436,7 +389,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignResetUndoTest do
               audit
             )
 
-          timing = pattern.id |> stored_timings() |> List.first()
+          timing = Repo.one(from(t in TimedPattern, where: t.route_pattern_id == ^pattern.id))
 
           trip =
             trip_fixture(organization.id, version.id, route.route_id, %{

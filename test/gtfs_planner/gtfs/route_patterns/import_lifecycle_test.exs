@@ -424,7 +424,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
     |> Repo.all()
   end
 
-  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
+  defp occurrences(pattern_id) do
+    from(o in RoutePatternStop,
+      where: o.route_pattern_id == ^pattern_id,
+      order_by: [asc: o.position]
+    )
+    |> Repo.all()
+  end
 
   defp linked_trip(context, version_id, trip_id) do
     trip =

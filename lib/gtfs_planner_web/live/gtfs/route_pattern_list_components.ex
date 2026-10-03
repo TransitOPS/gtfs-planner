@@ -54,10 +54,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   # The children are reached through their owner, so only the patterns that
-  # carry no label of their own lead a run of rows. A label holds its owner's
-  # `route_pattern_id`, which is unique within the route's version.
+  # carry no label of their own lead a run of rows.
   defp direction_items(group) do
-    owners = MapSet.new(group, & &1.pattern.route_pattern_id)
+    owners = MapSet.new(group, & &1.pattern.id)
     children = Enum.group_by(group, & &1.pattern.label_pattern_id)
 
     group
@@ -66,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
       is_nil(label) or not MapSet.member?(owners, label)
     end)
-    |> Enum.flat_map(&owner_items(&1, Map.get(children, &1.pattern.route_pattern_id, [])))
+    |> Enum.flat_map(&owner_items(&1, Map.get(children, &1.pattern.id, [])))
   end
 
   defp owner_items(summary, []), do: [pattern_item(summary, nil)]

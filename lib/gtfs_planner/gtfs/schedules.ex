@@ -2905,13 +2905,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp load_paste_timings(_organization_id, _version_id, []), do: %{}
 
   defp load_paste_timings(organization_id, version_id, patterns) do
-    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+    pattern_ids = Enum.map(patterns, & &1.id)
 
     timings =
       from(t in TimedPattern,
         where:
           t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
-            t.route_pattern_id in ^route_pattern_ids,
+            t.route_pattern_id in ^pattern_ids,
         order_by: [asc: t.route_pattern_id, asc: t.name, asc: t.id]
       )
       |> Repo.all()
@@ -2920,8 +2920,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     timings
     |> Enum.group_by(& &1.route_pattern_id)
-    |> Map.new(fn {route_pattern_id, pattern_timings} ->
-      {route_pattern_id,
+    |> Map.new(fn {pattern_id, pattern_timings} ->
+      {pattern_id,
        Enum.map(pattern_timings, fn timing ->
          %{
            id: timing.id,
@@ -2930,18 +2930,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
            rows: Map.get(rows_by_timing, timing.id, [])
          }
        end)}
-    end)
-    |> by_pattern_row(patterns)
-  end
-
-  # Child rows carry their pattern's GTFS `route_pattern_id`; the readers look
-  # them up by the pattern row's `id`. `patterns` are the loaded rows of one
-  # organization and version, so the GTFS ID names exactly one of them.
-  defp by_pattern_row(grouped, patterns) do
-    row_ids = Map.new(patterns, &{&1.route_pattern_id, &1.id})
-
-    Map.new(grouped, fn {route_pattern_id, rows} ->
-      {Map.fetch!(row_ids, route_pattern_id), rows}
     end)
   end
 
@@ -3194,29 +3182,28 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp load_occurrences(_organization_id, _version_id, []), do: %{}
 
   defp load_occurrences(organization_id, version_id, patterns) do
-    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+    pattern_ids = Enum.map(patterns, & &1.id)
 
     from(o in RoutePatternStop,
       where:
         o.organization_id == ^organization_id and o.gtfs_version_id == ^version_id and
-          o.route_pattern_id in ^route_pattern_ids,
+          o.route_pattern_id in ^pattern_ids,
       order_by: [asc: o.route_pattern_id, asc: o.position, asc: o.id]
     )
     |> Repo.all()
     |> Enum.group_by(& &1.route_pattern_id)
-    |> by_pattern_row(patterns)
   end
 
   defp load_timings(_organization_id, _version_id, []), do: %{}
 
   defp load_timings(organization_id, version_id, patterns) do
-    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+    pattern_ids = Enum.map(patterns, & &1.id)
 
     timings =
       from(t in TimedPattern,
         where:
           t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
-            t.route_pattern_id in ^route_pattern_ids,
+            t.route_pattern_id in ^pattern_ids,
         order_by: [asc: t.route_pattern_id, asc: t.name, asc: t.id]
       )
       |> Repo.all()
@@ -3225,8 +3212,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     timings
     |> Enum.group_by(& &1.route_pattern_id)
-    |> Map.new(fn {route_pattern_id, pattern_timings} ->
-      {route_pattern_id,
+    |> Map.new(fn {pattern_id, pattern_timings} ->
+      {pattern_id,
        Enum.map(pattern_timings, fn timing ->
          %{
            id: timing.id,
@@ -3236,7 +3223,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          }
        end)}
     end)
-    |> by_pattern_row(patterns)
   end
 
   defp timing_rows(_organization_id, _version_id, []), do: %{}
@@ -4153,8 +4139,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     timing_headsign =
       if is_binary(timing_id) do
         Repo.one(
-          from(t in RoutePatterns.timings_query(pattern),
-            where: t.id == ^timing_id,
+          from(t in TimedPattern,
+            where: t.route_pattern_id == ^pattern.id and t.id == ^timing_id,
             select: t.headsign
           )
         )
@@ -4862,7 +4848,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp normalize_timestamp(_value), do: nil
 
   defp locked_timing!(pattern, timed_pattern_id) do
-    query = from(t in RoutePatterns.timings_query(pattern), where: t.id == ^timed_pattern_id)
+    query =
+      from(t in TimedPattern,
+        where: t.route_pattern_id == ^pattern.id and t.id == ^timed_pattern_id
+      )
 
     case Repo.one(query) do
       %TimedPattern{} = timing -> timing
@@ -4871,9 +4860,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp pattern_occurrences(pattern) do
-    pattern
-    |> RoutePatterns.occurrences_query()
-    |> order_by([o], asc: o.position, asc: o.id)
+    from(o in RoutePatternStop,
+      where:
+        o.organization_id == ^pattern.organization_id and
+          o.gtfs_version_id == ^pattern.gtfs_version_id and
+          o.route_pattern_id == ^pattern.id,
+      order_by: [asc: o.position, asc: o.id]
+    )
     |> Repo.all()
   end
 

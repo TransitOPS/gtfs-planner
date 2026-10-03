@@ -130,12 +130,12 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
 
       base_patterns = [a | List.wrap(b)]
 
-      # Visits, timings, trips and usage all key on the GTFS route_pattern_id,
-      # which is unique within the scope's organization and version.
+      # Visits and timings hang off the pattern's UUID; trips and usage use the
+      # natural route_pattern_id.
       stops_by_pattern =
-        pattern_stops(scope, Enum.map(base_patterns ++ candidates, & &1.route_pattern_id))
+        pattern_stops(scope, Enum.map(base_patterns ++ candidates, & &1.id))
 
-      timings_by_pattern = pattern_timings(scope, Enum.map(base_patterns, & &1.route_pattern_id))
+      timings_by_pattern = pattern_timings(scope, Enum.map(base_patterns, & &1.id))
       all_counts = timing_trip_counts(scope, base_patterns)
       usage = Usage.usage(scope, base_patterns ++ candidates, service_id)
 
@@ -247,7 +247,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
       calendars = Usage.calendars(scope, pattern_ids)
       service_id = resolve_calendar(calendars, service_id, pattern_ids)
       usage = Usage.usage(scope, patterns, service_id)
-      stops_by_pattern = pattern_stops(scope, Enum.map(patterns, & &1.route_pattern_id))
+      stops_by_pattern = pattern_stops(scope, Enum.map(patterns, & &1.id))
       ordered = by_trips(patterns, usage)
 
       alignment =
@@ -267,7 +267,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
            stops_by_id(
              scope,
              Enum.flat_map(ordered, &pattern_stop_ids(&1, stops_by_pattern)),
-             direction_timepoints(scope, Enum.map(ordered, & &1.route_pattern_id))
+             direction_timepoints(scope, Enum.map(ordered, & &1.id))
            )
        }}
     end
@@ -557,7 +557,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
       on:
         occurrence.organization_id == pattern.organization_id and
           occurrence.gtfs_version_id == pattern.gtfs_version_id and
-          occurrence.route_pattern_id == pattern.route_pattern_id,
+          occurrence.route_pattern_id == pattern.id,
       left_join: stop in Stop,
       on:
         stop.organization_id == occurrence.organization_id and
@@ -855,8 +855,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     }
   end
 
-  defp pattern_stop_ids(pattern, stops_by_pattern),
-    do: Map.get(stops_by_pattern, pattern.route_pattern_id, [])
+  defp pattern_stop_ids(pattern, stops_by_pattern), do: Map.get(stops_by_pattern, pattern.id, [])
 
   defp side(
          pattern,
@@ -868,7 +867,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
          requested_timing_id
        ) do
     summary = Map.fetch!(usage, pattern.route_pattern_id)
-    timings = Map.get(timings_by_pattern, pattern.route_pattern_id, [])
+    timings = Map.get(timings_by_pattern, pattern.id, [])
 
     timing =
       select_timing(
@@ -881,7 +880,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     %{
       pattern: pattern,
       route: route,
-      stops: Map.get(stops_by_pattern, pattern.route_pattern_id, []),
+      stops: Map.get(stops_by_pattern, pattern.id, []),
       timings:
         Enum.map(timings, fn timing ->
           %{id: timing.id, name: timing.name, trips: Map.get(summary.by_timing, timing.id, 0)}
@@ -895,7 +894,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   defp timing_rows(_pattern, nil), do: nil
 
   defp timing_rows(pattern, %TimedPattern{} = timing),
-    do: RoutePatterns.timing_rows(pattern, timing.id)
+    do: RoutePatterns.timing_rows(pattern.id, timing.id)
 
   # A requested timing is used only when it belongs to this pattern; otherwise
   # the default is the most trips on the calendar, then the most trips on all
@@ -992,7 +991,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   end
 
   defp suggestion(pattern, a_stops, a_stop_ids, pattern_stops, usage) do
-    stops = Map.get(pattern_stops, pattern.route_pattern_id, [])
+    stops = Map.get(pattern_stops, pattern.id, [])
 
     %{
       route_pattern_id: pattern.route_pattern_id,
@@ -1003,16 +1002,16 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     }
   end
 
-  # One query for both sides' visits keyed by GTFS route_pattern_id, ordered by
-  # pattern and position.
+  # One query for both sides' visits keyed by the pattern's UUID, ordered by
+  # pattern and position; the route_pattern_id column is that UUID.
   defp pattern_stops(_scope, []), do: %{}
 
-  defp pattern_stops(scope, route_pattern_ids) do
+  defp pattern_stops(scope, pattern_ids) do
     from(occurrence in RoutePatternStop,
       where:
         occurrence.organization_id == ^scope.organization_id and
           occurrence.gtfs_version_id == ^scope.gtfs_version_id and
-          occurrence.route_pattern_id in ^Enum.uniq(route_pattern_ids),
+          occurrence.route_pattern_id in ^Enum.uniq(pattern_ids),
       order_by: [asc: occurrence.route_pattern_id, asc: occurrence.position],
       select: {occurrence.route_pattern_id, occurrence.stop_id}
     )
@@ -1020,15 +1019,15 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
 
-  # One query for every side's named timings, keyed by GTFS route_pattern_id.
+  # One query for every side's named timings, keyed by the pattern's UUID.
   defp pattern_timings(_scope, []), do: %{}
 
-  defp pattern_timings(scope, route_pattern_ids) do
+  defp pattern_timings(scope, pattern_ids) do
     from(timing in TimedPattern,
       where:
         timing.organization_id == ^scope.organization_id and
           timing.gtfs_version_id == ^scope.gtfs_version_id and
-          timing.route_pattern_id in ^Enum.uniq(route_pattern_ids),
+          timing.route_pattern_id in ^Enum.uniq(pattern_ids),
       order_by: [asc: timing.route_pattern_id, asc: timing.name, asc: timing.id]
     )
     |> Repo.all()
@@ -1058,7 +1057,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   # patterns marks it as one; there is no timepoint column on the visits.
   defp direction_timepoints(_scope, []), do: MapSet.new()
 
-  defp direction_timepoints(scope, route_pattern_ids) do
+  defp direction_timepoints(scope, pattern_uuids) do
     from(row in TimedPatternStop,
       join: timing in TimedPattern,
       on: timing.id == row.timed_pattern_id,
@@ -1067,7 +1066,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
       where:
         row.timepoint == 1 and timing.organization_id == ^scope.organization_id and
           timing.gtfs_version_id == ^scope.gtfs_version_id and
-          timing.route_pattern_id in ^route_pattern_ids and
+          timing.route_pattern_id in ^pattern_uuids and
           occurrence.organization_id == ^scope.organization_id and
           occurrence.gtfs_version_id == ^scope.gtfs_version_id,
       distinct: true,
