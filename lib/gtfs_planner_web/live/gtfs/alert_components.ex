@@ -2792,8 +2792,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           Save this alert
         </h2>
         <p id="review-outcome" class="text-sm text-default">
-          Saving keeps this alert with the version you are editing. You can change any answer,
-          and the message, whenever you come back.
+          Saving keeps this alert. You can change any answer, and the message, whenever you
+          come back.
         </p>
 
         <div id="alert-publication" class="grid gap-2 rounded-card bg-canvas px-3 py-2.5">

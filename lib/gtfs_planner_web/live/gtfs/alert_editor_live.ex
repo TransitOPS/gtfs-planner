@@ -4192,7 +4192,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     do: "Add a headline and details, replace any fill-ins, and check text marked for review."
 
   defp question_hint(:review),
-    do: "Check what riders will see. Saving keeps the alert with this version."
+    do: "Check what riders will see. Saving keeps the alert."
 
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
 
