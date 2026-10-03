@@ -1395,15 +1395,16 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   # -- Shared helpers ------------------------------------------------------
 
-  # A blank query is not a query. The wildcard characters are escaped so an
-  # operator's literal text cannot widen the match, as in the transfer editor.
+  # A blank query is not a query, and neither is text PostgreSQL cannot store (a NUL
+  # byte or invalid UTF-8): a forged search event must match nothing rather than
+  # become a database error. The wildcard characters are escaped so an operator's
+  # literal text cannot widen the match, as in the transfer editor.
   defp search_pattern(query) when is_binary(query) do
-    case String.trim(query) do
-      "" ->
-        nil
-
-      trimmed ->
-        "%" <> Gtfs.escape_like_pattern(trimmed) <> "%"
+    with true <- storable_id?(query),
+         trimmed when trimmed != "" <- String.trim(query) do
+      "%" <> Gtfs.escape_like_pattern(trimmed) <> "%"
+    else
+      _blank_or_unstorable -> nil
     end
   end
 

@@ -76,13 +76,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       refute has_element?(view, "#gtfs-version-switcher")
     end
 
-    test "an editor cannot start an alert and is told to select an active schedule", context do
+    test "an editor cannot start an alert and is told to choose an active schedule", context do
       assert {:ok, view, _html} = live(context.conn, "/alerts/new")
-      assert has_element?(view, "#alert-urgency-now", "Happening now")
 
-      # The answer would create the draft, and a draft is written against the
-      # active schedule, which this organization has not got.
-      assert view |> element("#alert-urgency-now") |> render_click() =~
+      # A draft is written against the active schedule, which this organization has
+      # not got, so the page offers the way to choose one and no question to answer.
+      assert has_element?(view, "#alert-editor-no-active", "No active schedule")
+      assert has_element?(view, "#alert-choose-schedule[href='/alerts']")
+      refute has_element?(view, "#alert-urgency-now")
+
+      # A hand-made answer is refused by the command, not only hidden by the page.
+      assert render_hook(view, "choose_urgency", %{"urgency" => "now"}) =~
                "Select an active schedule"
 
       assert Repo.all(Alert) == []

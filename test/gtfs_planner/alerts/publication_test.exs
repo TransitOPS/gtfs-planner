@@ -261,7 +261,7 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
                  publish?: true
                )
 
-      assert message =~ "no longer has"
+      assert message =~ "does not have a route, stop or departure"
       assert saved.revision == alert.revision + 1
       assert Repo.get!(Alert, alert.id).message.header == "Route 1 late"
 
@@ -401,7 +401,7 @@ defmodule GtfsPlanner.Alerts.PublicationTest do
       assert {:ok, %{publication: {:refused, [%{field: :scope, message: message}]}}} =
                save_review(context, alert, %{}, publish?: true)
 
-      assert message =~ "no longer has"
+      assert message =~ "does not have a route, stop or departure"
       assert publication_count(alert) == 0
     end
 

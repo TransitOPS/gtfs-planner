@@ -425,12 +425,13 @@ defmodule GtfsPlanner.Alerts.Publication do
   defp unresolved_trips(_trips), do: [[true]]
 
   defp unresolved_message do
-    "This alert names an identity its source no longer has. Retarget it before publishing."
+    "The active schedule does not have a route, stop or departure this alert names. " <>
+      "Repair its targets before publishing."
   end
 
   defp inapplicable_message do
     "This alert names a stop, stretch or departure the active schedule does not run that way. " <>
-      "Retarget it before publishing."
+      "Repair its targets before publishing."
   end
 
   # A mode is expanded by the caller into the explicit routes the trusted source

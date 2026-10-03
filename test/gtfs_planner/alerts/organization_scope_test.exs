@@ -331,14 +331,16 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  }
                )
 
+      # The alert was saved in New York and the active schedule's agency is in Tokyo:
+      # repairing a target moves the provenance, never the civil-time reading.
       assert retargeted.source_gtfs_version_id == context.fall.id
-      assert retargeted.timezone == "Asia/Tokyo"
+      assert retargeted.timezone == "America/New_York"
       assert retargeted.revision == context.alert.revision + 1
       assert retargeted.scope.route_ids == ["r_9"]
 
       assert [%{"gtfs_id" => "r_9"}] = retargeted.target_reference["selectors"]["routes"]
       assert retargeted.target_reference["selectors"]["unresolved_routes"] == []
-      assert retargeted.target_reference["timezone"] == "Asia/Tokyo"
+      assert retargeted.target_reference["timezone"] == "America/New_York"
     end
 
     test "retargeting cannot store a selection the active schedule does not hold", context do

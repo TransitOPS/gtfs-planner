@@ -12653,6 +12653,102 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: identity empty #{empty_user.email} in #{empty_org.name}")
 
+    # ── Alert editor journey (spec 34, `GTFS identity editor`) ──
+    #
+    # One organization the editor journey may move: two schedules that differ by one
+    # stop, the active one chosen explicitly, and one Current alert about the stop only
+    # the active schedule has. The journey changes the active schedule from a second
+    # session and restores it, so no other journey reads this organization. The empty
+    # organization above is the editor journey's no-active fixture.
+    {:ok, editor_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser Identity Editor Org",
+        alias: "browser-identity-editor"
+      })
+
+    editor_user = identity_editor.(editor_org, "identity-editor@gtfs-planner.test")
+    editor_scope = %{actor_id: editor_user.id, organization_id: editor_org.id}
+
+    from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^editor_org.id)
+    |> Repo.one!()
+    |> Ecto.Changeset.change(
+      name: "Editor Empty Schedule",
+      published_at: ~U[2020-02-01 00:00:00.000000Z]
+    )
+    |> Repo.update!()
+
+    editor_active =
+      identity_schedule.(
+        editor_org,
+        "Editor Active Schedule",
+        ~U[2020-03-01 00:00:00.000000Z],
+        "12",
+        ["ED_MAIN", "ED_ANNEX"]
+      )
+
+    editor_second =
+      identity_schedule.(
+        editor_org,
+        "Editor Second Schedule",
+        ~U[2020-04-01 00:00:00.000000Z],
+        "12",
+        ["ED_MAIN", "ED_HARBOR"]
+      )
+
+    {:ok, %{token: editor_token}} = Versions.active_schedule(editor_scope)
+
+    {:ok, _active} =
+      Versions.set_active_schedule(editor_scope, editor_active.id, editor_token)
+
+    editor_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: editor_org.id,
+      gtfs_version_id: editor_active.id,
+      station_stop_id: nil,
+      actor_id: editor_user.id,
+      actor_email: editor_user.email
+    }
+
+    editor_today = Gtfs.DisplayClock.today(editor_org.id, editor_active.id).date
+    {:ok, %{token: editor_token}} = Versions.active_schedule(editor_scope)
+
+    {:ok, editor_alert} =
+      GtfsPlanner.Alerts.create_alert(
+        editor_audit,
+        %{
+          "urgency" => "now",
+          "situation" => "stop_closed",
+          "cause" => "construction",
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => ["ED_ANNEX"],
+            "route_ids" => ["12"],
+            "all_routes_at_stops" => true,
+            "alternative_directions" => "Board at the main stop."
+          },
+          "message" => %{
+            "header" => "Annex stop closed for road works",
+            "description" => "Annex stop closed for road works. Board at the main stop."
+          }
+        },
+        expected_schedule: editor_token
+      )
+
+    {:ok, _saved} =
+      GtfsPlanner.Alerts.save_draft(editor_audit, editor_alert.id, editor_alert.revision, %{
+        "timing" => %{
+          "start_date" => Date.to_iso8601(editor_today),
+          "start_time" => "08:00:00",
+          "end_kind" => "estimated",
+          "check_in_at" =>
+            NaiveDateTime.to_iso8601(NaiveDateTime.new!(editor_today, ~T[18:00:00]))
+        }
+      })
+
+    IO.puts(
+      "Browser seed: identity editor #{editor_user.email} in #{editor_org.name} " <>
+        "(active #{editor_active.id}, second #{editor_second.id})"
+    )
+
     # ── Feed publishing journeys (spec 24, step 21) ──
     #
     # The browser journeys drive the real publication surfaces: the Export page's

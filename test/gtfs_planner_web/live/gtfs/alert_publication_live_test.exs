@@ -39,6 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
   alias GtfsPlanner.FeedPublishing.Config, as: PublishingConfig
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   @zone "America/New_York"
   # The ambiguous reading the fall-back on 2026-11-01 creates, keyed exactly as
@@ -276,6 +277,95 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
     end
   end
 
+  describe "a publication the active schedule cannot back" do
+    test "a stale active schedule refuses the checked save and keeps the intent and the public content",
+         context do
+      alert = complete_alert(context)
+      {:ok, view, _html} = live(context.conn, review_path(alert))
+
+      view |> form("#review-publication-form") |> render_change(%{"publish" => "true"})
+
+      other = gtfs_version_fixture(context.organization.id, %{name: "Winter 2027 service"})
+      agency_fixture(context.organization.id, other.id, %{agency_timezone: @zone})
+      switch_active!(context, other)
+      _ = :sys.get_state(view.pid)
+
+      assert render(view) =~ "The active schedule changed."
+      assert has_element?(view, "#alert-active-changed")
+
+      view |> element("#save-alert") |> render_click()
+
+      # Refused before anything was saved or accepted, and the checkbox is still the
+      # operator's choice.
+      assert has_element?(view, "#alert-publish-checkbox[checked]")
+      assert has_element?(view, "#alert-publication-status", "Not published")
+      assert publication_row(alert) == nil
+      assert Repo.get!(Alert, alert.id).revision == alert.revision
+
+      # The private save needs no schedule, so unchecking it finishes the review.
+      view |> form("#review-publication-form") |> render_change(%{"publish" => "false"})
+      refute has_element?(view, "#alert-publish-checkbox[checked]")
+      view |> element("#save-alert") |> render_click()
+
+      assert_redirect(view, ~p"/alerts")
+      assert publication_row(alert) == nil
+    end
+
+    test "a republish whose target the active schedule lacks is refused with the intent kept",
+         context do
+      {alert, dropped} = published_with_dropped_route(context)
+      accepted = publication_row(alert)
+
+      Repo.delete!(dropped)
+
+      {:ok, view, _html} = live(context.conn, review_path(alert))
+
+      assert has_element?(view, "#alert-reference-missing")
+      assert has_element?(view, "#alert-target-repair", "r_dropped")
+      assert has_element?(view, "#alert-publication-status", "Publishing changes")
+
+      view |> form("#review-publication-form") |> render_change(%{"publish" => "true"})
+      view |> element("#save-alert") |> render_click()
+
+      assert has_element?(
+               view,
+               "#alert-publication-error-scope",
+               "does not have a route, stop or departure"
+             )
+
+      assert has_element?(view, "#alert-publish-checkbox[checked]")
+      assert has_element?(view, "#alert-target-repair", "r_dropped")
+
+      # Nothing public moved: the accepted snapshot, its revision and its receipt are
+      # exactly as they were.
+      assert Repo.get!(Alert, alert.id).revision == alert.revision
+      assert publication_row(alert) == accepted
+    end
+
+    test "after an explicit repair the republish is accepted", context do
+      {alert, dropped} = published_with_dropped_route(context)
+      Repo.delete!(dropped)
+
+      {:ok, view, _html} = live(context.conn, review_path(alert))
+
+      view |> element("#alert-repair-remove-0") |> render_click()
+      view |> element("#alert-repair-apply") |> render_click()
+
+      refute has_element?(view, "#alert-target-repair")
+      refute has_element?(view, "#alert-reference-missing")
+
+      # The repair is a private change: nothing public moved yet.
+      repaired = Repo.get!(Alert, alert.id)
+      assert repaired.scope.route_ids == [context.route.route_id]
+      assert publication_row(alert).desired_revision == alert.revision
+
+      view |> form("#review-publication-form") |> render_change(%{"publish" => "true"})
+      view |> element("#save-alert") |> render_click()
+
+      assert publication_row(alert).desired_revision == repaired.revision
+    end
+  end
+
   describe "removal and disabled publishing" do
     test "a confirmed delete leaves a pending removal the list still shows", context do
       alert = complete_alert(context)
@@ -382,6 +472,35 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
       })
 
     alert_fixture(context.audit, attrs)
+  end
+
+  # An accepted alert about two routes, the second of which the caller then removes
+  # from the active schedule.
+  defp published_with_dropped_route(context) do
+    dropped =
+      route_fixture(context.organization.id, context.version.id, %{route_id: "r_dropped"})
+
+    alert =
+      alert_fixture(context.audit, %{
+        complete_attrs(context)
+        | "scope" => %{
+            "shape" => "routes",
+            "route_ids" => [context.route.route_id, dropped.route_id]
+          }
+      })
+
+    {:ok, view, _html} = live(context.conn, review_path(alert))
+    view |> form("#review-publication-form") |> render_change(%{"publish" => "true"})
+    view |> element("#save-alert") |> render_click()
+    assert publication_row(alert) != nil
+
+    {alert, dropped}
+  end
+
+  defp switch_active!(context, version) do
+    scope = %{actor_id: context.actor.id, organization_id: context.organization.id}
+    {:ok, %{token: token}} = Versions.active_schedule(scope)
+    {:ok, _active} = Versions.set_active_schedule(scope, version.id, token)
   end
 
   defp publication_row(alert), do: Repo.get_by(Publication, alert_id: alert.id)

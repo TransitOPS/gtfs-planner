@@ -52,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.AlertComponents
 
   # The tabs the read model groups into, in the order the strip shows them. An
   # unknown `?tab=` value is not an error a reader should see: it falls back to
@@ -396,33 +397,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   @notes_shown 3
 
   defp attention_notes(diagnostics) do
-    notes = diagnostics |> Enum.map(&attention_note/1) |> Enum.uniq()
+    notes = diagnostics |> Enum.map(&AlertComponents.target_note/1) |> Enum.uniq()
 
     case Enum.split(notes, @notes_shown) do
       {shown, []} -> shown
       {shown, rest} -> shown ++ ["and #{length(rest)} more"]
     end
   end
-
-  defp attention_note(%{kind: :missing, target_type: type, id: id}),
-    do: "#{type_label(type)} #{id} is not in the active schedule"
-
-  defp attention_note(%{target_type: :route_stop_pair, selector: selector}),
-    do: "Route #{selector.route_id} does not serve stop #{selector.stop_id}"
-
-  defp attention_note(%{target_type: :stretch, selector: selector}),
-    do:
-      "No trip runs from stop #{selector.stretch_from_stop_id} to stop #{selector.stretch_to_stop_id}"
-
-  defp attention_note(%{reason: :service_not_running_on_date, id: id, selector: selector}),
-    do: "Trip #{id} does not run on #{selector.service_date}"
-
-  defp attention_note(%{reason: :start_time_not_a_departure, id: id, selector: selector}),
-    do: "Trip #{id} has no departure at #{selector.start_time}"
-
-  defp type_label(:route), do: "Route"
-  defp type_label(:stop), do: "Stop"
-  defp type_label(:trip), do: "Trip"
 
   defp system_shape?(%{scope: %{shape: shape}}), do: shape in [:system, :stop_all_routes]
   defp system_shape?(_alert), do: false

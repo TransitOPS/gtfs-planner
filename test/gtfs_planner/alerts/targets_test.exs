@@ -64,6 +64,18 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert option.label == "Main St"
     end
 
+    test "text PostgreSQL cannot store matches nothing instead of raising", context do
+      stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Main St"))
+      route_fixture(context.organization.id, context.version.id, route_attrs("r1", "1"))
+
+      for query <- ["Main" <> <<0>>, <<0>>, <<255, 254>>] do
+        assert Alerts.search_stops(context.audit, query) == []
+        assert Alerts.search_routes(context.audit, query) == []
+      end
+
+      assert [_stop] = Alerts.search_stops(context.audit, "Main")
+    end
+
     test "matches name, stop id and platform code, case-insensitively", context do
       central =
         stop_fixture(
@@ -761,6 +773,32 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       assert routes == %{"r12" => "12"}
       assert stops == %{"S1" => "Central"}
       assert trips == %{"t_0815" => "8:15 AM to Depot"}
+    end
+
+    test "reads the schedule the context names, not the alert's source version", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+
+      stop =
+        stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "Central"))
+
+      alert = cancellation(context, route.route_id, stop.stop_id, nil)
+
+      # The active schedule names the same route differently and lacks the stop.
+      sibling = sibling_version(context)
+
+      route_fixture(context.organization.id, sibling.gtfs_version_id, route_attrs("r12", "12X"))
+
+      active = %{context.audit | gtfs_version_id: sibling.gtfs_version_id}
+      alert_id = alert.id
+
+      assert %{routes: %{"r12" => "12X"}, stops: stops} = Alerts.labels_for(active, alert)
+      assert stops == %{}
+
+      assert %{routes: %{"r12" => "12"}, stops: %{"S1" => "Central"}} =
+               Alerts.labels_for(context.audit, alert)
+
+      assert %{^alert_id => %{"r12" => %{route_short_name: "12X"}}} =
+               Alerts.routes_for(active, [alert])
     end
 
     test "a stop deleted from the version has no label and is reported missing", context do

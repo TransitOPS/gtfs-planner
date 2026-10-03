@@ -517,6 +517,156 @@ test.describe("GTFS identity workspace", () => {
   });
 });
 
+// The alert editor against the active schedule. One seeded organization the journey
+// may move (two schedules that differ by one stop, one alert about the stop only the
+// active schedule has), and the staging-only organization above as the no-active
+// fixture. The journey restores the active schedule it moved.
+const IDENTITY_EDITOR = {
+  email: "identity-editor@gtfs-planner.test",
+  password: IDENTITY_PASSWORD,
+};
+
+function editorCapture(page, testInfo, state, viewport) {
+  return page.screenshot({
+    path: capturePath(testInfo, `identity-editor-${state}-${viewport.label}.png`),
+    fullPage: true,
+    animations: "disabled",
+  });
+}
+
+// Captures one state at both viewports and leaves the page at desktop width.
+async function captureBothWidths(page, testInfo, state) {
+  for (const viewport of [DESKTOP, NARROW]) {
+    await page.setViewportSize(viewport);
+    expect(await fitsViewport(page)).toBe(true);
+    await editorCapture(page, testInfo, state, viewport);
+  }
+  await page.setViewportSize(DESKTOP);
+}
+
+test.describe("GTFS identity editor", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  test("an organization with no active schedule starts no alert @identity-editor", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page, IDENTITY_EMPTY);
+    await gotoLive(page, "/alerts/new");
+    await page.waitForSelector("#alert-editor-no-active", { timeout: 15000 });
+    await waitForLiveConnected(page);
+
+    await expect(page.locator("#alert-editor-no-active")).toContainText("No active schedule");
+    await expect(page.locator("#alert-question")).toHaveCount(0);
+    await expect(page.locator("#alert-form")).toHaveCount(0);
+    await expect(page.locator("#alert-save-bar")).toHaveCount(0);
+    await expect(page.locator("#alert-mode")).toHaveCount(0);
+    await expect(page.locator("#alert-choose-schedule")).toBeVisible();
+
+    await captureBothWidths(page, testInfo, "no-active");
+
+    // The way out is the Alerts page, where a schedule is chosen.
+    await page.locator("#alert-choose-schedule").click();
+    await page.waitForURL((url) => url.pathname === "/alerts");
+  });
+
+  test("a changed active schedule keeps the draft, and the targets are repaired explicitly @identity-editor", async ({
+    page,
+    browser,
+  }, testInfo) => {
+    const header = page.locator("#message-header");
+    const saveStatus = page.locator("#alert-save-status");
+
+    await page.setViewportSize(DESKTOP);
+    await openWorkspace(page, IDENTITY_EDITOR);
+    await expect(page.locator("#alerts-active-name")).toHaveText("Editor Active Schedule");
+
+    // Open the alert from the list, then deep-link its message step: the progress row
+    // only links the steps up to the one the editor is on.
+    await page.locator("#alerts tr", { hasText: "Annex stop closed" }).getByRole("link").first().click();
+    await page.waitForSelector("#alert-editor", { timeout: 15000 });
+    await waitForLiveConnected(page);
+    const alertPath = new URL(page.url()).pathname;
+    await expect(page.locator("#alert-target-repair")).toHaveCount(0);
+
+    await gotoLive(page, `${alertPath}?mode=form&step=message`);
+    await expect(header).toBeVisible();
+
+    // Edit the wording: it saves.
+    await header.fill("Annex stop closed until Friday");
+    await expect(saveStatus).toHaveText("Saved");
+
+    // Another session chooses the second schedule.
+    const other = await browser.newContext({ viewport: DESKTOP });
+    const otherPage = await other.newPage();
+    await openWorkspace(otherPage, IDENTITY_EDITOR);
+    await chooseSchedule(otherPage, "Editor Second Schedule");
+    await expect(otherPage.locator("#alerts-active-name")).toHaveText("Editor Second Schedule");
+    await other.close();
+
+    // The open editor learns of it without a reload. What was typed stays, and
+    // saving wording still works; only choosing targets is paused.
+    await expect(page.locator("#alert-active-changed")).toBeVisible();
+    await expect(page.locator("#alert-reload-targets")).toBeVisible();
+    await expect(header).toHaveValue("Annex stop closed until Friday");
+    await captureBothWidths(page, testInfo, "stale");
+
+    await header.fill("Annex stop closed until Monday");
+    await expect(saveStatus).toHaveText("Saved");
+
+    // Reloading reads the new schedule. The stop the alert names is not in it, so it
+    // is listed by its raw ID, and focus moves to that list.
+    await page.locator("#alert-reload-targets").click();
+    await expect(page.locator("#alert-active-changed")).toHaveCount(0);
+    await expect(page.locator("#alert-target-repair")).toContainText("Editor Second Schedule");
+    await expect(page.locator("#alert-repair-0")).toContainText("ED_ANNEX");
+    await expect(page.locator("#alert-target-repair")).toBeFocused();
+    await expect(page.locator("#alert-repair-apply")).toBeDisabled();
+    await captureBothWidths(page, testInfo, "attention");
+
+    // An unrelated edit keeps the original ID and the typed wording.
+    await expect(header).toHaveValue("Annex stop closed until Monday");
+    await header.fill("Annex stop closed until Tuesday");
+    await expect(saveStatus).toHaveText("Saved");
+    await expect(page.locator("#alert-repair-0")).toContainText("ED_ANNEX");
+
+    // Replace needs an explicit pick from the active schedule, and applies only on request.
+    await page.locator("#alert-repair-replace-0").click();
+    await expect(page.locator("#alert-repair-search-0")).toBeFocused();
+    await page.locator("#alert-repair-search-0").fill("HARBOR");
+    await expect(page.locator("#alert-repair-option-0-ED_HARBOR")).toBeVisible();
+    await expect(page.locator("#alert-repair-option-0-ED_ANNEX")).toHaveCount(0);
+    await captureBothWidths(page, testInfo, "choosing");
+
+    await page.locator("#alert-repair-option-0-ED_HARBOR").click();
+    await expect(page.locator("#alert-repair-0-staged")).toContainText("ED_HARBOR");
+    await expect(page.locator("#alert-repair-undo-0")).toBeFocused();
+    await expect(page.locator("#alert-repair-apply")).toBeEnabled();
+    await expect(page.locator("#alert-repair-0")).toContainText("ED_ANNEX");
+
+    await page.locator("#alert-repair-apply").click();
+    await expect(page.locator("#alert-target-repair")).toHaveCount(0);
+    await expect(page.locator("#alert-repair-done")).toContainText("Editor Second Schedule");
+    await expect(page.locator("#alert-question-title")).toBeFocused();
+    await expect(saveStatus).toHaveText("Saved");
+    await captureBothWidths(page, testInfo, "recovered");
+
+    // The repair persisted, and the wording is still the editor's.
+    await gotoLive(page, `${alertPath}?mode=form&step=message`);
+    await expect(page.locator("#alert-target-repair")).toHaveCount(0);
+    await expect(header).toHaveValue("Annex stop closed until Tuesday");
+
+    // A private save publishes nothing.
+    await gotoLive(page, `${alertPath}?mode=form&step=review`);
+    await expect(page.locator("#alert-publication-status")).toHaveText("Not published");
+    await page.locator("#save-alert").click();
+    await page.waitForURL((url) => url.pathname === "/alerts");
+
+    // Restore the schedule the other journeys' fixtures expect.
+    await chooseSchedule(page, "Editor Active Schedule");
+    await expect(page.locator("#alerts-active-name")).toHaveText("Editor Active Schedule");
+  });
+});
+
 // The editor shell, as spec 30's step 14 renders it: the frame, the URL state,
 // creation on the first answer and the version check (AC-15, R1). Nothing here
 // looks for a publication state or action, because saving an alert never

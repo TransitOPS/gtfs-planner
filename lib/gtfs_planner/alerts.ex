@@ -448,12 +448,12 @@ defmodule GtfsPlanner.Alerts do
   Returns the labels of the routes, stops and trips the alert's scope names,
   keyed by the same feed IDs the alert stored.
 
-  The labels are read from the alert's *own* source version rather than the
-  version the editor has selected, so a listing that spans several versions shows
-  each row against the schedule it was written against. An alert whose source
-  version is gone has no rows to read and therefore no labels: its stored
-  `target_reference` still carries the wire IDs and labels it was accepted with,
-  and the Needs attention badge says why the live rows are absent (CR-5).
+  The labels are read from the schedule the context names, which is the active
+  schedule for the editor, because an alert names the schedule's entities and not
+  one source version's rows. An identity that schedule does not have has no label,
+  and the editor lists it as a target to repair instead of inventing a name for it.
+  The alert's stored `target_reference` still carries the wire IDs and labels it
+  was captured with for the public feed (CR-5).
   """
   @spec labels_for(AuditContext.t(), Alert.t()) :: %{
           routes: %{optional(String.t()) => String.t()},
@@ -462,7 +462,7 @@ defmodule GtfsPlanner.Alerts do
         }
   def labels_for(%AuditContext{} = audit_context, %Alert{} = alert) do
     case Authorization.authorize_editor(audit_context) do
-      :ok -> Targets.labels_for(source_context(audit_context, alert), alert)
+      :ok -> Targets.labels_for(audit_context, alert)
       {:error, :forbidden} -> %{routes: %{}, stops: %{}, trips: %{}}
     end
   end
@@ -471,15 +471,10 @@ defmodule GtfsPlanner.Alerts do
   Returns the route rows for a list of alerts, keyed by alert id and then by the
   route feed IDs the alert stored.
 
-  The list page reads this so each affected route renders as its own identity
-  badge rather than as a word an editor has to recognize. The IDs come from the
-  whole page at once and are read from each alert's own source version, so a page
-  spanning several versions costs one query per version rather than one per row.
-  The result is keyed by alert because two source versions can carry the same
-  route feed ID, and a flat map would let one alert read the other's row. It is
-  the same scoped read `labels_for/2` performs, so a route that no longer exists
-  is simply absent from both and the row's Needs attention badge explains why
-  (R8, CR-5).
+  The rows come from the schedule the context names (the active schedule for the
+  editor's preview) in one query for every route the alerts name. It is the same
+  scoped read `labels_for/2` performs, so a route the schedule lacks is absent from
+  both and the Needs attention note explains why (R8, CR-5).
   """
   @spec routes_for(AuditContext.t(), [Alert.t()]) :: %{
           optional(Ecto.UUID.t()) => %{optional(String.t()) => map()}
@@ -487,34 +482,14 @@ defmodule GtfsPlanner.Alerts do
   def routes_for(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
     case Authorization.authorize_editor(audit_context) do
       :ok ->
-        alerts
-        |> Enum.group_by(& &1.source_gtfs_version_id)
-        |> Enum.map(&routes_for_version(audit_context, &1))
-        |> Enum.reduce(%{}, &Map.merge(&2, &1))
+        ids = Enum.flat_map(alerts, &Listing.referenced_ids(&1).routes)
+        routes = Targets.routes_by_id(audit_context, ids)
+
+        Map.new(alerts, fn alert -> {alert.id, routes} end)
 
       {:error, :forbidden} ->
         %{}
     end
-  end
-
-  # The audit context the alert's own provenance names, never one a caller chose.
-  # A nil source version yields a context with no version, whose scoped reads
-  # return nothing rather than falling back to the selected version.
-  defp source_context(%AuditContext{} = audit_context, %Alert{source_gtfs_version_id: version_id}) do
-    %{audit_context | gtfs_version_id: version_id}
-  end
-
-  defp source_context(%AuditContext{} = audit_context, version_id) do
-    %{audit_context | gtfs_version_id: version_id}
-  end
-
-  # One read for every route identity the alerts of one version name, so a page
-  # spanning several versions costs one query per version rather than one per row.
-  defp routes_for_version(audit_context, {version_id, version_alerts}) do
-    ids = Enum.flat_map(version_alerts, &Listing.referenced_ids(&1).routes)
-    routes = Targets.routes_by_id(source_context(audit_context, version_id), ids)
-
-    Map.new(version_alerts, fn alert -> {alert.id, routes} end)
   end
 
   # A target lookup takes no lock and writes nothing, so it authorizes rather
@@ -877,8 +852,9 @@ defmodule GtfsPlanner.Alerts do
   On success the alert's `source_gtfs_version_id` and `target_reference` are
   replaced with what the active schedule resolves, its revision is incremented
   like any other write, and `derive/1` recomputes the fields the operator cannot
-  set. The alert's `timezone` becomes the active schedule's single agency zone
-  when it has one, and is otherwise left as it was.
+  set. The alert keeps the `timezone` it was saved with, because its dates and
+  times are civil readings in that zone and repairing a target must not move them;
+  an alert saved with none takes the active schedule's single agency zone.
   """
   @spec retarget(AuditContext.t(), Ecto.UUID.t() | term(), integer(), term(), map()) ::
           {:ok, Alert.t()}
@@ -1499,8 +1475,9 @@ defmodule GtfsPlanner.Alerts do
   # The server-owned capture of what the alert's answer resolves to, taken from
   # the version named on the changeset. It is written on create and on retarget;
   # a save that changed no selection leaves the stored capture alone and one that
-  # changed it merges (`merge_target_reference/3`). `retained_zone` keeps an
-  # alert's own zone when the version has no single usable one.
+  # changed it merges (`merge_target_reference/3`). `retained_zone` is the zone an
+  # alert already holds; it wins over the version's, so only a new alert (or one
+  # saved with no zone) takes the version's single usable zone.
   defp capture_target_reference(changeset, audit_context, retained_zone \\ nil)
 
   defp capture_target_reference(%Changeset{valid?: false} = changeset, _audit_context, _zone),
@@ -1509,7 +1486,7 @@ defmodule GtfsPlanner.Alerts do
   defp capture_target_reference(%Changeset{} = changeset, %AuditContext{} = audit_context, zone) do
     alert = Changeset.apply_changes(changeset)
     reference = Targets.capture_reference(alert.scope, audit_context)
-    timezone = reference["timezone"] || zone
+    timezone = zone || reference["timezone"]
 
     changeset
     |> put_change(:target_reference, Map.put(reference, "timezone", timezone))
