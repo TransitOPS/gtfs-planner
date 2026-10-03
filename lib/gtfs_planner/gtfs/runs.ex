@@ -822,6 +822,78 @@ defmodule GtfsPlanner.Gtfs.Runs do
     end)
   end
 
+  @doc """
+  Applies a generation candidate's new run assignments inside the caller's transaction.
+
+  This is the transaction-local operation the TODS generator's save calls after the
+  candidate's block writes have already landed in the caller's transaction. It opens
+  no transaction, takes no version or blocking lock, keeps no fingerprint and starts
+  no retry: the documented caller preconditions are that the caller already holds
+  the editor membership lock, the version `FOR SHARE`, `Blocking.lock_blocking!/1`
+  and the UUID-ordered trip locks, and that `run_deltas` is the candidate composed
+  from those locked rows. The current editor membership is re-checked here, so
+  transaction presence alone never authorizes a write.
+
+  `run_deltas` is keyed by day type key and holds `trip_id => run_id` for the trips
+  the candidate adds to a run. Each day type is written through `write_moves/4`, the
+  same checked lower operation `apply_moves/4` and `apply_run_plan/2` share: a delta
+  is additive, so a trip that already holds a run is `:stale_moves`, a trip the day
+  type does not run is `{:invalid_trips, ids}`, and a malformed run ID is
+  `{:invalid_run_id, id}`. Any refusal rolls the caller's whole transaction back, so
+  a generation's blocks, runs, audits and marks commit together or not at all.
+
+  The fingerprint `apply_run_plan/2` compares is deliberately not recomputed here:
+  the caller has already written the candidate's own block and relief changes, so a
+  pre-write fingerprint of the day would refuse the generation's own valid work. The
+  candidate rebuilt under the caller's locks is what replaces that check.
+
+  Returns the bare result map the caller's transaction wraps: how many assignments
+  were written and the distinct run IDs they name.
+  """
+  @spec apply_generation_in_transaction!(
+          AuditContext.t(),
+          %{optional(String.t()) => %{Ecto.UUID.t() => String.t()}}
+        ) :: %{changed_trips: non_neg_integer(), run_ids: [String.t()]}
+  def apply_generation_in_transaction!(%AuditContext{} = audit, run_deltas)
+      when is_map(run_deltas) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError,
+            "apply_generation_in_transaction!/2 requires a caller-owned transaction"
+    end
+
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    Enum.reduce(run_deltas, %{changed_trips: 0, run_ids: []}, fn {day_type_key, deltas}, result ->
+      written = write_generation_day!(organization_id, gtfs_version_id, day_type_key, deltas)
+
+      %{
+        changed_trips: result.changed_trips + written.changed_trips,
+        run_ids: Enum.sort(Enum.uniq(result.run_ids ++ written.run_ids))
+      }
+    end)
+  end
+
+  # One day type's delta, read as the day this transaction sees it — the
+  # candidate's own block writes included — and written through `write_moves/4`.
+  defp write_generation_day!(organization_id, gtfs_version_id, day_type_key, deltas) do
+    case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
+      {:ok, day} ->
+        moves =
+          Enum.map(deltas, fn {trip_id, run_id} ->
+            %{trip_id: trip_id, from: nil, to: run_id}
+          end)
+
+        written = write_moves(organization_id, gtfs_version_id, day, moves)
+
+        %{changed_trips: written.changed_trips, run_ids: Enum.map(moves, & &1.to)}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
   defp write_plan(organization_id, gtfs_version_id, day, plan) do
     # The same read `suggest_runs/4` used, and therefore the same fingerprint:
     # the stale check works because both sides compute it with one function, not

@@ -340,6 +340,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @typedoc """
+  The block portion of one generation candidate, the input
+  `apply_generation_in_transaction!/3` writes.
+
+  `assignments` maps a trip UUID to the block ID the generation places it on,
+  keyed the way `Blocking.Generator.run/4` assigns and `Blocking.Plan` builds one,
+  and `blocks` are the new blocks it creates, each carrying the garage and vehicle
+  type `Context.resolve_block/3` resolved for it and the trip rows that run on it.
+  The engine's `TodsGenerator.Plan.block_candidate/2` produces this shape, so the
+  writer reads the candidate directly rather than a second projection of it.
+  """
+  @type generation_block_delta :: %{
+          assignments: %{Ecto.UUID.t() => String.t()},
+          blocks: [
+            %{
+              block_id: String.t(),
+              garage_id: Ecto.UUID.t() | nil,
+              vehicle_type_id: Ecto.UUID.t() | nil,
+              trips: [%{required(:service_id) => String.t(), optional(atom()) => term()}]
+            }
+          ]
+        }
+
+  @typedoc """
   The loaded review input set one calendar combination is projected over.
 
   `calendars` carries every selected calendar in the summary shape
@@ -1312,13 +1335,24 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # delete above, so a repeated save of the same marks is a no-op rather than a
   # constraint violation.
   defp insert_relief_point!(organization_id, gtfs_version_id, stop_id) do
+    case insert_relief_point(organization_id, gtfs_version_id, stop_id) do
+      {:ok, row} -> row
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The one insert both the relief drawer and a generation's relief additions use,
+  # so the scoping fields, the changeset and the conflict target cannot drift
+  # between them. It returns the insert's tuple: the drawer rolls back its
+  # transaction on an error, and a generation rolls back the caller's.
+  defp insert_relief_point(organization_id, gtfs_version_id, stop_id) do
     %ReliefPoint{
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id,
       stop_id: stop_id
     }
     |> ReliefPoint.changeset(%{})
-    |> Repo.insert!(
+    |> Repo.insert(
       on_conflict: :nothing,
       conflict_target: [:organization_id, :gtfs_version_id, :stop_id]
     )
@@ -2487,6 +2521,72 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   def apply_block_plan(_day_type_key, _plan, _audit), do: {:error, :invalid_plan}
 
+  @doc """
+  Applies a generation candidate's block additions and relief marks inside the
+  caller's transaction.
+
+  This is the transaction-local operation the TODS generator's save calls once it
+  has rebuilt the authoritative candidate from the rows it holds locked. It opens
+  no transaction, takes no version or blocking lock and starts no retry: the
+  documented caller preconditions are that the caller already holds the editor
+  membership lock, the version `FOR SHARE`, `lock_blocking!/1` and the UUID-ordered
+  trip, garage and vehicle-type locks, and that `block_delta` is the candidate
+  composed from those locked rows. The current editor membership is re-checked
+  here, so transaction presence alone never authorizes a write.
+
+  `block_delta` is the candidate's own block portion — `:assignments`, a map of
+  trip UUID to the new block ID, and `:blocks`, the new blocks with the garage and
+  vehicle type each resolved. `relief_additions` is the stops the candidate's
+  admitted runs hand over at that the version does not already mark.
+
+  Every move is validated against the locked rows before the first write: a named
+  trip this organization and version does not hold is `:not_found`, and a named
+  trip that already carries a block is `:stale_plan` — the candidate was built from
+  unassigned trips, so a stored block means the delta is no longer additive and
+  must not replace a manual assignment. Any write or audit the transaction refuses
+  rolls the caller's whole transaction back with its reason, so a generation's
+  blocks, attribute rows, trip audits and relief marks commit together or not at
+  all. The trip audits and the 500-row write batches are `write_plan!/2`'s, shared
+  with `apply_block_plan/3` rather than reimplemented here.
+
+  Returns the bare result map the caller's transaction wraps: the audit
+  `operation_id` (nil when no trip moved), the changed trip UUIDs and the relief
+  stops inserted.
+  """
+  @spec apply_generation_in_transaction!(AuditContext.t(), generation_block_delta(), [String.t()]) ::
+          %{
+            operation_id: Ecto.UUID.t() | nil,
+            changed_trip_ids: [Ecto.UUID.t()],
+            relief_stop_ids: [String.t()]
+          }
+  def apply_generation_in_transaction!(
+        %AuditContext{} = audit,
+        block_delta,
+        relief_additions
+      )
+      when is_map(block_delta) and is_list(relief_additions) do
+    assert_transaction!("apply_generation_in_transaction!/3")
+
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    moves =
+      generation_moves!(organization_id, version_id, Map.get(block_delta, :assignments, %{}))
+
+    result =
+      write_plan!(audit, %{
+        moves: moves,
+        attribute_rows: generation_attribute_rows(Map.get(block_delta, :blocks, []))
+      })
+
+    %{
+      operation_id: result.operation_id,
+      changed_trip_ids: result.changed_trip_ids,
+      relief_stop_ids: store_generation_relief!(organization_id, version_id, relief_additions)
+    }
+  end
+
   # The plan's shape, checked before any transaction opens. Only the `mode` decides
   # what is run; the rest of the plan's contents are re-derived under the lock and a
   # hand-built plan naming a mode the generator does not accept is refused here rather
@@ -2747,6 +2847,71 @@ defmodule GtfsPlanner.Gtfs.Blocking do
            ) do
         {:ok, _row} -> :ok
         {:error, refused} -> Repo.rollback(refused)
+      end
+    end)
+  end
+
+  # A generation writer asserts the transaction it does not own. `lock_editor!/1`
+  # would roll back with `:forbidden` whatever the context, so the caller-supplied
+  # candidate is never treated as authority and a missing transaction is a
+  # programming error rather than a refusal.
+  defp assert_transaction!(caller) do
+    unless Repo.in_transaction?() do
+      raise ArgumentError, "#{caller} requires a caller-owned transaction"
+    end
+  end
+
+  # The candidate's assignments read against the rows this transaction holds
+  # locked: every named trip must be this organization's and version's own, and
+  # must still be unassigned. A generation's delta is additive by construction, so
+  # a stored block on a named trip is a delta that would replace a manual
+  # assignment, and it is refused rather than written.
+  defp generation_moves!(organization_id, version_id, assignments) do
+    ids = assignments |> Map.keys() |> Enum.sort()
+
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.id in ^ids,
+        order_by: t.trip_id
+      )
+      |> Repo.all()
+
+    if length(trips) != length(ids), do: Repo.rollback(:not_found)
+    if Enum.any?(trips, &(&1.block_id != nil)), do: Repo.rollback(:stale_plan)
+
+    Enum.map(trips, &%{trip: &1, from: nil, to: Map.fetch!(assignments, &1.id)})
+  end
+
+  # One attribute row per service a new block's trips run on, the same shape
+  # `Blocking.Plan.attribute_rows/1` builds for a reviewed plan: the garage and
+  # vehicle type `Context.resolve_block/3` resolved for the block, repeated on
+  # every row because the block has one resolution.
+  defp generation_attribute_rows(blocks) do
+    for block <- blocks,
+        service_id <- block.trips |> Enum.map(& &1.service_id) |> Enum.uniq() |> Enum.sort() do
+      %{
+        service_id: service_id,
+        block_id: block.block_id,
+        garage_id: block.garage_id,
+        vehicle_type_id: block.vehicle_type_id
+      }
+    end
+  end
+
+  # The marks the candidate proposed and the version did not already hold. A mark
+  # is additive, so an ID a concurrent save already stored is left exactly as that
+  # save left it: the insert conflicts on nothing rather than replacing the row.
+  defp store_generation_relief!(_organization_id, _version_id, []), do: []
+
+  defp store_generation_relief!(organization_id, version_id, stop_ids) do
+    stop_ids
+    |> Enum.uniq()
+    |> Enum.map(fn stop_id ->
+      case insert_relief_point(organization_id, version_id, stop_id) do
+        {:ok, _row} -> stop_id
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
   end
