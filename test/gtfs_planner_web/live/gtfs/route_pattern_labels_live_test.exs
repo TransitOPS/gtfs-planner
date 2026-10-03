@@ -97,7 +97,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLabelsLiveTest do
       child = pattern_in(patterns, @child)
 
       assert is_nil(owner.label_pattern_id)
-      assert child.label_pattern_id == owner.id
+      assert child.label_pattern_id == owner.route_pattern_id
     end
   end
 
@@ -317,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLabelsLiveTest do
     {1, nil} =
       Repo.update_all(
         from(p in RoutePattern, where: p.id == ^child.id),
-        set: [label_pattern_id: owner.id]
+        set: [label_pattern_id: owner.route_pattern_id]
       )
 
     Repo.get!(RoutePattern, child.id)
@@ -343,18 +343,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLabelsLiveTest do
     )
   end
 
-  defp owner_id(context), do: loaded_pattern(context, @label).id
+  defp owner_id(context), do: loaded_pattern(context, @label).route_pattern_id
 
   defp pattern_label(pattern), do: pattern.label_pattern_id
 
   defp stop_count(_context, pattern) do
-    Repo.aggregate(
-      from(occurrence in GtfsPlanner.Gtfs.RoutePatternStop,
-        where: occurrence.route_pattern_id == ^pattern.id
-      ),
-      :count,
-      :id
-    )
+    length(stored_occurrences(pattern.id))
   end
 
   defp trip_count(context, route_pattern_id) do

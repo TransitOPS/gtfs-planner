@@ -246,6 +246,38 @@ defmodule GtfsPlanner.Gtfs.RecentChangesTest do
     assert length(group.operations) == 2
   end
 
+  test "a timing edit keys its pattern by the GTFS ID in its external ID, whatever its snapshot holds",
+       context do
+    timing_id = Ecto.UUID.generate()
+
+    insert_logs(context.organization, context.gtfs_version, [
+      %{
+        entity_type: "timed_pattern",
+        entity_external_id: "#{timing_id}:RP:1",
+        # An entry written before the conversion kept the pattern's row id here.
+        snapshot: %{"route_pattern_id" => Ecto.UUID.generate()},
+        inserted_at: ~U[2026-09-20 12:00:00.000000Z]
+      },
+      %{
+        entity_type: "timed_pattern",
+        entity_external_id: "#{timing_id}:RP:1",
+        snapshot: %{"route_pattern_id" => "RP:1"},
+        inserted_at: ~U[2026-09-21 12:00:00.000000Z]
+      }
+    ])
+
+    assert [group] =
+             RecentChanges.recent(
+               context.organization.id,
+               context.gtfs_version.id,
+               :everyone,
+               context.zone
+             )
+
+    assert group.destination == {:timed_pattern, "RP:1"}
+    assert length(group.operations) == 2
+  end
+
   test "a stop edit keys its station and GTFS level; a pathway keys its station with no level",
        context do
     insert_logs(context.organization, context.gtfs_version, [

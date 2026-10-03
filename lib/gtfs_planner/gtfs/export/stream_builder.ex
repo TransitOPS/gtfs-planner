@@ -333,6 +333,13 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     order_by(query, [s], asc: s.trip_id, asc: s.stop_sequence)
   end
 
+  # Trips of one route tie on route_id, and the label join in
+  # `exported_label_selection/4` leaves their relative order to the query plan.
+  # The trip ID is unique per version, so it breaks the tie.
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.Trip) do
+    order_by(query, [s], asc: s.route_id, asc: s.trip_id)
+  end
+
   # Route patterns share a route_id, so the pattern identity breaks the tie
   defp order_by_for_schema(query, GtfsPlanner.Gtfs.RoutePattern) do
     order_by(query, [s], asc: s.route_id, asc: s.route_pattern_id)

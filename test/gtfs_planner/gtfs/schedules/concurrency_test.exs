@@ -301,12 +301,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
         )
 
       rows =
-        Repo.all(
-          from(o in RoutePatternStop,
-            where: o.route_pattern_id == ^scope.bundle.pattern.id,
-            order_by: o.position
-          )
-        )
+        stored_occurrences(scope.bundle.pattern.id)
         |> Enum.zip(offsets)
         |> Enum.map(fn {occurrence, {arrival, departure}} ->
           %{

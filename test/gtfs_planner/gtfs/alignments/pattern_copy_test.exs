@@ -15,9 +15,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternCopyTest do
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
-  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Repo
 
   defp audit(organization, version) do
@@ -71,22 +69,10 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternCopyTest do
     Repo.reload!(pattern)
   end
 
-  defp occurrences(pattern_id) do
-    Repo.all(
-      from o in RoutePatternStop,
-        where: o.route_pattern_id == ^pattern_id,
-        order_by: [asc: o.position]
-    )
-  end
+  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
-  defp visit_distances(pattern_id) do
-    Repo.all(
-      from o in RoutePatternStop,
-        where: o.route_pattern_id == ^pattern_id,
-        order_by: [asc: o.position],
-        select: o.shape_dist_traveled
-    )
-  end
+  defp visit_distances(pattern_id),
+    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.shape_dist_traveled)
 
   defp insert_shared(organization, version, from_id, to_id, points) do
     %AlignmentSegment{
@@ -319,7 +305,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.PatternCopyTest do
     source_row_count = length(shape_rows(context.organization, context.version, source.shape_id))
     assert source_row_count > 0
 
-    timing = Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^source.id)
+    [timing] = stored_timings(source.id)
 
     operation =
       {:stops,

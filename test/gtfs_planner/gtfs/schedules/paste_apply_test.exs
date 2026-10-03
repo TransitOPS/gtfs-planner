@@ -740,16 +740,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert summary.added == 2
 
       main_timing =
-        Repo.get_by!(TimedPattern,
-          route_pattern_id: scope.main.pattern.id,
-          name: "Pasted Sep 28 · A"
-        )
+        scope.main.pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Pasted Sep 28 · A"))
 
       short_timing =
-        Repo.get_by!(TimedPattern,
-          route_pattern_id: scope.short.pattern.id,
-          name: "Pasted Sep 28 · A"
-        )
+        scope.short.pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Pasted Sep 28 · A"))
 
       main_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800")
       short_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0830")

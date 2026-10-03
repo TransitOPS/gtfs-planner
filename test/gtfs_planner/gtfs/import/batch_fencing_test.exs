@@ -222,6 +222,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
     test "refuses to derive and leaves the trips pending" do
       organization = organization_fixture()
       {run, token} = claimed_run(organization)
+      duplicate_in_sibling_version(organization, run)
       hand_over_after_stop_times_insert(run)
 
       assert {:error, %GtfsVersion{}, :lease_lost} =
@@ -230,7 +231,11 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       assert row_counts(organization.id, run.gtfs_version_id).stop_times == 2
 
       assert %Trip{pattern_derivation_state: "pending"} =
-               Repo.get_by!(Trip, organization_id: organization.id, trip_id: "T1")
+               Repo.get_by!(Trip,
+                 organization_id: organization.id,
+                 gtfs_version_id: run.gtfs_version_id,
+                 trip_id: "T1"
+               )
 
       assert Repo.get!(Run, run.id).state == "interrupted"
     end
@@ -240,6 +245,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
     test "classifies none of them" do
       organization = organization_fixture()
       {run, token} = claimed_run(organization)
+      duplicate_in_sibling_version(organization, run)
       hand_over_after_stop_times_insert(run)
 
       files =
@@ -249,7 +255,11 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
                Publication.run(run, token, StagedImport.stage(files), @topic)
 
       assert %Trip{pattern_derivation_state: "pending"} =
-               Repo.get_by!(Trip, organization_id: organization.id, trip_id: "T1")
+               Repo.get_by!(Trip,
+                 organization_id: organization.id,
+                 gtfs_version_id: run.gtfs_version_id,
+                 trip_id: "T1"
+               )
     end
   end
 
@@ -257,6 +267,7 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
     test "refuses to restore extension data and leaves the stop untouched" do
       organization = organization_fixture()
       {run, token} = claimed_run(organization)
+      duplicate_in_sibling_version(organization, run)
       hand_over_after_stop_times_insert(run)
 
       files =
@@ -269,7 +280,11 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       assert row_counts(organization.id, run.gtfs_version_id).stop_times == 2
 
       assert %Stop{diagram_coordinate: nil} =
-               Repo.get_by!(Stop, organization_id: organization.id, stop_id: "S1")
+               Repo.get_by!(Stop,
+                 organization_id: organization.id,
+                 gtfs_version_id: run.gtfs_version_id,
+                 stop_id: "S1"
+               )
     end
   end
 
@@ -410,6 +425,17 @@ defmodule GtfsPlanner.Gtfs.Import.BatchFencingTest do
       ImportRuns.claim_import(organization.id, run.id, run.lease_token)
 
     {claimed, token}
+  end
+
+  # Another version of the organization holds trip `T1` and stop `S1` too, so a
+  # lookup by feed ID alone finds two rows; the assertions pass only when scoped to
+  # the run's version.
+  defp duplicate_in_sibling_version(organization, run) do
+    sibling = GtfsPlanner.VersionsFixtures.gtfs_version_fixture(organization.id)
+    refute sibling.id == run.gtfs_version_id
+
+    GtfsPlanner.GtfsFixtures.trip_fixture(organization.id, sibling.id, "R1", %{trip_id: "T1"})
+    GtfsPlanner.GtfsFixtures.stop_fixture(organization.id, sibling.id, %{stop_id: "S1"})
   end
 
   # The organization, users, version and run of the committed cases, created on an own

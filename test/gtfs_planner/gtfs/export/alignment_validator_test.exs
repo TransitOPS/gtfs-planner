@@ -31,8 +31,6 @@ defmodule GtfsPlanner.Gtfs.Export.AlignmentValidatorTest do
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Export
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.GtfsValidatorCli
   alias GtfsPlanner.Repo
 
@@ -266,14 +264,11 @@ defmodule GtfsPlanner.Gtfs.Export.AlignmentValidatorTest do
     |> Repo.insert!()
   end
 
-  defp occurrences(pattern_id) do
-    Repo.all(
-      from(o in RoutePatternStop, where: o.route_pattern_id == ^pattern_id, order_by: o.position)
-    )
-  end
+  defp occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
   defp timing_for(pattern_id) do
-    Repo.one!(from(t in TimedPattern, where: t.route_pattern_id == ^pattern_id))
+    [timing] = stored_timings(pattern_id)
+    timing
   end
 
   defp source_for(organization, version, route_id, pattern) do

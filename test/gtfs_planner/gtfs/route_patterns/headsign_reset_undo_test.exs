@@ -389,7 +389,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignResetUndoTest do
               audit
             )
 
-          timing = Repo.one(from(t in TimedPattern, where: t.route_pattern_id == ^pattern.id))
+          timing = pattern.id |> stored_timings() |> List.first()
 
           trip =
             trip_fixture(organization.id, version.id, route.route_id, %{

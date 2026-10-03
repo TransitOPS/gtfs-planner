@@ -86,25 +86,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          %RoutePattern{} = pattern <-
            scoped_pattern(organization_id, version_id, route_id, pattern_id),
          {:ok, timing} <- selected_timing(pattern, timing_id) do
-      occurrences =
-        from(occurrence in RoutePatternStop,
-          where: occurrence.route_pattern_id == ^pattern.id,
-          order_by: [asc: occurrence.position]
-        )
-        |> Repo.all()
-
-      timings =
-        from(row in TimedPattern,
-          where: row.route_pattern_id == ^pattern.id,
-          order_by: [asc: row.name, asc: row.id]
-        )
-        |> Repo.all()
-
       {:ok,
        %{
          pattern: pattern,
-         occurrences: occurrences,
-         timings: timings,
+         occurrences: pattern_occurrences(pattern),
+         timings: pattern_timings(pattern),
          selected_timing: timing,
          source_fingerprint: source_fingerprint(pattern)
        }}
@@ -199,7 +185,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp headsign_usage_for_pattern(pattern, :pattern, opts) do
-    timings = pattern_timings(pattern.id)
+    timings = pattern_timings(pattern)
     counts = timing_trip_counts(pattern)
     default = Headsigns.normalize(pattern.headsign)
 
@@ -239,7 +225,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp headsign_usage_for_pattern(pattern, {:timing, timing_id}, opts) do
-    timings = pattern_timings(pattern.id)
+    timings = pattern_timings(pattern)
 
     case Enum.find(timings, &(&1.id == timing_id)) do
       nil ->
@@ -680,9 +666,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           %{
             id: pattern.route_pattern_id,
             pattern: pattern,
-            stop_count: Map.get(stop_counts, pattern.id, 0),
+            stop_count: Map.get(stop_counts, pattern.route_pattern_id, 0),
             trip_count: Map.get(trip_counts, pattern.route_pattern_id, 0),
-            timing_count: Map.get(timing_counts, pattern.id, 0),
+            timing_count: Map.get(timing_counts, pattern.route_pattern_id, 0),
             headsign_differ_count: counts.differ,
             headsign_typo_count: counts.typo
           }
@@ -771,12 +757,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end)
   end
 
-  # The route's timings carry the pattern's primary key, not a route id, so the
-  # route scoping joins through the pattern row.
+  # The route's timings carry the pattern's GTFS ID, not a route id, so the
+  # route scoping joins through the pattern row in the timing's own scope.
   defp route_timings_by_id(route) do
     from(timing in TimedPattern,
       join: pattern in RoutePattern,
-      on: pattern.id == timing.route_pattern_id,
+      on:
+        pattern.route_pattern_id == timing.route_pattern_id and
+          pattern.organization_id == timing.organization_id and
+          pattern.gtfs_version_id == timing.gtfs_version_id,
       where:
         timing.organization_id == ^route.organization_id and
           timing.gtfs_version_id == ^route.gtfs_version_id and
@@ -812,7 +801,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # pattern scope query.
   defp trip_effective_default(trip, pattern, timings_by_id) do
     case Map.get(timings_by_id, trip.timed_pattern_id) do
-      %{route_pattern_id: pattern_id, headsign: headsign} when pattern_id == pattern.id ->
+      %{route_pattern_id: pattern_id, headsign: headsign}
+      when pattern_id == pattern.route_pattern_id ->
         Headsigns.effective_default(headsign, pattern.headsign)
 
       _ ->
@@ -838,8 +828,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp build_pattern_detail(pattern, timing_id) do
-    occurrences = pattern_occurrences(pattern.id)
-    timings = pattern_timings(pattern.id)
+    occurrences = pattern_occurrences(pattern)
+    timings = pattern_timings(pattern)
     timing_trip_counts = timing_trip_counts(pattern)
     stops = stops_by_ids(pattern, Enum.map(occurrences, & &1.stop_id))
 
@@ -867,7 +857,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp detail_timing_rows(_pattern, nil, _stops), do: []
 
   defp detail_timing_rows(pattern, selected, stops),
-    do: selected_timing_rows(pattern.id, selected.id, stops)
+    do: selected_timing_rows(pattern, selected.id, stops)
 
   # Selecting no timing resolves to the pattern's first timing; a timing that
   # belongs to another pattern is a distinct not-found outcome so the editor can
@@ -952,12 +942,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   Rows carry the occurrence identity, position and stop ID, the relative
   arrival/departure offsets (nil when the timing has no scheduled time there),
   timepoint, pickup/drop-off values and the stop headsign. Each row is joined
-  to its occurrence and filtered on that occurrence's pattern, so a timing that
-  belongs to another pattern returns `[]` instead of leaking its rows. `:stop`
-  is not attached; callers that need the stop struct attach it from the stops
-  they loaded.
+  to its occurrence and filtered on that occurrence's organization, version and
+  pattern, so a timing that belongs to another pattern returns `[]` instead of
+  leaking its rows. `:stop` is not attached; callers that need the stop struct
+  attach it from the stops they loaded.
   """
-  @spec timing_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: [
+  @spec timing_rows(RoutePattern.t(), Ecto.UUID.t()) :: [
           %{
             route_pattern_stop_id: Ecto.UUID.t(),
             position: pos_integer(),
@@ -970,11 +960,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
             stop_headsign: String.t() | nil
           }
         ]
-  def timing_rows(pattern_id, timing_id) do
+  def timing_rows(%RoutePattern{} = pattern, timing_id) do
     from(row in TimedPatternStop,
       join: occurrence in RoutePatternStop,
-      on: occurrence.id == row.route_pattern_stop_id,
-      where: row.timed_pattern_id == ^timing_id and occurrence.route_pattern_id == ^pattern_id,
+      on:
+        occurrence.id == row.route_pattern_stop_id and
+          occurrence.organization_id == ^pattern.organization_id and
+          occurrence.gtfs_version_id == ^pattern.gtfs_version_id and
+          occurrence.route_pattern_id == ^pattern.route_pattern_id,
+      where: row.timed_pattern_id == ^timing_id,
       order_by: [asc: occurrence.position],
       select: %{
         route_pattern_stop_id: occurrence.id,
@@ -995,8 +989,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # occurrence position and offset values; no full stop-time vector list is
   # retained for any other timing. The editor's rows keep the attached stop
   # struct; the comparison read calls `timing_rows/2` without it.
-  defp selected_timing_rows(pattern_id, timing_id, stops) do
-    pattern_id
+  defp selected_timing_rows(pattern, timing_id, stops) do
+    pattern
     |> timing_rows(timing_id)
     |> Enum.map(&Map.put(&1, :stop, Map.get(stops, &1.stop_id)))
   end
@@ -1377,7 +1371,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     from(pattern in RoutePattern,
       left_join: owner in RoutePattern,
       on:
-        owner.id == pattern.label_pattern_id and
+        owner.route_pattern_id == pattern.label_pattern_id and
           owner.organization_id == pattern.organization_id and
           owner.gtfs_version_id == pattern.gtfs_version_id,
       where:
@@ -1453,9 +1447,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
          :ok <- validate_timing_attrs(values),
          {:ok, source} <- copy_source_timing(pattern, attrs) do
-      name = Map.get(values, :name) || next_timing_name(pattern.id)
+      name = Map.get(values, :name) || next_timing_name(pattern)
       timing = insert_timing!(pattern, name, Map.get(values, :headsign))
-      occurrences = pattern_occurrences(pattern.id)
+      occurrences = pattern_occurrences(pattern)
 
       if source,
         do: copy_timing_rows!(timing, occurrences, timing_rows(source.id)),
@@ -1482,7 +1476,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       is_nil(timing) ->
         Repo.rollback(:not_found)
 
-      timing_count(pattern.id) <= 1 ->
+      timing_count(pattern) <= 1 ->
         Repo.rollback(:last_timing)
 
       timing_used?(route, timing) ->
@@ -1567,7 +1561,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       true ->
         snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
         audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
-        _children = delete_pattern_children!([pattern.id])
+        _children = delete_pattern_children!([pattern])
         Alignments.delete_owned_shape!(pattern)
         Repo.delete!(pattern)
         %{pattern: nil, trips_updated: 0}
@@ -1737,10 +1731,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # FK-safe order: timing rows reference both timings and occurrences, so they
   # leave first. The set-based list form is shared by single pattern delete and
   # the reviewed route cascade (R5); callers own the pattern row deletion.
-  defp delete_pattern_children!(pattern_ids) when is_list(pattern_ids) do
+  defp delete_pattern_children!(patterns) when is_list(patterns) do
+    patterns
+    |> Enum.group_by(&{&1.organization_id, &1.gtfs_version_id}, & &1.route_pattern_id)
+    |> Enum.map(fn {{organization_id, version_id}, route_pattern_ids} ->
+      delete_scoped_pattern_children!(organization_id, version_id, route_pattern_ids)
+    end)
+    |> Enum.reduce(
+      %{timed_pattern_stops: 0, timed_patterns: 0, pattern_stops: 0},
+      &Map.merge(&2, &1, fn _key, left, right -> left + right end)
+    )
+  end
+
+  defp delete_scoped_pattern_children!(organization_id, version_id, route_pattern_ids) do
     timing_ids =
       from(timing in TimedPattern,
-        where: timing.route_pattern_id in ^pattern_ids,
+        where:
+          timing.organization_id == ^organization_id and timing.gtfs_version_id == ^version_id and
+            timing.route_pattern_id in ^route_pattern_ids,
         select: timing.id
       )
       |> Repo.all()
@@ -1753,7 +1761,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     {occurrences, nil} =
       Repo.delete_all(
-        from(occurrence in RoutePatternStop, where: occurrence.route_pattern_id in ^pattern_ids)
+        from(occurrence in RoutePatternStop,
+          where:
+            occurrence.organization_id == ^organization_id and
+              occurrence.gtfs_version_id == ^version_id and
+              occurrence.route_pattern_id in ^route_pattern_ids
+        )
       )
 
     %{
@@ -1915,7 +1928,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     cond do
       is_nil(timing) -> {:error, :not_found}
-      timing_count(pattern.id) <= 1 -> {:error, :last_timing}
+      timing_count(pattern) <= 1 -> {:error, :last_timing}
       timing_used?(nil, timing) -> {:error, :timing_in_use}
       true -> :ok
     end
@@ -2160,7 +2173,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # Timings with their own headsign shield their trips from the pattern scope,
   # the same carrying rule the headsign usage read model applies.
   defp carrying_timing_ids(pattern) do
-    pattern.id
+    pattern
     |> pattern_timings()
     |> Enum.filter(&(Headsigns.normalize(&1.headsign) != nil))
     |> MapSet.new(& &1.id)
@@ -2275,7 +2288,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp reset_scope_query(pattern, :pattern), do: {:ok, scope_query_for(pattern, :pattern)}
 
   defp reset_scope_query(pattern, {:timing, timing_id}) do
-    if Enum.any?(pattern_timings(pattern.id), &(&1.id == timing_id)),
+    if Enum.any?(pattern_timings(pattern), &(&1.id == timing_id)),
       do: {:ok, timing_scope_query(pattern, timing_id)},
       else: {:error, :not_found}
   end
@@ -2300,7 +2313,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # of this pattern has no timing default (Domain rule 2), so it targets the
   # pattern headsign.
   defp timing_headsigns_by_id(pattern) do
-    pattern.id
+    pattern
     |> pattern_timings()
     |> Map.new(&{&1.id, &1.headsign})
   end
@@ -2402,16 +2415,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp undo_timing!(pattern, timing_id) do
-    # The preload matches `scoped_timing/2`: restoring the timing's own
-    # headsign runs its changeset, whose scope validation reads the loaded
-    # parent pattern.
-    case Repo.one(
-           from(timing in TimedPattern,
-             where: timing.route_pattern_id == ^pattern.id and timing.id == ^timing_id,
-             preload: [:route_pattern]
-           )
-         ) do
-      %TimedPattern{} = timing -> timing
+    # The loaded parent matches `scoped_timing/2`: restoring the timing's own
+    # headsign runs its changeset, whose scope validation reads it.
+    case Repo.one(from(timing in timings_query(pattern), where: timing.id == ^timing_id)) do
+      %TimedPattern{} = timing -> %{timing | route_pattern: pattern}
       nil -> Repo.rollback(:not_found)
     end
   end
@@ -3348,7 +3355,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end)
 
     pattern_ids = Enum.map(patterns, & &1.id)
-    children = delete_pattern_children!(pattern_ids)
+    children = delete_pattern_children!(patterns)
     {removed, nil} = Repo.delete_all(from(p in RoutePattern, where: p.id in ^pattern_ids))
 
     %{
@@ -3429,13 +3436,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
+  # The timing carries its loaded parent pattern: its changeset validates the
+  # organization, version and GTFS ID against it.
   defp scoped_timing(pattern, timing_id) do
-    Repo.one(
-      from(timing in TimedPattern,
-        where: timing.route_pattern_id == ^pattern.id and timing.id == ^timing_id,
-        preload: [:route_pattern]
-      )
-    )
+    case Repo.one(from(timing in timings_query(pattern), where: timing.id == ^timing_id)) do
+      %TimedPattern{} = timing -> %{timing | route_pattern: pattern}
+      nil -> nil
+    end
   end
 
   defp route_id_for_pattern(pattern_id, audit) do
@@ -3480,7 +3487,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp insert_occurrence!(pattern, stop_id, position) do
     %RoutePatternStop{}
     |> RoutePatternStop.changeset(%{
-      route_pattern_id: pattern.id,
+      route_pattern_id: pattern.route_pattern_id,
       organization_id: pattern.organization_id,
       gtfs_version_id: pattern.gtfs_version_id,
       stop_id: stop_id,
@@ -3493,7 +3500,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp insert_timing!(pattern, name, headsign) do
     %TimedPattern{}
     |> TimedPattern.changeset(%{
-      route_pattern_id: pattern.id,
+      route_pattern_id: pattern.route_pattern_id,
       organization_id: pattern.organization_id,
       gtfs_version_id: pattern.gtfs_version_id,
       route_pattern: pattern,
@@ -3547,23 +3554,42 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp zero_timing_rows(count),
     do: List.duplicate(%{arrival_offset: 0, departure_offset: 0}, count)
 
-  defp pattern_occurrences(%RoutePattern{id: pattern_id}), do: pattern_occurrences(pattern_id)
-
-  defp pattern_occurrences(pattern_id) do
+  @doc """
+  The occurrences of `pattern`, matched on organization, version and its GTFS
+  `route_pattern_id`: another scope can repeat the same `route_pattern_id`.
+  """
+  @spec occurrences_query(RoutePattern.t()) :: Ecto.Query.t()
+  def occurrences_query(%RoutePattern{} = pattern) do
     from(occurrence in RoutePatternStop,
-      where: occurrence.route_pattern_id == ^pattern_id,
-      order_by: [asc: occurrence.position]
+      where:
+        occurrence.organization_id == ^pattern.organization_id and
+          occurrence.gtfs_version_id == ^pattern.gtfs_version_id and
+          occurrence.route_pattern_id == ^pattern.route_pattern_id
     )
+  end
+
+  @doc "The timings of `pattern`, scoped like `occurrences_query/1`."
+  @spec timings_query(RoutePattern.t()) :: Ecto.Query.t()
+  def timings_query(%RoutePattern{} = pattern) do
+    from(timing in TimedPattern,
+      where:
+        timing.organization_id == ^pattern.organization_id and
+          timing.gtfs_version_id == ^pattern.gtfs_version_id and
+          timing.route_pattern_id == ^pattern.route_pattern_id
+    )
+  end
+
+  defp pattern_occurrences(%RoutePattern{} = pattern) do
+    pattern
+    |> occurrences_query()
+    |> order_by([occurrence], asc: occurrence.position)
     |> Repo.all()
   end
 
-  defp pattern_timings(%RoutePattern{id: pattern_id}), do: pattern_timings(pattern_id)
-
-  defp pattern_timings(pattern_id) do
-    from(timing in TimedPattern,
-      where: timing.route_pattern_id == ^pattern_id,
-      order_by: [asc: timing.name, asc: timing.id]
-    )
+  defp pattern_timings(%RoutePattern{} = pattern) do
+    pattern
+    |> timings_query()
+    |> order_by([timing], asc: timing.name, asc: timing.id)
     |> Repo.all()
   end
 
@@ -3577,12 +3603,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     |> Repo.all()
   end
 
-  defp timing_count(pattern_id),
-    do:
-      Repo.aggregate(
-        from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern_id),
-        :count
-      )
+  defp timing_count(%RoutePattern{} = pattern),
+    do: Repo.aggregate(timings_query(pattern), :count)
 
   defp timing_used?(_route, timing) do
     query =
@@ -3620,7 +3642,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       where:
         child.organization_id == ^pattern.organization_id and
           child.gtfs_version_id == ^pattern.gtfs_version_id and
-          child.label_pattern_id == ^pattern.id
+          child.label_pattern_id == ^pattern.route_pattern_id
     )
   end
 
@@ -3870,8 +3892,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   @doc false
-  def next_timing_name(pattern_id) do
-    names = MapSet.new(Enum.map(pattern_timings(pattern_id), &String.downcase(&1.name)))
+  def next_timing_name(%RoutePattern{} = pattern) do
+    names = MapSet.new(Enum.map(pattern_timings(pattern), &String.downcase(&1.name)))
 
     Stream.iterate(0, &(&1 + 1))
     |> Enum.find_value(fn index ->
@@ -3893,12 +3915,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   Read-only; call any time.
   """
-  @spec next_free_timing_name(Ecto.UUID.t(), String.t(), [String.t()]) :: String.t()
-  def next_free_timing_name(pattern_id, prefix, pending) do
+  @spec next_free_timing_name(RoutePattern.t(), String.t(), [String.t()]) :: String.t()
+  def next_free_timing_name(%RoutePattern{} = pattern, prefix, pending) do
     taken =
       MapSet.new(
         Enum.map(
-          Enum.map(pattern_timings(pattern_id), & &1.name) ++ List.wrap(pending),
+          Enum.map(pattern_timings(pattern), & &1.name) ++ List.wrap(pending),
           &String.downcase(to_string(&1))
         )
       )
@@ -3977,7 +3999,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # direction or a timing vector clears the affected keys so a retry can never
   # match obsolete content.
   defp clear_structure_signatures!(pattern) do
-    from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+    pattern
+    |> timings_query()
     |> Repo.update_all(set: [derivation_key: nil])
 
     clear_pattern_signature!(pattern)

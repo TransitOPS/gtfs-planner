@@ -425,7 +425,9 @@ defmodule GtfsPlanner.Gtfs.Flex do
   defp route_stop_choices(organization_id, version_id, route_id) do
     from(o in RoutePatternStop,
       join: p in RoutePattern,
-      on: p.id == o.route_pattern_id,
+      on:
+        p.route_pattern_id == o.route_pattern_id and p.organization_id == o.organization_id and
+          p.gtfs_version_id == o.gtfs_version_id,
       left_join: s in Stop,
       on:
         s.organization_id == p.organization_id and s.gtfs_version_id == p.gtfs_version_id and

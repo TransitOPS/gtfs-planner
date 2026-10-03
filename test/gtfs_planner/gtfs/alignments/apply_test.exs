@@ -158,15 +158,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
     |> Enum.find(&(&1.position == position))
   end
 
-  defp first_occurrence(pattern) do
-    Repo.one!(
-      from(o in GtfsPlanner.Gtfs.RoutePatternStop,
-        where: o.route_pattern_id == ^pattern.id,
-        order_by: [asc: o.position],
-        limit: 1
-      )
-    )
-  end
+  defp first_occurrence(pattern), do: pattern.id |> stored_occurrences() |> hd()
 
   defp review!(pattern_id, draft, audit) do
     {:ok, review} = Gtfs.review_alignment_save(pattern_id, draft, audit)
@@ -332,13 +324,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ApplyTest do
         Decimal.new("100.0")
       ])
 
-    [custom_first | _] =
-      Repo.all(
-        from(o in GtfsPlanner.Gtfs.RoutePatternStop,
-          where: o.route_pattern_id == ^custom.id,
-          order_by: [asc: o.position]
-        )
-      )
+    [custom_first | _] = stored_occurrences(custom.id)
 
     insert_override(organization, version, custom_first, "A", "B", [[-74.0051, 40.7135]])
 

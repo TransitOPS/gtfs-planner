@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     {:ok, pattern} =
       Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
-    timing = Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     count = Repo.aggregate(ChangeLog, :count)
 
     for operation <- [
@@ -127,12 +127,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     {:ok, pattern} =
       Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
 
-    timing = Repo.one!(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
-
-    occurrences =
-      Repo.all(
-        from o in RoutePatternStop, where: o.route_pattern_id == ^pattern.id, order_by: o.position
-      )
+    [timing] = stored_timings(pattern.id)
+    occurrences = stored_occurrences(pattern.id)
 
     rows =
       Enum.map(
@@ -178,19 +174,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     assert pattern.headsign == "Harbor"
     assert pattern.route_pattern_id != "forged-natural-id"
 
-    occurrences =
-      Repo.all(
-        from occurrence in RoutePatternStop,
-          where: occurrence.route_pattern_id == ^pattern.id,
-          order_by: occurrence.position
-      )
+    occurrences = stored_occurrences(pattern.id)
 
     assert Enum.map(occurrences, &{&1.stop_id, &1.position}) == [
              {first.stop_id, 1},
              {second.stop_id, 2}
            ]
 
-    timing = Repo.one!(from timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     assert timing.name == "Timing A"
 
     timing_rows =
@@ -384,11 +375,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
              left.id == right.id
            end)
 
-    original_timing =
-      Repo.one!(from timing in TimedPattern, where: timing.route_pattern_id == ^original.id)
-
-    copied_timing =
-      Repo.one!(from timing in TimedPattern, where: timing.route_pattern_id == ^copied.id)
+    [original_timing] = stored_timings(original.id)
+    [copied_timing] = stored_timings(copied.id)
 
     refute copied_timing.id == original_timing.id
 
@@ -477,7 +465,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
         context.audit
       )
 
-    timing = Repo.one!(from timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+    [timing] = stored_timings(pattern.id)
     timing = timing |> Ecto.Changeset.change(%{headsign: "Timing-specific"}) |> Repo.update!()
 
     trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
@@ -517,8 +505,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     {:ok, pattern} =
       Gtfs.create_pattern(context.route.route_id, pattern_attrs([first, second]), context.audit)
 
-    [timing_a] =
-      Repo.all(from timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id)
+    [timing_a] = stored_timings(pattern.id)
 
     {:ok, %{source_fingerprint: source}} =
       Gtfs.get_pattern(
@@ -539,11 +526,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     assert {:ok, _result} =
              Gtfs.apply_review(pattern.id, add_operation, add_fingerprint, context.audit)
 
-    timing_b =
-      Repo.one!(
-        from timing in TimedPattern,
-          where: timing.route_pattern_id == ^pattern.id and timing.name == "Timing B"
-      )
+    timing_b = pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Timing B"))
 
     timing_audit =
       Repo.one!(
@@ -615,10 +598,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     assert {:ok, _result} =
              Gtfs.apply_review(pattern.id, delete_operation, delete_fingerprint, context.audit)
 
-    assert Repo.aggregate(
-             from(timing in TimedPattern, where: timing.route_pattern_id == ^pattern.id),
-             :count
-           ) == 1
+    assert length(stored_timings(pattern.id)) == 1
   end
 
   # The test database can hold rows this case did not create, so "no rows written"
@@ -627,13 +607,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatternsTest do
     from(row in schema, where: row.organization_id in ^organization_ids)
   end
 
-  defp pattern_occurrences(pattern_id) do
-    Repo.all(
-      from occurrence in RoutePatternStop,
-        where: occurrence.route_pattern_id == ^pattern_id,
-        order_by: occurrence.position
-    )
-  end
+  defp pattern_occurrences(pattern_id), do: stored_occurrences(pattern_id)
 
   defp pattern_attrs(stops) do
     %{

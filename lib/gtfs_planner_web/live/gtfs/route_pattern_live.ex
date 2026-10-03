@@ -3003,7 +3003,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     for row <- rows,
         row.pattern.label_pattern_id == nil,
-        labelled = Map.get(children, row.pattern.id, []),
+        labelled = Map.get(children, row.pattern.route_pattern_id, []),
         labelled != [],
         into: %{} do
       {row.pattern.route_pattern_id,

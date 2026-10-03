@@ -17,7 +17,6 @@ defmodule GtfsPlanner.Gtfs.Alignments.TripWritersTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AlignmentSegment
   alias GtfsPlanner.Gtfs.AuditContext
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Repo
 
@@ -134,14 +133,8 @@ defmodule GtfsPlanner.Gtfs.Alignments.TripWritersTest do
     %{bundle: bundle, pattern: pattern}
   end
 
-  defp visit_distances(pattern_id) do
-    Repo.all(
-      from o in RoutePatternStop,
-        where: o.route_pattern_id == ^pattern_id,
-        order_by: [asc: o.position],
-        select: o.shape_dist_traveled
-    )
-  end
+  defp visit_distances(pattern_id),
+    do: pattern_id |> stored_occurrences() |> Enum.map(& &1.shape_dist_traveled)
 
   defp persisted_distances(organization, version, trip_id) do
     Repo.all(

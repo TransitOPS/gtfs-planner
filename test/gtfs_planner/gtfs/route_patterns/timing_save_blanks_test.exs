@@ -29,7 +29,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
@@ -454,14 +453,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.TimingSaveBlanksTest do
 
   defp row_tail(bundle), do: Enum.map(1..3, &row(bundle, &1))
 
-  defp occurrences(bundle) do
-    Repo.all(
-      from(o in RoutePatternStop,
-        where: o.route_pattern_id == ^bundle.pattern.id,
-        order_by: o.position
-      )
-    )
-  end
+  defp occurrences(bundle), do: stored_occurrences(bundle.pattern.id)
 
   defp timing_offsets(bundle) do
     bundle.timing.id

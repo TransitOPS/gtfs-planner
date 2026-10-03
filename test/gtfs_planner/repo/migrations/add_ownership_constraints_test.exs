@@ -1,7 +1,6 @@
 defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   use GtfsPlanner.DataCase, async: false
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Import
   alias GtfsPlanner.Gtfs.Import.Recovery
   alias GtfsPlanner.Gtfs.Import.Run
@@ -22,8 +21,6 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   import GtfsPlanner.VersionsFixtures
 
   @containment [
-    {"route_pattern_stops", "route_pattern_id", "route_patterns"},
-    {"timed_patterns", "route_pattern_id", "route_patterns"},
     {"trips", "timed_pattern_id", "timed_patterns"},
     {"alignment_segments", "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas", "flex_service_id", "flex_services"},
@@ -91,16 +88,34 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       assert definition =~ "REFERENCES #{parent}(id, organization_id)"
     end
 
-    # `stop_levels` stores scoped GTFS identifiers, so its containment is a natural
-    # composite key that follows a parent rename and deletes with the parent.
-    for {parent, column} <- [{"stops", "stop_id"}, {"levels", "level_id"}] do
-      assert {"stop_levels", ^parent, definition, "c"} =
-               Map.fetch!(constraints, "stop_levels_#{parent}_owner_fkey")
+    # `stop_levels` and the pattern occurrences and timings store their parents' GTFS
+    # identifiers, so their containment is a natural composite key that follows a parent
+    # rename and deletes with the parent.
+    for {child, parent, name, column} <- [
+          {"stop_levels", "stops", "stop_levels_stops_owner_fkey", "stop_id"},
+          {"stop_levels", "levels", "stop_levels_levels_owner_fkey", "level_id"},
+          {"route_pattern_stops", "route_patterns",
+           "route_pattern_stops_route_patterns_owner_fkey", "route_pattern_id"},
+          {"timed_patterns", "route_patterns", "timed_patterns_route_patterns_owner_fkey",
+           "route_pattern_id"}
+        ] do
+      assert {^child, ^parent, definition, "c"} = Map.fetch!(constraints, name)
 
       assert definition =~ "FOREIGN KEY (organization_id, gtfs_version_id, #{column})"
       assert definition =~ "REFERENCES #{parent}(organization_id, gtfs_version_id, #{column})"
       assert definition =~ "ON UPDATE CASCADE ON DELETE CASCADE"
     end
+
+    # A label is optional and blocks deleting its owner, so only the update follows.
+    assert {"route_patterns", "route_patterns", label_definition, "r"} =
+             Map.fetch!(constraints, "route_patterns_label_pattern_id_fkey")
+
+    assert label_definition =~ "FOREIGN KEY (organization_id, gtfs_version_id, label_pattern_id)"
+
+    assert label_definition =~
+             "REFERENCES route_patterns(organization_id, gtfs_version_id, route_pattern_id)"
+
+    assert label_definition =~ "ON UPDATE CASCADE ON DELETE RESTRICT"
 
     refute Enum.any?(constraints, fn {_name, {child, parent, _definition, _delete_rule}} ->
              child == "gtfs_import_runs" and parent == "gtfs_versions"

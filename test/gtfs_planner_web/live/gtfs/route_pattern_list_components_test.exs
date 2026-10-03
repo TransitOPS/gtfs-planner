@@ -129,7 +129,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       owner_with_child = summary("B", 0)
 
       child =
-        summary("B-2", 0, %{pattern: %{label_pattern_id: owner_with_child.pattern.id}})
+        summary("B-2", 0, %{
+          pattern: %{label_pattern_id: owner_with_child.pattern.route_pattern_id}
+        })
 
       items = RoutePatternListComponents.stream_items([owner, owner_with_child, child])
 

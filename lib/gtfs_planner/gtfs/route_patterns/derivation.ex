@@ -597,7 +597,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp pattern_refs(route) do
     patterns = route_patterns(route) |> Map.values()
-    stops_by_pattern = occurrence_stop_ids(Enum.map(patterns, & &1.id))
+    stops_by_pattern = occurrence_stop_ids(route, patterns)
     linked = linked_trip_counts(route, Enum.map(patterns, & &1.route_pattern_id))
 
     Enum.map(patterns, fn pattern ->
@@ -605,7 +605,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         id: pattern.id,
         route_pattern_id: pattern.route_pattern_id,
         direction_id: pattern.direction_id,
-        stop_ids: Map.get(stops_by_pattern, pattern.id, []),
+        stop_ids: Map.get(stops_by_pattern, pattern.route_pattern_id, []),
         derivation_key: pattern.derivation_key,
         linked_trip_count: Map.get(linked, pattern.route_pattern_id, 0),
         # `Grouping` answers a labelled child's group from its owner, so the
@@ -615,11 +615,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     end)
   end
 
-  defp occurrence_stop_ids([]), do: %{}
+  defp occurrence_stop_ids(_route, []), do: %{}
 
-  defp occurrence_stop_ids(pattern_ids) do
+  defp occurrence_stop_ids(route, patterns) do
     from(o in RoutePatternStop,
-      where: o.route_pattern_id in ^pattern_ids,
+      where:
+        o.organization_id == ^route.organization_id and
+          o.gtfs_version_id == ^route.gtfs_version_id and
+          o.route_pattern_id in ^Enum.map(patterns, & &1.route_pattern_id),
       order_by: [asc: o.route_pattern_id, asc: o.position],
       select: {o.route_pattern_id, o.stop_id}
     )
@@ -774,7 +777,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   defp preview_groups(route, context, groups) do
     refs = context.pattern_refs
     service_names = service_names(route, groups)
-    taken = taken_timing_names(refs)
+    taken = taken_timing_names(route, refs)
 
     Enum.map(groups, fn group ->
       direction = preview_direction(group, groups, refs)
@@ -790,7 +793,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         direction_id: direction,
         suggestion: Grouping.suggest_direction(group, groups, refs),
         candidates: candidates,
-        timing_names: timing_names(group, service_names, taken, candidates),
+        timing_names: timing_names(context, group, service_names, taken, candidates),
         stop_distances_m: stop_distances(context, group, candidates)
       }
     end)
@@ -799,31 +802,36 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # Rule 6: one service is named after it, two are joined with "and", and any
   # other number falls back to the pattern's own next timing name. A new pattern
   # has no timings yet, so the fallback is the name derivation would give it.
-  defp timing_names(group, service_names, taken, candidates) do
+  defp timing_names(context, group, service_names, taken, candidates) do
     names =
       group.services
       |> Enum.map(fn {service_id, _count} -> Map.get(service_names, service_id, service_id) end)
       |> Enum.sort()
 
     case Grouping.timing_name(names, taken) do
-      :fallback -> [fallback_timing_name(candidates)]
+      :fallback -> [fallback_timing_name(context, candidates)]
       name -> [name]
     end
   end
 
-  defp fallback_timing_name([]), do: "Timing A"
-  defp fallback_timing_name([%{id: id} | _rest]), do: RoutePatterns.next_timing_name(id)
+  defp fallback_timing_name(_context, []), do: "Timing A"
+
+  defp fallback_timing_name(context, [%{id: id} | _rest]),
+    do: RoutePatterns.next_timing_name(Map.fetch!(context.patterns, id))
 
   # The names a target's timings already hold, so rule 6's " 2", " 3" suffix
   # never proposes a name the pattern owns.
-  defp taken_timing_names(refs) do
-    pattern_ids = Enum.map(refs, & &1.id)
+  defp taken_timing_names(route, refs) do
+    route_pattern_ids = Enum.map(refs, & &1.route_pattern_id)
 
-    if pattern_ids == [] do
+    if route_pattern_ids == [] do
       MapSet.new()
     else
       from(t in TimedPattern,
-        where: t.route_pattern_id in ^pattern_ids,
+        where:
+          t.organization_id == ^route.organization_id and
+            t.gtfs_version_id == ^route.gtfs_version_id and
+            t.route_pattern_id in ^route_pattern_ids,
         select: t.name
       )
       |> Repo.all()
@@ -1185,7 +1193,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       supplied_ids: supplied_ids,
       supplied: supplied,
       derived: derived,
-      occurrences: occurrence_rows(pattern_ids(supplied, derived, overrides)),
+      occurrences: occurrence_rows(route, context_patterns(supplied, derived, overrides)),
       representatives: representative_sequences(route, supplied, eligible_stops),
       eligible_stops: eligible_stops,
       names: pattern_names(route),
@@ -1248,21 +1256,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # so `supplied` and `derived` are both blind to it. Without its own occurrences
   # here, `existing_target/3` would insert a second copy of its stops and trip
   # over the unique position constraint.
-  defp pattern_ids(supplied, derived, overrides) do
+  defp context_patterns(supplied, derived, overrides) do
     targets = Map.get(overrides, :targets) || %{}
 
-    supplied_ids = Enum.map(Map.values(supplied), & &1.id)
-    derived_ids = Enum.map(derived, fn {_key, pattern} -> pattern.id end)
-    target_ids = targets |> Map.values() |> Enum.map(& &1.id)
-
-    supplied_ids ++ derived_ids ++ target_ids
+    Map.values(supplied) ++ Map.values(derived) ++ Map.values(targets)
   end
 
-  defp occurrence_rows([]), do: %{}
+  # Keyed by GTFS `route_pattern_id`, which is unique within the route's
+  # organization and version.
+  defp occurrence_rows(_route, []), do: %{}
 
-  defp occurrence_rows(pattern_ids) do
+  defp occurrence_rows(route, patterns) do
     from(o in RoutePatternStop,
-      where: o.route_pattern_id in ^pattern_ids,
+      where:
+        o.organization_id == ^route.organization_id and
+          o.gtfs_version_id == ^route.gtfs_version_id and
+          o.route_pattern_id in ^Enum.map(patterns, & &1.route_pattern_id),
       order_by: [asc: o.route_pattern_id, asc: o.position],
       select: %{route_pattern_id: o.route_pattern_id, id: o.id, stop_id: o.stop_id}
     )
@@ -1543,7 +1552,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
             name,
             0,
             entry.representative,
-            owner.id
+            owner.route_pattern_id
           )
 
         validate_label_pair!(pattern, owner)
@@ -1573,7 +1582,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # carry it is not this sequence's child and the route is rolled back instead
   # of linking trips to a pattern with the wrong stops.
   defp existing_child_target(context, pattern, sequence) do
-    case Map.get(context.occurrences, pattern.id) do
+    case Map.get(context.occurrences, pattern.route_pattern_id) do
       nil ->
         existing_derived_target(pattern, sequence, true)
 
@@ -1597,7 +1606,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   defp supplied_target(context, stage_one, natural_id) do
     pattern = Map.fetch!(context.supplied, natural_id)
 
-    case Map.get(context.occurrences, pattern.id) do
+    case Map.get(context.occurrences, pattern.route_pattern_id) do
       nil -> new_supplied_target(context, stage_one, pattern)
       occurrences -> occurred_target(pattern, occurrences)
     end
@@ -1721,7 +1730,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # A pattern's target is its own occurrences, or the sequence derivation would
   # have given it when it has none yet.
   defp existing_target(pattern, entry, context) do
-    case Map.get(context.occurrences, pattern.id) do
+    case Map.get(context.occurrences, pattern.route_pattern_id) do
       nil -> existing_derived_target(pattern, entry.sequence, true)
       occurrences -> existing_derived_target(pattern, occurrences, false)
     end
@@ -1882,7 +1891,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       |> Enum.map(fn {stop_id, position} ->
         %{
           id: Ecto.UUID.generate(),
-          route_pattern_id: pattern.id,
+          route_pattern_id: pattern.route_pattern_id,
           organization_id: pattern.organization_id,
           gtfs_version_id: pattern.gtfs_version_id,
           stop_id: stop_id,
@@ -2236,7 +2245,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         {timing_id, state}
 
       :error ->
-        case stored_timing(target.pattern.id, signature, rows) do
+        case stored_timing(target.pattern, signature, rows) do
           {:ok, timing_id} ->
             {timing_id, put_in(state, [:timings, key], timing_id)}
 
@@ -2244,16 +2253,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
             create_timing(target, signature, rows, state)
 
           :mismatch ->
-            create_timing(target, unique_signature_key(target.pattern.id, signature), rows, state)
+            create_timing(target, unique_signature_key(target.pattern, signature), rows, state)
         end
     end
   end
 
-  defp stored_timing(pattern_id, signature, rows) do
+  defp stored_timing(pattern, signature, rows) do
     case Repo.one(
-           from(t in TimedPattern,
-             where: t.route_pattern_id == ^pattern_id and t.derivation_key == ^signature
-           )
+           from(t in RoutePatterns.timings_query(pattern), where: t.derivation_key == ^signature)
          ) do
       nil ->
         :none
@@ -2281,10 +2288,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Repo.all()
   end
 
-  defp unique_signature_key(pattern_id, signature) do
+  defp unique_signature_key(pattern, signature) do
     taken =
-      from(t in TimedPattern,
-        where: t.route_pattern_id == ^pattern_id and not is_nil(t.derivation_key),
+      from(t in RoutePatterns.timings_query(pattern),
+        where: not is_nil(t.derivation_key),
         select: t.derivation_key
       )
       |> Repo.all()
@@ -2302,7 +2309,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     timing =
       %TimedPattern{}
       |> TimedPattern.changeset(%{
-        route_pattern_id: pattern.id,
+        route_pattern_id: pattern.route_pattern_id,
         route_pattern: pattern,
         organization_id: pattern.organization_id,
         gtfs_version_id: pattern.gtfs_version_id,
@@ -2327,6 +2334,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         })
       end)
 
+    verify_occurrence_parents!(timing, target.occurrences)
+
     {count, nil} = Repo.insert_all(TimedPatternStop, timing_rows)
 
     if count != length(timing_rows) do
@@ -2341,11 +2350,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     {timing.id, state}
   end
 
+  # `timed_pattern_stops` carries no scope columns, so the bulk insert applies the
+  # same parent check as `TimedPatternStop.changeset/2`: every occurrence must
+  # belong to the timing's pattern, by organization, version and GTFS
+  # `route_pattern_id` together.
+  defp verify_occurrence_parents!(timing, occurrence_ids) do
+    unique_ids = Enum.uniq(occurrence_ids)
+    occurrences = Repo.all(from(o in RoutePatternStop, where: o.id in ^unique_ids))
+
+    unless length(occurrences) == length(unique_ids) and
+             Enum.all?(occurrences, &TimedPatternStop.same_pattern?(timing, &1)) do
+      Repo.rollback(:timing_row_parent_mismatch)
+    end
+  end
+
   # A grouping review already named the timing it would create (rule 6), so
   # that name is used. Every other timing keeps derivation's own rule, so an
   # import names timings exactly as before.
   defp timing_name_for(%{timing_name: name}, _pattern) when is_binary(name), do: name
-  defp timing_name_for(_target, pattern), do: RoutePatterns.next_timing_name(pattern.id)
+  defp timing_name_for(_target, pattern), do: RoutePatterns.next_timing_name(pattern)
 
   defp record_headsign(state, timing_id, headsign) do
     if MapSet.member?(state.created_timings, timing_id) do
@@ -2364,7 +2387,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     (Map.values(plan.supplied) ++
        Map.values(plan.derived) ++ supplied_child_targets(plan.supplied))
     |> Enum.reduce(state, fn target, state ->
-      if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern.id) do
+      if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern) do
         {_timing_id, state} =
           create_timing(target, nil, zero_rows(length(target.occurrences)), state)
 
@@ -2381,8 +2404,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Enum.flat_map(fn target -> Map.values(Map.get(target, :children, %{})) end)
   end
 
-  defp pattern_has_timing?(pattern_id) do
-    Repo.exists?(from(t in TimedPattern, where: t.route_pattern_id == ^pattern_id))
+  defp pattern_has_timing?(pattern) do
+    pattern |> RoutePatterns.timings_query() |> Repo.exists?()
   end
 
   defp zero_rows(count),

@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
   describe "a trip blank between timepoints" do
     test "links, stores nil offsets and leaves its stop_times rows alone", context do
       _trip = imported_trip(context, "T-1", blank_timed_rows())
+      duplicate_trip_in_sibling_version(context, "T-1")
 
       before = stop_time_snapshot(context)
 
@@ -69,7 +70,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
       assert summary.trips_linked == 1
       assert summary.trips_custom == 0
 
-      linked = Repo.get_by!(Trip, trip_id: "T-1")
+      linked =
+        Repo.get_by!(Trip,
+          trip_id: "T-1",
+          organization_id: context.organization.id,
+          gtfs_version_id: context.version.id
+        )
+
       assert linked.pattern_derivation_state == "linked"
       assert linked.pattern_derivation_reason == nil
       refute is_nil(linked.route_pattern_id)
@@ -212,6 +219,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
   describe "a fully timed trip" do
     test "links with integer offsets and no nil", context do
       _trip = imported_trip(context, "T-full", fully_timed_rows())
+      duplicate_trip_in_sibling_version(context, "T-full")
 
       assert {:ok, summary} = derive(context)
 
@@ -219,12 +227,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.DerivationBlankTimesTest do
       assert summary.timings_created == 1
       assert summary.trips_linked == 1
 
-      linked = Repo.get_by!(Trip, trip_id: "T-full")
+      linked =
+        Repo.get_by!(Trip,
+          trip_id: "T-full",
+          organization_id: context.organization.id,
+          gtfs_version_id: context.version.id
+        )
+
       assert linked.pattern_derivation_state == "linked"
 
       assert offsets(timing_rows(linked.timed_pattern_id)) ==
                Enum.map(0..12, fn stops_passed -> {stops_passed * 240, stops_passed * 240} end)
     end
+  end
+
+  # Another version of the organization holds a trip with the same ID, so a lookup
+  # by trip ID alone finds two rows; the assertions pass only when scoped.
+  defp duplicate_trip_in_sibling_version(context, trip_id) do
+    sibling = gtfs_version_fixture(context.organization.id)
+    trip_fixture(context.organization.id, sibling.id, "R1", %{trip_id: trip_id})
   end
 
   defp derive(context) do
