@@ -900,6 +900,42 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   @doc """
+  Returns the version's roster lines and their slots as plain facts.
+
+  This is `export_roster/4`'s line read without the composition: the line
+  number, the operator and each weekday's day type, run and stored sign-on and
+  sign-off times, scoped by organization and version on the line query itself.
+
+  A caller fingerprinting the source it read — the TODS generator's preview —
+  needs to name the roster facts that would change a generated candidate without
+  deriving a roster from movements to learn them. The stored sign-on and sign-off
+  times are included because they are what makes a re-cut run a stale slot
+  (INV-13); a write that moved one changes the hash even though the run did not.
+  """
+  @spec export_line_facts(Ecto.UUID.t(), Ecto.UUID.t()) :: [map()]
+  def export_line_facts(organization_id, gtfs_version_id) do
+    organization_id
+    |> list_lines(gtfs_version_id)
+    |> Enum.map(fn line ->
+      %{
+        line_number: line.line_number,
+        operator_id: line.operator && line.operator.id,
+        days:
+          Enum.map(
+            line.days,
+            &%{
+              weekday: &1.weekday,
+              day_type_key: &1.day_type_key,
+              run_id: &1.run_id,
+              run_sign_on_secs: &1.run_sign_on_secs,
+              run_sign_off_secs: &1.run_sign_off_secs
+            }
+          )
+      }
+    end)
+  end
+
+  @doc """
   Composes the roster for an export that already has its movements and runs.
 
   The export derives the version's runs once and passes them here rather than

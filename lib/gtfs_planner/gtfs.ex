@@ -70,6 +70,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Gtfs.TodsGenerator
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
@@ -5757,6 +5758,42 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Rosters.roster_view()} | {:error, :not_found | :unavailable}
   def load_roster(organization_id, gtfs_version_id) do
     catalog_read_adapter().load_roster(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Answers what one TODS generation request would add to a version, writing
+  nothing.
+
+  `params` are the five business inputs of `TodsGenerator.Input` and `audit`
+  carries the version, the organization and the actor; the actor's current
+  editor membership is read first, so a revoked editor is refused before any
+  source fact. Every source fact is read inside one `Export.with_read_snapshot/1`
+  read boundary.
+
+  The result is the candidate a page previews: the normalized inputs, the source
+  fingerprint a later save compares against, the new blocks and the trip moves,
+  the blocks that are preserved, and the exclusions with their reasons. An empty
+  service in the selected range is `{:ok, preview}` with `no_work?: true` rather
+  than an error, because "this version has nothing to staff" is something a page
+  must be able to say.
+
+  The refusals are `{:error, :forbidden}`, `{:error, :not_found}` for a foreign
+  or unusable version, `{:error, :missing_garages}`, `{:error, {:too_large,
+  count}}` above 3,000 distinct trips, and `{:error, changeset}` for anything the
+  input refuses — including a garage UUID of another organization or of no one,
+  which is a field error and never a fallback garage.
+  """
+  @spec preview_tods_generation(AuditContext.t(), map()) ::
+          {:ok, TodsGenerator.preview()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :forbidden
+             | :not_found
+             | :missing_garages
+             | {:snapshot_timeout}
+             | {:too_large, non_neg_integer()}}
+  def preview_tods_generation(%AuditContext{} = audit, params) do
+    TodsGenerator.preview(audit, params)
   end
 
   @doc """

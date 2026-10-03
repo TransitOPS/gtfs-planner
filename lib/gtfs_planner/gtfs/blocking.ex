@@ -1710,6 +1710,114 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Returns the candidate inputs of one generator run over several day types.
+
+  `suggest_blocks/4` reads one day type and hands the result to
+  `Blocking.Plan.build/1` for a review and an apply. A caller that composes the
+  candidate itself — the TODS generator's `Plan` — needs the same reads for a
+  *set* of day types and nothing else, so this is that read and no more: the
+  trips of every named day type *completed with the rest of every block they
+  touch*, the one planning context they are all read against, and every block ID
+  in use on an affected date so a new block continues after the highest one.
+
+  A block is one vehicle's work across every date it runs and a trip's `block_id`
+  is stored once for all of its dates, so the rows are the named day types' own
+  trips plus every trip sharing a block with one of them anywhere in the version.
+  A scope holding only its own dates would read a shared block as half-empty: it
+  could count three trips against a capacity bound where the block holds five,
+  and it could call a chain valid that already overlaps a trip running on a date
+  outside the range. `{:blocks, block_ids}` is the same companion read a calendar
+  combination's closure uses.
+
+  The returned `day_types` is every derived day type that runs one of those rows,
+  which is a superset of the requested keys: the requested keys are the days a
+  caller composes *on*, and the returned set is the days that decide whether what
+  it composed is valid there. `rows_by_day_type` keys both, so a requested day
+  type the completed rows do not reach is an empty list rather than a missing key.
+
+  The context is built once over the completed rows, not once per day type, so a
+  block the generator forms across two day types is resolved against the same
+  route settings, attributes, driving times and relief points whichever day it is
+  evaluated on.
+
+  **It opens no transaction.** It runs inside the caller's — the export's and the
+  generator's one read snapshot, which has already established its isolation, and
+  a nested `Repo.transaction/1` would only take a savepoint. It writes no row and
+  takes no lock, so it is a read like `load_day/3` and `export_movements/2`.
+
+  An unknown day type key is refused with `{:unknown_day_type, day_types}` and
+  selects nothing, exactly as `load_day/3` refuses one: nothing falls back to
+  another day type (INV-6). A foreign or unpublished version is
+  `{:error, :not_found}` through `Calendars.list_calendars/3`.
+  """
+  @spec candidate_input(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          {:ok,
+           %{
+             day_types: [DayTypes.day_type()],
+             rows_by_day_type: %{optional(String.t()) => [Queries.trip_row()]},
+             context: Context.t(),
+             used_block_ids: [String.t()]
+           }}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+  def candidate_input(organization_id, gtfs_version_id, day_type_keys) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    requested = Enum.map(day_type_keys, &resolve_day_type!(day_types, &1))
+
+    service_ids = requested |> Enum.flat_map(& &1.service_ids) |> Enum.uniq() |> Enum.sort()
+
+    rows =
+      organization_id
+      |> Queries.trip_rows(gtfs_version_id, {:services, service_ids})
+      |> complete_touched_blocks(organization_id, gtfs_version_id)
+
+    affected = affected_day_types(day_types, rows)
+    affected_services = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+    settings = get_settings(organization_id, gtfs_version_id)
+    context = build_context!(organization_id, gtfs_version_id, settings, rows)
+
+    used_block_ids =
+      organization_id
+      |> Queries.used_block_ids(gtfs_version_id, affected_services)
+      |> MapSet.to_list()
+
+    {:ok,
+     %{
+       day_types: affected,
+       rows_by_day_type: rows_by_day_type(requested, affected, rows),
+       context: context,
+       # Sorted so a run's `used_ids` does not depend on the order the set
+       # happened to iterate in.
+       used_block_ids: Enum.sort_by(used_block_ids, &Summary.natural_key/1)
+     }}
+  end
+
+  # Every trip of every block the requested trips touch, wherever those trips
+  # run: the checks read a block as a whole, and a block with a trip outside the
+  # requested dates is not a smaller block.
+  defp complete_touched_blocks(rows, organization_id, gtfs_version_id) do
+    touched = rows |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    companions = Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, touched})
+
+    (rows ++ companions)
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(& &1.id)
+  end
+
+  # The requested day types first, so a requested day the completed rows do not
+  # reach comes back as an empty list rather than a missing key.
+  defp rows_by_day_type(requested, affected, rows) do
+    (requested ++ affected)
+    |> Enum.uniq_by(& &1.key)
+    |> Map.new(&{&1.key, rows_of_service(rows, &1)})
+  end
+
+  defp rows_of_service(rows, %{service_ids: service_ids}) do
+    Enum.filter(rows, &(&1.service_id in service_ids))
+  end
+
+  @doc """
   Suggests blocks for one day type and returns the plan a reviewer reads.
 
   A read-only transaction: it takes the version row `FOR SHARE` through
