@@ -61,16 +61,32 @@ defmodule GtfsPlanner.Gtfs.DisplayClock do
   The comparison is exact, so callers trim their own input first:
   `"America/New_York"` is a zone, `" America/New_York "` is not. Validation
   through this function accepts exactly the zones `resolve_zone/2` resolves.
+
+  A name found valid is remembered for the life of the node, so repeat calls
+  run no query. A name the catalog rejects is asked again every time.
   """
   @spec valid_zone?(String.t()) :: boolean()
   def valid_zone?(name) do
-    %Postgrex.Result{rows: [[valid?]]} =
-      Repo.query!(
-        "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)",
-        [name]
-      )
+    # `pg_timezone_names` rebuilds the whole zone list from the tz files on every
+    # scan (about 15 ms). A name found valid stays valid until the server's tz data
+    # changes, so remember it; a miss is never stored, which bounds the cache to the
+    # catalog's ~600 names however many invalid values callers send.
+    key = {__MODULE__, :valid_zone, name}
 
-    valid?
+    case :persistent_term.get(key, false) do
+      true ->
+        true
+
+      false ->
+        %Postgrex.Result{rows: [[valid?]]} =
+          Repo.query!(
+            "SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)",
+            [name]
+          )
+
+        if valid?, do: :persistent_term.put(key, true)
+        valid?
+    end
   end
 
   @doc """

@@ -154,6 +154,24 @@ defmodule GtfsPlanner.Gtfs.DisplayClockTest do
       refute DisplayClock.valid_zone?("Not/a_zone")
       refute DisplayClock.valid_zone?(" America/New_York ")
     end
+
+    test "answers a zone it has already found valid without a query" do
+      assert DisplayClock.valid_zone?("America/Chicago")
+
+      {valid?, queries} = with_query_log(fn -> DisplayClock.valid_zone?("America/Chicago") end)
+
+      assert valid?
+      assert queries == []
+    end
+
+    test "asks the catalog again for a name it rejected" do
+      for _call <- 1..2 do
+        {valid?, queries} = with_query_log(fn -> DisplayClock.valid_zone?("Not/a_zone") end)
+
+        refute valid?
+        assert [_catalog_lookup] = queries
+      end
+    end
   end
 
   describe "zone_names/0" do
