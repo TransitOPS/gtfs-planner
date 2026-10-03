@@ -135,7 +135,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       # Both writers landed: the spare timing carries the edit and the paste
       # removed its trip with the trip's transfers.
       assert timing_departures(scope.spare_rev_timing) == [0, 0, 0]
-      assert unboxed(fn -> Repo.get_by(Trip, trip_id: scope.trips.first) end) == nil
+      assert unboxed(fn -> get_trip(scope, scope.trips.first) end) == nil
       assert_consistent!(scope)
     end
 
@@ -151,7 +151,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       editor =
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            trip = Repo.get_by!(Trip, trip_id: scope.rev_trip_other)
+            trip = get_trip!(scope, scope.rev_trip_other)
 
             {:ok, updated} =
               Gtfs.update_trip(
@@ -186,7 +186,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
 
       # The paste never escapes its direction: the other-service
       # opposite-direction trip keeps the other writer's value.
-      assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.rev_trip_other).trip_short_name end) ==
+      assert unboxed(fn -> get_trip!(scope, scope.rev_trip_other).trip_short_name end) ==
                "12"
 
       assert_consistent!(scope)
@@ -208,7 +208,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       editor =
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            stop = Repo.get_by!(Stop, stop_id: "PSA-2")
+            stop = get_stop!(scope, "PSA-2")
             {:ok, renamed} = Gtfs.import_update_stop(stop, %{stop_name: "Market Street Hall"})
             send(parent, {:stop_committed, self()})
             renamed
@@ -233,7 +233,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       # Nothing was written: the doomed trip, its stop times and both
       # transfers are all still there.
       assert scoped_counts(scope) == counts_before
-      assert %Trip{} = unboxed(fn -> Repo.get_by(Trip, trip_id: scope.trips.first) end)
+      assert %Trip{} = unboxed(fn -> get_trip(scope, scope.trips.first) end)
       assert_consistent!(scope)
     end
 
@@ -315,7 +315,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       editor =
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            trip = Repo.get_by!(Trip, trip_id: scope.rev_trip)
+            trip = get_trip!(scope, scope.rev_trip)
 
             {:ok, updated} =
               Gtfs.update_trip(
@@ -369,7 +369,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
 
       assert summary.removed == 1
 
-      assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.rev_trip).trip_short_name end) ==
+      assert unboxed(fn -> get_trip!(scope, scope.rev_trip).trip_short_name end) ==
                "10"
 
       assert_consistent!(scope)
@@ -430,7 +430,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
                {"PSA-3", "08:10:00", "08:10:00"}
              ]
 
-      assert %Trip{} = unboxed(fn -> Repo.get_by(Trip, trip_id: scope.trips.first) end)
+      assert %Trip{} = unboxed(fn -> get_trip(scope, scope.trips.first) end)
       assert_consistent!(scope)
     end
   end
@@ -486,7 +486,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
                end)
 
       assert scoped_counts(scope) == Map.update!(counts_before, :transfers, &(&1 + 1))
-      assert %Trip{} = unboxed(fn -> Repo.get_by(Trip, trip_id: scope.trips.first) end)
+      assert %Trip{} = unboxed(fn -> get_trip(scope, scope.trips.first) end)
       assert_consistent!(scope)
 
       # A fresh review sees the third transfer, and the apply deletes the
@@ -506,7 +506,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
 
       assert summary.removed == 1
       assert summary.transfers_removed == 3
-      assert unboxed(fn -> Repo.get_by(Trip, trip_id: scope.trips.first) end) == nil
+      assert unboxed(fn -> get_trip(scope, scope.trips.first) end) == nil
       assert_consistent!(scope)
 
       # And a transfer naming the now-removed trip is refused, so no
@@ -646,7 +646,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       assigner =
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            trip = Repo.get_by!(Trip, trip_id: scope.trips.second)
+            trip = get_trip!(scope, scope.trips.second)
 
             {:ok, result} =
               Gtfs.apply_block_change(day_key, {:assign, [trip.id], "101"}, scope.audit)
@@ -678,7 +678,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
 
       # The later paste reflects the earlier Blocks write: a paste without a
       # Block column keeps the assigned block (R13).
-      assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.trips.second).block_id end) ==
+      assert unboxed(fn -> get_trip!(scope, scope.trips.second).block_id end) ==
                "101"
 
       assert_consistent!(scope)
@@ -710,13 +710,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
 
       assert summary.removed == 1
 
-      assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.trips.second).block_id end) ==
+      assert unboxed(fn -> get_trip!(scope, scope.trips.second).block_id end) ==
                "101"
 
       assigner =
         Task.Supervisor.async_nolink(supervisor, fn ->
           unboxed(fn ->
-            trip = Repo.get_by!(Trip, trip_id: scope.trips.second)
+            trip = get_trip!(scope, scope.trips.second)
 
             {:ok, result} =
               Gtfs.apply_block_change(day_key, {:assign, [trip.id], "102"}, scope.audit)
@@ -730,7 +730,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       assert assigner_pid == assigner.pid
       assert %{block_id: "102"} = Task.await(assigner, @collect_timeout)
 
-      assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.trips.second).block_id end) ==
+      assert unboxed(fn -> get_trip!(scope, scope.trips.second).block_id end) ==
                "102"
 
       assert_consistent!(scope)
@@ -795,7 +795,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
           send(parent, {:assigner_ready, self()})
 
           unboxed(fn ->
-            trip = Repo.get_by!(Trip, trip_id: scope.trips.second)
+            trip = get_trip!(scope, scope.trips.second)
             Gtfs.apply_block_change(day_key, {:assign, [trip.id], "102"}, scope.audit)
           end)
         end)
@@ -820,7 +820,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
                match?({:error, _}, assign_result)
 
       if match?({:ok, _}, assign_result) do
-        assert unboxed(fn -> Repo.get_by!(Trip, trip_id: scope.trips.second).block_id end) ==
+        assert unboxed(fn -> get_trip!(scope, scope.trips.second).block_id end) ==
                  "102"
       end
 
@@ -981,6 +981,19 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
           service_id: other_service,
           start_time: "06:30:00"
         }).trip
+
+      # A sibling version of the same organization repeats the stop and trip
+      # feed IDs, so an unscoped natural lookup would find two rows.
+      sibling = gtfs_version_fixture(organization.id)
+      route_fixture(organization.id, sibling.id, %{route_id: route_id})
+      stop_fixture(organization.id, sibling.id, %{stop_id: "PSA-2", stop_name: "Sibling Market"})
+
+      for trip <- [first, second, rev_trip, rev_trip_other] do
+        trip_fixture(organization.id, sibling.id, route_id, %{
+          trip_id: trip.trip_id,
+          service_id: trip.service_id
+        })
+      end
 
       transfer_fixture(organization.id, version.id, %{
         from_stop_id: "PSA-1",
@@ -1240,6 +1253,32 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
     end)
   end
 
+  # Natural-ID reads carry the fixture's organization and version, like the
+  # production lookups: the seeded sibling version repeats these feed IDs.
+  defp get_trip(scope, trip_id) do
+    Repo.get_by(Trip,
+      organization_id: scope.organization.id,
+      gtfs_version_id: scope.version.id,
+      trip_id: trip_id
+    )
+  end
+
+  defp get_trip!(scope, trip_id) do
+    Repo.get_by!(Trip,
+      organization_id: scope.organization.id,
+      gtfs_version_id: scope.version.id,
+      trip_id: trip_id
+    )
+  end
+
+  defp get_stop!(scope, stop_id) do
+    Repo.get_by!(Stop,
+      organization_id: scope.organization.id,
+      gtfs_version_id: scope.version.id,
+      stop_id: stop_id
+    )
+  end
+
   defp stop_clocks(scope, trip_id) do
     unboxed(fn ->
       Repo.all(
@@ -1439,7 +1478,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
       Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(u in User, where: u.id in ^user_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 

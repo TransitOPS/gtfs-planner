@@ -69,7 +69,8 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     # organization. The alert keys are a retained provenance source that clears
     # only `source_gtfs_version_id`, and an `alert_publications` row that may only
     # name an alert of its own organization; neither is a version owner, because an
-    # alert outlives its source version. The four later fare keys are the one set
+    # alert outlives its source version. `organizations_active_gtfs_version_owner_fkey`
+    # keeps an organization's active schedule among its own versions. The four later fare keys are the one set
     # the shared migration leaves NOT VALID, so they are asserted apart from the
     # rest rather than as part of the validated whole.
     fare_constraints =
@@ -77,7 +78,7 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
       |> Enum.map(&"#{&1}_version_owner_fkey")
 
     {later, original} = Enum.split_with(rows, fn [name, _] -> name in fare_constraints end)
-    assert length(original) == 78
+    assert length(original) == 79
     assert Enum.all?(original, fn [_name, validated?] -> validated? end)
     assert Enum.sort(Enum.map(later, &hd/1)) == Enum.sort(fare_constraints)
     assert Enum.all?(later, fn [_name, validated?] -> not validated? end)

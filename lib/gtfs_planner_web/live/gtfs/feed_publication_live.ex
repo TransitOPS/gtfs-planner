@@ -274,6 +274,14 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationLive do
       </p>
 
       <p
+        :if={@row.note}
+        id={"feed-note-" <> Atom.to_string(@row.channel)}
+        class="max-w-[64ch] text-[13px] text-default"
+      >
+        {@row.note}
+      </p>
+
+      <p
         :if={is_nil(@row.public_url)}
         id={"feed-status-note-" <> Atom.to_string(@row.channel)}
         class="max-w-[64ch] text-[13px] text-muted"
@@ -346,7 +354,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationLive do
       public_url: FeedPublishing.public_url(publication.namespace, publication.channel),
       source: source_receipt(publication.active_attempt),
       served_at: served_at(publication.manifest_last_modified),
-      detail: failure_detail(publication)
+      detail: failure_detail(publication),
+      note: receipt_note(publication)
     }
   end
 
@@ -382,6 +391,16 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationLive do
        do: error || "The publisher could not serve this feed. It keeps trying."
 
   defp failure_detail(_publication), do: nil
+
+  # A served file is not a failure. This only says the schedule it was exported from could
+  # not become the active schedule.
+  defp receipt_note(%Publication{status: :current, last_error: error}) do
+    if error == Publication.active_source_unavailable() do
+      "The active schedule did not change. The version this feed was exported from is no longer available."
+    end
+  end
+
+  defp receipt_note(_publication), do: nil
 
   defp served_at(%DateTime{} = at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M UTC")
   defp served_at(_at), do: nil

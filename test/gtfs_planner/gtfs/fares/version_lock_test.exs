@@ -253,7 +253,7 @@ defmodule GtfsPlanner.Gtfs.Fares.VersionLockTest do
 
   defp cleanup(organization_id, actor_id \\ nil) do
     unboxed(fn ->
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
       if actor_id, do: Repo.delete_all(from(u in User, where: u.id == ^actor_id))
     end)

@@ -639,8 +639,11 @@ defmodule GtfsPlanner.FeedPublishing do
         "objects" => %{"zip" => %{"file" => pin.path}},
         "pin" => %{"owner_id" => pin.owner_id, "pin_token" => pin.pin_token},
         "review" => report_fingerprint(payload, review),
+        # The exported version is frozen with the attempt: the export run can be gone
+        # by the time the receipt that selects it as the active schedule is recorded.
         "source" => %{
           "run_id" => run.id,
+          "gtfs_version_id" => run.gtfs_version_id,
           "slot" => Atom.to_string(slot),
           "filename" => pin.filename,
           "export_type" => Atom.to_string(run.export_type)

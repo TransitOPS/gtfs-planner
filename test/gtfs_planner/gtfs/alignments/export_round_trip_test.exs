@@ -539,7 +539,7 @@ defmodule GtfsPlanner.Gtfs.Alignments.ExportRoundTripTest do
       Repo.delete_all(from(s in Stop, where: s.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
       Repo.delete_all(from(t in TimedPattern, where: t.organization_id in ^organization_ids))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
       Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
 
       refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))

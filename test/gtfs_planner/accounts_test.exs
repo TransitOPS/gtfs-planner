@@ -1611,6 +1611,7 @@ defmodule GtfsPlanner.AccountsTest do
       assert version
       assert version.name == "First Version"
       assert version.publication_status == "published"
+      assert org.active_gtfs_version_id == version.id
 
       membership =
         Repo.get_by(UserOrgMembership, user_id: user.id, organization_id: org.id)

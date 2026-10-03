@@ -180,8 +180,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       assert requested_bogus.filters.direction_id == 1
     end
 
-    test "the pattern filter accepts a UUID or a natural ID and otherwise falls back to all",
-         context do
+    test "the pattern filter accepts a row UUID and otherwise falls back to all", context do
       route_fixture(context.organization.id, context.version.id, %{route_id: "12p"})
       service = weekly_calendar!(context, %{name: "Patterns"})
 
@@ -227,10 +226,11 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
                downtown.pattern.route_pattern_id
              ]
 
-      assert {:ok, by_natural_id} =
+      # The filter matches row UUIDs only, not a feed route_pattern_id.
+      assert {:ok, natural_as_row} =
                load(context, "12p", %{pattern: crosstown.pattern.route_pattern_id})
 
-      assert by_natural_id.filters.pattern == crosstown.pattern.id
+      assert natural_as_row.filters.pattern == :all
 
       # A pattern of the other direction never resolves.
       assert {:ok, other_direction} = load(context, "12p", %{pattern: inbound.pattern.id})
@@ -238,6 +238,40 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
 
       assert {:ok, unknown} = load(context, "12p", %{pattern: Ecto.UUID.generate()})
       assert unknown.filters.pattern == :all
+    end
+
+    test "a route_pattern_id spelled like another pattern's row UUID does not displace the row",
+         context do
+      route_fixture(context.organization.id, context.version.id, %{route_id: "12u"})
+      service = weekly_calendar!(context, %{name: "Lookalike"})
+
+      by_row =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12u",
+          direction_id: 0,
+          route_pattern_name: "Chosen by row",
+          stops: [{"A", 0, 0, 1}]
+        })
+
+      # This pattern's feed ID is the other pattern's row UUID.
+      by_feed_id =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12u",
+          direction_id: 0,
+          route_pattern_name: "Chosen by feed ID",
+          route_pattern_id: by_row.pattern.id,
+          stops: [{"B", 0, 0, 1}]
+        })
+
+      for bundle <- [by_row, by_feed_id] do
+        schedule_trip_fixture(context.organization.id, context.version.id, "12u", bundle, %{
+          service_id: service
+        })
+      end
+
+      assert {:ok, row} = load(context, "12u", %{pattern: by_row.pattern.id})
+      assert row.filters.pattern == by_row.pattern.id
+      assert Enum.map(row.sections, & &1.pattern.id) == [by_row.pattern.id]
     end
 
     test "stops defaults to timepoints and accepts all", context do
@@ -286,7 +320,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
                load(context, "12k", %{
                  "service_id" => service,
                  "direction" => "1",
-                 "pattern" => bundle.pattern.route_pattern_id,
+                 "pattern" => bundle.pattern.id,
                  "stops" => "all"
                })
 
@@ -1604,7 +1638,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
   defp cleanup_committed_lock_scope(scope) do
     unboxed(fn ->
       Repo.delete_all(from(r in Route, where: r.organization_id == ^scope.organization.id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^scope.organization.id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^scope.organization.id))
       Repo.delete_all(from(o in Organization, where: o.id == ^scope.organization.id))
       :ok
     end)
@@ -1876,7 +1910,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       Repo.delete_all(from(l in ChangeLog, where: l.organization_id == ^organization_id))
       Repo.delete_all(from(s in Stop, where: s.organization_id == ^organization_id))
       Repo.delete_all(from(r in Route, where: r.organization_id == ^organization_id))
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
       Repo.delete_all(from(u in GtfsPlanner.Accounts.User, where: u.id == ^scope.actor.id))
     end)

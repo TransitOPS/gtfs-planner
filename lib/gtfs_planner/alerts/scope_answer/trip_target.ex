@@ -3,6 +3,8 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer.TripTarget do
   One cancelled or changed trip with the service date it runs on, embedded in
   `scope_answer.trips`.
 
+  `trip_id` is the exact GTFS feed ID, compared byte for byte.
+
   `service_date` is part of the identity because a trip repeats across its
   service dates and a consumer that reads only the trip ID would match every one
   of them.
@@ -12,8 +14,8 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer.TripTarget do
   not a `Time`: `25:15:00` is a real first departure of a frequency-based trip,
   and an `Ecto.Time` cannot say so. It is nil for a trip that is not
   frequency-based, which is the one case where the trip ID and the service date
-  already identify the instance. It is a `:string` for that reason, and for the
-  same reason as `trip_id`: this row is stored inside the `scope` jsonb column.
+  already identify the instance. It is a `:string` for that reason, and because
+  this row is stored inside the `scope` jsonb column.
   """
 
   use Ecto.Schema
@@ -24,16 +26,13 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer.TripTarget do
   @primary_key false
 
   embedded_schema do
-    # `trip_id` is a `:string` for the same reason as
-    # `GtfsPlanner.Alerts.ScopeAnswer.RouteStopPair.route_id`: this row is stored
-    # inside the `scope` jsonb column.
     field :trip_id, :string
     field :service_date, :date
     field :start_time, :string
   end
 
   @type t :: %__MODULE__{
-          trip_id: Ecto.UUID.t() | nil,
+          trip_id: String.t() | nil,
           service_date: Date.t() | nil,
           start_time: String.t() | nil
         }
@@ -54,19 +53,22 @@ defmodule GtfsPlanner.Alerts.ScopeAnswer.TripTarget do
     trip
     |> cast(attrs, [:trip_id, :service_date, :start_time])
     |> validate_required([:trip_id, :service_date])
-    |> validate_start_time()
+    |> normalize_start_time()
   end
 
-  defp validate_start_time(changeset) do
-    validate_change(changeset, :start_time, fn
-      :start_time, value ->
+  defp normalize_start_time(changeset) do
+    case get_change(changeset, :start_time) do
+      nil ->
+        changeset
+
+      value ->
         case GtfsTime.parse(value) do
           {:ok, seconds} ->
-            [{:start_time, GtfsTime.format(seconds)}]
+            put_change(changeset, :start_time, GtfsTime.format(seconds))
 
           {:error, :invalid_time} ->
-            [start_time: "must be a GTFS time like 08:00:00 or 25:15:00"]
+            add_error(changeset, :start_time, "must be a GTFS time like 08:00:00 or 25:15:00")
         end
-    end)
+    end
   end
 end

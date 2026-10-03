@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Alerts.Alert do
   `source_gtfs_version_id` is optional provenance, not ownership: the alert
   belongs to `organization_id` and survives the deletion of the version it was
   written against. `target_reference` is the server-owned capture of the trusted
-  wire IDs, labels and source row UUIDs those answers resolved to, so a source
+  wire IDs and labels those answers resolved to, so a source
   version can disappear without the alert losing its published identity, and an
   identity that no longer resolves is recorded as unresolved rather than
   replaced by a guess.

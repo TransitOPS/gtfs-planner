@@ -5,10 +5,23 @@ defmodule GtfsPlanner.Versions do
   This context owns the publication lifecycle: staging, importing, published, and
   failed states, and every transition is organization-scoped and conditional so a
   concurrent publish/fail race has exactly one winner.
+
+  It also owns each organization's active schedule: the one usable version that
+  authoring reads and target-dependent writes use. The selection is a pointer plus a
+  revision on the organization row. The first usable version of an organization
+  becomes active when it is created or published, and an editor can select any other
+  usable version with `set_active_schedule/3`. Staging, failed and later versions
+  never displace it.
+
+  Lock order for selection writers: the organization row first, then the actor's
+  membership, then the version. `Authorization` documents that a membership command
+  holds the organization row while it waits for the member's row; a writer that took
+  its membership lock first and the organization row second would deadlock with it.
   """
 
   import Ecto.Query, warn: false
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions.GtfsVersion
@@ -19,6 +32,15 @@ defmodule GtfsPlanner.Versions do
   @failed_status "failed"
 
   @telemetry_event [:gtfs_planner, :import_publication, :transition]
+
+  @typedoc """
+  What an editor saw when it read the selection. `revision` counts pointer changes and
+  never decreases, so a token read before an A -> B -> A switch is stale. `version_id`
+  is nil while the organization has no active schedule.
+  """
+  @type selection_token :: %{version_id: Ecto.UUID.t() | nil, revision: non_neg_integer()}
+
+  @type active_schedule :: %{version: GtfsVersion.t() | nil, token: selection_token()}
 
   # --- creation -------------------------------------------------------------
 
@@ -31,8 +53,12 @@ defmodule GtfsPlanner.Versions do
   @spec create_gtfs_version(Ecto.UUID.t(), map()) ::
           {:ok, GtfsVersion.t()} | {:error, Ecto.Changeset.t()}
   def create_gtfs_version(organization_id, attrs) do
+    outer? = Repo.in_transaction?()
+
     result =
       Repo.transaction(fn ->
+        lock_organization(organization_id, "FOR NO KEY UPDATE")
+
         case Repo.insert(
                GtfsVersion.published_create_changeset(
                  %GtfsVersion{organization_id: organization_id},
@@ -46,15 +72,20 @@ defmodule GtfsPlanner.Versions do
             )
             |> Repo.update_all([])
 
-            Repo.get!(GtfsVersion, version.id)
+            version = Repo.get!(GtfsVersion, version.id)
+            select_when_none(version)
+            version
 
           {:error, changeset} ->
             Repo.rollback(changeset)
         end
       end)
 
+    result = emit_transition(result, organization_id, nil, @published_status)
+
+    # A caller that opened the outer transaction announces after its own commit.
+    if not outer?, do: announce_published(result, organization_id)
     result
-    |> emit_transition(organization_id, nil, @published_status)
   end
 
   @doc """
@@ -113,13 +144,28 @@ defmodule GtfsPlanner.Versions do
   @spec publish_importing_gtfs_version(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, GtfsVersion.t()} | {:error, :invalid_status_transition | :not_found}
   def publish_importing_gtfs_version(organization_id, version_id) do
-    conditional_transition(
-      organization_id,
-      version_id,
-      @importing_status,
-      @published_status,
-      :database_now
-    )
+    outer? = Repo.in_transaction?()
+
+    {:ok, result} =
+      Repo.transaction(fn ->
+        lock_organization(organization_id, "FOR NO KEY UPDATE")
+
+        with {:ok, version} = published <-
+               conditional_transition(
+                 organization_id,
+                 version_id,
+                 @importing_status,
+                 @published_status,
+                 :database_now
+               ) do
+          select_when_none(version)
+          published
+        end
+      end)
+
+    # `ImportRuns` opens the outer transaction and announces after its own commit.
+    if not outer?, do: announce_published(result, organization_id)
+    result
   end
 
   @doc """
@@ -321,6 +367,242 @@ defmodule GtfsPlanner.Versions do
     GtfsVersion.changeset(version, attrs)
   end
 
+  # --- active schedule ------------------------------------------------------
+
+  @doc """
+  The PubSub topic that carries `{:active_schedule_changed, token}` for one organization.
+
+  A message is sent only after the transaction that moved the selection has committed.
+  It is a refresh hint: a receiver rereads `active_schedule/1` and ignores a token that
+  is not newer than the one it holds.
+  """
+  @spec active_schedule_topic(Ecto.UUID.t()) :: String.t()
+  def active_schedule_topic(organization_id), do: "active_schedule:" <> organization_id
+
+  @doc """
+  Reads the organization's active schedule and the token that identifies this state.
+
+  `scope` is `%{actor_id: _, organization_id: _}` from the server session. The read
+  requires a current editor membership, like every Alerts read, and returns the
+  pointer, its version and the revision from one statement. `version` is nil while the
+  organization has no active schedule; the token then carries `version_id: nil`.
+  """
+  @spec active_schedule(map()) :: {:ok, active_schedule()} | {:error, :forbidden}
+  def active_schedule(scope) do
+    with :ok <- Authorization.authorize_editor(scope),
+         %{} = active <- read_active_schedule(scope.organization_id) do
+      {:ok, active}
+    else
+      _ -> {:error, :forbidden}
+    end
+  end
+
+  @doc """
+  Selects `version_id` as the organization's active schedule.
+
+  One transaction locks the organization row, takes the actor's current editor
+  membership, compares `expected_token` with the stored state and then selects a
+  published version of the same organization. The token is an expectation, never
+  authority: the organization and actor come from `scope`.
+
+  Selecting the version that is already active changes nothing and keeps the revision.
+  Any other selection increments the revision once and, after commit, broadcasts
+  `{:active_schedule_changed, token}` on `active_schedule_topic/1`.
+
+  Returns `{:ok, active}`, or `{:error, reason}` with nothing written:
+
+    * `:forbidden` - the membership is missing, revoked or not an editor's;
+    * `:stale_active` - the selection moved since the token was read, including an
+      A -> B -> A return to the same version;
+    * `:not_found` - the version is not in the actor's organization;
+    * `:not_usable` - the version is staging, importing or failed.
+  """
+  @spec set_active_schedule(map(), term(), term()) ::
+          {:ok, active_schedule()}
+          | {:error, :forbidden | :stale_active | :not_found | :not_usable}
+  def set_active_schedule(scope, version_id, expected_token) do
+    result =
+      Repo.transaction(fn ->
+        organization = lock_selection!(scope, "FOR NO KEY UPDATE")
+
+        if not current_token?(organization, expected_token), do: Repo.rollback(:stale_active)
+
+        version = usable_version!(organization.id, version_id)
+
+        if organization.active_gtfs_version_id == version.id do
+          {:unchanged, %{version: version, token: token(organization)}}
+        else
+          {1, [revision]} =
+            from(o in Organization,
+              where: o.id == ^organization.id,
+              select: o.active_gtfs_version_revision
+            )
+            |> Repo.update_all(
+              set: [active_gtfs_version_id: version.id],
+              inc: [active_gtfs_version_revision: 1]
+            )
+
+          {:changed, %{version: version, token: %{version_id: version.id, revision: revision}}}
+        end
+      end)
+
+    case result do
+      {:ok, {:unchanged, active}} ->
+        {:ok, active}
+
+      {:ok, {:changed, active}} ->
+        broadcast_active_change(active.token, scope.organization_id)
+        {:ok, active}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Locks the organization's active schedule for the caller's write transaction.
+
+  Call inside `Repo.transaction/1`, before any lock on an alert or other entity of the
+  version. The organization row is locked `FOR SHARE`, then the actor's current editor
+  membership, then the active version `FOR UPDATE`, so a selection change
+  (`FOR NO KEY UPDATE` on the organization) and a mutation of the version's targets
+  each wait for this transaction and are seen by it afterwards. Take this lock in place
+  of a separate `Authorization.lock_editor!/1`; locking the membership first would
+  deadlock with a membership command, which holds the organization row while it waits
+  for the member's row.
+
+  Returns the locked `%{version: version, token: token}`. Otherwise the surrounding
+  transaction rolls back with `:forbidden` (membership), `:stale_active` (the selection
+  moved since `expected_token` was read) or `:no_active_schedule`.
+
+  A reader that holds no earlier token passes `:current` instead and is given whatever
+  is active, under the same locks. The caller (never a client) chooses `:current`.
+  """
+  @spec lock_active_schedule!(map(), term()) :: active_schedule()
+  def lock_active_schedule!(scope, expected_token) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError, "lock_active_schedule!/2 must run inside Repo.transaction/1"
+    end
+
+    organization = lock_selection!(scope, "FOR SHARE")
+
+    cond do
+      expected_token != :current and not current_token?(organization, expected_token) ->
+        Repo.rollback(:stale_active)
+
+      is_nil(organization.active_gtfs_version_id) ->
+        Repo.rollback(:no_active_schedule)
+
+      true ->
+        %{version: lock_active_version!(organization), token: token(organization)}
+    end
+  end
+
+  @doc """
+  Takes the locks of `lock_active_schedule!/2` for a command that learns only after it has
+  read its own row whether it depends on the schedule, and reports instead of refusing.
+
+  An alert save is metadata-only unless it changes a target, and that is known only against
+  the locked alert; the alert row must come after the active version, so the version is
+  locked first whether or not it ends up mattering. The organization row `FOR SHARE`, the
+  actor's editor membership and the active version `FOR UPDATE` (when one exists) are held
+  in that order. Rolls the surrounding transaction back with `:forbidden` for a missing
+  membership; otherwise returns the locked `version` (nil without an active schedule), its
+  current `token` and `current?`, whether `expected_token` equals that token. The caller
+  decides what a stale or absent selection means for its write.
+  """
+  @spec lock_schedule_for_write!(map(), term()) :: %{
+          version: GtfsVersion.t() | nil,
+          token: selection_token(),
+          current?: boolean()
+        }
+  def lock_schedule_for_write!(scope, expected_token) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError, "lock_schedule_for_write!/2 must run inside Repo.transaction/1"
+    end
+
+    organization = lock_selection!(scope, "FOR SHARE")
+
+    %{
+      version: organization.active_gtfs_version_id && lock_active_version!(organization),
+      token: token(organization),
+      current?: current_token?(organization, expected_token)
+    }
+  end
+
+  @doc """
+  Locks one organization row `FOR NO KEY UPDATE` for the caller's transaction.
+
+  Lifecycle writers that may select the first usable version take this lock before any
+  version row, and after their run lock but before the actor's membership lock (see the
+  module note). It does not conflict with the `FOR KEY SHARE` lock a foreign-key insert
+  takes, so unrelated version input writers keep running. An absent organization rolls
+  the transaction back with `:not_found`.
+  """
+  @spec lock_organization!(Ecto.UUID.t()) :: Organization.t()
+  def lock_organization!(organization_id) do
+    case lock_organization(organization_id, "FOR NO KEY UPDATE") do
+      %Organization{} = organization -> organization
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  @doc """
+  Broadcasts the organization's token when `version_id` is its active schedule.
+
+  A lifecycle caller that owns the outer transaction calls this once after that
+  transaction commits, with the version it created or published. It sends nothing
+  when the version is not active.
+  """
+  @spec announce_activation(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def announce_activation(organization_id, version_id) do
+    case read_active_schedule(organization_id) do
+      %{token: %{version_id: ^version_id} = token} ->
+        broadcast_active_change(token, organization_id)
+
+      _other ->
+        :ok
+    end
+  end
+
+  @doc """
+  Applies one confirmed full-GTFS receipt to the organization's active schedule.
+
+  Call inside the receipt transaction, after the receipt's own attempt and channel
+  locks. `sequence` is the served full manifest's sequence and `source_version_id` the
+  version its file was exported from. Under the organization lock, a receipt whose
+  sequence is not newer than `active_full_publication_sequence` was already applied or
+  is older than one that was, and changes nothing (`:unchanged`), so a replayed or
+  late receipt cannot undo a later manual choice. A newer receipt is consumed once:
+
+    * the source is a published version of this organization: it becomes active, and the
+      revision increments, only when it is not already active. A change returns
+      `{:changed, token}`; the caller announces it with `announce_activation/2` after
+      the outer commit. Otherwise the result is `:unchanged`;
+    * the source is absent, unpublished or deleted: the pointer stays and the receipt
+      is still consumed (`:unavailable`), because the file really was served.
+  """
+  @spec activate_full_publication!(Ecto.UUID.t(), integer(), term()) ::
+          :unchanged | {:changed, selection_token()} | :unavailable
+  def activate_full_publication!(organization_id, sequence, source_version_id)
+      when is_integer(sequence) do
+    if not Repo.in_transaction?() do
+      raise ArgumentError, "activate_full_publication!/3 must run inside Repo.transaction/1"
+    end
+
+    organization = lock_organization!(organization_id)
+
+    if sequence <= organization.active_full_publication_sequence do
+      :unchanged
+    else
+      consume_full_receipt(
+        organization,
+        sequence,
+        locked_version(organization.id, source_version_id)
+      )
+    end
+  end
+
   # --- writer coordination --------------------------------------------------
 
   @doc """
@@ -388,6 +670,145 @@ defmodule GtfsPlanner.Versions do
       )
       |> Repo.one()
     end
+  end
+
+  # Selects the first usable version of an organization. The row is already locked
+  # `FOR NO KEY UPDATE` by this transaction, and the condition is evaluated against the
+  # current row, so concurrent first versions leave exactly one pointer and one
+  # revision increment.
+  defp select_when_none(%GtfsVersion{id: version_id, organization_id: organization_id}) do
+    from(o in Organization, where: o.id == ^organization_id and is_nil(o.active_gtfs_version_id))
+    |> Repo.update_all(
+      set: [active_gtfs_version_id: version_id],
+      inc: [active_gtfs_version_revision: 1]
+    )
+  end
+
+  defp announce_published({:ok, %GtfsVersion{id: version_id}}, organization_id),
+    do: announce_activation(organization_id, version_id)
+
+  defp announce_published(_error, _organization_id), do: :ok
+
+  defp broadcast_active_change(token, organization_id) do
+    Phoenix.PubSub.broadcast(
+      GtfsPlanner.PubSub,
+      active_schedule_topic(organization_id),
+      {:active_schedule_changed, token}
+    )
+  end
+
+  # The pointer, its version and the revision come from one statement, so they agree.
+  defp read_active_schedule(organization_id) do
+    if Values.uuid?(organization_id) do
+      from(o in Organization,
+        left_join: v in GtfsVersion,
+        on: v.id == o.active_gtfs_version_id and v.organization_id == o.id,
+        where: o.id == ^organization_id,
+        select: %{
+          version: v,
+          token: %{version_id: o.active_gtfs_version_id, revision: o.active_gtfs_version_revision}
+        }
+      )
+      |> Repo.one()
+    end
+  end
+
+  defp lock_active_version!(%Organization{} = organization) do
+    from(v in GtfsVersion,
+      where:
+        v.id == ^organization.active_gtfs_version_id and v.organization_id == ^organization.id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one!()
+  end
+
+  defp token(%Organization{} = organization) do
+    %{
+      version_id: organization.active_gtfs_version_id,
+      revision: organization.active_gtfs_version_revision
+    }
+  end
+
+  defp current_token?(organization, %{version_id: version_id, revision: revision}),
+    do: token(organization) == %{version_id: version_id, revision: revision}
+
+  defp current_token?(_organization, _forged), do: false
+
+  # Organization row first, then the actor's membership. A bad scope fails the
+  # membership lock, so a missing or foreign organization is `:forbidden` too.
+  defp lock_selection!(scope, lock) do
+    organization = lock_organization(is_map(scope) && Map.get(scope, :organization_id), lock)
+    Authorization.lock_editor!(scope)
+    organization || Repo.rollback(:forbidden)
+  end
+
+  # A literal lock string is required by Ecto; callers pass one of two constants.
+  defp lock_organization(organization_id, lock) do
+    if Values.uuid?(organization_id) do
+      case lock do
+        "FOR NO KEY UPDATE" ->
+          Repo.one(
+            from o in Organization, where: o.id == ^organization_id, lock: "FOR NO KEY UPDATE"
+          )
+
+        "FOR SHARE" ->
+          Repo.one(from o in Organization, where: o.id == ^organization_id, lock: "FOR SHARE")
+      end
+    end
+  end
+
+  # `FOR KEY SHARE` is the lock the pointer's own foreign key takes. It holds off a
+  # delete of the version without conflicting with a publish transition.
+  defp locked_version(organization_id, version_id) do
+    if Values.uuid?(version_id) do
+      from(v in GtfsVersion,
+        where: v.id == ^version_id and v.organization_id == ^organization_id,
+        lock: "FOR KEY SHARE"
+      )
+      |> Repo.one()
+    end
+  end
+
+  defp usable_version!(organization_id, version_id) do
+    case locked_version(organization_id, version_id) do
+      nil -> Repo.rollback(:not_found)
+      %GtfsVersion{publication_status: @published_status} = usable -> usable
+      %GtfsVersion{} -> Repo.rollback(:not_usable)
+    end
+  end
+
+  # The organization row is locked, so the watermark and the pointer move in one
+  # statement and the revision counts only actual pointer changes.
+  defp consume_full_receipt(organization, sequence, source) do
+    active_id = organization.active_gtfs_version_id
+
+    case source do
+      %GtfsVersion{publication_status: @published_status, id: ^active_id} ->
+        consume_receipt(organization, sequence)
+        :unchanged
+
+      %GtfsVersion{publication_status: @published_status, id: version_id} ->
+        {1, [revision]} =
+          from(o in Organization,
+            where: o.id == ^organization.id,
+            select: o.active_gtfs_version_revision
+          )
+          |> Repo.update_all(
+            set: [active_gtfs_version_id: version_id, active_full_publication_sequence: sequence],
+            inc: [active_gtfs_version_revision: 1]
+          )
+
+        {:changed, %{version_id: version_id, revision: revision}}
+
+      _unavailable ->
+        consume_receipt(organization, sequence)
+        :unavailable
+    end
+  end
+
+  defp consume_receipt(organization, sequence) do
+    from(o in Organization, where: o.id == ^organization.id)
+    |> Repo.update_all(set: [active_full_publication_sequence: sequence])
   end
 
   defp lifecycle_state(organization_id, version_id) do

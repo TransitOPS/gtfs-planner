@@ -134,16 +134,62 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteScopeTest do
       assert paste.direction_id == 0
       assert paste.pattern_id == scope.main.pattern.id
 
-      assert {:ok, natural} =
+      assert {:ok, selected} =
                Schedules.load_paste_scope(
                  context.organization.id,
                  context.version.id,
                  scope.route_id,
-                 %{"service_id" => scope.service, "direction_id" => "0", "pattern_id" => "MAIN"}
+                 %{
+                   "service_id" => scope.service,
+                   "direction_id" => "0",
+                   "pattern_id" => scope.main.pattern.id
+                 }
                )
 
-      assert natural.pattern_id == scope.main.pattern.id
-      assert natural.direction_id == 0
+      assert selected.pattern_id == scope.main.pattern.id
+      assert selected.direction_id == 0
+    end
+
+    test "a route_pattern_id spelled like another pattern's row UUID does not displace the row",
+         context do
+      scope = schedule_scope!(context)
+
+      # This pattern's feed ID is the main pattern's row UUID.
+      schedule_pattern_fixture(context.organization.id, context.version.id, %{
+        route_id: scope.route_id,
+        direction_id: 0,
+        route_pattern_id: scope.main.pattern.id,
+        route_pattern_name: "Lookalike",
+        stops: []
+      })
+
+      for params <- [
+            %{pattern_id: scope.main.pattern.id},
+            %{pattern: scope.main.pattern.id},
+            %{"pattern_id" => scope.main.pattern.id}
+          ] do
+        assert {:ok, by_row} =
+                 Schedules.load_paste_scope(
+                   context.organization.id,
+                   context.version.id,
+                   scope.route_id,
+                   Map.merge(%{service_id: scope.service, direction_id: 0}, params)
+                 )
+
+        assert by_row.pattern_id == scope.main.pattern.id
+      end
+    end
+
+    test "a feed route_pattern_id under the row selector is :not_found", context do
+      scope = schedule_scope!(context)
+
+      assert {:error, :not_found} =
+               Schedules.load_paste_scope(
+                 context.organization.id,
+                 context.version.id,
+                 scope.route_id,
+                 %{service_id: scope.service, direction_id: 0, pattern_id: "MAIN"}
+               )
     end
 
     test "a foreign route, organization or version is :not_found", context do

@@ -70,11 +70,15 @@ defmodule GtfsPlanner.Agents.Pack do
   A change a pack prepared but did not apply.
 
   `summary` carries the generic copy the panel renders; `command` is the
-  section-specific value that only the owning LiveView interprets.
+  section-specific value that only the owning LiveView interprets. `bound_to`
+  is the optional record of what the proposal was made against (the Alerts pack
+  names an alert revision and a schedule token), which the owning LiveView hands
+  back to the command that writes it.
   """
   @type prepared :: %{
-          summary: %{title: String.t(), detail: String.t(), lines: [String.t()]},
-          command: term()
+          required(:summary) => %{title: String.t(), detail: String.t(), lines: [String.t()]},
+          required(:command) => term(),
+          optional(:bound_to) => map()
         }
 
   @doc "Stable pack identifier, also used as the session scope's `pack_id`."

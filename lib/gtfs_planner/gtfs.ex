@@ -2656,7 +2656,13 @@ defmodule GtfsPlanner.Gtfs do
       )
       |> Enum.filter(& &1.is_cross_level)
 
-    target_level = Repo.get!(Level, stop_level.level_id)
+    target_level =
+      Repo.get_by!(Level,
+        id: stop_level.level_id,
+        organization_id: stop_level.organization_id,
+        gtfs_version_id: stop_level.gtfs_version_id
+      )
+
     partner_level_indexes = load_partner_level_indexes(pathways, stop_level, target_level)
 
     pathways
@@ -3571,13 +3577,17 @@ defmodule GtfsPlanner.Gtfs do
   @doc """
   Returns child stops for a parent station, preloading level association.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_child_stops_for_parent(org_id, version_id, parent_id)
       [%Stop{level: %Level{}}, ...]
   """
   def list_child_stops_for_parent(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -3633,13 +3643,17 @@ defmodule GtfsPlanner.Gtfs do
   Returns the list of levels for a specific station with stop counts.
   Uses a hybrid approach: combines levels from child stops with levels from stop_levels table.
 
+  The parent row is resolved within `organization_id`/`gtfs_version_id` before
+  its `stop_id` is translated, so a foreign row with a locally duplicated feed ID
+  is refused instead of reading another scope's station.
+
   ## Examples
 
       iex> list_levels_for_station(organization_id, gtfs_version_id, parent_station_id)
       [%{level: %Level{}, stop_count: 5}, ...]
   """
   def list_levels_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -3825,18 +3839,46 @@ defmodule GtfsPlanner.Gtfs do
   Returns pathways where the from_stop is on the specified level
   and both endpoints belong to the specified parent station.
 
+  `level_id` and `parent_station_id` are row handles, resolved inside the
+  organization/version scope before their GTFS identifiers are used. A handle
+  outside that scope returns `[]`.
+
   ## Examples
 
       iex> list_pathways_for_level(org_id, version_id, level_id, parent_station_id)
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_level(organization_id, gtfs_version_id, level_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
-    level = Repo.get!(Level, level_id)
+    with %Stop{} = parent_station <-
+           get_stop_by_id(organization_id, gtfs_version_id, parent_station_id),
+         %Level{} = level <- get_level_by_id(organization_id, gtfs_version_id, level_id) do
+      organization_id
+      |> level_pathways_query(gtfs_version_id, level.level_id, parent_station.stop_id)
+      |> Repo.all()
+      |> flag_cross_level(level.level_id)
+    else
+      _ -> []
+    end
+  end
 
-    descendants =
-      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
+  # Pathways with an endpoint on `level_id` whose endpoints both descend from the
+  # station, with both endpoint stops merged in.
+  defp level_pathways_query(organization_id, gtfs_version_id, level_id, station_stop_id) do
+    descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
 
+    organization_id
+    |> pathways_with_stops_query(gtfs_version_id)
+    |> where(
+      [_p, from_stop, to_stop],
+      from_stop.level_id == ^level_id or to_stop.level_id == ^level_id
+    )
+    |> where(
+      [_p, from_stop, to_stop],
+      from_stop.stop_id in subquery(descendants) and to_stop.stop_id in subquery(descendants)
+    )
+  end
+
+  defp pathways_with_stops_query(organization_id, gtfs_version_id) do
     from(p in Pathway,
       join: from_stop in Stop,
       on:
@@ -3848,25 +3890,21 @@ defmodule GtfsPlanner.Gtfs do
         p.to_stop_id == to_stop.stop_id and
           to_stop.organization_id == ^organization_id and
           to_stop.gtfs_version_id == ^gtfs_version_id,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
-          from_stop.stop_id in subquery(descendants) and
-          to_stop.stop_id in subquery(descendants),
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id,
       order_by: [asc: p.pathway_id],
       select: p,
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
-    |> Repo.all()
-    |> Enum.map(fn pathway ->
-      # Add flags indicating if this is a cross-level pathway
-      from_on_level = pathway.from_stop.level_id == level.level_id
-      to_on_level = pathway.to_stop.level_id == level.level_id
-      is_cross_level = from_on_level != to_on_level
+  end
+
+  # Adds flags indicating whether each pathway crosses levels.
+  defp flag_cross_level(pathways, level_id) do
+    Enum.map(pathways, fn pathway ->
+      from_on_level = pathway.from_stop.level_id == level_id
+      to_on_level = pathway.to_stop.level_id == level_id
 
       Map.merge(pathway, %{
-        is_cross_level: is_cross_level,
+        is_cross_level: from_on_level != to_on_level,
         from_on_active_level: from_on_level,
         to_on_active_level: to_on_level
       })
@@ -3881,6 +3919,9 @@ defmodule GtfsPlanner.Gtfs do
   to the parent station descendant set and at least one endpoint must be on the
   requested level. The endpoint stops and cross-level flags are populated the same
   way as `list_pathways_for_level/4`.
+
+  `level_id` and `parent_station_id` are row handles, resolved inside the
+  organization/version scope; a handle outside it returns `[]`.
 
   ## Examples
 
@@ -3901,51 +3942,24 @@ defmodule GtfsPlanner.Gtfs do
         parent_station_id,
         stop_id
       ) do
-    parent_station = Repo.get!(Stop, parent_station_id)
-    level = Repo.get!(Level, level_id)
-
-    descendants =
-      descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
-
-    from(p in Pathway,
-      join: from_stop in Stop,
-      on:
-        p.from_stop_id == from_stop.stop_id and
-          from_stop.organization_id == ^organization_id and
-          from_stop.gtfs_version_id == ^gtfs_version_id,
-      join: to_stop in Stop,
-      on:
-        p.to_stop_id == to_stop.stop_id and
-          to_stop.organization_id == ^organization_id and
-          to_stop.gtfs_version_id == ^gtfs_version_id,
-      where:
-        p.organization_id == ^organization_id and
-          p.gtfs_version_id == ^gtfs_version_id and
-          (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id) and
-          (from_stop.level_id == ^level.level_id or to_stop.level_id == ^level.level_id) and
-          from_stop.stop_id in subquery(descendants) and
-          to_stop.stop_id in subquery(descendants),
-      order_by: [asc: p.pathway_id],
-      select: p,
-      select_merge: %{from_stop: from_stop, to_stop: to_stop}
-    )
-    |> Repo.all()
-    |> Enum.map(fn pathway ->
-      # Add flags indicating if this is a cross-level pathway
-      from_on_level = pathway.from_stop.level_id == level.level_id
-      to_on_level = pathway.to_stop.level_id == level.level_id
-      is_cross_level = from_on_level != to_on_level
-
-      Map.merge(pathway, %{
-        is_cross_level: is_cross_level,
-        from_on_active_level: from_on_level,
-        to_on_active_level: to_on_level
-      })
-    end)
+    with %Stop{} = parent_station <-
+           get_stop_by_id(organization_id, gtfs_version_id, parent_station_id),
+         %Level{} = level <- get_level_by_id(organization_id, gtfs_version_id, level_id) do
+      organization_id
+      |> level_pathways_query(gtfs_version_id, level.level_id, parent_station.stop_id)
+      |> where([p], p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
+      |> Repo.all()
+      |> flag_cross_level(level.level_id)
+    else
+      _ -> []
+    end
   end
 
   @doc """
   Returns pathways where from_stop or to_stop is a child of the given station.
+
+  `parent_station_id` is a row handle resolved inside the organization/version
+  scope; a row outside it raises `Ecto.NoResultsError`.
 
   ## Examples
 
@@ -3953,7 +3967,7 @@ defmodule GtfsPlanner.Gtfs do
       [%Pathway{from_stop: %Stop{}, to_stop: %Stop{}}, ...]
   """
   def list_pathways_for_station(organization_id, gtfs_version_id, parent_station_id) do
-    parent_station = Repo.get!(Stop, parent_station_id)
+    parent_station = get_scoped_station!(organization_id, gtfs_version_id, parent_station_id)
 
     descendants =
       descendant_stop_ids_query(organization_id, gtfs_version_id, parent_station.stop_id)
@@ -5088,6 +5102,33 @@ defmodule GtfsPlanner.Gtfs do
       :gtfs_planner,
       :gtfs_catalog_read_adapter,
       @default_catalog_read_adapter
+    )
+  end
+
+  # Station readers take a row handle, so the handle is only a translation input
+  # after ownership is proven. A row outside the scope raises the same
+  # not-found error an absent row would.
+  defp get_scoped_station!(organization_id, gtfs_version_id, station_id) do
+    case get_stop_by_id(organization_id, gtfs_version_id, station_id) do
+      nil ->
+        raise Ecto.NoResultsError,
+          queryable: Stop,
+          query:
+            "station #{inspect(station_id)} not found in organization #{inspect(organization_id)} " <>
+              "and gtfs version #{inspect(gtfs_version_id)}"
+
+      station ->
+        station
+    end
+  end
+
+  # Level row handles are scoped the same way: the row's GTFS `level_id` is only
+  # read after the row is proven to belong to the organization and version.
+  defp get_level_by_id(organization_id, gtfs_version_id, id) do
+    Repo.get_by(Level,
+      id: id,
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
     )
   end
 

@@ -16,14 +16,19 @@ defmodule GtfsPlanner.FeedPublishing.PublisherTest do
 
   use GtfsPlanner.DataCase, async: false
 
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.ConcurrencyHelpers
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Feed, as: AlertsFeed
   alias GtfsPlanner.Alerts.MessageAnswer
   alias GtfsPlanner.Alerts.Publication, as: AlertPublication
   alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.TimingAnswer
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.FeedPublishing
   alias GtfsPlanner.FeedPublishing.Attempt
   alias GtfsPlanner.FeedPublishing.Config
@@ -37,6 +42,7 @@ defmodule GtfsPlanner.FeedPublishing.PublisherTest do
   @moduletag timeout: 120_000
 
   @static_tasks GtfsPlanner.FeedPublishing.Publisher.StaticTasks
+  @contention_timeout 10_000
 
   @t0 ~U[2026-10-02 12:00:00.000000Z]
 
@@ -99,6 +105,90 @@ defmodule GtfsPlanner.FeedPublishing.PublisherTest do
       assert HTTPBoundary.requests() == []
       assert Repo.get!(Attempt, attempt.id).state == "pending"
       assert Repo.get!(Publication, publication.id).status == :pending
+    end
+  end
+
+  describe "receipts and the active schedule" do
+    test "the supervised publisher selects the source of the full file it serves" do
+      organization = organization_fixture()
+      source = gtfs_version_fixture(organization.id)
+      before = selection(organization)
+      {publication, attempt} = queued_static(organization, source_version_id: source.id)
+
+      start_supervised!({Publisher, interval_ms: 30_000})
+      assert :ok = Publisher.await_idle()
+
+      assert Repo.get!(Publication, publication.id).status == :current
+
+      assert selection(organization) == %{
+               version_id: source.id,
+               revision: before.revision + 1,
+               sequence: attempt.sequence
+             }
+    end
+
+    for channel <- [:flex, :pathways] do
+      test "a served #{channel} file leaves the selection and the full receipt watermark alone" do
+        organization = organization_fixture()
+        source = gtfs_version_fixture(organization.id)
+        before = selection(organization)
+
+        {publication, _attempt} =
+          queued_static(organization, channel: unquote(channel), source_version_id: source.id)
+
+        assert {:ok, :current} = FeedPublishing.advance(publication.id)
+
+        assert Repo.get!(Publication, publication.id).status == :current
+        assert selection(organization) == before
+      end
+    end
+  end
+
+  describe "receipt lock order" do
+    test "a membership command, a publishing editor and a full receipt do not deadlock" do
+      %{organization: organization, scope: scope, admin: admin, publication: publication} =
+        committed = unboxed(&committed_full_receipt/0)
+
+      on_exit(fn -> unboxed(fn -> clear_committed(committed) end) end)
+      supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
+
+      # A membership command holds the organization row, then needs the member's row.
+      command =
+        start_holder(
+          supervisor,
+          fn -> Authorization.lock_member_admin!(admin, organization.id) end,
+          fn ->
+            Repo.update_all(
+              from(m in UserOrgMembership,
+                where: m.user_id == ^scope.actor_id and m.organization_id == ^organization.id
+              ),
+              set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+            )
+          end
+        )
+
+      # The receipt starts behind the command. It must wait before it holds the channel.
+      receipt = start_command(supervisor, fn -> serve_and_advance(committed) end)
+      send(receipt.pid, :go)
+      assert_blocked_by(receipt, command)
+
+      # A publishing editor holds its membership shared, then locks the channel, as
+      # `FeedPublishing.publish_static/4` does. A receipt already holding the channel
+      # while it waited for the organization would close the cycle here.
+      editor =
+        start_holder(supervisor, fn ->
+          Authorization.lock_editor!(scope)
+          Repo.one!(from p in Publication, where: p.id == ^publication.id, lock: "FOR UPDATE")
+        end)
+
+      send(command.pid, :release)
+      send(editor.pid, :release)
+
+      assert {:ok, :held} = Task.await(editor.task, @contention_timeout)
+      assert {:ok, :held} = Task.await(command.task, @contention_timeout)
+      assert {:ok, :current} = Task.await(receipt.task, @contention_timeout)
+
+      assert unboxed(fn -> selection(organization) end).version_id == committed.source.id
     end
   end
 
@@ -327,7 +417,14 @@ defmodule GtfsPlanner.FeedPublishing.PublisherTest do
       }
     }
 
-    private = %{"objects" => %{"zip" => %{"file" => path}}}
+    private =
+      case Keyword.get(opts, :source_version_id) do
+        nil ->
+          %{"objects" => %{"zip" => %{"file" => path}}}
+
+        id ->
+          %{"objects" => %{"zip" => %{"file" => path}}, "source" => %{"gtfs_version_id" => id}}
+      end
 
     publication =
       Repo.insert!(%Publication{
@@ -452,6 +549,115 @@ defmodule GtfsPlanner.FeedPublishing.PublisherTest do
 
   defp stored_snapshot(%AlertPublication{desired_snapshot: snapshot}),
     do: AlertPublication.snapshot_from_stored(snapshot)
+
+  # A committed organization with an editor, an administrator and a full-channel attempt
+  # whose manifest the loopback store already serves (a lost database receipt).
+  defp committed_full_receipt do
+    organization = organization_fixture()
+    editor = editor_fixture(organization)
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+    source = gtfs_version_fixture(organization.id)
+
+    {publication, attempt} =
+      queued_static(organization, state: "switching", source_version_id: source.id)
+
+    %{
+      organization: organization,
+      scope: %{actor_id: editor.id, organization_id: organization.id},
+      admin: admin,
+      source: source,
+      publication: publication,
+      attempt: attempt,
+      manifest_key: Manifest.key(prefix(publication), :full)
+    }
+  end
+
+  defp clear_committed(%{organization: organization}) do
+    Repo.update_all(from(p in Publication, where: p.organization_id == ^organization.id),
+      set: [active_attempt_id: nil]
+    )
+
+    delete_committed_scope!([organization.id])
+  end
+
+  defp serve_and_advance(%{publication: publication, attempt: attempt, manifest_key: key}) do
+    HTTPBoundary.reset()
+
+    HTTPBoundary.put_object(key, attempt.manifest_body,
+      etag: ~s("remote"),
+      last_modified: "Thu, 02 Oct 2026 12:00:00 GMT"
+    )
+
+    FeedPublishing.advance(publication.id)
+  end
+
+  # A committing task parked until `:go`, on its own connection.
+  defp start_command(supervisor, command) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          send(parent, {:ready, self(), backend_pid()})
+
+          receive do
+            :go -> :ok
+          after
+            @contention_timeout -> raise "command was not released"
+          end
+
+          command.()
+        end)
+      end)
+
+    assert_receive {:ready, pid, backend}, @contention_timeout
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  # A transaction that holds whatever `acquire` locks until `:release`, then runs `finish`.
+  defp start_holder(supervisor, acquire, finish \\ fn -> :ok end) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn -> hold(parent, acquire, finish) end)
+      end)
+
+    assert_receive {:held, pid, backend}, @contention_timeout
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  defp hold(parent, acquire, finish) do
+    Repo.transaction(fn ->
+      acquire.()
+      send(parent, {:held, self(), backend_pid()})
+
+      receive do
+        :release -> :ok
+      after
+        @contention_timeout -> raise "holder was not released"
+      end
+
+      finish.()
+      :held
+    end)
+  end
+
+  defp assert_blocked_by(waiting, holder) do
+    deadline = System.monotonic_time(:millisecond) + @contention_timeout
+    assert :ok == unboxed(fn -> await_blocker(waiting.backend, holder.backend, deadline) end)
+  end
+
+  defp selection(organization) do
+    organization = Repo.get!(Organization, organization.id)
+
+    %{
+      version_id: organization.active_gtfs_version_id,
+      revision: organization.active_gtfs_version_revision,
+      sequence: organization.active_full_publication_sequence
+    }
+  end
 
   defp alerts_channel(organization) do
     Repo.get_by!(Publication, organization_id: organization.id, channel: :alerts)

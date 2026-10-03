@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   frame - the mode control with its preference link, the step progress row, the
   question card, the Rider preview and the bottom save bar.
 
-  The list components are renderings of what `Alerts.list_alerts/2` already
+  The list components are renderings of what `Alerts.workspace/2` already
   derived. Nothing here computes a tab, a count or a badge: the read model owns
   those, so a row cannot disagree with the count in its own tab (AC-9, R8).
 
@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   step the editor is on cannot come from two different sequences (INV-2). The
   Rider preview shows saved answers only: the header the editor wrote, the When
   summary `Alerts.Recurrence.summary/1` derived, and the labels
-  `Alerts.labels_for/2` read from the alert's own version (CR-4).
+  `Alerts.labels_for/2` read from the active schedule (CR-4).
 
   The bottom bar carries the save state in the reader's words - `Saving…`,
   `Saved`, `Not saved.` - and offers the actions that state allows: Retry for a
@@ -35,7 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   import GtfsPlannerWeb.CoreComponents,
     only: [button: 1, callout: 1, icon: 1, input: 1, segmented_control: 1, status_badge: 1]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -90,6 +90,44 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       if is_binary(value) and String.trim(value) != "", do: String.trim(value)
     end)
   end
+
+  @doc """
+  One sentence for a selector the active schedule cannot honour, in the feed IDs the
+  alert keeps.
+
+  The list's Needs attention rows and the editor's repair panel say the same thing
+  about the same diagnostic (`Alerts.Targets.resolve/2`), so the words live here once.
+  """
+  @spec target_note(map()) :: String.t()
+  def target_note(%{kind: :missing, target_type: type, id: id}),
+    do: "#{target_type_label(type)} #{id} is not in the active schedule"
+
+  def target_note(%{target_type: :route_stop_pair, selector: selector}),
+    do: "Route #{selector.route_id} does not serve stop #{selector.stop_id}"
+
+  def target_note(%{target_type: :stretch, selector: selector}),
+    do:
+      "No trip runs from stop #{selector.stretch_from_stop_id} to stop #{selector.stretch_to_stop_id}"
+
+  def target_note(%{reason: :service_not_running_on_date, id: id, selector: selector}),
+    do: "Trip #{id} does not run on #{selector.service_date}"
+
+  def target_note(%{reason: :start_time_not_a_departure, id: id, selector: selector}),
+    do: "Trip #{id} has no departure at #{selector.start_time}"
+
+  # A diagnostic `Alerts.Targets` adds later still reads as a sentence, so a display-only
+  # note can never stop the list or the editor from rendering.
+  def target_note(%{target_type: type, id: id}),
+    do: "#{target_type_label(type)} #{id} needs attention"
+
+  @doc "The noun a diagnostic's target type reads as in a sentence or on a button."
+  @spec target_type_label(atom()) :: String.t()
+  def target_type_label(:route), do: "Route"
+  def target_type_label(:stop), do: "Stop"
+  def target_type_label(:trip), do: "Trip"
+  def target_type_label(:route_stop_pair), do: "Stop on route"
+  def target_type_label(:stretch), do: "Stretch"
+  def target_type_label(_other), do: "Target"
 
   # -- Editor frame -------------------------------------------------------
 
@@ -223,6 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
             data-role="alert-check-in-due"
           />
         </div>
+        <.attention_notes notes={@row.attention_notes} />
       </td>
       <td class="px-3 py-3 align-top">
         <.all_routes_badge :if={@row.system?} />
@@ -269,6 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         <.status_badge :if={@row.needs_attention?} status="warning" label="Needs attention" />
         <.status_badge :if={@row.check_in_due?} status="info" label="Check-in due" />
       </div>
+      <.attention_notes notes={@row.attention_notes} />
       <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
         <.all_routes_badge :if={@row.system?} />
         <RouteIdentity.route_badge :for={route <- @row.routes} route={route} />
@@ -281,6 +321,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       </p>
       <p class="mt-0.5 text-[13px] text-muted">{@row.last_change}</p>
     </li>
+    """
+  end
+
+  # The targets behind a Needs attention badge, in the feed IDs the alert keeps, so a
+  # reader can tell what the active schedule lacks without opening the alert. The
+  # badge carries the status; these lines are its detail.
+  attr :notes, :list, required: true, doc: "the sentences `alerts_live.ex` derived"
+
+  defp attention_notes(assigns) do
+    ~H"""
+    <ul
+      :if={@notes != []}
+      data-role="alert-target-notes"
+      class="mt-1.5 space-y-0.5 text-[13px] text-muted"
+    >
+      <li :for={note <- @notes} class="[overflow-wrap:anywhere]">{note}</li>
+    </ul>
     """
   end
 
@@ -466,6 +523,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   attr :heading, :string, required: true
   attr :hint, :string, default: nil
   attr :back, :string, default: nil, doc: "patch path to the previous step, when there is one"
+
+  attr :locked?, :boolean,
+    default: false,
+    doc: "disables every control in the body while the schedule it reads from is not the editor's"
+
   slot :inner_block, required: true
   slot :actions
 
@@ -487,9 +549,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
         </h2>
         <p :if={@hint} id={"#{@id}-hint"} class="mt-1 text-sm text-muted">{@hint}</p>
       </div>
-      <div id="alert-question-body" class="mt-5">
+      <%!-- A fieldset disables its whole body natively, so a locked question keeps what
+           it shows but takes no click, keystroke or search until targets are reloaded. --%>
+      <fieldset id="alert-question-body" class="m-0 mt-5 min-w-0 border-0 p-0" disabled={@locked?}>
         {render_slot(@inner_block)}
-      </div>
+      </fieldset>
       <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-subtle pt-4">
         <.link
           :if={@back}
@@ -511,7 +575,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   It is a reading of saved answers, never a draft of the editor's input: the
   header, the `Recurrence.summary/1` sentence for When, and the route and stop
-  labels `Alerts.labels_for/2` read from the alert's own version (CR-4). A draft
+  labels `Alerts.labels_for/2` read from the active schedule (CR-4). A draft
   that has answered nothing says so in words rather than showing an empty card,
   because an empty card reads as a broken one.
 
@@ -990,7 +1054,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   """
   attr :id, :string, default: "alert-routes"
   attr :options, :list, required: true, doc: "`Alerts.search_routes/2` options"
-  attr :selected, :list, required: true, doc: "row UUIDs the alert already names"
+  attr :selected, :list, required: true, doc: "route feed IDs the alert already names"
   attr :query, :string, default: ""
   attr :error, :string, default: nil
   attr :allow_system?, :boolean, default: true
@@ -1012,7 +1076,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           <.icon name="hero-globe-alt" class="size-4" /> The whole system
         </.button>
         <span :if={@system_selected?} class="text-[13px] font-semibold text-muted">
-          Every route in this version is affected.
+          Every route in the active schedule is affected.
         </span>
       </div>
 
@@ -1063,7 +1127,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
         <p :if={@options == []} id="alert-route-empty" class="text-sm text-muted">
           <%= if @query == "" do %>
-            Type a route number or name to search this version's routes.
+            Type a route number or name to search the active schedule's routes.
           <% else %>
             No matching routes. Try a number or another name.
           <% end %>
@@ -1087,7 +1151,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     """
   end
 
-  defp count_text(_count, true), do: "Every route in this version is selected."
+  defp count_text(_count, true), do: "Every route in the active schedule is selected."
 
   defp count_text(1, false), do: "1 route selected · Select all affected routes."
   defp count_text(count, false), do: "#{count} routes selected · Select all affected routes."
@@ -1109,7 +1173,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   selection and a typed answer arrive through one writer (INV-1).
 
   The search matches on name, number and platform code, and lists only stops of
-  the alert's own version, so the widget cannot offer a stop this alert could
+  the active schedule, so the widget cannot offer a stop this alert could
   not store (CR-4). The prototype's "Affected routes at this place" is answered
   by the routes question that follows, which arrives with the serving routes
   already pressed. **Continue** is what carries the reader there, because the
@@ -1161,7 +1225,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     required: true,
     doc: "`Alerts.route_stops/2` options for the chosen routes"
 
-  attr :selected, :list, required: true, doc: "row UUIDs the alert already skips"
+  attr :selected, :list, required: true, doc: "stop feed IDs the alert already skips"
 
   attr :stretch, :map,
     default: %{},
@@ -1303,7 +1367,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     ~H"""
     <div id="alert-shared" class="grid gap-4">
       <p :if={@routes == []} class="text-sm text-muted">
-        No other route in this version serves the stops you chose.
+        No other route in the active schedule serves the stops you chose.
       </p>
 
       <fieldset :if={@routes != []} class="rounded-control bg-info-bg p-4">
@@ -1453,7 +1517,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
 
   A cancelled trip is named the way a rider names it - the first departure and
   where it goes - because the departures come from `Alerts.departures_on/4`,
-  which reads the schedule of the alert's own version and offers only the trips
+  which reads the active schedule and offers only the trips
   whose service is active on the date being listed (AC-10, CR-4).
 
   The service date is chosen here rather than in the timing step: a cancelled
@@ -2728,8 +2792,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           Save this alert
         </h2>
         <p id="review-outcome" class="text-sm text-default">
-          Saving keeps this alert with the version you are editing. You can change any answer,
-          and the message, whenever you come back.
+          Saving keeps this alert. You can change any answer, and the message, whenever you
+          come back.
         </p>
 
         <div id="alert-publication" class="grid gap-2 rounded-card bg-canvas px-3 py-2.5">
@@ -2770,8 +2834,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
           id="alert-reference-missing"
           class="rounded-card bg-warning-bg px-3 py-2 text-sm text-warning-fg"
         >
-          This alert names an identity its reference version no longer holds. Choose the
-          affected routes again before publishing.
+          The active schedule does not have a route, stop or departure this alert names. Repair
+          its targets before publishing.
         </p>
 
         <p
@@ -2921,8 +2985,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   (**Save as new alert**). There is deliberately no "overwrite" action: a stale
   write never overwrites a newer revision, and a banner offering to force it
   would be the same failure wearing a button (R6, AC-16).
+
+  With no typed values waiting to be saved (`save_new?` false), as when a staged
+  target repair meets a newer revision, there is nothing to keep as a new alert, so
+  only **Load latest** is offered.
   """
   attr :id, :string, default: "alert-conflict"
+  attr :save_new?, :boolean, default: true
 
   def conflict_banner(assigns) do
     ~H"""
@@ -2933,14 +3002,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
       class="mb-4 rounded-card"
     >
       <p id={"#{@id}-body"}>
-        Your latest changes aren't saved. Load the current draft to keep going, or save what
-        you have here as a new alert.
+        Your latest changes aren't saved.
+        <%= if @save_new? do %>
+          Load the current draft to keep going, or save what you have here as a new alert.
+        <% else %>
+          Load the current draft to keep going.
+        <% end %>
       </p>
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <.button id="conflict-load-latest" type="button" variant="primary" phx-click="load_latest">
           <.icon name="hero-arrow-path" class="size-4" /> Load latest
         </.button>
         <.button
+          :if={@save_new?}
           id="conflict-save-new"
           type="button"
           variant="secondary"
@@ -2952,6 +3026,294 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     </.callout>
     """
   end
+
+  @doc """
+  The notice an editor sees when the organization's active schedule changed after the
+  page read it.
+
+  Everything typed stays where it is. Choosing routes, stops and departures is
+  unavailable, because those answers are checked against a schedule that is no longer
+  the active one, until **Reload targets** rereads the active schedule. Nothing the
+  alert already names is changed by reloading.
+  """
+  attr :id, :string, default: "alert-active-changed"
+
+  def active_changed_banner(assigns) do
+    ~H"""
+    <div class="mb-4">
+      <.callout id={@id} kind="warning" title="The active schedule changed." role="status">
+        <p id={"#{@id}-body"}>
+          What you typed is kept. Choosing routes, stops and departures is paused until you reload
+          targets from the new active schedule.
+        </p>
+        <div class="mt-3">
+          <.button
+            id="alert-reload-targets"
+            type="button"
+            variant="primary"
+            phx-click="reload_targets"
+          >
+            <.icon name="hero-arrow-path" class="size-4" /> Reload targets
+          </.button>
+        </div>
+      </.callout>
+    </div>
+    """
+  end
+
+  @doc """
+  The notice an existing alert shows while the organization has no active schedule.
+
+  The draft, its typed answers, Save and close and Delete alert stay available: none of
+  them reads a schedule. Choosing or repairing targets waits for a schedule, which an
+  editor selects on the Alerts page.
+  """
+  attr :id, :string, default: "alert-editor-no-active"
+
+  def no_active_banner(assigns) do
+    ~H"""
+    <div class="mb-4">
+      <.callout id={@id} kind="warning" title="No active schedule." role="status">
+        <p id={"#{@id}-body"}>
+          Targets are checked against the active schedule, so choosing them is paused. Your answers
+          are kept.
+          <.link id="alert-choose-schedule" navigate="/alerts" class="font-semibold underline">
+            Choose a schedule
+          </.link>
+          on the Alerts page.
+        </p>
+      </.callout>
+    </div>
+    """
+  end
+
+  @doc """
+  The targets an alert keeps that the active schedule cannot honour, each with its raw
+  feed ID and an explicit way to remove or replace it.
+
+  Nothing here changes the alert by itself. **Remove** and **Replace** only stage a
+  change on the row, and **Apply repaired targets** sends the complete proposed
+  selection to `Alerts.retarget/5`, which checks all of it against the active schedule.
+  A replacement is always one the editor picked from that schedule's own search results;
+  the alert never retargets itself.
+
+  `items` are prepared by the editor: `index`, `type` (the diagnostic's target type),
+  `noun`, `id`, `note`, `replaceable?` and `op` (`nil`, `:remove` or
+  `{:replace, id, label}`). `picker` is the open replacement search or nil. With no
+  items the panel is absent; `notice` names the schedule a finished repair now
+  targets and shows as `#alert-repair-done`.
+  """
+  attr :id, :string, default: "alert-target-repair"
+  attr :active_name, :string, default: nil
+  attr :items, :list, required: true
+  attr :picker, :map, default: nil
+  attr :blocked?, :boolean, default: false
+  attr :error, :string, default: nil
+  attr :notice, :string, default: nil
+
+  def target_repair(assigns) do
+    assigns = assign(assigns, :staged, Enum.count(assigns.items, & &1.op))
+
+    ~H"""
+    <div :if={@items != []} class="mb-4">
+      <.callout id={@id} kind="warning" title={repair_title(@active_name)} tabindex="-1">
+        <p id={"#{@id}-body"}>
+          The alert keeps its original targets until you remove or replace them. Other changes to
+          this alert save as usual.
+        </p>
+
+        <ul id="alert-repair-list" class="mt-3 divide-y divide-subtle border-y border-subtle">
+          <li
+            :for={item <- @items}
+            id={"alert-repair-#{item.index}"}
+            class="grid gap-x-4 gap-y-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+          >
+            <div class="min-w-0">
+              <p class="font-semibold text-strong [overflow-wrap:anywhere]">
+                {item.noun} <code class="font-mono text-[13px]">{item.id}</code>
+              </p>
+              <p id={"alert-repair-#{item.index}-note"} class="text-[13px] text-muted">
+                {item.note}
+              </p>
+              <p
+                :if={item.op}
+                id={"alert-repair-#{item.index}-staged"}
+                class="mt-1 text-[13px] font-semibold text-strong [overflow-wrap:anywhere]"
+              >
+                {staged_text(item.op)}
+              </p>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+              <.button
+                :if={is_nil(item.op) and item.replaceable?}
+                id={"alert-repair-replace-#{item.index}"}
+                type="button"
+                variant="secondary"
+                disabled={@blocked?}
+                aria-label={"Replace #{String.downcase(item.noun)} #{item.id}"}
+                phx-click="repair_replace"
+                phx-value-index={item.index}
+              >
+                Replace
+              </.button>
+              <.button
+                :if={is_nil(item.op)}
+                id={"alert-repair-remove-#{item.index}"}
+                type="button"
+                variant="secondary"
+                disabled={@blocked?}
+                aria-label={"Remove #{String.downcase(item.noun)} #{item.id}"}
+                phx-click="repair_remove"
+                phx-value-index={item.index}
+              >
+                Remove
+              </.button>
+              <.button
+                :if={item.op}
+                id={"alert-repair-undo-#{item.index}"}
+                type="button"
+                variant="quiet"
+                disabled={@blocked?}
+                aria-label={"Undo the change to #{String.downcase(item.noun)} #{item.id}"}
+                phx-click="repair_undo"
+                phx-value-index={item.index}
+              >
+                Undo
+              </.button>
+            </div>
+
+            <.replacement_picker
+              :if={@picker && @picker.index == item.index}
+              item={item}
+              picker={@picker}
+            />
+          </li>
+        </ul>
+
+        <p
+          :if={@error}
+          id="alert-repair-error"
+          role="alert"
+          tabindex="-1"
+          class="mt-3 font-semibold text-error-fg [overflow-wrap:anywhere]"
+        >
+          {@error}
+        </p>
+
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <.button
+            id="alert-repair-apply"
+            type="button"
+            variant="primary"
+            disabled={@blocked? or @staged == 0}
+            phx-click="repair_apply"
+          >
+            Apply repaired targets
+          </.button>
+          <p :if={@staged == 0} id="alert-repair-hint" class="text-[13px] text-muted">
+            Choose Remove or Replace for at least one target.
+          </p>
+        </div>
+      </.callout>
+    </div>
+
+    <.message
+      :if={@notice}
+      id="alert-repair-done"
+      kind="success"
+      title="Targets updated."
+      class="mb-4"
+    >
+      The alert now names targets in {@notice}.
+    </.message>
+    """
+  end
+
+  attr :item, :map, required: true
+  attr :picker, :map, required: true
+
+  defp replacement_picker(assigns) do
+    ~H"""
+    <div
+      id={"alert-repair-picker-#{@item.index}"}
+      class="grid gap-2 rounded-control border border-subtle bg-white p-3 sm:col-span-2"
+    >
+      <%!-- Its own form, so a typed, pasted or dictated change all search. --%>
+      <form
+        id={"alert-repair-search-form-#{@item.index}"}
+        phx-change="repair_search"
+        phx-submit="repair_search"
+        class="grid gap-2"
+      >
+        <label
+          for={"alert-repair-search-#{@item.index}"}
+          class="text-[13px] font-semibold text-strong"
+        >
+          Find a replacement {String.downcase(@item.noun)}
+        </label>
+        <input
+          type="search"
+          id={"alert-repair-search-#{@item.index}"}
+          name="repair_query"
+          value={@picker.query}
+          phx-debounce="250"
+          autocomplete="off"
+          placeholder="Name or number"
+          class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong placeholder:text-muted"
+        />
+      </form>
+
+      <p id="alert-repair-status" role="status" class="text-[13px] text-muted">
+        <%= case @picker.state do %>
+          <% :loading -> %>
+            Searching…
+          <% :failed -> %>
+            <span id="alert-repair-search-error" class="font-semibold text-error-fg">
+              The search failed. Try again.
+            </span>
+          <% :ready when @picker.options == [] -> %>
+            No matches in the active schedule.
+          <% :ready -> %>
+            {length(@picker.options)} in the active schedule.
+          <% _idle -> %>
+            Search the active schedule by name or number.
+        <% end %>
+      </p>
+
+      <ul :if={@picker.options != []} id="alert-repair-options" class="grid gap-2 sm:grid-cols-2">
+        <li :for={option <- @picker.options}>
+          <button
+            id={"alert-repair-option-#{@item.index}-#{option.id}"}
+            type="button"
+            phx-click="repair_choose"
+            phx-value-index={@item.index}
+            phx-value-id={option.id}
+            class="flex min-h-11 w-full items-center gap-2 rounded-control border border-control p-3 text-left text-sm hover:bg-canvas"
+          >
+            <span class="min-w-0 flex-1 font-semibold text-strong [overflow-wrap:anywhere]">
+              {option.label}
+            </span>
+          </button>
+        </li>
+      </ul>
+
+      <div>
+        <.button id="alert-repair-close" type="button" variant="quiet" phx-click="repair_close">
+          Close search
+        </.button>
+      </div>
+    </div>
+    """
+  end
+
+  defp repair_title(nil), do: "Some targets are not in the active schedule."
+  defp repair_title(name), do: "Some targets are not in #{name}."
+
+  defp staged_text(:remove), do: "Will be removed when you apply."
+
+  defp staged_text({:replace, id, label}),
+    do: "Will be replaced by #{label} (#{id}) when you apply."
 
   @doc """
   The **Describe the situation** card `/alerts/new` shows in Assistant mode.

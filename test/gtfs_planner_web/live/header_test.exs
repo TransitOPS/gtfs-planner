@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.HeaderTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
   describe "Header - Unauthenticated Users (Auth Layout)" do
@@ -427,7 +426,7 @@ defmodule GtfsPlannerWeb.HeaderTest do
       # organization_fixture/1 seeds a default published version, so the
       # versionless editor state must be built explicitly: removing it makes
       # AssignOrganization assign a nil current_gtfs_version.
-      Repo.delete_all(from v in GtfsVersion, where: v.organization_id == ^organization.id)
+      delete_versions!(from v in GtfsVersion, where: v.organization_id == ^organization.id)
 
       conn = log_in_user(conn, user, organization: organization)
 

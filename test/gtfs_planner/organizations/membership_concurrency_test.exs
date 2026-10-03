@@ -166,7 +166,7 @@ defmodule GtfsPlanner.Organizations.MembershipConcurrencyTest do
     organization_id = scope.organization.id
 
     Repo.delete_all(from(m in UserOrgMembership, where: m.id in ^membership_ids))
-    Repo.delete_all(from(v in GtfsVersion, where: v.id in ^version_ids))
+    delete_versions!(from(v in GtfsVersion, where: v.id in ^version_ids))
     Repo.delete_all(from(u in User, where: u.id in ^user_ids))
     Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
   end

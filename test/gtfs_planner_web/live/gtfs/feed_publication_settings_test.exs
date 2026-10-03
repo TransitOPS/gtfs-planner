@@ -132,8 +132,24 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationSettingsTest do
     end
   end
 
+  describe "a served file whose source could not be selected" do
+    test "stays published and says only that the active schedule did not change", context do
+      full = current_channel(context, :full, filename: "network.zip", export_type: "full")
+
+      Repo.update!(
+        Ecto.Changeset.change(full, last_error: Publication.active_source_unavailable())
+      )
+
+      {:ok, view, _html} = live(conn(context), @published_feeds)
+
+      assert row_text(view, "#feed-status-full") =~ "Published"
+      assert row_text(view, "#feed-note-full") =~ "active schedule did not change"
+      refute has_element?(view, "#feed-detail-full")
+    end
+  end
+
   describe "what each product sees" do
-    test "a Pathways organization has this page and still hides its hidden surfaces", context do
+    test "a Pathways organization has this page and still hides its hidden surfaces", _context do
       pathways_organization = organization_fixture(%{product: :pathways})
       pathways_version = gtfs_version_fixture(pathways_organization.id)
       user = user_fixture()
@@ -209,7 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationSettingsTest do
     test "works with no GTFS version at all", context do
       # A fresh organization is created with a published version, so the
       # versionless state this case is about is built by removing it.
-      Repo.delete_all(
+      delete_versions!(
         from(v in Versions.GtfsVersion, where: v.organization_id == ^context.organization.id)
       )
 

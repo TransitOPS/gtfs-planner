@@ -366,7 +366,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         tool_calls_reply("search_routes", %{"query" => "12"})
 
       "search_routes" ->
-        # The alerts skill forbids naming a route no tool returned, so the row
+        # The alerts skill forbids naming a route no tool returned, so the route
         # id comes out of this turn's own search result and a result without
         # Route 12 prepares nothing.
         case route_12_id(tool_message) do
@@ -389,7 +389,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp route_12_id(%{"content" => content}) when is_binary(content) do
     case Jason.decode(content) do
       {:ok, %{"routes" => routes}} when is_list(routes) ->
-        Enum.find_value(routes, &route_12_row_id/1)
+        Enum.find_value(routes, &route_12_feed_id/1)
 
       _other ->
         nil
@@ -398,11 +398,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp route_12_id(_other), do: nil
 
-  defp route_12_row_id(%{"id" => id} = route) when is_binary(id) do
+  defp route_12_feed_id(%{"id" => id} = route) when is_binary(id) do
     if route["route_id"] == "12" or route["short_name"] == "Route 12", do: id
   end
 
-  defp route_12_row_id(_route), do: nil
+  defp route_12_feed_id(_route), do: nil
 
   # The turn loop reports a refused tool call as `{"error": message}`.
   defp tool_error?(%{"content" => content}) when is_binary(content),

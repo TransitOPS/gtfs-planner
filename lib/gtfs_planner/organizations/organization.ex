@@ -8,6 +8,9 @@ defmodule GtfsPlanner.Organizations.Organization do
           alias: String.t(),
           name: String.t(),
           product: :planner | :pathways,
+          active_gtfs_version_id: Ecto.UUID.t() | nil,
+          active_gtfs_version_revision: non_neg_integer(),
+          active_full_publication_sequence: non_neg_integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -18,6 +21,12 @@ defmodule GtfsPlanner.Organizations.Organization do
     field :alias, :string
     field :name, :string
     field :product, Ecto.Enum, values: [:planner, :pathways], default: :planner
+
+    # Server-owned active-schedule selection. `GtfsPlanner.Versions` is the only writer;
+    # `changeset/2` never casts these, so no form or API attribute can reach them.
+    field :active_gtfs_version_id, :binary_id
+    field :active_gtfs_version_revision, :integer, default: 0
+    field :active_full_publication_sequence, :integer, default: 0
 
     timestamps(type: :utc_datetime_usec)
   end

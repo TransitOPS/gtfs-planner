@@ -14,11 +14,11 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     * after the source version is deleted, a message-only save keeps the trusted
       wire IDs, and a retarget replaces the whole selection from one owned
       version;
-    * with no schedule an organization still authors a private system-scope
-      alert, and the missing timezone and selectors are explicit rather than
-      guessed.
+    * with no active schedule an organization creates nothing, and a command that
+      depends on the schedule is refused once the selection the caller read has
+      moved.
 
-  Every alert is written through `create_alert/2`, `save_draft/4` or
+  Every alert is written through `create_alert/3`, `save_draft/5` or
   `retarget/5`, so no row is reachable only by a hand-inserted struct.
   """
 
@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.AlertSettings
   alias GtfsPlanner.Gtfs.AuditContext
 
@@ -135,23 +136,37 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       refute theirs.id in listed
     end
 
-    test "a retarget naming another organization's version is not found", context do
+    test "a retarget names no version: a forged token or source is refused and stores nothing",
+         context do
       foreign_organization = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign_organization.id)
       agency_fixture(foreign_organization.id, foreign_version.id)
 
-      assert {:error, :not_found} =
+      active = activate_version!(context.organization, context.spring, context.actor)
+
+      # A token for another organization's version, with the current revision.
+      forged = %{active.token | version_id: foreign_version.id}
+
+      assert {:error, :stale_active} =
                Alerts.retarget(
                  context.audit,
                  context.spring_alert.id,
                  context.spring_alert.revision,
-                 foreign_version.id,
+                 forged,
                  %{"shape" => "system"}
                )
 
-      assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.spring_alert.id)
-      assert unchanged.revision == context.spring_alert.revision
-      assert unchanged.source_gtfs_version_id == context.spring.id
+      # A source named inside the answer is not an answer to cast.
+      assert {:ok, retargeted} =
+               Alerts.retarget(
+                 context.audit,
+                 context.spring_alert.id,
+                 context.spring_alert.revision,
+                 active.token,
+                 %{"shape" => "system", "source_gtfs_version_id" => foreign_version.id}
+               )
+
+      assert retargeted.source_gtfs_version_id == context.spring.id
     end
 
     test "near UTC midnight each alert classifies on its own civil date", context do
@@ -197,6 +212,47 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     end
   end
 
+  describe "an active schedule in another zone" do
+    test "existing alerts keep reading their own civil day after a switch", context do
+      # At 02:30 UTC it is 4 October 22:30 in New York and 5 October 11:30 in Tokyo.
+      # The New York alert ends on the 4th, so it is still current in its own zone and
+      # would be past in Tokyo's. The Tokyo alert starts on the 5th, so it is current
+      # in its own zone and would be upcoming in New York's.
+      new_york =
+        delay_about(context, context.spring, "NY ends the 4th", nil, "2026-10-01", "2026-10-04")
+
+      tokyo =
+        delay_about(
+          context,
+          context.fall,
+          "Tokyo starts the 5th",
+          nil,
+          "2026-10-05",
+          "2026-10-06"
+        )
+
+      tabs_under = fn version ->
+        activate_version!(context.organization, version, context.actor)
+
+        assert {:ok, %{active: active, groups: groups}} =
+                 Alerts.workspace(context.audit, @tokyo_morning)
+
+        assert active.version.id == version.id
+
+        Map.new(groups, fn {tab, rows} ->
+          {tab, rows |> Enum.map(& &1.alert.id) |> Enum.sort()}
+        end)
+      end
+
+      in_new_york = tabs_under.(context.spring)
+      in_tokyo = tabs_under.(context.fall)
+
+      assert new_york.id in in_new_york.current
+      assert tokyo.id in in_new_york.current
+      assert in_tokyo == in_new_york
+    end
+  end
+
   describe "retained targets after the source version is deleted" do
     setup context do
       # `Targets.route_label/1` presents `route_short_name` before `route_long_name`,
@@ -209,7 +265,8 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
 
       stop = stop_fixture(context.organization.id, context.spring.id, %{stop_id: "s_1"})
 
-      alert = delay_about(context, context.spring, "Spring detour", route.id, "2026-10-01", nil)
+      alert =
+        delay_about(context, context.spring, "Spring detour", route.route_id, "2026-10-01", nil)
 
       %{route: route, stop: stop, alert: alert}
     end
@@ -227,6 +284,7 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     end
 
     test "a message-only save keeps them after the source version is deleted", context do
+      activate_version!(context.organization, context.fall, context.actor)
       delete_version!(context.spring)
 
       assert {:ok, alert} = Alerts.get_alert(context.audit, context.alert.id)
@@ -248,6 +306,7 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     end
 
     test "the deleted route is reported from the retained capture, not guessed", context do
+      activate_version!(context.organization, context.fall, context.actor)
       delete_version!(context.spring)
 
       assert {:ok, tabs} = Alerts.list_alerts(context.audit, @new_york_night)
@@ -256,41 +315,48 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       assert row.needs_attention? == true
     end
 
-    test "retargeting replaces the whole selection from one owned version", context do
+    test "retargeting replaces the whole selection from the active schedule", context do
       new_route = route_fixture(context.organization.id, context.fall.id, %{route_id: "r_9"})
+      active = activate_version!(context.organization, context.fall, context.actor)
 
       assert {:ok, retargeted} =
                Alerts.retarget(
                  context.audit,
                  context.alert.id,
                  context.alert.revision,
-                 context.fall.id,
+                 active.token,
                  %{
                    "shape" => "routes",
-                   "route_ids" => [new_route.id]
+                   "route_ids" => [new_route.route_id]
                  }
                )
 
+      # The alert was saved in New York and the active schedule's agency is in Tokyo:
+      # repairing a target moves the provenance, never the civil-time reading.
       assert retargeted.source_gtfs_version_id == context.fall.id
-      assert retargeted.timezone == "Asia/Tokyo"
+      assert retargeted.timezone == "America/New_York"
       assert retargeted.revision == context.alert.revision + 1
-      assert retargeted.scope.route_ids == [new_route.id]
+      assert retargeted.scope.route_ids == ["r_9"]
 
       assert [%{"gtfs_id" => "r_9"}] = retargeted.target_reference["selectors"]["routes"]
       assert retargeted.target_reference["selectors"]["unresolved_routes"] == []
-      assert retargeted.target_reference["timezone"] == "Asia/Tokyo"
+      assert retargeted.target_reference["timezone"] == "America/New_York"
     end
 
-    test "retargeting cannot store a selection the named version does not hold", context do
+    test "retargeting cannot store a selection the active schedule does not hold", context do
       foreign_stop = stop_fixture(context.organization.id, context.fall.id, %{stop_id: "s_tokyo"})
+      active = activate_version!(context.organization, context.fall, context.actor)
 
       assert {:error, %Ecto.Changeset{} = changeset} =
                Alerts.retarget(
                  context.audit,
                  context.alert.id,
                  context.alert.revision,
-                 context.fall.id,
-                 %{"shape" => "stop_all_routes", "stop_ids" => [context.stop.id, foreign_stop.id]}
+                 active.token,
+                 %{
+                   "shape" => "stop_all_routes",
+                   "stop_ids" => [context.stop.stop_id, foreign_stop.stop_id]
+                 }
                )
 
       # The alert being retargeted still holds a route of the version it was
@@ -320,6 +386,7 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
 
     test "a stale retarget revision changes nothing", context do
       new_route = route_fixture(context.organization.id, context.fall.id, %{route_id: "r_9"})
+      active = activate_version!(context.organization, context.fall, context.actor)
 
       {:ok, saved} =
         Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
@@ -331,10 +398,10 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
                  context.audit,
                  context.alert.id,
                  saved.revision - 1,
-                 context.fall.id,
+                 active.token,
                  %{
                    "shape" => "routes",
-                   "route_ids" => [new_route.id]
+                   "route_ids" => [new_route.route_id]
                  }
                )
 
@@ -343,16 +410,19 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     end
   end
 
-  describe "an organization with no usable schedule" do
+  describe "an organization with no active schedule" do
     setup do
       organization = organization_fixture()
       actor = editor_fixture(organization)
 
+      # The default version goes, and with it the active selection.
+      delete_versions!(
+        from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^organization.id)
+      )
+
       %{
         organization: organization,
         actor: actor,
-        # A context with no selected version: the organization has no schedule to
-        # write against, which is the case this step must still author in.
         audit: %AuditContext{
           organization_id: organization.id,
           gtfs_version_id: nil,
@@ -363,32 +433,35 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       }
     end
 
-    test "still authors a private system-scope alert", context do
-      assert {:ok, alert} =
-               Alerts.create_alert(context.audit, %{
-                 "urgency" => "now",
-                 "situation" => "delay",
-                 "cause" => "weather",
-                 "scope" => %{"shape" => "system"},
-                 "message" => %{"header" => "System-wide delay"}
-               })
+    test "creates nothing, whatever token the caller holds", context do
+      attrs = %{
+        "urgency" => "now",
+        "situation" => "delay",
+        "cause" => "weather",
+        "scope" => %{"shape" => "system"},
+        "message" => %{"header" => "System-wide delay"}
+      }
 
-      assert alert.organization_id == context.organization.id
-      assert alert.source_gtfs_version_id == nil
-      assert alert.scope.shape == :system
+      token = current_token!(context.audit)
+      assert token.version_id == nil
 
-      # No schedule means no zone to retain and no identities to capture: both
-      # stay absent rather than defaulting to UTC or to an empty selector the
-      # publication step could mistake for a system-wide agency list.
-      assert alert.timezone == nil
+      assert {:error, :no_active_schedule} =
+               Alerts.create_alert(context.audit, attrs, expected_schedule: token)
 
-      assert alert.target_reference["source_gtfs_version_id"] == nil
-      assert alert.target_reference["timezone"] == nil
-      assert alert.target_reference["selectors"]["agencies"] == []
-      assert alert.target_reference["selectors"]["unresolved_routes"] == []
+      assert {:error, :stale_active} = Alerts.create_alert(context.audit, attrs, [])
 
-      assert {:ok, %{in_progress: [row]}} = Alerts.list_alerts(context.audit, @new_york_night)
-      assert row.alert.id == alert.id
+      assert {:error, :stale_active} =
+               Alerts.create_alert(context.audit, attrs,
+                 expected_schedule: %{token | revision: token.revision + 1}
+               )
+
+      assert Repo.aggregate(
+               from(a in Alert, where: a.organization_id == ^context.organization.id),
+               :count
+             ) ==
+               0
+
+      assert {:error, :no_active_schedule} = Alerts.list_alerts(context.audit, @new_york_night)
     end
 
     test "a system scope against a version captures that version's real agency ids" do
@@ -404,13 +477,313 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
       actor = editor_fixture(organization)
       audit = audit_context(organization, version, actor)
 
-      assert {:ok, alert} =
-               Alerts.create_alert(audit, %{"scope" => %{"shape" => "system"}})
+      alert = alert_fixture(audit, %{"scope" => %{"shape" => "system"}})
 
       assert [%{"gtfs_id" => "nyc", "label" => "NYC Transit"}] =
                alert.target_reference["selectors"]["agencies"]
 
+      assert alert.source_gtfs_version_id == version.id
       assert alert.timezone == "America/New_York"
+    end
+  end
+
+  describe "the active schedule guards target-dependent writes" do
+    setup context do
+      route_fixture(context.organization.id, context.spring.id, %{
+        route_id: "r_1",
+        route_short_name: "1 Main"
+      })
+
+      route_fixture(context.organization.id, context.spring.id, %{route_id: "r_2"})
+      route_fixture(context.organization.id, context.spring.id, %{route_id: "r_spring_only"})
+      route_fixture(context.organization.id, context.fall.id, %{route_id: "r_2"})
+      route_fixture(context.organization.id, context.fall.id, %{route_id: "r_9"})
+
+      alert =
+        delay_about(context, context.spring, "Spring detour", "r_1", "2026-10-01", nil)
+
+      %{alert: alert}
+    end
+
+    test "an old token refuses a target edit after an A to B to A return", context do
+      stale = schedule_opts(context.audit)
+
+      activate_version!(context.organization, context.fall, context.actor)
+      activate_version!(context.organization, context.spring, context.actor)
+
+      attrs = %{
+        "source_gtfs_version_id" => context.fall.id,
+        "scope" => %{"shape" => "routes", "route_ids" => ["r_1", "r_2"]}
+      }
+
+      assert {:error, :stale_active} =
+               Alerts.save_draft(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 attrs,
+                 stale
+               )
+
+      # No token is no expectation met, and a forged identity at the current
+      # revision names no schedule of the organization.
+      assert {:error, :stale_active} =
+               Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, attrs)
+
+      forged = %{current_token!(context.audit) | version_id: context.fall.id}
+
+      assert {:error, :stale_active} =
+               Alerts.save_draft(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 attrs,
+                 expected_schedule: forged
+               )
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.alert.id)
+      assert unchanged.revision == context.alert.revision
+      assert unchanged.scope == context.alert.scope
+
+      # The token read after the return is the organization's, and a client-supplied
+      # source in the same attributes is not an answer to cast.
+      assert {:ok, saved} =
+               Alerts.save_draft(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 attrs,
+                 schedule_opts(context.audit)
+               )
+
+      assert saved.scope.route_ids == ["r_1", "r_2"]
+      assert saved.source_gtfs_version_id == context.spring.id
+    end
+
+    test "a new draft is written against the active schedule, not the audit context's version",
+         context do
+      active = activate_version!(context.organization, context.fall, context.actor)
+
+      # The context names the New York schedule; the active one is Tokyo's.
+      assert {:ok, alert} =
+               Alerts.create_alert(context.audit, %{"urgency" => "now"},
+                 expected_schedule: active.token
+               )
+
+      assert alert.source_gtfs_version_id == context.fall.id
+      assert alert.timezone == "Asia/Tokyo"
+      assert alert.timing.time_zone == "Asia/Tokyo"
+
+      # A route only the context's version holds is not selectable, and a token read
+      # before the next switch writes nothing.
+      assert {:error, %Ecto.Changeset{} = refused} =
+               Alerts.create_alert(
+                 context.audit,
+                 %{"scope" => %{"shape" => "routes", "route_ids" => ["r_spring_only"]}},
+                 expected_schedule: active.token
+               )
+
+      assert %{scope: ["Choose routes from this version."]} = errors_on(refused)
+
+      activate_version!(context.organization, context.spring, context.actor)
+      count = Repo.aggregate(Alert, :count)
+
+      assert {:error, :stale_active} =
+               Alerts.create_alert(context.audit, %{"urgency" => "now"},
+                 expected_schedule: active.token
+               )
+
+      assert Repo.aggregate(Alert, :count) == count
+    end
+
+    test "a message-only save needs no token and keeps unresolved targets, zone and capture",
+         context do
+      activate_version!(context.organization, context.fall, context.actor)
+
+      assert {:ok, saved} =
+               Alerts.save_draft(context.audit, context.alert.id, context.alert.revision, %{
+                 "message" => %{"header" => "Reworded while r_1 is missing"}
+               })
+
+      assert saved.scope == context.alert.scope
+      assert saved.target_reference == context.alert.target_reference
+      assert saved.timezone == "America/New_York"
+      assert saved.source_gtfs_version_id == context.spring.id
+
+      assert {:ok, %{diagnostics_by_alert: diagnostics}} =
+               Alerts.workspace(context.audit, @new_york_night)
+
+      assert [%{kind: :missing, target_type: :route, id: "r_1"}] =
+               diagnostics[context.alert.id]
+    end
+
+    test "a partial repair validates only what it adds and keeps the capture it held",
+         context do
+      {:ok, widened} =
+        Alerts.save_draft(
+          context.audit,
+          context.alert.id,
+          context.alert.revision,
+          %{"scope" => %{"shape" => "routes", "route_ids" => ["r_1", "r_2"]}},
+          schedule_opts(context.audit)
+        )
+
+      active = activate_version!(context.organization, context.fall, context.actor)
+
+      # r_spring_only is absent from the active schedule, so adding it is refused.
+      assert {:error, %Ecto.Changeset{} = refused} =
+               Alerts.save_draft(
+                 context.audit,
+                 widened.id,
+                 widened.revision,
+                 %{
+                   "scope" => %{
+                     "shape" => "routes",
+                     "route_ids" => ["r_1", "r_2", "r_spring_only"]
+                   }
+                 },
+                 expected_schedule: active.token
+               )
+
+      assert %{scope: ["Choose routes from this version."]} = errors_on(refused)
+
+      # r_9 exists there. r_1 stays although it is missing there, and r_2's capture is
+      # taken from the active schedule.
+      assert {:ok, repaired} =
+               Alerts.save_draft(
+                 context.audit,
+                 widened.id,
+                 widened.revision,
+                 %{"scope" => %{"shape" => "routes", "route_ids" => ["r_1", "r_2", "r_9"]}},
+                 expected_schedule: active.token
+               )
+
+      assert repaired.scope.route_ids == ["r_1", "r_2", "r_9"]
+      assert repaired.timezone == "America/New_York"
+      assert repaired.source_gtfs_version_id == context.spring.id
+
+      selectors = repaired.target_reference["selectors"]
+      assert Enum.sort(Enum.map(selectors["routes"], & &1["gtfs_id"])) == ["r_1", "r_2", "r_9"]
+      assert Enum.find(selectors["routes"], &(&1["gtfs_id"] == "r_1"))["label"] == "1 Main"
+      assert selectors["unresolved_routes"] == []
+
+      assert repaired.target_reference["timezone"] == "America/New_York"
+
+      assert {:ok, %{diagnostics_by_alert: diagnostics}} =
+               Alerts.workspace(context.audit, @new_york_night)
+
+      assert [%{kind: :missing, target_type: :route, id: "r_1"}] = diagnostics[repaired.id]
+    end
+
+    test "a target change that keeps the alert's mode does not ask the active schedule for it",
+         context do
+      route_fixture(context.organization.id, context.spring.id, %{
+        route_id: "r_ferry",
+        route_type: 4
+      })
+
+      mode_alert =
+        alert_fixture(context.audit, %{
+          "urgency" => "now",
+          "situation" => "delay",
+          "scope" => %{"shape" => "routes", "mode_route_type" => 4}
+        })
+
+      # The active schedule has no ferry route.
+      active = activate_version!(context.organization, context.fall, context.actor)
+      scope = %{"shape" => "routes", "mode_route_type" => 4, "direction_id" => 1}
+
+      assert {:ok, saved} =
+               Alerts.save_draft(
+                 context.audit,
+                 mode_alert.id,
+                 mode_alert.revision,
+                 %{"scope" => scope},
+                 expected_schedule: active.token
+               )
+
+      assert saved.scope.mode_route_type == 4
+      assert saved.scope.direction_id == 1
+
+      # A mode it did not hold is still checked against the active schedule.
+      assert {:error, %Ecto.Changeset{} = refused} =
+               Alerts.save_draft(
+                 context.audit,
+                 saved.id,
+                 saved.revision,
+                 %{"scope" => %{scope | "mode_route_type" => 11}},
+                 expected_schedule: active.token
+               )
+
+      assert %{scope: ["Choose a route type this version has."]} = errors_on(refused)
+    end
+
+    test "an explicit retarget needs the current token, an active schedule and a fitting selection",
+         context do
+      stale = schedule_opts(context.audit)
+      active = activate_version!(context.organization, context.fall, context.actor)
+      route = route_fixture(context.organization.id, context.fall.id, %{route_id: "R_pair"})
+      stop = stop_fixture(context.organization.id, context.fall.id, %{stop_id: "s_unserved"})
+
+      pair_scope = %{
+        "shape" => "route_stops",
+        "route_ids" => [route.route_id],
+        "route_stop_pairs" => [%{"route_id" => route.route_id, "stop_id" => stop.stop_id}]
+      }
+
+      assert {:error, :stale_active} =
+               Alerts.retarget(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 stale[:expected_schedule],
+                 pair_scope
+               )
+
+      # Both identities exist in the active schedule, but no trip of the route serves
+      # the stop, so the pair is not a selection that fits.
+      assert {:error, %Ecto.Changeset{} = refused} =
+               Alerts.retarget(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 active.token,
+                 pair_scope
+               )
+
+      assert %{scope: [message]} = errors_on(refused)
+      assert message =~ "the chosen routes serve"
+
+      assert {:ok, unchanged} = Alerts.get_alert(context.audit, context.alert.id)
+      assert unchanged.revision == context.alert.revision
+      assert unchanged.source_gtfs_version_id == context.spring.id
+    end
+
+    test "retargeting keeps the alert's zone when the active schedule names none", context do
+      conflicting = gtfs_version_fixture(context.organization.id, %{name: "Conflicting zones"})
+      route_fixture(context.organization.id, conflicting.id, %{route_id: "r_9"})
+
+      for {id, zone} <- [{"one", "America/New_York"}, {"two", "Asia/Tokyo"}] do
+        agency_fixture(context.organization.id, conflicting.id, %{
+          agency_id: id,
+          agency_timezone: zone
+        })
+      end
+
+      active = activate_version!(context.organization, conflicting, context.actor)
+
+      assert {:ok, retargeted} =
+               Alerts.retarget(
+                 context.audit,
+                 context.alert.id,
+                 context.alert.revision,
+                 active.token,
+                 %{"shape" => "routes", "route_ids" => ["r_9"]}
+               )
+
+      assert retargeted.source_gtfs_version_id == conflicting.id
+      assert retargeted.timezone == "America/New_York"
+      assert retargeted.target_reference["timezone"] == "America/New_York"
     end
   end
 

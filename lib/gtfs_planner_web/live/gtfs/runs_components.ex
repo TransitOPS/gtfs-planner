@@ -2468,7 +2468,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   defp trip_id(nil), do: "the end of this piece"
-  defp trip_id(trip), do: trip.id
+  defp trip_id(trip), do: trip.trip_id
 
   defp move_options(runs, next_run_id) do
     [{"New run (#{next_run_id})", @new_run_option} | Enum.map(runs, &move_option/1)]

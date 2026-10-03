@@ -8,7 +8,6 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Home
   alias GtfsPlanner.Organizations
-  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -171,7 +170,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       # create_organization seeds a published default; clear all versions so the
       # published-only latest query returns nil (staging-only is equivalent).
       organization = organization_fixture(%{name: "No Published Version Org"})
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
 
       {:ok, _staging} =
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})
@@ -212,7 +211,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       conn: conn
     } do
       organization = organization_fixture(%{name: "Pathways No Version Org", product: :pathways})
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
 
       {:ok, _staging} =
         Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})

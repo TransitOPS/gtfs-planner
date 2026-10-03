@@ -387,7 +387,11 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
                %{}
              )
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "FAILED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "FAILED"
+           ) == nil
 
     assert {:error, %Ecto.Changeset{}} =
              Stations.update_level(invalid_audit, level.id, %{level_id: "FAILED"}, 1)
@@ -419,7 +423,12 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     assert {:error, :forbidden} =
              Stations.remove_level_from_station(scope.audit, level.id, attached.lock_version)
 
-    assert Repo.get_by(Level, organization_id: scope.organization.id, level_id: "DENIED") == nil
+    assert Repo.get_by(Level,
+             organization_id: scope.organization.id,
+             gtfs_version_id: scope.version.id,
+             level_id: "DENIED"
+           ) == nil
+
     assert Repo.get!(Level, level.id).level_name == level.level_name
     assert Repo.get!(StopLevel, attached.id)
   end
@@ -510,7 +519,7 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
     Repo.delete_all(from row in Stop, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in Level, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in UserOrgMembership, where: row.organization_id == ^org_id)
-    Repo.delete_all(from row in GtfsVersion, where: row.organization_id == ^org_id)
+    delete_versions!(from row in GtfsVersion, where: row.organization_id == ^org_id)
     Repo.delete_all(from row in Organization, where: row.id == ^org_id)
     Repo.delete_all(from row in User, where: row.id == ^scope.actor.id)
   end

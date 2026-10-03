@@ -315,6 +315,37 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       refute has_element?(view, "#section-#{rich.downtown.pattern.route_pattern_id}-omitted")
     end
 
+    test "the pattern parameter is a row UUID even when another pattern's feed ID spells it",
+         %{conn: conn, organization: organization, version: version} = context do
+      rich = rich_route(context)
+
+      # This pattern sorts before Downtown and its feed ID is Downtown's row UUID.
+      decoy =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: rich.route.route_id,
+          direction_id: 0,
+          route_pattern_id: rich.downtown.pattern.id,
+          route_pattern_name: "Aardvark",
+          stops: [{"SCH1_S1", 0, 0, 1}, {"SCH1_S2", 300, 300, 1}]
+        })
+
+      schedule_trip_fixture(organization.id, version.id, rich.route.route_id, decoy, %{
+        service_id: rich.weekday
+      })
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          schedules_path(version, rich.route, %{
+            "service_id" => rich.weekday,
+            "pattern" => rich.downtown.pattern.id
+          })
+        )
+
+      assert has_element?(view, "#section-#{rich.downtown.pattern.route_pattern_id}")
+      refute has_element?(view, "#section-#{decoy.pattern.route_pattern_id}")
+    end
+
     test "the calendar select lists every calendar with its route trip count and dates-only kind",
          %{conn: conn, version: version} = context do
       rich = rich_route(context)

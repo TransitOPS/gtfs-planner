@@ -2961,7 +2961,7 @@ case Accounts.register_first_admin(%{
         alias: "account-no-version"
       })
 
-    Repo.delete_all(
+    GtfsPlanner.OrganizationsFixtures.delete_versions!(
       from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^no_version_org.id)
     )
 
@@ -12232,6 +12232,21 @@ case Accounts.register_first_admin(%{
         actor_email: editor.email
       }
 
+      # Alerts are written against the organization's active schedule, and the first
+      # version an organization has keeps that pointer, so the alerts version is
+      # selected explicitly before any alert is created.
+      alerts_token = fn ->
+        {:ok, %{token: token}} = GtfsPlanner.Versions.active_schedule(alerts_audit)
+        token
+      end
+
+      {:ok, _active} =
+        GtfsPlanner.Versions.set_active_schedule(
+          alerts_audit,
+          alerts_version.id,
+          alerts_token.()
+        )
+
       {:ok, _alerts_script} =
         GtfsPlanner.Alerts.create_script(alerts_audit, %{
           name: "Route detour",
@@ -12255,7 +12270,9 @@ case Accounts.register_first_admin(%{
       alerts_check_in = NaiveDateTime.new!(alerts_today, ~T[18:00:00])
 
       alerts_new = fn attrs ->
-        {:ok, alert} = GtfsPlanner.Alerts.create_alert(alerts_audit, attrs)
+        {:ok, alert} =
+          GtfsPlanner.Alerts.create_alert(alerts_audit, attrs, expected_schedule: alerts_token.())
+
         alert
       end
 
@@ -12273,7 +12290,7 @@ case Accounts.register_first_admin(%{
           "urgency" => "now",
           "situation" => "delay",
           "cause" => "weather",
-          "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+          "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.route_id]},
           "message" => %{
             "header" => "Route 12 delays of up to 20 minutes",
             "description" => "Wet roads on the coast road. Expect up to 20 minutes of delay."
@@ -12292,7 +12309,10 @@ case Accounts.register_first_admin(%{
           "urgency" => "planned",
           "situation" => "stop_closed",
           "cause" => "construction",
-          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => [Enum.at(alerts_stops, 5).id]},
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => [Enum.at(alerts_stops, 5).stop_id]
+          },
           "message" => %{
             "header" => "Harbor Street stop closed for road works",
             "description" => "Harbor Street stop is closed. Board at the Ferry Terminal stop."
@@ -12308,10 +12328,10 @@ case Accounts.register_first_admin(%{
 
       alerts_in_progress = alerts_new.(%{"urgency" => "planned", "situation" => "detour"})
 
-      # The alert names a stop row that exists when it is written, because a write
-      # refuses an identity that is not a row of the version. The stop is deleted
-      # once the alert is finished, which is how a stop leaves a version in
-      # practice and what the Needs attention badge reports.
+      # The alert names a stop by its GTFS stop_id, which exists in the version when
+      # the alert is written, because a write refuses a stop_id the version does not
+      # have. The stop is deleted once the alert is finished, which is how a stop
+      # leaves a version in practice and what the Needs attention badge reports.
       {:ok, alerts_old_depot} =
         GtfsFixtures.insert_stop(%{
           organization_id: org.id,
@@ -12330,7 +12350,7 @@ case Accounts.register_first_admin(%{
           "cause" => "construction",
           "scope" => %{
             "shape" => "stop_all_routes",
-            "stop_ids" => [alerts_old_depot.id]
+            "stop_ids" => [alerts_old_depot.stop_id]
           },
           "message" => %{
             "header" => "Old Depot Road stop closed",
@@ -12361,6 +12381,7 @@ case Accounts.register_first_admin(%{
         new: alerts_new,
         route_12: alerts_route_12,
         today: alerts_today,
+        token: alerts_token,
         upcoming: alerts_upcoming
       }
     end
@@ -12376,17 +12397,18 @@ case Accounts.register_first_admin(%{
       new: alerts_new,
       route_12: alerts_route_12,
       today: alerts_today,
+      token: alerts_token,
       upcoming: alerts_upcoming
     } = seed_alerts_fixtures.(org, editor)
 
     # ── Alerts journeys organization (spec 30) ──
     #
-    # The alert editor resolves its schedule from the organization's latest
-    # published version, so the alert journeys need an organization whose newest
-    # published version is the alert-authoring one. This organization's default
-    # version is staging (versions are only published when they are finalized),
-    # so the fixture version above is the one the editor and its questions read.
-    # No other spec signs in here.
+    # The alert editor resolves its schedule from the organization's active
+    # schedule, so the alert journeys need an organization whose active schedule is
+    # the alert-authoring version. This organization's default version is staging
+    # (versions are only published when they are finalized), so the fixture version
+    # above is the one the editor and its questions read. No other spec signs in
+    # here.
     {:ok, alerts_org} =
       Organizations.create_organization_unchecked(%{
         name: "Browser Alerts Org",
@@ -12397,7 +12419,7 @@ case Accounts.register_first_admin(%{
     # one the editor resolves. Deleting it leaves the fixture version seeded
     # below as this organization's only published version, so the editor and its
     # questions read the alert-authoring schedule.
-    Repo.delete_all(
+    GtfsPlanner.OrganizationsFixtures.delete_versions!(
       from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^alerts_org.id)
     )
 
@@ -12416,6 +12438,318 @@ case Accounts.register_first_admin(%{
     })
 
     seed_alerts_fixtures.(alerts_org, alerts_org_editor)
+
+    # ── Active schedule workspace organizations (spec 34, `GTFS identity workspace`) ──
+    #
+    # /alerts names the organization's active schedule and lets an editor choose it.
+    # Each state has its own organization and editor, because a journey that changes
+    # the selection would otherwise move the schedule every other alert journey reads.
+    #
+    #   * Browser Identity Org: three published schedules. The active one is chosen
+    #     explicitly below, not inherited from insertion order, and the newest
+    #     published schedule is a different one, so the version menu in the header
+    #     shows a schedule that is not the active one. "Identity Second Schedule"
+    #     keeps Route 12 under another short name and lacks the Annex stop;
+    #     "Identity Empty Schedule" holds nothing.
+    #   * Browser Identity Legacy Org: two published schedules and no pointer, the
+    #     state an organization could be left in before the pointer existed. It is
+    #     the only fixture that exercises choosing a schedule from "no active".
+    #   * Browser Identity Empty Org: no published schedule at all, only a staging one.
+    identity_editor = fn org, email ->
+      {:ok, user} = Accounts.register_user(%{email: email, password: "IdentityTest123!"})
+      Repo.update!(User.confirm_changeset(user))
+
+      {:ok, _membership} =
+        Accounts.create_user_org_membership(%{
+          user_id: user.id,
+          organization_id: org.id,
+          roles: ["pathways_studio_editor"]
+        })
+
+      user
+    end
+
+    identity_schedule = fn org, name, published_at, route_12_name, stop_ids ->
+      {:ok, version} = Versions.create_gtfs_version(org.id, %{name: name})
+      version = Repo.update!(Ecto.Changeset.change(version, published_at: published_at))
+
+      {:ok, _agency} =
+        GtfsFixtures.insert_agency(%{
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          agency_id: "IDENTITY_AGENCY",
+          agency_name: "Identity Transit",
+          agency_url: "https://example.test",
+          agency_timezone: "America/Los_Angeles"
+        })
+
+      for {route_id, short_name} <- [{"1", "1"}, {"12", route_12_name}] do
+        {:ok, _route} =
+          GtfsFixtures.insert_route(%{
+            organization_id: org.id,
+            gtfs_version_id: version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: "Identity route #{route_id}",
+            route_type: 3
+          })
+      end
+
+      for stop_id <- stop_ids do
+        {:ok, _stop} =
+          GtfsFixtures.insert_stop(%{
+            organization_id: org.id,
+            gtfs_version_id: version.id,
+            stop_id: stop_id,
+            stop_name: "Identity stop #{stop_id}",
+            location_type: 0,
+            stop_lat: Decimal.new("44.6210"),
+            stop_lon: Decimal.new("-124.0490")
+          })
+      end
+
+      version
+    end
+
+    {:ok, identity_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser Identity Org",
+        alias: "browser-identity"
+      })
+
+    identity_user = identity_editor.(identity_org, "identity-workspace@gtfs-planner.test")
+    identity_scope = %{actor_id: identity_user.id, organization_id: identity_org.id}
+
+    # The version the organization starts with is the empty schedule: it was the first
+    # usable version, so it starts active until the explicit choice below.
+    identity_empty =
+      from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^identity_org.id)
+      |> Repo.one!()
+      |> Ecto.Changeset.change(
+        name: "Identity Empty Schedule",
+        published_at: ~U[2020-02-01 00:00:00.000000Z]
+      )
+      |> Repo.update!()
+
+    identity_active =
+      identity_schedule.(
+        identity_org,
+        "Identity Active Schedule",
+        ~U[2020-03-01 00:00:00.000000Z],
+        "12",
+        ["ID_MAIN", "ID_ANNEX"]
+      )
+
+    identity_second =
+      identity_schedule.(
+        identity_org,
+        "Identity Second Schedule",
+        ~U[2020-04-01 00:00:00.000000Z],
+        "12X",
+        ["ID_MAIN"]
+      )
+
+    {:ok, %{token: identity_token}} = Versions.active_schedule(identity_scope)
+
+    {:ok, _active} =
+      Versions.set_active_schedule(identity_scope, identity_active.id, identity_token)
+
+    identity_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: identity_org.id,
+      gtfs_version_id: identity_active.id,
+      station_stop_id: nil,
+      actor_id: identity_user.id,
+      actor_email: identity_user.email
+    }
+
+    identity_today = Gtfs.DisplayClock.today(identity_org.id, identity_active.id).date
+
+    # Three Current alerts through the editor's own commands: one that names Route 12
+    # (its badge follows the schedule), one that names a stop only the active schedule
+    # has (it needs attention elsewhere) and one about the whole system (it never does).
+    for {attrs, header} <- [
+          {%{
+             "situation" => "delay",
+             "cause" => "weather",
+             "scope" => %{"shape" => "routes", "route_ids" => ["12"]}
+           }, "Route 12 delays of up to 20 minutes"},
+          {%{
+             "situation" => "stop_closed",
+             "cause" => "construction",
+             "scope" => %{"shape" => "stop_all_routes", "stop_ids" => ["ID_ANNEX"]}
+           }, "Annex stop closed for road works"},
+          {%{
+             "situation" => "service_change",
+             "cause" => "maintenance",
+             "scope" => %{"shape" => "system"}
+           }, "Service changes tonight"}
+        ] do
+      {:ok, %{token: token}} = Versions.active_schedule(identity_scope)
+
+      {:ok, alert} =
+        GtfsPlanner.Alerts.create_alert(
+          identity_audit,
+          Map.merge(attrs, %{
+            "urgency" => "now",
+            "message" => %{"header" => header, "description" => "#{header}. Plan extra time."}
+          }),
+          expected_schedule: token
+        )
+
+      {:ok, _saved} =
+        GtfsPlanner.Alerts.save_draft(identity_audit, alert.id, alert.revision, %{
+          "timing" => %{
+            "start_date" => Date.to_iso8601(identity_today),
+            "start_time" => "08:00:00",
+            "end_kind" => "estimated",
+            "check_in_at" =>
+              NaiveDateTime.to_iso8601(NaiveDateTime.new!(identity_today, ~T[18:00:00]))
+          }
+        })
+    end
+
+    IO.puts(
+      "Browser seed: identity workspace #{identity_user.email} in #{identity_org.name} " <>
+        "(active #{identity_active.id}, second #{identity_second.id}, empty #{identity_empty.id})"
+    )
+
+    {:ok, legacy_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser Identity Legacy Org",
+        alias: "browser-identity-legacy"
+      })
+
+    legacy_user = identity_editor.(legacy_org, "identity-legacy@gtfs-planner.test")
+
+    identity_schedule.(
+      legacy_org,
+      "Identity Legacy Schedule",
+      ~U[2020-04-01 00:00:00.000000Z],
+      "12",
+      ["ID_MAIN"]
+    )
+
+    # The pointer is cleared the way a pre-pointer organization would have it. This is
+    # the one fixture that models a legacy nil pointer with published schedules.
+    Repo.update_all(
+      from(o in GtfsPlanner.Organizations.Organization, where: o.id == ^legacy_org.id),
+      set: [active_gtfs_version_id: nil]
+    )
+
+    IO.puts("Browser seed: identity legacy #{legacy_user.email} in #{legacy_org.name}")
+
+    {:ok, empty_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser Identity Empty Org",
+        alias: "browser-identity-empty"
+      })
+
+    empty_user = identity_editor.(empty_org, "identity-empty@gtfs-planner.test")
+
+    GtfsPlanner.OrganizationsFixtures.delete_versions!(
+      from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^empty_org.id)
+    )
+
+    {:ok, _empty_staging} =
+      Versions.create_staging_gtfs_version(empty_org.id, %{name: "Identity Staging Only"})
+
+    IO.puts("Browser seed: identity empty #{empty_user.email} in #{empty_org.name}")
+
+    # ── Alert editor journey (spec 34, `GTFS identity editor`) ──
+    #
+    # One organization the editor journey may move: two schedules that differ by one
+    # stop, the active one chosen explicitly, and one Current alert about the stop only
+    # the active schedule has. The journey changes the active schedule from a second
+    # session and restores it, so no other journey reads this organization. The empty
+    # organization above is the editor journey's no-active fixture.
+    {:ok, editor_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser Identity Editor Org",
+        alias: "browser-identity-editor"
+      })
+
+    editor_user = identity_editor.(editor_org, "identity-editor@gtfs-planner.test")
+    editor_scope = %{actor_id: editor_user.id, organization_id: editor_org.id}
+
+    from(v in GtfsPlanner.Versions.GtfsVersion, where: v.organization_id == ^editor_org.id)
+    |> Repo.one!()
+    |> Ecto.Changeset.change(
+      name: "Editor Empty Schedule",
+      published_at: ~U[2020-02-01 00:00:00.000000Z]
+    )
+    |> Repo.update!()
+
+    editor_active =
+      identity_schedule.(
+        editor_org,
+        "Editor Active Schedule",
+        ~U[2020-03-01 00:00:00.000000Z],
+        "12",
+        ["ED_MAIN", "ED_ANNEX"]
+      )
+
+    editor_second =
+      identity_schedule.(
+        editor_org,
+        "Editor Second Schedule",
+        ~U[2020-04-01 00:00:00.000000Z],
+        "12",
+        ["ED_MAIN", "ED_HARBOR"]
+      )
+
+    {:ok, %{token: editor_token}} = Versions.active_schedule(editor_scope)
+
+    {:ok, _active} =
+      Versions.set_active_schedule(editor_scope, editor_active.id, editor_token)
+
+    editor_audit = %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: editor_org.id,
+      gtfs_version_id: editor_active.id,
+      station_stop_id: nil,
+      actor_id: editor_user.id,
+      actor_email: editor_user.email
+    }
+
+    editor_today = Gtfs.DisplayClock.today(editor_org.id, editor_active.id).date
+    {:ok, %{token: editor_token}} = Versions.active_schedule(editor_scope)
+
+    {:ok, editor_alert} =
+      GtfsPlanner.Alerts.create_alert(
+        editor_audit,
+        %{
+          "urgency" => "now",
+          "situation" => "stop_closed",
+          "cause" => "construction",
+          "scope" => %{
+            "shape" => "stop_all_routes",
+            "stop_ids" => ["ED_ANNEX"],
+            "route_ids" => ["12"],
+            "all_routes_at_stops" => true,
+            "alternative_directions" => "Board at the main stop."
+          },
+          "message" => %{
+            "header" => "Annex stop closed for road works",
+            "description" => "Annex stop closed for road works. Board at the main stop."
+          }
+        },
+        expected_schedule: editor_token
+      )
+
+    {:ok, _saved} =
+      GtfsPlanner.Alerts.save_draft(editor_audit, editor_alert.id, editor_alert.revision, %{
+        "timing" => %{
+          "start_date" => Date.to_iso8601(editor_today),
+          "start_time" => "08:00:00",
+          "end_kind" => "estimated",
+          "check_in_at" =>
+            NaiveDateTime.to_iso8601(NaiveDateTime.new!(editor_today, ~T[18:00:00]))
+        }
+      })
+
+    IO.puts(
+      "Browser seed: identity editor #{editor_user.email} in #{editor_org.name} " <>
+        "(active #{editor_active.id}, second #{editor_second.id})"
+    )
 
     # ── Feed publishing journeys (spec 24, step 21) ──
     #
@@ -12645,7 +12979,8 @@ case Accounts.register_first_admin(%{
                  "description" => alert.message.description
                }
              },
-             publish?: true
+             publish?: true,
+             expected_schedule: alerts_token.()
            ) do
         {:ok, %{alert: _accepted, publication: {:refused, field_errors}}} ->
           raise "Browser seed: alert publication refused: #{inspect(field_errors)}"
@@ -12679,7 +13014,7 @@ case Accounts.register_first_admin(%{
         "urgency" => "now",
         "situation" => "delay",
         "cause" => "weather",
-        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.id]},
+        "scope" => %{"shape" => "routes", "route_ids" => [alerts_route_12.route_id]},
         "message" => %{
           "header" => "Route 12 rerouted for the harvest fair",
           "description" => "Route 12 is detouring around the fair until Sunday evening."

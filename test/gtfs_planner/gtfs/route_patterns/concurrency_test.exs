@@ -699,7 +699,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
           where: m.organization_id == ^fixture.organization.id or m.user_id == ^fixture.actor.id
       )
 
-      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      delete_versions!(from v in GtfsVersion, where: v.id == ^fixture.version.id)
       Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
       :ok
@@ -756,7 +756,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
       Repo.delete_all(from r in Route, where: r.id == ^fixture.route.id)
       Repo.delete_all(from s in Stop, where: s.id in ^Enum.map(fixture.stops, & &1.id))
       Repo.delete_all(from m in UserOrgMembership, where: m.id in ^fixture.membership_ids)
-      Repo.delete_all(from v in GtfsVersion, where: v.id == ^fixture.version.id)
+      delete_versions!(from v in GtfsVersion, where: v.id == ^fixture.version.id)
       Repo.delete_all(from u in User, where: u.id == ^fixture.actor.id)
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
 
@@ -1104,7 +1104,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
         )
       )
 
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
+      delete_versions!(from(v in GtfsVersion, where: v.organization_id == ^organization_id))
       Repo.delete_all(from(u in User, where: u.id == ^scope.actor.id))
       Repo.delete_all(from(o in Organization, where: o.id == ^organization_id))
 

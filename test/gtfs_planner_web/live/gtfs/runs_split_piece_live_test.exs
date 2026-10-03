@@ -206,12 +206,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
       w = split_world(ctx)
       view = open(ctx, w, "run=2001")
 
-      {_piece, trips} = piece_of(w, "2001")
+      {piece, row_ids} = piece_of(w, "2001")
+      trips = Enum.map(piece.trips, & &1.trip_id)
       labels = texts(view, "#run-split-at-1 option")
 
-      # Option 1 splits after the first trip, option 2 after the second.
+      # Option 1 splits after the first trip, option 2 after the second, each named by
+      # its GTFS trip ID rather than its row UUID.
       assert Enum.any?(labels, &(&1 =~ "(after #{List.first(trips)})"))
       assert Enum.any?(labels, &(&1 =~ "(after #{Enum.at(trips, 1)})"))
+      refute Enum.any?(labels, &(&1 =~ List.first(row_ids)))
     end
 
     test "nothing is chosen until the reader chooses", ctx do

@@ -1,16 +1,29 @@
 defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   @moduledoc """
   LiveView for the Alerts list: the organization's alerts grouped into Current,
-  Upcoming, In progress and Past.
+  Upcoming, In progress and Past, and the organization's active schedule.
 
-  Every row is a rendering of `Alerts.list_alerts/2`, which is the only place a
-  tab, a count or a badge is decided. The page reads that read model with one UTC
-  instant, and each row is classified and stamped in that alert's own retained
-  zone, so a tab cannot disagree with its own count and an alert written against
-  another version's zone is read on its own civil day rather than the version the
-  editor last selected (AC-8, AC-9, CR-7). The read model is organization
-  scoped, so the list is the organization's alerts and never a slice of one
-  selected version (AC-8).
+  Every row is a rendering of `Alerts.workspace/2`, which is the only place a
+  tab, a count, a route badge or a Needs attention flag is decided. The page reads
+  that workspace with one UTC instant, and each row is classified and stamped in
+  that alert's own retained zone, so a tab cannot disagree with its own count and
+  an alert written against another version's zone is read on its own civil day
+  rather than the version the editor last selected (AC-8, AC-9, CR-7). The
+  workspace is organization scoped and resolves every target against the
+  organization's one active schedule, so the list is the organization's alerts
+  and never a slice of one selected version (AC-8, AC-19).
+
+  The active schedule is the page's own subject, separate from the version menu in
+  the header: that menu is navigation and this page never reads it. The page names
+  the active schedule and, when another published schedule exists, offers the
+  editor a form that selects it with `Versions.set_active_schedule/3`. The form
+  carries only the chosen version. The expectation that the selection has not moved
+  is the token this view read with its workspace, so a forged or stale submit can
+  only be refused, and a refusal rereads the workspace and keeps the choice the
+  editor made. A committed change by anyone reaches the page on the organization's
+  active-schedule topic and reloads the counts, the rows and the labels together.
+  An organization with no active schedule lists nothing and offers no create; it
+  offers the selection when it has a published schedule to select (AC-11, AC-24).
 
   The page shows what an editor is working on now and what is coming. It
   carries no publication action, but it does carry one piece of publication
@@ -22,8 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   Both are `AlertEditorLive`'s routes, so they are live navigations rather than
   patches of this page. None of them carries a version: the list is reachable
   from the organization navigation before the organization has any schedule at
-  all, which is why the audit context's version is the navbar's when there is
-  one and `nil` when there is none (AC-8).
+  all (AC-8).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -39,6 +51,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   alias GtfsPlanner.Alerts.Recurrence
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.AlertComponents
 
   # The tabs the read model groups into, in the order the strip shows them. An
   # unknown `?tab=` value is not an error a reader should see: it falls back to
@@ -63,6 +77,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    # A committed change of the active schedule, by anyone, is a hint to reread.
+    # The organization is absent for a system administrator who chose none.
+    with %{id: organization_id} <- socket.assigns[:current_organization],
+         true <- connected?(socket) do
+      Phoenix.PubSub.subscribe(
+        GtfsPlanner.PubSub,
+        Versions.active_schedule_topic(organization_id)
+      )
+    end
+
     {:ok,
      socket
      |> assign(:page_title, "Alerts")
@@ -72,19 +96,135 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
      |> assign(:alerts_state, :loading)
      |> assign(:alerts_empty?, true)
      |> assign(:pending_removals, [])
+     |> assign(:active_version, nil)
+     |> assign(:active_token, nil)
+     |> assign(:schedule_options, [])
+     |> assign(:schedule_error, nil)
+     |> assign(:schedule_form_open?, false)
+     |> assign_choice(nil)
      |> stream_configure(:alerts, dom_id: &"alert-row-#{&1.id}")
      |> stream_configure(:alerts_mobile, dom_id: &"alert-card-#{&1.id}")
      |> stream(:alerts, [])
      |> stream(:alerts_mobile, [])}
   end
 
+  # The disconnected render only shows the loading state. The workspace is read once, on
+  # the connected mount, instead of once for each of the two renders of a page load.
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, load_alerts(socket, tab(params))}
+    if connected?(socket) do
+      {:noreply, load_alerts(socket, tab(params))}
+    else
+      {:noreply, assign(socket, :tab, tab(params))}
+    end
+  end
+
+  @impl true
+  def handle_event(
+        "set_active_schedule",
+        %{"active_schedule" => %{"version_id" => version_id}},
+        %{assigns: %{active_token: %{}}} = socket
+      )
+      when is_binary(version_id) do
+    {:noreply, set_active_schedule(socket, version_id)}
+  end
+
+  # The disclosure's open state is held here, not only in the browser: the server
+  # sets the attribute on every render, so a render caused by someone else's change
+  # would otherwise close the form under an editor who is choosing.
+  def handle_event("toggle_schedule_form", _params, socket) do
+    {:noreply, assign(socket, :schedule_form_open?, not socket.assigns.schedule_form_open?)}
+  end
+
+  # A forged event with no usable shape, or one sent while the page holds no
+  # expectation to submit against (there is no form then), changes nothing.
+  def handle_event("set_active_schedule", _params, %{assigns: %{active_token: %{}}} = socket) do
+    {:noreply, refuse_schedule(socket, :not_found, nil)}
+  end
+
+  def handle_event("set_active_schedule", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_info({:active_schedule_changed, %{revision: revision}}, socket) do
+    case socket.assigns.active_token do
+      %{revision: held} when revision <= held -> {:noreply, socket}
+      _older_or_none -> {:noreply, load_alerts(socket, socket.assigns.tab)}
+    end
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # The token is the expectation this view read with its workspace, never a value
+  # the client sent, so a form built from an older page cannot talk its way past a
+  # change that happened since.
+  defp set_active_schedule(socket, version_id) do
+    result =
+      if String.trim(version_id) == "" do
+        {:error, :blank}
+      else
+        Versions.set_active_schedule(
+          audit_context(socket),
+          version_id,
+          socket.assigns.active_token
+        )
+      end
+
+    case result do
+      {:ok, _active} ->
+        socket
+        |> assign(:schedule_error, nil)
+        |> assign(:schedule_form_open?, false)
+        |> load_alerts(socket.assigns.tab)
+        |> push_event("focus_scoped_target", %{id: "alerts-active-name"})
+
+      {:error, reason} ->
+        refuse_schedule(socket, reason, version_id)
+    end
+  end
+
+  # A refusal rereads the workspace, so the page shows what is true now, and keeps
+  # the choice the editor made when it is still on offer so a second try is one
+  # submit. Focus returns to the select the error describes.
+  defp refuse_schedule(socket, reason, submitted) do
+    socket = load_alerts(socket, socket.assigns.tab)
+
+    choice =
+      if Enum.any?(socket.assigns.schedule_options, fn {id, _name} -> id == submitted end),
+        do: submitted,
+        else: socket.assigns.schedule_choice
+
+    socket
+    |> assign_choice(choice)
+    |> assign(:schedule_error, schedule_refusal(reason))
+    |> assign(:schedule_form_open?, true)
+    |> push_event("focus_form_error", %{form_id: "alerts-active-schedule", fallback_id: nil})
+  end
+
+  defp schedule_refusal(:blank), do: "Choose a schedule."
+
+  defp schedule_refusal(:stale_active),
+    do:
+      "The active schedule changed since you opened this page. The page now shows the current " <>
+        "one; choose again to change it."
+
+  defp schedule_refusal(:not_found),
+    do: "That schedule is not available in this organization. Choose another."
+
+  defp schedule_refusal(:not_usable),
+    do: "That schedule is not published yet. Choose a published schedule."
+
+  defp schedule_refusal(:forbidden),
+    do: "You no longer have permission to choose the active schedule."
+
+  defp assign_choice(socket, choice) do
+    assign(socket, :schedule_form, to_form(%{"version_id" => choice}, as: :active_schedule))
+    |> assign(:schedule_choice, choice)
   end
 
   # The whole page is one read. The four counts come from the same map the rows
-  # do, so a tab can never show a count its own rows contradict.
+  # do, so a tab can never show a count its own rows contradict. The active
+  # schedule, the token the selector submits against and the rows are assigned
+  # together for the same reason.
   #
   # A reader with no organization in context - a system administrator who has
   # none selected - sees the explicit unavailable state. `AssignOrganization`
@@ -96,10 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       nil ->
         socket
         |> assign(:alerts_state, :organization_required)
-        |> assign(:alerts_empty?, true)
-        |> assign(:pending_removals, [])
-        |> stream(:alerts, [], reset: true)
-        |> stream(:alerts_mobile, [], reset: true)
+        |> clear_alerts()
 
       _organization ->
         load_alerts_for_organization(socket, tab)
@@ -109,10 +246,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   defp load_alerts_for_organization(socket, tab) do
     audit_context = audit_context(socket)
 
-    case Alerts.list_alerts(audit_context, DateTime.utc_now()) do
-      {:ok, grouped} ->
+    case Alerts.workspace(audit_context, DateTime.utc_now()) do
+      {:ok, %{active: active} = workspace} ->
+        %{groups: grouped, routes_by_id: routes, diagnostics_by_alert: diagnostics} = workspace
         counts = Map.new(@tabs, &{&1, length(Map.fetch!(grouped, &1))})
-        rows = prepare_rows(Map.fetch!(grouped, tab), socket)
+        rows = prepare_rows(Map.fetch!(grouped, tab), socket, routes, diagnostics)
 
         socket
         |> assign(:tab, tab)
@@ -120,20 +258,67 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         |> assign(:alerts_state, :ready)
         |> assign(:alerts_empty?, Enum.all?(@tabs, &(Map.fetch!(grouped, &1) == [])))
         |> assign(:pending_removals, pending_removals(audit_context))
+        |> assign_schedule(active.version, active.token)
         |> stream(:alerts, rows, reset: true)
         |> stream(:alerts_mobile, rows, reset: true)
+
+      # Every target resolves against the active schedule, so without one there is
+      # nothing to list or create against. The editor can still choose one.
+      {:error, :no_active_schedule} ->
+        case Versions.active_schedule(audit_context) do
+          {:ok, %{token: token}} ->
+            socket
+            |> assign(:alerts_state, :no_active_schedule)
+            |> assign(:pending_removals, pending_removals(audit_context))
+            |> assign_schedule(nil, token)
+            |> clear_rows()
+
+          {:error, :forbidden} ->
+            unavailable(socket)
+        end
 
       # `EnsureRole` already refuses a member without the editor role, so this
       # branch is the fail-closed answer to a membership that lapsed between
       # mount and this read: the page stays up and says it cannot list.
       {:error, :forbidden} ->
-        socket
-        |> assign(:alerts_state, :unavailable)
-        |> assign(:alerts_empty?, true)
-        |> assign(:pending_removals, [])
-        |> stream(:alerts, [], reset: true)
-        |> stream(:alerts_mobile, [], reset: true)
+        unavailable(socket)
     end
+  end
+
+  defp unavailable(socket) do
+    socket
+    |> assign(:alerts_state, :unavailable)
+    |> clear_alerts()
+  end
+
+  defp clear_alerts(socket) do
+    socket
+    |> assign(:pending_removals, [])
+    |> assign(:active_version, nil)
+    |> assign(:active_token, nil)
+    |> assign(:schedule_options, [])
+    |> clear_rows()
+  end
+
+  defp clear_rows(socket) do
+    socket
+    |> assign(:alerts_empty?, true)
+    |> stream(:alerts, [], reset: true)
+    |> stream(:alerts_mobile, [], reset: true)
+  end
+
+  # The choices are the organization's published schedules, read fresh with every
+  # workspace so a schedule published while the page is open is on offer. The
+  # select starts on the persisted selection, not on a stale draft.
+  defp assign_schedule(socket, version, token) do
+    socket
+    |> assign(:active_version, version)
+    |> assign(:active_token, token)
+    |> assign(
+      :schedule_options,
+      Versions.list_gtfs_versions_for_dropdown(socket.assigns.current_organization.id)
+    )
+    |> assign_choice(version && version.id)
   end
 
   defp tab(%{"tab" => value}) when is_binary(value) do
@@ -145,21 +330,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   # -- Rows ----------------------------------------------------------------
 
   # One pass per row, so a row carries everything its markup reads and the
-  # template never queries. The route rows come from `Alerts.routes_for/2`, the
-  # same scoped read the editor's own labels are built from, so a row cannot
-  # name a route the editor's text does not (CR-4).
+  # template never queries. The route rows come from the workspace's own
+  # `routes_by_id`, read from the same active schedule as the row's Needs
+  # attention flag, so a row cannot name a route its own flag contradicts (CR-4).
   #
   # Each row's change stamp is localized in that alert's own retained zone, so an
   # organization holding alerts from several versions reads every row against the
   # day its own answers were written in. One conversion query is issued per
   # distinct zone, which for a single-zone organization is one.
-  defp prepare_rows(rows, socket) do
+  defp prepare_rows(rows, socket, routes, diagnostics) do
     audit_context = audit_context(socket)
     alerts = Enum.map(rows, & &1.alert)
     organization_timezone = Alerts.organization_zone(audit_context)
 
     emails = editor_emails(Enum.map(alerts, & &1.updated_by_id))
-    routes = Alerts.routes_for(audit_context, alerts)
     now_utc = DateTime.utc_now()
 
     stamps =
@@ -178,11 +362,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
 
     Enum.map(rows, fn row ->
       {today, local_change} = Map.fetch!(stamps, row.alert.id)
-      prepare_row(row, local_change, today, emails, routes)
+      prepare_row(row, local_change, today, emails, routes, diagnostics)
     end)
   end
 
-  defp prepare_row(row, local_change, today, emails, routes) do
+  defp prepare_row(row, local_change, today, emails, routes, diagnostics) do
     alert = row.alert
     referenced = Alerts.Listing.referenced_ids(alert)
 
@@ -196,9 +380,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       title: alert_title(alert),
       situation_label: Map.get(@situations, alert.situation),
       # Walking the stored identities keeps the alert's own order and drops an
-      # identity the version no longer has, which is the one the row's Needs
+      # identity the active schedule lacks, which is the one the row's Needs
       # attention badge names.
-      routes: Enum.flat_map(referenced.routes, &(Map.get(routes, &1, []) |> List.wrap())),
+      routes: referenced.routes |> Enum.map(&Map.get(routes, &1)) |> Enum.reject(&is_nil/1),
       # Only an alert that said it is about the whole system, or about a place on
       # every route, reads "All routes". A draft that has not reached the routes
       # question, or whose routes were all deselected, names nothing yet.
@@ -208,8 +392,23 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       check_in_label: check_in_label(alert),
       last_change: last_change(local_change, today, Map.get(emails, alert.updated_by_id)),
       needs_attention?: row.needs_attention?,
+      attention_notes: attention_notes(Map.get(diagnostics, alert.id, [])),
       check_in_due?: row.check_in_due?
     }
+  end
+
+  # What the active schedule lacks or cannot honour, in the feed IDs the alert
+  # retains, so the badge says which target to look at without a click. At most
+  # three are spelled out; the editor lists them all.
+  @notes_shown 3
+
+  defp attention_notes(diagnostics) do
+    notes = diagnostics |> Enum.map(&AlertComponents.target_note/1) |> Enum.uniq()
+
+    case Enum.split(notes, @notes_shown) do
+      {shown, []} -> shown
+      {shown, rest} -> shown ++ ["and #{length(rest)} more"]
+    end
   end
 
   defp system_shape?(%{scope: %{shape: shape}}), do: shape in [:system, :stop_all_routes]
@@ -284,25 +483,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
     |> Map.new(fn user_id -> {user_id, Accounts.get_user!(user_id).email} end)
   end
 
-  # The version is the navbar's when the organization has one and `nil` when it
-  # does not. Alerts belongs to the organization, so the list, its labels and
-  # its change stamps are organization-scoped either way; the version only names
-  # the schedule an alert was written against, and an organization with no
-  # schedule has none to name (AC-8, AC-10).
+  # Alerts belongs to the organization, so the list, its labels and its change
+  # stamps are organization-scoped. The context names no version: the workspace
+  # resolves every target against the active schedule it locks, and the version
+  # menu in the header is navigation that this page never consults (AC-8, AC-19).
   defp audit_context(socket) do
     %AuditContext{
       organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: selected_version_id(socket),
+      gtfs_version_id: nil,
       actor_id: socket.assigns.current_user.id,
       actor_email: socket.assigns.current_user.email
     }
-  end
-
-  defp selected_version_id(socket) do
-    case socket.assigns[:current_gtfs_version] do
-      %{id: version_id} -> version_id
-      _no_version -> nil
-    end
   end
 
   # A removal the delivery steps have not applied yet. The alert is already
@@ -335,7 +526,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="alerts-page" class="ds-page">
+      <div id="alerts-page" class="ds-page" phx-hook="FormErrorFocus">
         <.header>
           Alerts
           <:subtitle>
@@ -359,6 +550,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
           </:actions>
         </.header>
 
+        <%!-- The page's first paint, before the connected mount reads the workspace. --%>
+        <.skeleton
+          :if={@alerts_state == :loading}
+          id="alerts-loading"
+          role="status"
+          label="Loading alerts…"
+          class="mt-6"
+        >
+          <div class="overflow-clip rounded-card border border-subtle bg-white">
+            <div
+              :for={_row <- 1..4}
+              class="flex gap-4 border-b border-subtle px-5 py-3 last:border-b-0"
+            >
+              <div class="h-4 flex-[3] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 flex-[2] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 flex-[2] rounded-badge bg-navy-100/60"></div>
+              <div class="h-4 w-24 rounded-badge bg-navy-100/60"></div>
+            </div>
+          </div>
+        </.skeleton>
+
         <.message
           :if={@alerts_state == :organization_required}
           id="alerts-organization-required"
@@ -367,6 +579,34 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         >
           Choose an organization to see and write its alerts.
         </.message>
+
+        <%!-- No active schedule is the page's first-use state: nothing is listed or
+               created until one is chosen, and the one next step is the choice. --%>
+        <.first_use
+          :if={@alerts_state == :no_active_schedule}
+          id="alerts-no-active"
+          title="No active schedule"
+          icon="hero-calendar-days"
+        >
+          <%= if @schedule_options == [] do %>
+            Alerts check their routes, stops and departures against the active schedule. This
+            organization has no published schedule yet. The first schedule that is published
+            becomes active.
+          <% else %>
+            Alerts check their routes, stops and departures against the active schedule. Choose
+            the published schedule to use.
+          <% end %>
+          <:action :if={@schedule_options != []}>
+            <.schedule_form
+              form={@schedule_form}
+              options={@schedule_options}
+              error={@schedule_error}
+              prompt="Choose a schedule"
+              variant="primary"
+              class="mx-auto flex max-w-sm flex-col gap-1 text-left"
+            />
+          </:action>
+        </.first_use>
 
         <.message
           :if={@alerts_state == :unavailable}
@@ -387,6 +627,54 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         </.message>
 
         <%= if @alerts_state == :ready do %>
+          <%!-- Choosing another schedule is rare next to reading the list, so the
+                 name and what it means are always on the page and the form sits
+                 behind a disclosure. A refusal opens it again. --%>
+          <section
+            id="alerts-active"
+            aria-labelledby="alerts-active-heading"
+            class="mt-6 rounded-card border border-subtle bg-white px-4 py-3 sm:px-5"
+          >
+            <h2 id="alerts-active-heading" class="text-[13px] font-semibold text-muted">
+              Active schedule
+            </h2>
+            <p
+              id="alerts-active-name"
+              tabindex="-1"
+              class="mt-0.5 text-base font-semibold text-strong [overflow-wrap:anywhere]"
+            >
+              {@active_version.name}
+            </p>
+            <p class="mt-1 max-w-[60ch] text-[13px] text-muted">
+              Alerts check their targets against this schedule. The version menu in the header
+              does not change it.
+            </p>
+            <details
+              :if={Enum.any?(@schedule_options, fn {id, _name} -> id != @active_version.id end)}
+              id="alerts-active-more"
+              open={@schedule_form_open?}
+              class="group"
+            >
+              <summary
+                id="alerts-active-toggle"
+                phx-click="toggle_schedule_form"
+                class="-ml-1 mt-1 flex min-h-11 w-fit cursor-pointer list-none items-center gap-1.5 rounded-control px-1 text-sm font-semibold text-action hover:underline [&::-webkit-details-marker]:hidden"
+              >
+                <.icon
+                  name="hero-chevron-right"
+                  class="size-4 transition-transform group-open:rotate-90"
+                /> Change schedule
+              </summary>
+              <.schedule_form
+                form={@schedule_form}
+                options={@schedule_options}
+                error={@schedule_error}
+                variant="secondary"
+                class="mt-1 flex w-full flex-col gap-1 pb-1 sm:w-72"
+              />
+            </details>
+          </section>
+
           <%!-- An organization with no alerts at all gets the first-use panel
                  instead of four empty tabs: four empty tabs describe an
                  organization that is choosing, not one that has nothing. --%>
@@ -455,6 +743,41 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         <% end %>
       </div>
     </Layouts.app>
+    """
+  end
+
+  # The one form that selects the organization's active schedule. It posts only the
+  # chosen version; the server supplies the expectation (see the moduledoc).
+  attr :form, :map, required: true
+  attr :options, :list, required: true, doc: "published schedules as `{id, name}`"
+  attr :error, :string, default: nil
+  attr :prompt, :string, default: nil
+  attr :variant, :string, values: ~w(primary secondary), required: true
+  attr :class, :string, required: true
+
+  defp schedule_form(assigns) do
+    ~H"""
+    <.form for={@form} id="alerts-active-schedule" phx-submit="set_active_schedule" class={@class}>
+      <.input
+        field={@form[:version_id]}
+        id="alerts-active-schedule-version"
+        type="select"
+        label="Schedule"
+        options={for {id, name} <- @options, do: {name, id}}
+        prompt={@prompt}
+        errors={List.wrap(@error)}
+        required
+      />
+      <.button
+        id="alerts-active-schedule-submit"
+        type="submit"
+        variant={@variant}
+        class={["min-h-11", @variant == "secondary" && "w-fit"]}
+        phx-disable-with="Setting schedule…"
+      >
+        Set active schedule
+      </.button>
+    </.form>
     """
   end
 end

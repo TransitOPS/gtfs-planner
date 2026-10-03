@@ -1,12 +1,19 @@
 defmodule GtfsPlanner.Gtfs.StopReferencesTest do
   use GtfsPlanner.DataCase, async: false
 
+  import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.AlertsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Alerts
+  alias GtfsPlanner.Alerts.Alert
+  alias GtfsPlanner.Alerts.Publication
+
   alias GtfsPlanner.Gtfs.{
     AlignmentSegment,
+    AuditContext,
     DeadheadTime,
     FareLegJoinRule,
     FlexService,
@@ -14,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
     ReliefPoint,
     Stop,
     StopArea,
+    StopEditing,
     StopReferences,
     StopTime,
     Transfer,
@@ -21,6 +29,7 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
   }
 
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.WalkabilityTest
   alias GtfsPlanner.Versions
@@ -298,6 +307,150 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
 
     assert %{from_ref: "unknown:S:1", to_ref: "stop:S:10", minutes: 15} =
              Repo.get!(DeadheadTime, unknown.id)
+  end
+
+  describe "organization alert targets" do
+    # An alert names the schedule's stops by feed ID, so it is a retained
+    # external reference: the stop commands never rewrite it, and a stop the
+    # schedule has since lost stays on the alert until an editor repairs it.
+    setup do
+      organization = organization_fixture()
+      active_id = Repo.get!(Organization, organization.id).active_gtfs_version_id
+      other = gtfs_version_fixture(organization.id)
+      actor = editor_fixture(organization)
+
+      for version_id <- [active_id, other.id], stop_id <- ["S1", "S2", "S3", "S4"] do
+        stop_fixture(organization.id, version_id, stop_id: stop_id)
+      end
+
+      audit = fn version_id ->
+        %AuditContext{
+          organization_id: organization.id,
+          gtfs_version_id: version_id,
+          actor_id: actor.id,
+          actor_email: actor.email
+        }
+      end
+
+      alert =
+        alert_fixture(audit.(active_id), %{
+          "urgency" => "now",
+          "situation" => "stop_closed",
+          "cause" => "construction",
+          "scope" => %{"shape" => "stop_all_routes", "stop_ids" => ["S1", "S3"]}
+        })
+
+      publication =
+        Repo.insert!(%Publication{
+          organization_id: organization.id,
+          alert_id: alert.id,
+          desired_revision: alert.revision,
+          desired_snapshot: %{"scope" => %{"shape" => "stop_all_routes", "stops" => ["S1", "S3"]}},
+          confirmed_revision: alert.revision,
+          confirmed_snapshot: %{"scope" => %{"shape" => "stop_all_routes", "stops" => ["S1"]}}
+        })
+
+      %{
+        organization: organization,
+        active_id: active_id,
+        other_id: other.id,
+        audit: audit,
+        alert: alert,
+        publication: publication
+      }
+    end
+
+    test "replace and delete in a non-active version leave the alert and its accepted content",
+         context do
+      before = retained(context)
+
+      replace!(context, context.other_id, "S1", "S2")
+      delete!(context, context.other_id, "S3")
+
+      assert Repo.get_by(Stop, gtfs_version_id: context.other_id, stop_id: "S3") == nil
+      assert retained(context) == before
+
+      # The alert's own schedule still holds both stops it names.
+      assert [] = stops_missing(context)
+    end
+
+    test "replace, delete and rename in the alert's schedule keep its original targets",
+         context do
+      before = retained(context)
+
+      replace!(context, context.active_id, "S1", "S2")
+      delete!(context, context.active_id, "S3")
+
+      # The replace leaves S1 in the schedule; renaming it moves the schedule's stop.
+      assert {:ok, _counts} =
+               Repo.transaction(fn ->
+                 Versions.lock_for_exclusive_write!(context.organization.id, context.active_id)
+
+                 StopReferences.rename!(context.organization.id, context.active_id, %{
+                   "S1" => "S9"
+                 })
+               end)
+
+      # Neither stop the alert names is in the schedule now, and the alert still names both.
+      assert stops_missing(context) == ["S1", "S3"]
+      assert retained(context) == before
+
+      assert before.scope.stop_ids == ["S1", "S3"]
+      assert [%{"gtfs_id" => "S1"}, %{"gtfs_id" => "S3"}] = before.reference["selectors"]["stops"]
+
+      assert {:ok, tabs} =
+               Alerts.list_alerts(context.audit.(context.active_id), DateTime.utc_now())
+
+      assert [%{needs_attention?: true}] = Enum.concat(Map.values(tabs))
+    end
+  end
+
+  defp replace!(context, version_id, old_id, new_id) do
+    old = Repo.get_by!(Stop, gtfs_version_id: version_id, stop_id: old_id)
+    new = Repo.get_by!(Stop, gtfs_version_id: version_id, stop_id: new_id)
+    audit = context.audit.(version_id)
+
+    {:ok, review} = StopEditing.replace_review(old.id, new.id, audit)
+
+    assert {:ok, _result} =
+             StopEditing.replace_stop(old.id, new.id, %{fingerprint: review.fingerprint}, audit)
+  end
+
+  defp delete!(context, version_id, stop_id) do
+    stop = Repo.get_by!(Stop, gtfs_version_id: version_id, stop_id: stop_id)
+    audit = context.audit.(version_id)
+
+    {:ok, review} = StopEditing.delete_review(stop.id, audit)
+
+    assert {:ok, _result} = StopEditing.delete_stop(stop.id, review.fingerprint, audit)
+  end
+
+  # What a stop command must not touch: the private answer and its capture, the
+  # revision they were saved at, and both accepted public snapshots.
+  defp retained(context) do
+    alert = Repo.get!(Alert, context.alert.id)
+    publication = Repo.get!(Publication, context.publication.id)
+
+    %{
+      scope: alert.scope,
+      reference: alert.target_reference,
+      revision: alert.revision,
+      updated_at: alert.updated_at,
+      desired: publication.desired_snapshot,
+      confirmed: publication.confirmed_snapshot
+    }
+  end
+
+  defp stops_missing(context) do
+    alert = Repo.get!(Alert, context.alert.id)
+
+    alert.scope.stop_ids --
+      Repo.all(
+        from stop in Stop,
+          where:
+            stop.gtfs_version_id == ^context.active_id and stop.stop_id in ^alert.scope.stop_ids,
+          select: stop.stop_id
+      )
   end
 
   defp insert_references(organization_id, version_id, stop_id) do

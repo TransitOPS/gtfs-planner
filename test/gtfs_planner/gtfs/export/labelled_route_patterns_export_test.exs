@@ -135,6 +135,22 @@ defmodule GtfsPlanner.Gtfs.Export.LabelledRoutePatternsExportTest do
              Enum.sort([@label, child.route_pattern_id])
   end
 
+  test "trips of one route export in trip ID order whatever order they were written in",
+       context do
+    org_id = context.organization.id
+    version = gtfs_version_fixture(org_id)
+    route_fixture(org_id, version.id, route_id: "R_ORDER")
+
+    for trip_id <- ["T-C", "T-A", "T-B"] do
+      trip_fixture(org_id, version.id, "R_ORDER", trip_id: trip_id)
+    end
+
+    files = export!(org_id, version.id)
+
+    assert files |> csv_rows("trips.txt") |> Enum.map(&column(&1, "trip_id")) ==
+             ["T-A", "T-B", "T-C"]
+  end
+
   test "trips on an inactive route stay excluded while an active route's child exports its owner",
        context do
     org_id = context.organization.id

@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorReasonTest do
     alert_fixture(context.audit, %{
       "urgency" => "now",
       "situation" => "delay",
-      "scope" => %{"shape" => "routes", "route_ids" => [context.route.id]}
+      "scope" => %{"shape" => "routes", "route_ids" => [context.route.route_id]}
     })
   end
 
