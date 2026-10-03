@@ -726,9 +726,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     if owned_stop?(id, socket), do: stop_show_path(socket, id)
   end
 
-  defp evidence_link("station", id, socket) do
-    if owned_stop?(id, socket), do: stop_show_path(socket, id) <> "/report"
-  end
+  defp evidence_link("station", id, socket), do: station_report_path(socket, id)
 
   defp evidence_link("station_reachability_run", id, socket),
     do: station_reachability_result_path(socket, id)
@@ -774,6 +772,20 @@ defmodule GtfsPlannerWeb.AgentPanel do
     )
   end
 
+  # The station is re-read through this panel's own organization and version
+  # before a path is built, and the stop id is percent-encoded, so an imported
+  # stop id cannot escape the path and a station that is gone offers no link.
+  defp station_report_path(socket, stop_id) do
+    organization_id = socket.assigns.current_organization.id
+
+    with version_id when not is_nil(version_id) <- panel_version_id(socket),
+         %{} <- Gtfs.get_stop_by_stop_id(organization_id, version_id, stop_id) do
+      ~p"/gtfs/#{version_id}/stops/#{stop_id}/report"
+    else
+      _other -> nil
+    end
+  end
+
   # A recorded run resolves only while this panel still holds the very snapshot
   # that selected it, and only while the scoped station read still finds it: the
   # run id on its own would be a run this page never explained.
@@ -781,14 +793,13 @@ defmodule GtfsPlannerWeb.AgentPanel do
     case station_snapshot(socket) do
       %{"station_stop_id" => stop_id, "run_id" => ^run_id} when is_binary(stop_id) ->
         organization_id = socket.assigns.current_organization.id
-        version_id = socket.assigns.current_gtfs_version.id
 
-        case Reachability.get_station_run(organization_id, version_id, stop_id, run_id) do
-          {:ok, _run} ->
-            "/gtfs/" <> version_id <> "/station-reachability/" <> URI.encode_www_form(run_id)
-
-          {:error, _reason} ->
-            nil
+        with version_id when not is_nil(version_id) <- panel_version_id(socket),
+             {:ok, _run} <-
+               Reachability.get_station_run(organization_id, version_id, stop_id, run_id) do
+          ~p"/gtfs/#{version_id}/station-reachability/#{run_id}"
+        else
+          _other -> nil
         end
 
       _other ->
