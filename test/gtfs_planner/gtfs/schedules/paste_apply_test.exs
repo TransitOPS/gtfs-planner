@@ -212,36 +212,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
     end
   end
 
-  describe "apply_paste/5 pattern selectors" do
-    test "a row UUID with a route_pattern_id returns :not_found and writes nothing", context do
-      scope = apply_case!(context)
-      input = replace_input(keep_b_text())
-      review = prepare_review!(context, scope, input)
-      counts_before = scoped_counts(context)
-
-      # Each selector names the main pattern; naming both is still refused.
-      params =
-        scope_params(scope)
-        |> Map.put(:pattern_id, scope.main.pattern.id)
-        |> Map.put(:route_pattern_id, "MAIN")
-
-      assert {:error, :not_found} =
-               Schedules.apply_paste(
-                 scope.route_id,
-                 params,
-                 input,
-                 review.fingerprint,
-                 context.audit
-               )
-
-      assert scoped_counts(context) == counts_before
-    end
-
-    test "a route_pattern_id selects its pattern and a natural ID under pattern_id is refused",
+  describe "apply_paste/5 pattern selector" do
+    test "a feed route_pattern_id under pattern_id returns :not_found and writes nothing",
          context do
       scope = apply_case!(context)
       input = replace_input(keep_b_text())
       review = prepare_review!(context, scope, input)
+      counts_before = scoped_counts(context)
 
       assert {:error, :not_found} =
                Schedules.apply_paste(
@@ -252,14 +229,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
                  context.audit
                )
 
-      assert {:ok, %{removed: 1}} =
-               Schedules.apply_paste(
-                 scope.route_id,
-                 Map.put(scope_params(scope), :route_pattern_id, "MAIN"),
-                 input,
-                 review.fingerprint,
-                 context.audit
-               )
+      assert scoped_counts(context) == counts_before
     end
   end
 

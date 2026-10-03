@@ -1760,14 +1760,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   Loads one route's Schedules read for `organization_id`/`version_id`.
 
   `filters` accepts `:service_id`, `:direction_id` (or `:direction`), `:pattern`
-  (a route pattern row UUID or `:all`), `:route_pattern_id` (a feed route pattern
-  ID, for callers that hold one instead of a row) and `:stops` (`:timepoints` or
-  `:all`). Each is canonicalized against the loaded scope: an unknown calendar
-  falls back to the one with the most trips on this route, an unknown direction
-  to one with trips, an unknown pattern, or both pattern selectors together, to
-  `:all` and any stops value other than `:all` to `:timepoints`. A pattern value
-  is never read as the other kind, whatever it looks like. String keys are
-  accepted so URL params can be passed through.
+  (a route pattern row UUID or `:all`) and `:stops` (`:timepoints` or `:all`). Each
+  is canonicalized against the loaded scope: an unknown calendar falls back to the
+  one with the most trips on this route, an unknown direction to one with trips,
+  an unknown pattern to `:all` and any stops value other than `:all` to
+  `:timepoints`. A pattern value matches a row UUID only, never a feed
+  `route_pattern_id`, whatever it looks like. String keys are accepted so URL
+  params can be passed through.
 
   Returns `{:ok, schedule()}` or `{:error, :not_found}` for a foreign, invalid or
   unpublished scope.
@@ -1875,16 +1874,15 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   @doc """
   Loads the paste scope for one route, calendar and direction.
 
-  `params` accepts `:service_id`, `:direction_id` (or `:direction`),
-  `:pattern_id` (or `:pattern`, a route pattern row UUID) and `:route_pattern_id`
-  (a feed route pattern ID). Each is resolved like `load_route_schedule/4`: an
+  `params` accepts `:service_id`, `:direction_id` (or `:direction`) and
+  `:pattern_id` (or `:pattern`, a route pattern row UUID, never a feed
+  `route_pattern_id`). Each is resolved like `load_route_schedule/4`: an
   unknown calendar falls back to the one with the most trips on this route,
   an unknown direction to one with trips, and an absent pattern to the
   direction's most-used pattern (most trips on the resolved calendar, ties
   keep pattern order). A requested pattern that is not one of the direction's
-  patterns, or both pattern selectors together, is `{:error, :not_found}`; a
-  pattern value is never read as the other kind. String keys are accepted so
-  URL params can be passed through.
+  patterns is `{:error, :not_found}`; string keys are accepted so URL params
+  can be passed through.
 
   The whole scope loads in one read transaction that holds the version row
   `FOR SHARE` through `Calendars.list_calendars/3`, exactly like the Schedules
@@ -2694,14 +2692,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     patterns = load_patterns(organization_id, version_id, route_id)
     direction_patterns = Enum.filter(patterns, &(&1.direction_id == direction))
-
-    pattern =
-      resolve_pattern(
-        filter_value(filters, :pattern),
-        filter_value(filters, :route_pattern_id),
-        direction_patterns
-      )
-
+    pattern = resolve_pattern(filter_value(filters, :pattern), direction_patterns)
     stops = resolve_stops(filter_value(filters, :stops))
 
     occurrences_by_pattern = load_occurrences(organization_id, version_id, patterns)
@@ -2779,7 +2770,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     pattern_id =
       resolve_paste_pattern(
         filter_value(params, :pattern_id) || filter_value(params, :pattern),
-        filter_value(params, :route_pattern_id),
         direction_patterns,
         trips
       )
@@ -2830,24 +2820,23 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     }
   end
 
-  # A requested pattern is a row UUID (`pattern_id`/`pattern`) or a feed
-  # `route_pattern_id`, never both and never guessed from the value's spelling.
-  # Unlike the Schedules read, a request that names no pattern of the chosen
-  # direction, or both kinds, is a foreign scope, not an `:all` fallback. An
-  # absent request resolves to the direction's most-used pattern (most trips
+  # A requested pattern is a row UUID, like the Schedules read, and is never
+  # matched against the feed `route_pattern_id`: a feed ID spelled like another
+  # pattern's UUID would otherwise select the wrong one. Here a request naming no
+  # pattern of the chosen direction is a foreign scope, not an `:all` fallback.
+  # An absent request resolves to the direction's most-used pattern (most trips
   # on the resolved calendar, ties keep pattern order), or nil when the
   # direction has no pattern at all.
-  defp resolve_paste_pattern(row_id, route_pattern_id, direction_patterns, trips) do
-    case select_pattern(row_id, route_pattern_id, direction_patterns) do
-      {:ok, %RoutePattern{id: id}} -> id
-      :absent -> default_paste_pattern(direction_patterns, trips)
-      _invalid -> Repo.rollback(:not_found)
+  defp resolve_paste_pattern(requested, direction_patterns, _trips) when is_binary(requested) do
+    case Enum.find(direction_patterns, &(&1.id == requested)) do
+      %RoutePattern{id: id} -> id
+      nil -> Repo.rollback(:not_found)
     end
   end
 
-  defp default_paste_pattern([], _trips), do: nil
+  defp resolve_paste_pattern(_requested, [], _trips), do: nil
 
-  defp default_paste_pattern(direction_patterns, trips) do
+  defp resolve_paste_pattern(_requested, direction_patterns, trips) do
     counts = Enum.frequencies_by(trips, &{&1.route_pattern_id, &1.direction_id})
 
     direction_patterns
@@ -3361,42 +3350,18 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp normalize_direction("1"), do: 1
   defp normalize_direction(_requested), do: nil
 
-  # The requested pattern is a row UUID (`pattern`) or a feed `route_pattern_id`,
-  # never both and never guessed from the value's spelling. It resolves to the
-  # UUID the payload exposes; an absent, unknown or ambiguous request falls back
-  # to `:all`. A pattern of the other direction never resolves.
-  defp resolve_pattern(row_id, route_pattern_id, direction_patterns) do
-    case select_pattern(row_id, route_pattern_id, direction_patterns) do
-      {:ok, %RoutePattern{id: id}} -> id
-      _unselected -> :all
+  # The requested pattern is a row UUID, matched against row UUIDs only: a feed
+  # `route_pattern_id` spelled like another pattern's UUID must not select it.
+  # Anything else falls back to `:all`. A pattern of the other direction never
+  # resolves.
+  defp resolve_pattern(requested, direction_patterns) when is_binary(requested) do
+    case Enum.find(direction_patterns, &(&1.id == requested)) do
+      %RoutePattern{id: id} -> id
+      nil -> :all
     end
   end
 
-  # Exactly one binary selector selects by its own kind: `{:ok, pattern}` for a
-  # match, `:not_found` for none, `:ambiguous` when both kinds are named and
-  # `:absent` when neither is.
-  defp select_pattern(row_id, route_pattern_id, direction_patterns) do
-    case {row_id, route_pattern_id} do
-      {row, natural} when is_binary(row) and is_binary(natural) ->
-        :ambiguous
-
-      {row, _absent} when is_binary(row) ->
-        find_pattern(direction_patterns, &(&1.id == row))
-
-      {_absent, natural} when is_binary(natural) ->
-        find_pattern(direction_patterns, &(&1.route_pattern_id == natural))
-
-      _neither ->
-        :absent
-    end
-  end
-
-  defp find_pattern(direction_patterns, matches?) do
-    case Enum.find(direction_patterns, matches?) do
-      %RoutePattern{} = pattern -> {:ok, pattern}
-      nil -> :not_found
-    end
-  end
+  defp resolve_pattern(_requested, _direction_patterns), do: :all
 
   defp resolve_stops(value) when value in [:all, "all"], do: :all
   defp resolve_stops(_value), do: :timepoints

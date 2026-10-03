@@ -134,7 +134,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteScopeTest do
       assert paste.direction_id == 0
       assert paste.pattern_id == scope.main.pattern.id
 
-      assert {:ok, natural} =
+      assert {:ok, selected} =
                Schedules.load_paste_scope(
                  context.organization.id,
                  context.version.id,
@@ -142,73 +142,45 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteScopeTest do
                  %{
                    "service_id" => scope.service,
                    "direction_id" => "0",
-                   "route_pattern_id" => "MAIN"
+                   "pattern_id" => scope.main.pattern.id
                  }
                )
 
-      assert natural.pattern_id == scope.main.pattern.id
-      assert natural.direction_id == 0
+      assert selected.pattern_id == scope.main.pattern.id
+      assert selected.direction_id == 0
     end
 
-    test "a route_pattern_id spelled like another pattern's row UUID selects exactly the requested kind",
+    test "a route_pattern_id spelled like another pattern's row UUID does not displace the row",
          context do
       scope = schedule_scope!(context)
 
       # This pattern's feed ID is the main pattern's row UUID.
-      lookalike =
-        schedule_pattern_fixture(context.organization.id, context.version.id, %{
-          route_id: scope.route_id,
-          direction_id: 0,
-          route_pattern_id: scope.main.pattern.id,
-          route_pattern_name: "Lookalike",
-          stops: []
-        })
-
-      load = fn params ->
-        Schedules.load_paste_scope(
-          context.organization.id,
-          context.version.id,
-          scope.route_id,
-          Map.merge(%{service_id: scope.service, direction_id: 0}, params)
-        )
-      end
+      schedule_pattern_fixture(context.organization.id, context.version.id, %{
+        route_id: scope.route_id,
+        direction_id: 0,
+        route_pattern_id: scope.main.pattern.id,
+        route_pattern_name: "Lookalike",
+        stops: []
+      })
 
       for params <- [
             %{pattern_id: scope.main.pattern.id},
             %{pattern: scope.main.pattern.id},
             %{"pattern_id" => scope.main.pattern.id}
           ] do
-        assert {:ok, by_row} = load.(params)
-        assert by_row.pattern_id == scope.main.pattern.id
-      end
-
-      assert {:ok, by_feed_id} = load.(%{route_pattern_id: scope.main.pattern.id})
-      assert by_feed_id.pattern_id == lookalike.pattern.id
-
-      assert {:ok, by_main_feed_id} = load.(%{route_pattern_id: "MAIN"})
-      assert by_main_feed_id.pattern_id == scope.main.pattern.id
-    end
-
-    test "naming a row UUID and a route_pattern_id together is :not_found", context do
-      scope = schedule_scope!(context)
-
-      # Even two selectors that name the same pattern are refused.
-      for params <- [
-            %{pattern_id: scope.main.pattern.id, route_pattern_id: "MAIN"},
-            %{pattern: scope.main.pattern.id, route_pattern_id: "MAIN"},
-            %{"pattern_id" => scope.main.pattern.id, "route_pattern_id" => "MAIN"}
-          ] do
-        assert {:error, :not_found} =
+        assert {:ok, by_row} =
                  Schedules.load_paste_scope(
                    context.organization.id,
                    context.version.id,
                    scope.route_id,
                    Map.merge(%{service_id: scope.service, direction_id: 0}, params)
                  )
+
+        assert by_row.pattern_id == scope.main.pattern.id
       end
     end
 
-    test "a natural ID under the row selector is :not_found", context do
+    test "a feed route_pattern_id under the row selector is :not_found", context do
       scope = schedule_scope!(context)
 
       assert {:error, :not_found} =
@@ -261,18 +233,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteScopeTest do
           stops: []
         })
 
-      for selector <- [
-            %{pattern_id: scope.rev.pattern.id},
-            %{route_pattern_id: "REV"},
-            %{pattern_id: stranger.pattern.id},
-            %{route_pattern_id: stranger.pattern.route_pattern_id}
-          ] do
+      for pattern_id <- [scope.rev.pattern.id, "REV", stranger.pattern.id] do
         assert {:error, :not_found} =
                  Schedules.load_paste_scope(
                    context.organization.id,
                    context.version.id,
                    scope.route_id,
-                   Map.merge(%{service_id: scope.service, direction_id: 0}, selector)
+                   %{service_id: scope.service, direction_id: 0, pattern_id: pattern_id}
                  )
       end
 
