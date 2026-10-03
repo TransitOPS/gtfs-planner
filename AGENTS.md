@@ -16,14 +16,15 @@ keep setup minimal, and make new cases independently selectable.
 
 | Need | Existing command or location |
 |---|---|
+| Focused tests for the current diff (advisory) | `bin/test-affected` (add `--run` to run them) |
 | Routing unit feedback | `mix test test/gtfs_planner/routing/route_test.exs` |
 | Calendar rule feedback | `mix test test/gtfs_planner/gtfs/calendars/service_dates_test.exs` |
 | Calendar persistence boundary | `mix test test/gtfs_planner/gtfs/calendars/combination_apply_test.exs` |
 | One ExUnit case or describe block | `mix test path/to/file_test.exs:LINE` (use an actual test/describe line) |
-| Previously failed ExUnit cases | `mix test --failed` (for this checkout's last recorded failures) |
+| Previously failed ExUnit cases | `mix test --failed` (this checkout's last recorded failures; after a partitioned run, those of every partition) |
 | Map geometry unit feedback | `npm --prefix assets test -- js/__tests__/stop_map_geometry_test.js` |
 | Calendar browser journey | `bin/test-browser e2e/calendars.spec.js` |
-| Final Elixir regression and static checks | `mix precommit` |
+| Final Elixir regression and static checks | `mix precommit` (static checks, then `bin/test-all` partitions on throwaway `pg_tmp` servers) |
 
 Find nearby context tests under `test/gtfs_planner/`, LiveView tests under
 `test/gtfs_planner_web/live/`, API tests under `test/gtfs_planner_web/api/`, JavaScript tests
@@ -31,11 +32,41 @@ under `assets/js/__tests__/`, and browser journeys under `assets/e2e/`. Trace af
 as well as matching filenames. These examples are selectors, not a required checklist.
 `mix precommit` does not run JavaScript or browser checks; select those separately when relevant.
 
+`bin/test-affected [--base <ref>] [--run]` prints focused ExUnit, JavaScript and browser commands
+for the diff against the merge base with `origin/main`, including uncommitted and untracked files.
+It matches module names and imports, so it misses dynamic references and files read at runtime.
+It recommends `bin/test-all` instead of a file list when a change touches `test/support/`,
+`config/`, `mix.exs` or migrations, or selects over a quarter of the test files. `--run` runs the
+printed ExUnit and JavaScript commands, never browser tests. The selection is advisory;
+`mix precommit` stays the completion gate.
+
 `mix test` always runs the database-create/migrate alias first, even for pure tests. Tags and
 name filters may still load broad collections; prefer explicit files. `--stale` is supplementary
 selection with an initial full run, not a replacement for boundary reasoning. `--slowest` and
 `--slowest-modules` enable tracing and serialize execution by default; distinguish diagnostic
 timings from ordinary suite runtime. Read `mix help test` before changing invocation options.
+
+`mix precommit` ends with `bin/test-all`, which runs the ExUnit suite as `TEST_PARTITIONS`
+partitions. Each partition is its own `mix test --partitions` process with its own throwaway
+`pg_tmp` server, `TMPDIR` and failures manifest. It never connects to the local
+`gtfs_planner_exunit*` databases and ignores the caller's `MIX_TEST_PARTITION`. `pg_tmp` comes
+from ephemeralpg (`brew install ephemeralpg`), so `mix precommit` requires it. Arguments reach
+every partition (`mix precommit --max-cases 4`), and a caller's `--max-cases` replaces the
+runner's default. The run exits 0 only when every partition exits 0 and prints an ExUnit summary;
+a killed or silent partition fails it. `TEST_PARTITIONS=1 bin/test-all <args>` is the
+single-process fallback: it runs `mix test <args>` on the local test database with the caller's
+`MIX_TEST_PARTITION` suffix.
+
+A partitioned run prints each partition's tests, failures, seed, setup seconds and test seconds,
+then the failure output. To reproduce one partition, run its printed
+`TEST_PARTITIONS=n TEST_PARTITION_ONLY=i bin/test-all --seed <seed> --max-cases <m>` command. To
+rerun only the failures, run the printed `mix test <file:line ...>` command or `mix test --failed`
+(one process, local test database). The runner writes every partition's failures to this
+checkout's manifest under `_build`, so `--failed` covers all partitions.
+
+`pg_tmp` starts its server with `LC_ALL=C` unless the caller sets `LC_ALL`, while the local test
+database keeps the locale it was created with. A test that depends on collation or sort order can
+pass in one mode and fail in the other; reproduce it in both before changing the test.
 
 One owner runs final regression checks. Reuse valid step/CI results, preserving their original
 revision and explaining why later changes leave them applicable. Rerun affected checks after
@@ -43,13 +74,31 @@ fixes; broaden for changed shared foundations or a concrete integration risk. A 
 workflow stage, or unrelated commit alone is not a reason for another full run. Keep scale and
 real external-service tests opt-in unless the feature or project gate requires them.
 
-Across local worktrees, allow one broad or resource-heavy suite at a time by default. Check
-existing runs before launching another; never terminate someone else's process. Independent
-runs need isolated databases, ports, and temporary roots. `MIX_TEST_PARTITION` separates default
-database names but does not isolate the fixed upload/artifact defaults in `config/test.exs`.
+Across local worktrees, allow one broad or resource-heavy suite at a time by default. A
+partitioned `bin/test-all` run, with all its partitions, counts as one. Check existing runs
+before launching another; never terminate someone else's process. Independent runs need isolated
+databases, ports, and temporary roots. For focused `mix test` runs, `MIX_TEST_PARTITION` stays the
+database suffix: it separates default database names but does not isolate the fixed
+upload/artifact defaults in `config/test.exs`. Partitioned runs ignore it and isolate each
+partition instead.
 Use the established disposable harnesses and [database setup](docs/db-setup.md). Do not increase
 ExUnit concurrency or browser workers without checking global state, fixture isolation, and
 connection capacity; the browser suite intentionally shares state with one worker.
+
+A test module may use `async: true` only when none of these apply; otherwise keep `async: false`:
+
+- It changes process-global state: `Application.put_env/3`, `System.put_env/2`,
+  `Logger.configure/1`, `File.cd/1`, `:persistent_term`, named ETS tables, Mox global mode, or an
+  application-wide named process.
+- It uses shared sandbox mode or `Sandbox.unboxed_run/2`, or commits deliberate interleavings or
+  global advisory locks.
+- It writes a fixed path under `System.tmp_dir!/0`.
+- It inserts a literal value into a globally unique column or index, such as `users.email` or
+  `organizations.alias`. Where the test does not assert the value, use `unique_user_email/0` or
+  `System.unique_integer/1` instead.
+
+A converted module that fails intermittently returns to `async: false` with a comment naming the
+observed failure. Do not add retries or sleeps to keep it asynchronous.
 
 Use finite command deadlines (120 seconds for focused checks unless measured setup/runtime
 justifies longer). Record selection, elapsed time, outcome, and why a rerun is needed. Diagnose
