@@ -13,7 +13,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
       one — never becomes an accepted run, while a merely estimated travel time
       stays visible on the duty that keeps it;
     * an existing run keeps its trips, its numbering is not reused, and a sign-off
-      past midnight keeps its service-day seconds unmodified.
+      past midnight keeps its service-day seconds unmodified;
+    * a proposed relief mark is reported when it is what makes a stored handover
+      legal, so the day the preview shows and the marks a save would add agree.
 
   Every case runs the production chain — `Gtfs.preview_tods_generation/2` through
   `TodsGenerator.preview/2` and `Plan.with_runs/3`, with the real
@@ -217,6 +219,47 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
       assert preview.counts.new_runs == 5
       refute Enum.any?(preview.run_days[day_type_key].findings, &(&1.severity == :error))
     end
+
+    test "a proposed mark a stored handover uses is reported" do
+      world =
+        crew_world_fixture(
+          block: :long_duty,
+          existing_runs: [
+            {"long-1", "9001"},
+            {"long-2", "9002"},
+            {"long-3", "9002"},
+            {"long-4", "9002"}
+          ],
+          max_piece_minutes: 480
+        )
+
+      day_type_key = world.weekday_day_type
+
+      # Every trip of the added block already holds a run, so the two stored runs
+      # meet at the unmarked terminal: a change of run that is `:not_at_relief`
+      # until a mark opens a window there.
+      assert {:ok, without_mark} = preview(world, crew_inputs(world))
+
+      assert Enum.any?(
+               derived_run(without_mark, world, "9001").findings,
+               &(&1.code == :not_at_relief and &1.severity == :error)
+             )
+
+      assert {:ok, preview} = preview(world, crew_inputs(world, %{"terminal_relief?" => true}))
+
+      # The generation still adds duties of its own — the world's other blocks are
+      # uncovered work — and not one of them hands over at the terminal: the only
+      # runs that do are the two the version already stores.
+      assert preview.counts.new_runs > 0
+      assert handover_runs(preview, world, world.terminal_stop_id) == ["9001", "9002"]
+      refute Enum.any?(preview.run_days[day_type_key].findings, &(&1.severity == :error))
+
+      # So the terminal is reported as one of the marks the derived day rests on,
+      # even though no new run uses it: a save that wrote only the new runs' marks
+      # would leave the day the preview showed unreproducible.
+      assert preview.assumptions == [:terminal_relief_additive]
+      assert preview.relief_additions == [world.terminal_stop_id]
+    end
   end
 
   # Every trip the fixture wrote, by its GTFS `trip_id`, whether it is one of the
@@ -244,6 +287,25 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.CrewPlanTest do
   defp trip_ids(run), do: run.pieces |> Enum.flat_map(& &1.trips) |> Enum.map(& &1.trip_id)
 
   defp piece_trip_ids(piece), do: Enum.map(piece.trips, & &1.trip_id)
+
+  # The day's runs that hand over at one stop at relief, by run ID: the runs whose
+  # own boundary there is a change at a relief point, rather than the change away
+  # from one `:not_at_relief` reports. A piece names the boundary it is handed over
+  # at, and a piece that opens or closes its block has none.
+  defp handover_runs(preview, world, stop_id) do
+    preview.run_days[world.weekday_day_type].runs
+    |> Enum.filter(fn run ->
+      Enum.any?(run.pieces, fn piece ->
+        relief_boundary?(piece.start_boundary, stop_id) or
+          relief_boundary?(piece.end_boundary, stop_id)
+      end)
+    end)
+    |> Enum.map(& &1.run_id)
+    |> Enum.sort()
+  end
+
+  defp relief_boundary?(%{at_relief?: true, stop: %{stop_id: stop_id}}, stop_id), do: true
+  defp relief_boundary?(_boundary, _stop_id), do: false
 
   # The exclusions keyed by the fixture's own trip IDs, sorted, so an assertion says
   # which trips were refused rather than which opaque UUIDs.

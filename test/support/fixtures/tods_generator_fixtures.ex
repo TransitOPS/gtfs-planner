@@ -339,8 +339,11 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   `:terminal_stop_id` on the returned world; omitting it leaves the world's own
   blocks as the uncovered work. `:existing_run` stores that run ID on the added
   block's own first trip, which is the saved work a generation must leave exactly
-  as it found it. Each block uses the world's own route and weekday service, so it
-  resolves to the world's garage and is in the world's weekday day type.
+  as it found it. `:existing_runs` stores runs named by that block's own trip IDs
+  (`[{"long-1", "9001"}, {"long-2", "9002"}]`) for a case that needs the block's
+  saved work laid out over more than one run. Each block uses the world's own route
+  and weekday service, so it resolves to the world's garage and is in the world's
+  weekday day type.
   """
   def crew_world_fixture(opts \\ []) do
     opts = Map.new(opts)
@@ -351,10 +354,9 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
       |> tods_world_fixture()
       |> add_crew_block(Map.get(opts, :block))
 
-    case Map.get(opts, :existing_run) do
-      nil -> world
-      run_id -> put_existing_run(world, run_id)
-    end
+    world
+    |> put_existing_run(Map.get(opts, :existing_run))
+    |> put_existing_runs(Map.get(opts, :existing_runs))
   end
 
   defp add_crew_block(world, nil), do: world
@@ -471,12 +473,23 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
 
   # The case's saved run, on the added block's own first trip: the work a generation
   # must leave exactly where it found it, and the ID its numbering must not reuse.
-  defp put_existing_run(world, run_id) do
-    trip_run_fixture(world.organization.id, world.version.id, %{
-      trip: world.first_trip.id,
-      day_type_key: world.weekday_day_type,
-      run_id: run_id
-    })
+  defp put_existing_run(world, nil), do: world
+
+  defp put_existing_run(world, run_id),
+    do: put_existing_runs(world, %{world.first_trip.trip_id => run_id})
+
+  # The block's saved work laid out over several runs, each named by the fixture's
+  # own trip ID, which is the same identity the block's trips carry everywhere else.
+  defp put_existing_runs(world, nil), do: world
+
+  defp put_existing_runs(world, runs) do
+    Enum.each(runs, fn {trip_id, run_id} ->
+      trip_run_fixture(world.organization.id, world.version.id, %{
+        trip: Map.fetch!(world.trips, trip_id).id,
+        day_type_key: world.weekday_day_type,
+        run_id: run_id
+      })
+    end)
 
     world
   end

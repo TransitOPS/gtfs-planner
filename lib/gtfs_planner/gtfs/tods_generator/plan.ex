@@ -80,9 +80,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   re-derives the windows with them, so a block the piece limit makes impossible
   can end in two legal duties instead of one impossible one. The proposed marks
   are additive: the stored marks are never overwritten, the piece limit is never
-  changed, and no mark is reported unless an admitted run actually hands over at
-  it. What the stage assumes is reported in `assumptions` rather than hidden in
-  the numbers.
+  changed, and every proposed mark a run of the reported day hands over at is
+  reported — a stored run's handover included, because the reported day was
+  derived with that mark and a preview that omitted it would promise a day the
+  save could not write. What the stage assumes is reported in `assumptions`
+  rather than hidden in the numbers.
 
   ## The result
 
@@ -669,7 +671,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
       refused: refused,
       refusals: refusals(derived, refused),
       warnings: warnings(key, reported),
-      marks: used_marks(reported, marks_by_stop, admitted_ids)
+      marks: used_marks(reported, marks_by_stop)
     }
   end
 
@@ -749,15 +751,17 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     |> Enum.map(&Map.put(&1, :day_type_key, key))
   end
 
-  # The proposed marks the admitted runs actually hand over at. A mark nothing cuts
-  # at is not reported: the operator asked for legal duties, not for hypothetical
-  # marks nobody used.
-  defp used_marks(_reported, marks_by_stop, _admitted_ids) when map_size(marks_by_stop) == 0,
-    do: []
+  # The proposed marks the reported day's runs hand over at, stored runs included.
+  # A stored run's handover is reported for the same reason an admitted one's is:
+  # the day that is reported was derived with the mark in the context, so a save
+  # that did not write the mark would leave the version holding a different day
+  # than the one the operator was shown. A mark nothing hands over at is not
+  # reported: the operator asked for legal duties, not for hypothetical marks
+  # nobody used.
+  defp used_marks(_reported, marks_by_stop) when map_size(marks_by_stop) == 0, do: []
 
-  defp used_marks(reported, marks_by_stop, admitted_ids) do
+  defp used_marks(reported, marks_by_stop) do
     reported.runs
-    |> Enum.filter(&(&1.run_id in admitted_ids))
     |> Enum.flat_map(& &1.pieces)
     |> Enum.flat_map(&relief_stop_ids/1)
     |> Enum.map(&Map.get(marks_by_stop, &1))
