@@ -13,7 +13,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
   The focused command is deferred to branch review:
   `mix test test/gtfs_planner_web/live/gtfs/flex_service_live_sections_test.exs`.
   """
-  use GtfsPlannerWeb.ConnCase, async: true
+  # Synchronous: "the distance select offers the five distances and no default"
+  # failed once when this module ran concurrently in a partitioned full suite.
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
