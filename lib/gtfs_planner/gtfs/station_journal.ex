@@ -641,7 +641,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   # station: a caller resolving a source reference gets its own station's entry
   # or nothing, never another station's.
   defp filter_by_id(query, id) do
-    {:ok, uuid} = cast_uuid(id)
+    {:ok, uuid} = Ecto.UUID.cast(id)
 
     from(entry in query, where: entry.id == ^uuid)
   end
@@ -731,7 +731,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
   defp validate_opt!(:id, nil), do: :ok
 
   defp validate_opt!(:id, val) do
-    case cast_uuid(val) do
+    case Ecto.UUID.cast(val) do
       {:ok, _uuid} ->
         :ok
 

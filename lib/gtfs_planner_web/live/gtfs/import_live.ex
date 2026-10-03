@@ -3050,7 +3050,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           Cancel
         </.button>
         <p class="m-0 text-[13px] text-muted">
-          Confirming approves {length(@suggestion.rows)} {plural(
+          Confirming approves {length(@suggestion.rows)} {Wording.noun(
             length(@suggestion.rows),
             "change",
             "changes"
@@ -3065,9 +3065,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     do: "No change is approved, so Apply would do nothing."
 
   defp approved_scope_note(count, reviewed, total) do
-    "Apply will make all #{count} approved #{plural(count, "change", "changes")} of #{total} in " <>
+    "Apply will make all #{count} approved #{Wording.noun(count, "change", "changes")} of #{total} in " <>
       "this review, including #{MapSet.size(reviewed)} confirmed against a captured " <>
-      "measurement#{plural(MapSet.size(reviewed), "", "s")} and the rest approved natively."
+      "measurement#{Wording.noun(MapSet.size(reviewed), "", "s")} and the rest approved natively."
   end
 
   # Which of this run's decisions carry captured provenance. Read from the

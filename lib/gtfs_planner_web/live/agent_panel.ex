@@ -256,7 +256,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       user_id: socket.assigns.current_user.id,
       user_email: socket.assigns.current_user.email,
       pack_id: socket.assigns.agent_pack_id,
-version_name: scope_version_name(socket),
+      version_name: scope_version_name(socket),
       subject_id: socket.assigns.agent_subject_id,
       alert_schedule_token: socket.assigns.agent_schedule_token,
       resource_context: socket.assigns.agent_context
@@ -1058,7 +1058,7 @@ version_name: scope_version_name(socket),
     |> assign(:agent_notice, message)
   end
 
-# The version the host's navbar currently names, or nil when it names none. An
+  # The version the host's navbar currently names, or nil when it names none. An
   # organization-scoped panel keeps no version even when the navbar has one: the
   # record its conversation is about is the organization's, so the selected
   # version is neither that record's identity nor the context its tools read

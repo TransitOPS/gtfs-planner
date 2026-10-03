@@ -643,7 +643,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
     }
   end
 
-  defp staged_files(name, size, digit \\ "a") do
+  defp staged_files(name, size, digit) do
     [%{name: name, size: size, sha256: String.duplicate(digit, 64)}]
   end
 
