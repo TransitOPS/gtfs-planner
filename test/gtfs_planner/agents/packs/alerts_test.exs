@@ -171,27 +171,43 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert Dispatch.call(AlertsPack, scope, "get_draft", "{}") == {:error, :unavailable}
     end
 
-    test "reads a subject alert of this organization written against another version", context do
-      sibling_route =
-        route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
+    test "reads the active schedule for an alert written against another version", context do
+      _source_route =
+        route_fixture(
+          context.organization.id,
+          context.sibling.id,
+          route_attrs("r12-source", "12")
+        )
 
-      _scope_route =
-        route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
+      active_route =
+        route_fixture(
+          context.organization.id,
+          context.version.id,
+          route_attrs("r12-active", "12")
+        )
 
+      # The alert's source is the sibling; the organization then selects the scope's
+      # version again, and the conversation is opened under that selection.
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
-      scope = %{context.scope | subject_id: elsewhere.id}
+      activate_version!(context.organization, context.version, context.actor)
+
+      scope = %{
+        context.scope
+        | subject_id: elsewhere.id,
+          alert_schedule_token: current_token!(context.audit)
+      }
 
       assert {:ok, %{"urgency" => "planned"}} =
                Dispatch.call(AlertsPack, scope, "get_draft", "{}")
 
       assert Dispatch.call(AlertsPack, scope, "check_draft", "{}") != {:error, :unavailable}
 
-      # The tools read the alert's own retained source version, not the version
-      # this scope carries.
+      # The tools read the active schedule, not the alert's retained source version
+      # and not the version this scope carries.
       assert {:ok, %{"routes" => routes}} =
                Dispatch.call(AlertsPack, scope, "search_routes", ~s|{"query":"12"}|)
 
-      assert Enum.map(routes, & &1["id"]) == [sibling_route.route_id]
+      assert Enum.map(routes, & &1["id"]) == [active_route.route_id]
     end
 
     test "refuses a subject alert of another organization", context do
@@ -218,7 +234,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
     test "the subject is this organization's alert whichever version wrote it", context do
       elsewhere = alert_fixture(context.sibling_audit, %{"urgency" => "planned"})
-      scope = %{context.scope | subject_id: elsewhere.id}
+
+      scope = %{
+        context.scope
+        | subject_id: elsewhere.id,
+          alert_schedule_token: current_token!(context.sibling_audit)
+      }
 
       assert {:ok, %{"urgency" => "planned"}} = AlertsPack.call("get_draft", %{}, scope)
     end
@@ -279,7 +300,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["labels"]["stops"][stop.stop_id] =~ "Elm St"
     end
 
-    test "reads a draft in another version only through that version's scope", context do
+    test "reads a draft written in another version through the active schedule", context do
       sibling_route =
         route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
 
@@ -304,9 +325,10 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert draft["scope"]["route_ids"] == [sibling_route.route_id]
 
       # The alert is the subject and the organization owns it, so a scope naming
-      # another of the organization's versions reads the same draft: the version
-      # supplies lookup context, never the identity of the subject (step 9). The
-      # editor still refuses another organization, which its own cases prove.
+      # another of the organization's versions reads the same draft: the scope's
+      # version is neither the identity of the subject nor the lookup context,
+      # which is the active schedule. The editor still refuses another
+      # organization, which its own cases prove.
       other_version_scope = %{sibling_scope | gtfs_version_id: context.version.id}
 
       assert {:ok, same_draft} = Dispatch.call(AlertsPack, other_version_scope, "get_draft", "{}")
@@ -558,6 +580,12 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert prepared.summary.title == "Update this alert"
       assert "Situation · Detour" in prepared.summary.lines
 
+      # The proposal records the alert revision and the selection it was made under.
+      assert prepared.bound_to == %{
+               revision: context.alert.revision,
+               schedule: context.scope.alert_schedule_token
+             }
+
       # Preparing wrote nothing: the draft is still the one the fixture made.
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
       assert draft["revision"] == 1
@@ -632,7 +660,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       assert {:alert_changes, %{"situation" => "detour"}} = prepared.command
     end
 
-    test "refuses a route, stop and departure this alert's version does not have", context do
+    test "refuses a route, stop and departure the active schedule does not have", context do
       sibling_route =
         route_fixture(context.organization.id, context.sibling.id, route_attrs("r12", "12"))
 
@@ -644,7 +672,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: route #{sibling_route.route_id}. " <>
+                "Not in the active schedule: route #{sibling_route.route_id}. " <>
                   "Use ids the search tools returned."}
 
       assert call(
@@ -653,7 +681,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: stop #{missing}, stop 12. " <>
+                "Not in the active schedule: stop #{missing}, stop 12. " <>
                   "Use ids the search tools returned."}
 
       assert call(
@@ -666,13 +694,13 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
                context.scope
              ) ==
                {:tool_error,
-                "Not in this service version: trip #{missing}. Use ids the search tools returned."}
+                "Not in the active schedule: trip #{missing}. Use ids the search tools returned."}
 
       assert {:ok, draft} = call("get_draft", %{}, context.scope)
       assert draft["revision"] == 1
     end
 
-    test "accepts a route type the version has and refuses one it does not", context do
+    test "accepts a route type the active schedule has and refuses one it does not", context do
       route_fixture(context.organization.id, context.version.id, route_attrs("r12", "12"))
 
       assert {:prepared, prepared, _result} =
@@ -682,7 +710,7 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
 
       assert call("propose_changes", %{"scope" => %{"mode_route_type" => 11}}, context.scope) ==
                {:tool_error,
-                "Not in this service version: route type 11. Use ids the search tools returned."}
+                "Not in the active schedule: route type 11. Use ids the search tools returned."}
     end
 
     test "keeps a target the stored alert already names after the version dropped it", context do
@@ -886,6 +914,8 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
     Repo.aggregate(from(row in schema, where: row.organization_id == ^organization_id), :count)
   end
 
+  # The scope is bound to the selection token the organization holds when it is
+  # built, as the editor's panel binds it when the conversation opens.
   defp scope_fixture(user, organization, version, subject_id) do
     %Scope{
       organization_id: organization.id,
@@ -894,7 +924,8 @@ defmodule GtfsPlanner.Agents.Packs.AlertsTest do
       user_email: user.email,
       pack_id: "alerts",
       version_name: version.name,
-      subject_id: subject_id
+      subject_id: subject_id,
+      alert_schedule_token: current_token!(audit_context(organization, version, user))
     }
   end
 

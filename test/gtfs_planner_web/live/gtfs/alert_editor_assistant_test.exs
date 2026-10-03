@@ -10,13 +10,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   fixture's route and stops; nothing here recomputes an expectation with the
   module under test.
 
-  The alert is written only through `Alerts.create_alert/2` and
-  `Alerts.save_draft/4`, which is the property the whole file is about: the
+  The alert is written only through `Alerts.create_alert/3` and
+  `Alerts.save_draft/5`, which is the property the whole file is about: the
   assistant prepares, this editor writes (INV-1, CR-6).
+
+  The conversation is opened under the organization's active-schedule token
+  (AC-26, EV-13): a newer selection stops the helper and drops what it prepared,
+  **Reload targets** opens a new conversation from the saved alert, and a result
+  that still arrives after a selection the page never heard of (a lost broadcast)
+  is refused by the session and never reaches the draft.
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
 
   import GtfsPlanner.AccountsFixtures
@@ -30,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
 
   # The test environment routes `GtfsPlanner.Agents.Model` through this plug, so
@@ -57,7 +65,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     version = gtfs_version_fixture(organization.id, %{name: "Fall 2026 service"})
     actor = editor_fixture(organization)
 
+    other = gtfs_version_fixture(organization.id, %{name: "Winter 2027 service"})
+
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
+    agency_fixture(organization.id, other.id, %{agency_timezone: "America/Los_Angeles"})
     activate_version!(organization, version, actor)
 
     [skipped, boarding] =
@@ -68,11 +79,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
 
     route = route(organization, version, skipped, boarding)
 
+    # The other schedule names the same stops and route, so a helper opened under
+    # either selection can prepare the same answers.
+    [other_skipped, other_boarding] =
+      stops(organization, other, [{"S9", "SW 9th St"}, {"S10", "SW 10th & Abbey"}])
+
+    _other_route = route(organization, other, other_skipped, other_boarding)
+
     track_sessions()
 
     %{
       organization: organization,
       version: version,
+      other: other,
       actor: actor,
       route: route,
       skipped: skipped,
@@ -355,6 +374,233 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
     end
   end
 
+  describe "the active schedule the helper was opened under" do
+    setup :log_in_editor
+
+    test "a newer selection stops the helper and Reload targets opens a new conversation",
+         context do
+      alert = alert_fixture(context.audit, %{"urgency" => "now"})
+
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
+      pid = attach(context, alert, view)
+
+      opened = socket_assigns(view)
+      assert opened.agent_schedule_token == current_token!(context.audit)
+
+      # The first reply is parked: the helper is working when the selection moves.
+      park_next_provider_request(
+        tool_calls_reply([{"call_1", "propose_changes", prepared_arguments(context)}])
+      )
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:parked, stub}, 5_000
+
+      # A -> B -> A: the page ends on the schedule it opened on, under a later token.
+      activate_version!(context.organization, context.other, context.actor)
+      returned = activate_version!(context.organization, context.version, context.actor)
+      assert returned.token.revision > opened.agent_schedule_token.revision
+
+      # The running turn was stopped and the panel let go of the session.
+      assert_receive {:agent_event, ^pid, {:entry, %{status: :stopped}}}, 5_000
+      send(stub, :release)
+
+      stopped = socket_assigns(view)
+      assert stopped.agent_session == nil
+      assert stopped.pending_active.revision == returned.token.revision
+      assert stopped.assistant_candidate == nil
+      assert has_element?(view, "#alert-active-changed")
+      assert has_element?(view, "#agent-notice")
+      assert has_element?(view, "#agent-composer-input[disabled]")
+
+      # Nothing the stopped turn prepared reached the draft.
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == alert.revision
+      assert untouched.situation == nil
+
+      # Moving within the editor does not open a conversation under the old token.
+      render_patch(view, "/alerts/#{alert.id}?mode=assistant&step=timing")
+      still_stopped = socket_assigns(view)
+      assert still_stopped.agent_session == nil
+      assert still_stopped.agent_status == :ended
+
+      view |> element("#alert-reload-targets") |> render_click()
+
+      reloaded = socket_assigns(view)
+      assert is_pid(reloaded.agent_session)
+      refute reloaded.agent_session == pid
+      refute reloaded.agent_conversation_id == opened.agent_conversation_id
+      assert reloaded.agent_schedule_token == returned.token
+      assert reloaded.agent_entries_empty?
+      refute has_element?(view, "#alert-active-changed")
+
+      # The old conversation is refused for the old token, even on the same version.
+      assert Agents.open(%{
+               scope(context, alert.id)
+               | alert_schedule_token: opened.agent_schedule_token
+             }) ==
+               {:error, :unavailable}
+
+      # The new conversation prepares and applies under the new token.
+      new_pid = attach(context, alert, view)
+      assert new_pid == reloaded.agent_session
+
+      script_prepared_turn(context)
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:agent_event, ^new_pid, {:entry, %{applied?: true}}}, 5_000
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.revision == alert.revision + 1
+      assert saved.situation == :detour
+    end
+
+    test "a result that arrives after a selection the page never heard of is never applied",
+         context do
+      alert = alert_fixture(context.audit, %{"urgency" => "now"})
+
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
+      pid = attach(context, alert, view)
+
+      park_next_provider_request(
+        tool_calls_reply([{"call_1", "propose_changes", prepared_arguments(context)}])
+      )
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:parked, stub}, 5_000
+
+      # A -> B -> A with no broadcast: the page is still on its first token.
+      select_silently(context, context.other)
+      select_silently(context, context.version)
+      send(stub, :release)
+
+      assert_receive {:agent_event, ^pid, {:entry, %{status: :unavailable, prepared: nil}}},
+                     5_000
+
+      assert_receive {:agent_event, ^pid, {:status, :unavailable}}, 5_000
+
+      assigns = socket_assigns(view)
+      assert assigns.assistant_candidate == nil
+      assert assigns.pending_active == nil
+
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == alert.revision
+      assert untouched.situation == nil
+    end
+
+    test "Apply changes under a selection the page never heard of saves nothing", context do
+      {view, alert, newer} = kept_candidate(context)
+
+      select_silently(context, context.other)
+      select_silently(context, context.version)
+
+      view |> element("#apply-changes-2") |> render_click()
+
+      # The change was prepared under the first token: the write is refused with
+      # nothing saved, the page learns of the newer selection, and the candidate
+      # is dropped rather than carried over to the new one.
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == newer.revision
+      assert untouched.situation == nil
+
+      assert has_element?(view, "#alert-active-changed")
+      refute has_element?(view, "#alert-assistant-stale")
+      assert socket_assigns(view).assistant_candidate == nil
+    end
+
+    test "a newer selection drops a change kept for Apply changes", context do
+      {view, alert, newer} = kept_candidate(context)
+
+      activate_version!(context.organization, context.other, context.actor)
+
+      assert socket_assigns(view).assistant_candidate == nil
+      assert has_element?(view, "#alert-active-changed")
+      refute has_element?(view, "#alert-assistant-stale")
+      refute has_element?(view, "#apply-changes-2")
+
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == newer.revision
+      assert untouched.situation == nil
+    end
+
+    test "Reload targets drops a change kept for Apply changes", context do
+      {view, alert, newer} = kept_candidate(context)
+
+      # The page never heard of the selection, so no notice cleared the candidate.
+      select_silently(context, context.other)
+      select_silently(context, context.version)
+
+      render_hook(view, "reload_targets", %{})
+
+      assert socket_assigns(view).assistant_candidate == nil
+      refute has_element?(view, "#alert-assistant-stale")
+      refute has_element?(view, "#apply-changes-2")
+
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == newer.revision
+      assert untouched.situation == nil
+    end
+
+    test "a change prepared on an older revision than the form holds is kept, not applied",
+         context do
+      alert = alert_fixture(context.audit, %{"urgency" => "now"})
+
+      {:ok, view, _html} = live(context.conn, assistant_path(alert))
+      pid = attach(context, alert, view)
+
+      script_prepared_turn(context, release_from: self())
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => @note}})
+
+      assert_receive {:stub_waiting, stub}, 5_000
+
+      # The operator answers a question in the form while the helper is working, so
+      # this editor holds a newer revision than the one the helper read.
+      view |> element("#alert-mode-control-form") |> render_change(%{"mode" => "form"})
+
+      view
+      |> element("#alert-form")
+      |> render_change(%{
+        "alert" => %{"revision" => to_string(alert.revision), "cause" => "weather"}
+      })
+
+      assert {:ok, answered} = Alerts.get_alert(context.audit, alert.id)
+      assert answered.revision == alert.revision + 1
+      assert answered.cause == :weather
+
+      send(stub, {:release, self()})
+      assert_receive {:agent_event, ^pid, {:entry, %{status: :done, prepared: %{}}}}, 5_000
+
+      # Kept as a candidate for Apply changes; the operator's answer is not written over.
+      # The first read lets the editor handle the settled entry, which queues the
+      # handoff to itself; the second reads after that handoff.
+      _ = socket_assigns(view)
+      assert %{entry_id: 2} = socket_assigns(view).assistant_candidate
+
+      assert {:ok, untouched} = Alerts.get_alert(context.audit, alert.id)
+      assert untouched.revision == answered.revision
+      assert untouched.situation == nil
+
+      render_hook(view, "set_mode", %{"mode" => "assistant"})
+      view |> element("#apply-changes-2") |> render_click()
+
+      assert {:ok, saved} = Alerts.get_alert(context.audit, alert.id)
+      assert saved.revision == answered.revision + 1
+      assert saved.situation == :detour
+      assert saved.cause == :weather
+    end
+  end
+
   describe "when the provider cannot answer" do
     setup :log_in_editor
 
@@ -439,22 +685,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   # Two provider replies for one turn: the tool call that prepares the change,
   # and the sentence that settles it.
   defp script_prepared_turn(context, opts \\ []) do
-    arguments =
-      Jason.encode!(
-        Map.merge(
-          %{
-            "urgency" => "now",
-            "situation" => "detour",
-            "scope" => %{
-              "shape" => "route_stops",
-              "route_ids" => [context.route.route_id],
-              "stop_ids" => [context.skipped.stop_id]
-            },
-            "message" => %{"header" => @header, "description" => @description}
-          },
-          Keyword.get(opts, :extra, %{})
-        )
-      )
+    arguments = prepared_arguments(context, Keyword.get(opts, :extra, %{}))
 
     Req.Test.expect(@owner, 1, fn conn ->
       respond(conn, tool_calls_reply([{"call_1", "propose_changes", arguments}]))
@@ -466,6 +697,54 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
         :error -> respond(conn, text_reply(@prepared_text))
       end
     end)
+  end
+
+  # An alert, an open assistant and a prepared change the form outran: another tab
+  # saved a newer answer before the change landed, so the editor keeps the change as a
+  # candidate. Returns the view, the alert as created and the newer saved alert.
+  defp kept_candidate(context) do
+    alert = alert_fixture(context.audit, %{"urgency" => "now"})
+
+    {:ok, view, _html} = live(context.conn, assistant_path(alert))
+    pid = attach(context, alert, view)
+
+    script_prepared_turn(context, release_from: self())
+
+    view
+    |> element("#agent-composer")
+    |> render_submit(%{"agent" => %{"message" => @note}})
+
+    assert_receive {:stub_waiting, stub}, 5_000
+
+    assert {:ok, newer} =
+             Alerts.save_draft(context.audit, alert.id, alert.revision, %{"cause" => "weather"})
+
+    send(stub, {:release, self()})
+    assert_receive {:agent_event, ^pid, {:entry, %{status: :done, prepared: %{}}}}, 5_000
+
+    _ = socket_assigns(view)
+    assert has_element?(view, "#apply-changes-2")
+
+    {view, alert, newer}
+  end
+
+  # The arguments the scripted `propose_changes` call carries, as JSON.
+  defp prepared_arguments(context, extra \\ %{}) do
+    Jason.encode!(
+      Map.merge(
+        %{
+          "urgency" => "now",
+          "situation" => "detour",
+          "scope" => %{
+            "shape" => "route_stops",
+            "route_ids" => [context.route.route_id],
+            "stop_ids" => [context.skipped.stop_id]
+          },
+          "message" => %{"header" => @header, "description" => @description}
+        },
+        extra
+      )
+    )
   end
 
   # The settling reply parks until the test has committed the newer save, which
@@ -518,9 +797,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
   # message produced.
   defp socket_assigns(view), do: :sys.get_state(view.pid).socket.assigns
 
-  # The scope the editor's panel builds: bound to the organization and the
-  # alert, with no service version, because the alert belongs to the
-  # organization rather than to the selected schedule.
+  # The scope the editor's panel builds: bound to the organization, the alert and
+  # the active-schedule token the page holds, with no service version, because the
+  # alert belongs to the organization rather than to the selected schedule.
   defp scope(context, alert_id) do
     %Scope{
       organization_id: context.organization.id,
@@ -530,8 +809,35 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorAssistantTest do
       pack_id: "alerts",
       version_name: nil,
       subject_id: alert_id,
+      alert_schedule_token: current_token!(context.audit),
       resource_context: Scope.context(nil)
     }
+  end
+
+  # The pointer moves with no broadcast, as it does for a page that missed the
+  # message: the revision advances once per pointer change, as a selection does.
+  defp select_silently(context, version) do
+    Repo.update_all(
+      from(o in Organization, where: o.id == ^context.organization.id),
+      set: [active_gtfs_version_id: version.id],
+      inc: [active_gtfs_version_revision: 1]
+    )
+  end
+
+  # Holds the next provider request until the test releases it, so a selection can
+  # change while the helper is working. The request is made by the helper's turn.
+  defp park_next_provider_request(reply) do
+    test = self()
+
+    Req.Test.expect(@owner, 1, fn conn ->
+      send(test, {:parked, self()})
+
+      receive do
+        :release -> respond(conn, reply)
+      after
+        5_000 -> respond(conn, text_reply("The stub gave up waiting."))
+      end
+    end)
   end
 
   defp stops(organization, version, rows) do

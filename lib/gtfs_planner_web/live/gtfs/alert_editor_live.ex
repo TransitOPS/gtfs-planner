@@ -174,23 +174,32 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   start card already began.
 
   Every edit route in assistant mode mounts `AgentPanel` with the `alerts` pack,
-  `auto_apply: true`, `organization_scoped: true` and this alert's own id as the
-  session's subject, and opens it. The conversation is bound to that alert and
-  to this organization, not to the version the navbar happens to name, so
-  selecting another version while the alert is open leaves this conversation —
-  and this alert — alone; the pack derives whatever schedule context it needs
-  from the alert's own retained source. Each settled prepared change arrives as
-  `{:agent_prepared, conversation_id, entry_id}`; a message naming another
-  conversation, or another alert's session, changes nothing. The change itself
-  is applied here and nowhere else: `Agents.prepared/3` returns the model's own
-  draft-shaped parameters, they go through `Alerts.save_draft/4` at the revision
-  this editor holds, and the entry is recorded applied with the exact command
-  that was written (CR-6, INV-1).
+  `auto_apply: true`, `organization_scoped: true`, this alert's own id as the
+  session's subject and the active-schedule token this page holds. The
+  conversation is bound to that alert, to this organization and to that token, not
+  to the version the navbar happens to name, so selecting another version while the
+  alert is open leaves this conversation - and this alert - alone, while a change of
+  the *active* schedule ends it: the pack reads the active schedule and refuses
+  every request, tool and delivered result once the organization's token is no
+  longer the one the conversation was opened under, including an A -> B -> A return.
+  When this page learns of a newer selection it stops the running turn, lets go of
+  the session and drops any change kept for **Apply changes**; **Reload targets**
+  opens a new conversation under the new token, from the alert as it is saved, and
+  nothing prepared under the old one is replayed. Each settled prepared change
+  arrives as `{:agent_prepared, conversation_id, entry_id}`; a message naming
+  another conversation, or another alert's session, changes nothing. The change
+  itself is applied here and nowhere else: `Agents.prepared/3` returns the model's
+  own draft-shaped parameters with the alert revision and token it was made
+  against, they go through `Alerts.save_draft/5` with exactly those expectations,
+  and the entry is recorded applied with the exact command that was written (CR-6,
+  INV-1). An auto-applied change is a private save: it never reads the
+  Publish/Republish checkbox and never accepts anything for publication.
 
   A change prepared against a revision this editor has since replaced is not
   dropped and not forced either: the editor keeps it as a candidate and offers
   **Apply changes**, which re-reads the alert and applies the same parameters at
-  whatever revision the row is at then.
+  whatever revision the row is at then, still under the token the helper was
+  opened under.
 
   The assistant is a convenience, never a dependency. When the provider cannot
   answer, the panel reports it and the mode control says so, while Form mode
@@ -438,7 +447,13 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:form, draft_form(%Alert{}))
      |> put_target_lock()
      |> subscribe_active()
-     |> AgentPanel.mount("alerts", auto_apply: true, organization_scoped: true)}
+     |> then(
+       &AgentPanel.mount(&1, "alerts",
+         auto_apply: true,
+         organization_scoped: true,
+         schedule_token: held_token(&1)
+       )
+     )}
   end
 
   @impl true
@@ -1434,8 +1449,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           |> cancel_repair_search()
           |> assign(:active_schedule, active)
           |> assign(:pending_active, nil)
+          |> assign(:assistant_candidate, nil)
           |> put_target_lock()
+          |> AgentPanel.set_schedule_token(active.token)
           |> reload_questions()
+          |> then(&prepare_assistant(&1, &1.assigns.alert))
 
         {:noreply, push_focus(socket, reload_focus(socket))}
 
@@ -1641,9 +1659,22 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       |> cancel_repair_search()
       |> assign(:pending_active, token)
       |> put_target_lock()
+      |> end_helper_work()
     else
       socket
     end
+  end
+
+  # The helper's conversation and anything it prepared belong to the schedule this
+  # page held. When a newer selection exists the running turn is stopped, the panel
+  # lets go of its session and a change kept for **Apply changes** is dropped. None
+  # of it is replayed after the reload: the helper starts again from the saved alert.
+  defp end_helper_work(socket) do
+    socket
+    |> assign(:assistant_candidate, nil)
+    |> AgentPanel.suspend(
+      "The active schedule changed. Reload targets to start a new conversation."
+    )
   end
 
   # The server refused a write as `:stale_active`, which is how a page that missed the
@@ -3271,7 +3302,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp prepare_assistant(socket, alert) do
     socket = assign(socket, :agent_subject_id, alert && alert.id)
 
-    if socket.assigns.mode == :assistant and not is_nil(alert) do
+    # A newer selection than the one this page holds starts no conversation: a new
+    # one would be opened under a token the server has already moved past.
+    if socket.assigns.mode == :assistant and not is_nil(alert) and
+         is_nil(socket.assigns.pending_active) do
       AgentPanel.open(socket)
     else
       socket
@@ -3307,10 +3341,19 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # A proposal is written only on the alert revision it was made against. When this
+  # editor holds a different revision the row moved after the helper read it, so the
+  # change is kept for **Apply changes** instead of landing on answers it never saw.
   defp apply_prepared(socket, conversation_id, entry_id) do
     case prepared_change(socket, conversation_id, entry_id) do
-      {:ok, alert, params} -> write_prepared(socket, alert, conversation_id, entry_id, params)
-      :foreign -> socket
+      {:ok, %{revision: revision} = alert, params, %{revision: revision} = bound} ->
+        write_prepared(socket, alert, conversation_id, entry_id, params, bound)
+
+      {:ok, _alert, params, bound} ->
+        offer_candidate(socket, conversation_id, entry_id, params, bound)
+
+      :foreign ->
+        socket
     end
   end
 
@@ -3319,15 +3362,27 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp prepared_change(socket, conversation_id, entry_id) do
     with true <- conversation_id == socket.assigns.agent_conversation_id,
          alert when not is_nil(alert) <- socket.assigns.alert,
-         {:ok, %{command: {:alert_changes, params}}} <-
+         {:ok, %{command: {:alert_changes, params}, bound_to: bound}} <-
            Agents.prepared(socket.assigns.agent_session, conversation_id, entry_id) do
-      {:ok, alert, params}
+      {:ok, alert, params, bound}
     else
       _other -> :foreign
     end
   end
 
-  defp write_prepared(socket, alert, conversation_id, entry_id, params) do
+  defp offer_candidate(socket, conversation_id, entry_id, params, bound) do
+    assign(socket, :assistant_candidate, %{
+      entry_id: entry_id,
+      conversation_id: conversation_id,
+      params: params,
+      bound: bound
+    })
+  end
+
+  # The write carries the selection token the helper was opened under, never the
+  # token this page holds now: a proposal made under a schedule that has since moved
+  # is refused as `:stale_active` with nothing saved, and its token is not refreshed.
+  defp write_prepared(socket, alert, conversation_id, entry_id, params, bound) do
     attrs = mark_prepared_wording(socket, alert, params)
 
     case Alerts.save_draft(
@@ -3335,7 +3390,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
            alert.id,
            alert.revision,
            attrs,
-           schedule_opts(socket)
+           expected_schedule: bound.schedule
          ) do
       {:ok, saved} ->
         socket
@@ -3351,11 +3406,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       # change as **Apply changes** (AC-28).
       {:error, :stale, current} ->
         socket
-        |> assign(:assistant_candidate, %{
-          entry_id: entry_id,
-          conversation_id: conversation_id,
-          params: params
-        })
+        |> offer_candidate(conversation_id, entry_id, params, bound)
         |> assign(:conflict, current)
         |> assign(:save_state, :error)
 
@@ -3411,7 +3462,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
           latest,
           candidate.conversation_id,
           candidate.entry_id,
-          candidate.params
+          candidate.params,
+          candidate.bound
         )
         |> assign(:conflict, nil)
         |> assign(:assistant_candidate, nil)

@@ -27,6 +27,14 @@ defmodule GtfsPlannerWeb.AgentPanel do
   session can no longer reach the new state (INV-1, AC-1). No other tab, session
   or native form input is touched.
 
+  A host whose conversation reads the organization's active schedule also binds
+  that selection's token with `:schedule_token`, and the panel copies it into
+  every `Scope` it builds. `suspend/2` ends the panel's hold on the conversation
+  when the selection moves: it stops the running turn, detaches, clears the
+  transcript and locks the composer with a notice. `set_schedule_token/2` is the host's
+  reload: it replaces the token the way `set_context/2` replaces the context, so
+  the next session is a new one and nothing from the old selection is reused.
+
   Focus is a client concern with a server trigger: `agent:focus` events must be
   handled by a hook on a wrapper that survives the conditional panel, because the
   closing panel cannot own its own post-removal handler.
@@ -108,6 +116,9 @@ defmodule GtfsPlannerWeb.AgentPanel do
       so a host that reviews changes itself — Calendar's — receives nothing.
     * `:subject_id` - the record this conversation is about, carried into the
       session `Scope` so two records get two conversations.
+    * `:schedule_token` - the active-schedule selection token this conversation is
+      opened under, carried into the session `Scope` as `alert_schedule_token`.
+      Only the Alerts pack reads it; every other host leaves it `nil`.
     * `:organization_scoped` - bind no service version to this conversation,
       because the record named by `:subject_id` belongs to the organization
       rather than to a version. Defaults to false, which is the whole-version
@@ -132,6 +143,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_examples, pack.examples())
     |> assign(:agent_auto_apply?, Keyword.get(opts, :auto_apply, false) == true)
     |> assign(:agent_subject_id, Keyword.get(opts, :subject_id))
+    |> assign(:agent_schedule_token, Keyword.get(opts, :schedule_token))
     |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_open?, false)
     |> assign(:agent_session, nil)
@@ -171,6 +183,50 @@ defmodule GtfsPlannerWeb.AgentPanel do
       |> assign(:agent_context, context)
       |> maybe_reopen()
     end
+  end
+
+  @doc """
+  Replaces the selection token this panel's conversation is opened under.
+
+  Called when the host reloads against a newer active schedule. An unchanged
+  token is a no-op. Otherwise the prior session is detached and the transcript,
+  draft, notice and origin are cleared, exactly as `set_context/2` does, and an
+  open panel attaches to the new token's session: a fresh conversation, because
+  the token is part of the session key. Nothing the old selection prepared can
+  reach the new one.
+  """
+  @spec set_schedule_token(Phoenix.LiveView.Socket.t(), map() | nil) ::
+          Phoenix.LiveView.Socket.t()
+  def set_schedule_token(socket, token) do
+    if token == socket.assigns[:agent_schedule_token] do
+      socket
+    else
+      socket
+      |> detach_session()
+      |> reset_panel()
+      |> assign(:agent_schedule_token, token)
+      |> maybe_reopen()
+    end
+  end
+
+  @doc """
+  Ends this panel's hold on its conversation without opening another.
+
+  The host calls it when the selection the conversation was opened under is no
+  longer current. The running turn is stopped, the panel detaches and clears its
+  transcript, so a late event, result or down from that session reaches nothing
+  and no working entry is left on screen, and the composer locks with `notice`
+  until the host calls `set_schedule_token/2`.
+  """
+  @spec suspend(Phoenix.LiveView.Socket.t(), String.t()) :: Phoenix.LiveView.Socket.t()
+  def suspend(socket, notice) do
+    Agents.stop(socket.assigns[:agent_session])
+
+    socket
+    |> detach_session()
+    |> reset_panel()
+    |> assign(:agent_status, :ended)
+    |> assign(:agent_notice, notice)
   end
 
   ## Opening
@@ -628,6 +684,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
       pack_id: socket.assigns.agent_pack_id,
       version_name: scope_version_name(socket),
       subject_id: socket.assigns.agent_subject_id,
+      alert_schedule_token: socket.assigns.agent_schedule_token,
       resource_context: socket.assigns.agent_context
     }
   end

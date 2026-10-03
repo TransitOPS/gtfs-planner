@@ -9,27 +9,34 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   provider request, tool and delivered result, so a deleted or foreign alert ends
   the session; a tool read that loses a race with a delete is a message instead.
   The alert, not the version, is the subject: this scope carries no service
-  version at all, because the alert belongs to the organization, and every read
-  here is built from the loaded row's own organization and retained
-  `source_gtfs_version_id` rather than from the version the person happens to
-  have selected in the navigation (CR-4). The identity of the organization,
-  actor and alert comes from the scope alone: no tool declares an identity
-  argument, so `GtfsPlanner.Agents.Dispatch` refuses one before this module runs
-  (R11).
+  version at all, because the alert belongs to the organization. Its schedule
+  context is the organization's active schedule, the one the editor reads and
+  writes targets against, and never the version the person happens to have
+  selected in the navigation or the alert's retained source (CR-4). The scope
+  carries the selection token the conversation was opened under, and
+  `authorize_context/1` and every tool re-read the active schedule and refuse
+  unless it still has exactly that token, so a switch, even back to the same
+  version, ends the conversation instead of answering from a different schedule
+  (AC-26). The identity of the organization, actor and alert comes from the scope
+  alone: no tool declares an identity argument, so `GtfsPlanner.Agents.Dispatch`
+  refuses one before this module runs (R11).
 
-  An alert whose source version has been deleted — or that was authored as a
-  private system-scope draft with no schedule at all — keeps a readable draft,
-  because its retained `target_reference` still carries the trusted IDs and
-  labels it was written against. It has no schedule to search, so the four
-  reference-version tools answer that the lookup is unavailable rather than
-  reading another version's rows, and a proposal that would add or replace a
-  target is refused instead of validated against nothing (AC-9, AC-10, FH-13).
+  An organization with no active schedule keeps a readable draft, because the
+  alert's retained `target_reference` still carries the trusted IDs and labels it
+  was written against. It has no schedule to search, so the four schedule tools
+  answer that the lookup is unavailable rather than reading another version's
+  rows, and a proposal that would add or replace a target is refused instead of
+  validated against nothing (AC-9, AC-10, FH-13).
 
   Nothing here writes. `propose_changes` validates its arguments with
   `Alert.draft_changeset/2` - the same changeset the editor autosaves and saves
   through - and returns `{:alert_changes, params}` with a summary for the editor
-  to apply through `Alerts.save_draft/4` (CR-6, INV-1). This module never calls
-  a write command, and the tool list has no write tool.
+  to apply through `Alerts.save_draft/5` (CR-6, INV-1). The prepared map also
+  carries `bound_to`, the alert revision the proposal was made against and the
+  active-schedule token it was made under; the editor writes with exactly those
+  expectations, so the command refuses a proposal the alert or the selection has
+  moved past. This module never calls a write command, and the tool list has no
+  write tool.
   """
 
   @behaviour GtfsPlanner.Agents.Pack
@@ -45,6 +52,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Versions
 
   @skill_path Path.expand("../../../../priv/agents/packs/alerts/SKILL.md", __DIR__)
   @external_resource @skill_path
@@ -71,10 +79,15 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     {:message, "Rider message"}
   ]
 
-  # What a schedule tool says when this alert's source version is gone. It names
-  # the alert's own record rather than the schedule, because the alert is the
-  # subject and the schedule is only optional provenance.
-  @no_source_version "This alert has no service version to search. Name the ids it already holds."
+  # What a schedule tool says when the organization has no active schedule. It
+  # names the alert's own record rather than the schedule, because the alert is the
+  # subject and the schedule is only the context its targets are read in.
+  @no_active_schedule "No schedule is active, so there is nothing to search. Name the ids this alert already holds."
+
+  # What a tool says when the selection moved after the turn was authorized. The
+  # next authorization ends the conversation; this only keeps the tool from reading
+  # another schedule in the meantime.
+  @schedule_changed "The active schedule changed, so the helper stopped. Reload the alert's targets to continue."
 
   @impl true
   def id, do: "alerts"
@@ -107,7 +120,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "search_routes",
         description:
-          "Find routes in the service version this alert was written against, by short name, long name or route id. Returns the first 25 matches; ask the person to narrow the text when none fit. Answers that the search is unavailable when this alert has no source version.",
+          "Find routes in the active schedule, by short name, long name or route id. Returns the first 25 matches; ask the person to narrow the text when none fit. Answers that the search is unavailable when no schedule is active.",
         activity: "Searched routes",
         parameters: %{
           "type" => "object",
@@ -119,7 +132,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "search_stops",
         description:
-          "Find stops in the service version this alert was written against, by name or stop id. Returns the first 25 matches. The preferred and excluded ids are this alert's own route and stop answers, so a narrowed search does not repeat what the draft already names. Answers that the search is unavailable when this alert has no source version.",
+          "Find stops in the active schedule, by name or stop id. Returns the first 25 matches. The preferred and excluded ids are this alert's own route and stop answers, so a narrowed search does not repeat what the draft already names. Answers that the search is unavailable when no schedule is active.",
         activity: "Searched stops",
         parameters: %{
           "type" => "object",
@@ -143,7 +156,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "route_stops",
         description:
-          "List the stops one route of this alert's source version serves, in the order its trips serve them. Answers that the search is unavailable when this alert has no source version.",
+          "List the stops one route of the active schedule serves, in the order its trips serve them. Answers that the search is unavailable when no schedule is active.",
         activity: "Listed a route's stops",
         parameters: %{
           "type" => "object",
@@ -155,7 +168,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "departures_on",
         description:
-          "List one route's departures on a date, earliest first. Only trips the source version actually runs that day are listed, so a cancelled trip is never offered for a day it does not run. Answers that the search is unavailable when this alert has no source version.",
+          "List one route's departures on a date, earliest first. Only trips the active schedule actually runs that day are listed, so a cancelled trip is never offered for a day it does not run. Answers that the search is unavailable when no schedule is active.",
         activity: "Listed departures",
         parameters: %{
           "type" => "object",
@@ -192,7 +205,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       %{
         name: "propose_changes",
         description:
-          "Prepare answers for the alert editor to fill into this draft. Call it once per turn with every answer you have. Takes only the answers themselves, never an identity, and saves nothing. An alert with no source version keeps every other answer but cannot take a new or changed selection.",
+          "Prepare answers for the alert editor to fill into this draft. Call it once per turn with every answer you have. Takes only the answers themselves, never an identity, and saves nothing. With no active schedule every other answer is kept, but a new or changed selection cannot be prepared.",
         activity: "Prepared alert answers",
         parameters: %{
           "type" => "object",
@@ -204,23 +217,31 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     ]
   end
 
-  # The subject alert is part of this conversation's resource context. Once it is
-  # deleted, or is not this organization's, the session ends before the next
-  # provider request instead of answering about a record that is gone. The alert's
-  # source version is not part of this check: an organization reads its own alert
-  # whether or not the schedule it was written against still exists (AC-8).
+  # The subject alert and the active schedule are part of this conversation's
+  # resource context. Once the alert is deleted or is not this organization's, or
+  # the organization's selection has any token other than the one this
+  # conversation was opened under, the session ends before the next provider
+  # request instead of answering about a record or a schedule that is not the
+  # editor's now. The alert's source version is not part of this check: an
+  # organization reads its own alert whether or not the schedule it was written
+  # against still exists (AC-8).
   @impl true
   def authorize_context(%Scope{} = scope) do
-    case Alerts.get_alert(Scope.audit_context(scope), scope.subject_id) do
-      {:ok, _alert} -> :ok
-      {:error, _reason} -> {:error, :unavailable}
+    with {:ok, _alert} <- Alerts.get_alert(Scope.audit_context(scope), scope.subject_id),
+         {:ok, _active} <- active_schedule(scope) do
+      :ok
+    else
+      _refused -> {:error, :unavailable}
     end
   end
 
   @impl true
   def call(name, args, %Scope{} = scope) do
-    with {:ok, context, alert} <- subject(scope) do
-      run(name, args, context, alert)
+    with {:ok, alert} <- subject(scope),
+         {:ok, active} <- bound_schedule(scope) do
+      context = alert_context(Scope.audit_context(scope), alert, active)
+
+      name |> run(args, context, alert) |> bind(alert, active)
     end
   end
 
@@ -230,32 +251,66 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   # runs on, and it answers a message if the alert went away in between.
   defp subject(%Scope{} = scope) do
     case Alerts.get_alert(Scope.audit_context(scope), scope.subject_id) do
-      {:ok, alert} -> {:ok, alert_context(Scope.audit_context(scope), alert), alert}
+      {:ok, alert} -> {:ok, alert}
       {:error, :forbidden} -> {:error, "Access to this alert changed."}
       {:error, :not_found} -> {:error, "This alert is not available here."}
     end
   end
 
-  # The reads below take the alert's own organization and its retained source
-  # version, so a target lookup can never follow the version the person selected
-  # in the navigation (R1, CR-4). `gtfs_version_id` is nil for an alert whose
-  # source version was deleted or that never had one, which is what
-  # `with_source_version/2` refuses rather than reads another version through.
-  defp alert_context(%AuditContext{} = audit_context, %Alert{} = alert) do
+  # The organization's active schedule, only while its token is the one this
+  # conversation was opened under. A scope with no token never matches, so a
+  # conversation that was not bound to a selection reads nothing.
+  defp active_schedule(%Scope{} = scope) do
+    with {:ok, %{token: token} = active} <-
+           Versions.active_schedule(%{
+             actor_id: scope.user_id,
+             organization_id: scope.organization_id
+           }),
+         true <- token == scope.alert_schedule_token do
+      {:ok, active}
+    else
+      _moved -> {:error, :unavailable}
+    end
+  end
+
+  defp bound_schedule(%Scope{} = scope) do
+    case active_schedule(scope) do
+      {:ok, active} -> {:ok, active}
+      {:error, :unavailable} -> {:error, @schedule_changed}
+    end
+  end
+
+  # The reads below take the alert's own organization and the active schedule the
+  # token names, so a target lookup can never follow the version the person
+  # selected in the navigation or the alert's source (R1, CR-4). `gtfs_version_id`
+  # is nil while the organization has no active schedule, which is what
+  # `with_active_schedule/2` refuses rather than reads another version through.
+  defp alert_context(%AuditContext{} = audit_context, %Alert{} = alert, active) do
     %{
       audit_context
       | organization_id: alert.organization_id,
-        gtfs_version_id: alert.source_gtfs_version_id
+        gtfs_version_id: active.version && active.version.id
     }
   end
 
-  # A schedule tool needs the alert's own source version. Without one there is
-  # nothing to search, so the answer names that rather than returning rows of
-  # whatever version happens to be current.
-  defp with_source_version(%AuditContext{gtfs_version_id: nil}, _fun),
-    do: {:error, @no_source_version}
+  # A prepared change is made against one alert revision under one selection
+  # token. The editor writes with exactly these expectations, so a later revision
+  # or a different selection refuses the write instead of replacing it.
+  defp bind({:prepared, prepared, result}, alert, active) do
+    bound_to = %{revision: alert.revision, schedule: active.token}
 
-  defp with_source_version(%AuditContext{} = context, fun), do: fun.(context)
+    {:prepared, Map.put(prepared, :bound_to, bound_to), result}
+  end
+
+  defp bind(other, _alert, _active), do: other
+
+  # A schedule tool needs the active schedule. Without one there is nothing to
+  # search, so the answer names that rather than returning rows of whatever
+  # version happens to be current.
+  defp with_active_schedule(%AuditContext{gtfs_version_id: nil}, _fun),
+    do: {:error, @no_active_schedule}
+
+  defp with_active_schedule(%AuditContext{} = context, fun), do: fun.(context)
 
   defp run("get_draft", _args, context, alert) do
     labels = Alerts.labels_for(context, alert)
@@ -264,13 +319,13 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   end
 
   defp run("search_routes", args, context, _alert) do
-    with_source_version(context, fn context ->
+    with_active_schedule(context, fn context ->
       {:ok, %{"routes" => context |> Alerts.search_routes(args["query"]) |> route_rows()}}
     end)
   end
 
   defp run("search_stops", args, context, _alert) do
-    with_source_version(context, fn context ->
+    with_active_schedule(context, fn context ->
       stops =
         Alerts.search_stops(context, args["query"],
           prefer_route_ids: args["prefer_route_ids"] || [],
@@ -282,13 +337,13 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
   end
 
   defp run("route_stops", args, context, _alert) do
-    with_source_version(context, fn context ->
+    with_active_schedule(context, fn context ->
       {:ok, %{"stops" => context |> Alerts.route_stops(args["route_id"]) |> stop_rows()}}
     end)
   end
 
   defp run("departures_on", args, context, _alert) do
-    with_source_version(context, fn context ->
+    with_active_schedule(context, fn context ->
       with {:ok, date} <- parse_date(args["date"]),
            {:ok, direction_id} <- parse_direction(args["direction_id"]) do
         departures = Alerts.departures_on(context, args["route_id"], direction_id, date)
@@ -338,10 +393,11 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
       not changeset.valid? ->
         {:error, changeset_message(changeset)}
 
-      # A new or replaced selection has to be validated against the version it
-      # will be written against, and an alert with no source version has none.
+      # A new or replaced selection has to be validated against the schedule it
+      # will be written against, and an organization with no active schedule has
+      # none.
       changes_scope?(changeset, alert) and is_nil(context.gtfs_version_id) ->
-        {:error, @no_source_version}
+        {:error, @no_active_schedule}
 
       true ->
         prepare(context, alert, changeset, args)
@@ -352,8 +408,8 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
     do: {:error, "Unknown tool: " <> name}
 
   # Only a changed selection needs a schedule to check against, compared the way
-  # `Alerts.save_draft/4` compares it. Wording, timing and the other answers are
-  # this alert's own, and an alert whose source is gone keeps them (AC-9).
+  # `Alerts.save_draft/5` compares it. Wording, timing and the other answers are
+  # this alert's own, and an organization with no active schedule keeps them (AC-9).
   defp changes_scope?(changeset, alert) do
     proposed = Ecto.Changeset.apply_changes(changeset)
 
@@ -362,8 +418,8 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
 
   # -- Prepared change ------------------------------------------------------
 
-  # `Alerts.save_draft/4` refuses a route, stop, departure or route type this
-  # alert's version does not have, so it is refused here too, naming what to
+  # `Alerts.save_draft/5` refuses a route, stop, departure or route type the
+  # active schedule does not have, so it is refused here too, naming what to
   # look up again, instead of a card the editor could only fail to apply.
   defp prepare(context, alert, changeset, args) do
     case unknown_targets(context, alert, changeset) do
@@ -409,7 +465,7 @@ defmodule GtfsPlanner.Agents.Packs.Alerts do
         "#{target_name(kind)} #{String.slice("#{id}", 0, 40)}"
       end)
 
-    "Not in this service version: #{named}. Use ids the search tools returned."
+    "Not in the active schedule: #{named}. Use ids the search tools returned."
   end
 
   defp target_name(:routes), do: "route"

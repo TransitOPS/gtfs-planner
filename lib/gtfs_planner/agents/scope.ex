@@ -31,6 +31,13 @@ defmodule GtfsPlanner.Agents.Scope do
   already resolved (CR-4), and `resolve_identity/1` authorizes such a scope on its
   organization and subject instead of on a version. Every other host binds a
   version identity, so those conversations keep their exact version contract.
+
+  `alert_schedule_token` is the organization's active-schedule selection token
+  (`Versions.selection_token()`) the Alerts conversation was opened under. The
+  Alerts pack reads the active schedule, not any version the person selected, so
+  its session key carries this token and the pack refuses every request, tool and
+  delivered result once the organization's selection has moved on, including an
+  A -> B -> A return. Every other pack leaves it `nil`.
   """
 
   alias GtfsPlanner.Authorization
@@ -50,6 +57,7 @@ defmodule GtfsPlanner.Agents.Scope do
     :pack_id,
     :version_name,
     :subject_id,
+    :alert_schedule_token,
     resource_context: %{identity: nil, approved_extension: nil}
   ]
 
@@ -77,6 +85,7 @@ defmodule GtfsPlanner.Agents.Scope do
           pack_id: String.t(),
           version_name: String.t() | nil,
           subject_id: Ecto.UUID.t() | nil,
+          alert_schedule_token: Versions.selection_token() | nil,
           resource_context: resource_context()
         }
 
