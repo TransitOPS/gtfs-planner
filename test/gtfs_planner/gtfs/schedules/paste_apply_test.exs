@@ -60,7 +60,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
 
       # The removed trip, its stop times and both transfers naming it are gone
       # while the kept trip is byte-identical.
-      assert Repo.get_by(Trip, trip_id: scope.trips.first) == nil
+      assert get_trip(context, scope.trips.first) == nil
 
       assert scoped(StopTime, context) |> where_trip(scope.trips.first) |> Repo.all() == []
       assert scoped(Transfer, context) |> Repo.all() == []
@@ -69,7 +69,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
                scope.trips.first
              ]) == 0
 
-      assert %Trip{trip_id: trip_id} = Repo.get_by(Trip, trip_id: scope.trips.second)
+      assert %Trip{trip_id: trip_id} = get_trip(context, scope.trips.second)
       assert trip_id == scope.trips.second
 
       # One 'deleted' trip audit carries the shared operation id.
@@ -109,7 +109,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       # Nothing was written: the doomed trip, its stop times and both
       # transfers are all still there.
       assert scoped_counts(context) == counts_before
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
+      assert %Trip{} = get_trip(context, scope.trips.first)
 
       assert Schedules.count_trip_transfers(context.organization.id, context.version.id, [
                scope.trips.first
@@ -134,9 +134,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
                )
 
       assert scoped_counts(context) == counts_before
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.second)
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.third)
+      assert %Trip{} = get_trip(context, scope.trips.first)
+      assert %Trip{} = get_trip(context, scope.trips.second)
+      assert %Trip{} = get_trip(context, scope.trips.third)
     end
 
     test "a plan with an open pairing decision returns :blocking_issues with no writes",
@@ -159,9 +159,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
 
       # The block runs before any write, so the unpaired trip survives too.
       assert scoped_counts(context) == counts_before
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.second)
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.second_b)
+      assert %Trip{} = get_trip(context, scope.trips.first)
+      assert %Trip{} = get_trip(context, scope.trips.second)
+      assert %Trip{} = get_trip(context, scope.trips.second_b)
     end
 
     test "a foreign route_id returns :not_found", context do
@@ -212,15 +212,66 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
     end
   end
 
+  describe "apply_paste/5 pattern selectors" do
+    test "a row UUID with a route_pattern_id returns :not_found and writes nothing", context do
+      scope = apply_case!(context)
+      input = replace_input(keep_b_text())
+      review = prepare_review!(context, scope, input)
+      counts_before = scoped_counts(context)
+
+      # Each selector names the main pattern; naming both is still refused.
+      params =
+        scope_params(scope)
+        |> Map.put(:pattern_id, scope.main.pattern.id)
+        |> Map.put(:route_pattern_id, "MAIN")
+
+      assert {:error, :not_found} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 params,
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert scoped_counts(context) == counts_before
+    end
+
+    test "a route_pattern_id selects its pattern and a natural ID under pattern_id is refused",
+         context do
+      scope = apply_case!(context)
+      input = replace_input(keep_b_text())
+      review = prepare_review!(context, scope, input)
+
+      assert {:error, :not_found} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 Map.put(scope_params(scope), :pattern_id, "MAIN"),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert {:ok, %{removed: 1}} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 Map.put(scope_params(scope), :route_pattern_id, "MAIN"),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+    end
+  end
+
   describe "apply_paste/5 changes" do
     test "a retimed 07:00 trip keeps its trip_id, transfers and wheelchair_accessible, with timepoint 0 at estimated stops",
          context do
       scope = apply_case!(context)
 
       was_updated_at =
-        Repo.get_by!(Trip, trip_id: scope.trips.second) |> Map.fetch!(:updated_at)
+        get_trip!(context, scope.trips.second) |> Map.fetch!(:updated_at)
 
-      Repo.get_by!(Trip, trip_id: scope.trips.second)
+      get_trip!(context, scope.trips.second)
       |> Ecto.Changeset.change(%{wheelchair_accessible: 1})
       |> Repo.update!()
 
@@ -251,10 +302,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert Enum.sort(summary.trip_ids) ==
                Enum.sort([scope.trips.first, scope.trips.second])
 
-      first_id = Repo.get_by!(Trip, trip_id: scope.trips.first).id
-      second_id = Repo.get_by!(Trip, trip_id: scope.trips.second).id
+      first_id = get_trip!(context, scope.trips.first).id
+      second_id = get_trip!(context, scope.trips.second).id
 
-      trip = Repo.get_by!(Trip, trip_id: scope.trips.second)
+      trip = get_trip!(context, scope.trips.second)
       assert trip.trip_id == scope.trips.second
       assert trip.wheelchair_accessible == 1
       assert trip.direction_id == 0
@@ -271,7 +322,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
 
       first_timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
 
-      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id ==
+      assert get_trip!(context, scope.trips.first).timed_pattern_id ==
                first_timing.id
 
       assert ordered_stop_times(context, scope.trips.second) == [
@@ -339,11 +390,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert summary.new_timings == []
       assert Enum.sort(summary.trip_ids) == Enum.sort([scope.trips.first, scope.trips.second])
 
-      first = Repo.get_by!(Trip, trip_id: scope.trips.first)
+      first = get_trip!(context, scope.trips.first)
       assert first.timed_pattern_id == scope.main.timing.id
       assert first.trip_short_name == "1227"
 
-      second = Repo.get_by!(Trip, trip_id: scope.trips.second)
+      second = get_trip!(context, scope.trips.second)
       assert second.timed_pattern_id == scope.main.timing.id
       assert second.trip_short_name == "1228"
 
@@ -381,8 +432,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
              ) == 1
 
       timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
-      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id == timing.id
-      assert Repo.get_by!(Trip, trip_id: scope.trips.second).timed_pattern_id == timing.id
+      assert get_trip!(context, scope.trips.first).timed_pattern_id == timing.id
+      assert get_trip!(context, scope.trips.second).timed_pattern_id == timing.id
     end
 
     test "a change and a removal in one apply both commit", context do
@@ -409,7 +460,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert summary.new_timings == ["Pasted Sep 28 · A"]
       assert summary.trip_ids == [scope.trips.second]
 
-      assert Repo.get_by(Trip, trip_id: scope.trips.first) == nil
+      assert get_trip(context, scope.trips.first) == nil
 
       assert ordered_stop_times(context, scope.trips.second) == [
                {"07:00:00", "07:00:00", 1},
@@ -439,7 +490,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       counts_before = scoped_counts(context)
 
       scope.trips.first
-      |> then(&Repo.get_by!(Trip, trip_id: &1))
+      |> then(&get_trip!(context, &1))
       |> Ecto.Changeset.change(%{trip_short_name: "1"})
       |> Repo.update!()
 
@@ -453,7 +504,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
                )
 
       assert scoped_counts(context) == counts_before
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
+      assert %Trip{} = get_trip(context, scope.trips.first)
 
       # The changed trip keeps its original Standard clocks (fixture stop
       # times carry no timepoint, so only the clocks compare here).
@@ -514,7 +565,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert summary.changed == 1
       assert summary.new_timings == []
 
-      custom = Repo.get_by!(Trip, trip_id: custom_trip_id)
+      custom = get_trip!(context, custom_trip_id)
       assert custom.trip_id == custom_trip_id
       assert custom.pattern_derivation_state == "linked"
       assert custom.pattern_derivation_reason == nil
@@ -573,7 +624,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
             {"R-APPLY-0-WKD-APPLY-0900", "09:00:00", "09:06:00", "09:12:00"},
             {"R-APPLY-0-WKD-APPLY-1000", "10:00:00", "10:06:00", "10:12:00"}
           ] do
-        trip = Repo.get_by!(Trip, trip_id: trip_id)
+        trip = get_trip!(context, trip_id)
         assert trip.trip_id == trip_id
         assert trip.direction_id == 0
         assert trip.route_pattern_id == "MAIN"
@@ -595,7 +646,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
 
       for trip_id <- expected_ids do
-        assert Repo.get_by!(Trip, trip_id: trip_id).timed_pattern_id == timing.id
+        assert get_trip!(context, trip_id).timed_pattern_id == timing.id
       end
 
       created_logs =
@@ -699,10 +750,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
              ) == 1
 
       timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
-      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id == timing.id
-      assert Repo.get_by!(Trip, trip_id: scope.trips.second).timed_pattern_id == timing.id
+      assert get_trip!(context, scope.trips.first).timed_pattern_id == timing.id
+      assert get_trip!(context, scope.trips.second).timed_pattern_id == timing.id
 
-      assert Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800").timed_pattern_id ==
+      assert get_trip!(context, "R-APPLY-0-WKD-APPLY-0800").timed_pattern_id ==
                timing.id
 
       assert Enum.sort(summary.trip_ids) ==
@@ -745,8 +796,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       short_timing =
         scope.short.pattern.id |> stored_timings() |> Enum.find(&(&1.name == "Pasted Sep 28 · A"))
 
-      main_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800")
-      short_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0830")
+      main_trip = get_trip!(context, "R-APPLY-0-WKD-APPLY-0800")
+      short_trip = get_trip!(context, "R-APPLY-0-WKD-APPLY-0830")
 
       assert {main_trip.route_pattern_id, main_trip.timed_pattern_id} == {"MAIN", main_timing.id}
 
@@ -855,7 +906,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert Enum.sort(summary.trip_ids) ==
                Enum.sort([scope.trips.second, "R-APPLY-0-WKD-APPLY-0800"])
 
-      assert Repo.get_by(Trip, trip_id: scope.trips.first) == nil
+      assert get_trip(context, scope.trips.first) == nil
       assert scoped(StopTime, context) |> where_trip(scope.trips.first) |> Repo.all() == []
 
       assert ordered_stop_times(context, scope.trips.second) == [
@@ -914,9 +965,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       remove_last_add_rejection!()
 
       assert scoped_counts(context) == counts_before
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
-      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.second)
-      assert Repo.get_by(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800") == nil
+      assert %Trip{} = get_trip(context, scope.trips.first)
+      assert %Trip{} = get_trip(context, scope.trips.second)
+      assert get_trip(context, "R-APPLY-0-WKD-APPLY-0800") == nil
 
       assert Repo.aggregate(
                from(t in TimedPattern, where: t.name == "Pasted Sep 28 · A"),
@@ -1055,6 +1106,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
 
   defp where_trip(query, trip_id), do: from(row in query, where: row.trip_id == ^trip_id)
 
+  defp get_trip(context, trip_id), do: scoped(Trip, context) |> where_trip(trip_id) |> Repo.one()
+
+  defp get_trip!(context, trip_id),
+    do: scoped(Trip, context) |> where_trip(trip_id) |> Repo.one!()
+
   defp trip_logs(context) do
     Repo.all(
       from(l in ChangeLog,
@@ -1137,6 +1193,18 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
         service_id: service,
         start_time: "07:00:00"
       }).trip
+
+    # The same trip IDs in another organization: an unscoped natural lookup
+    # would find two rows.
+    foreign = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign.id)
+
+    for trip <- [first, second] do
+      trip_fixture(foreign.id, foreign_version.id, route.route_id, %{
+        trip_id: trip.trip_id,
+        service_id: service
+      })
+    end
 
     transfer_fixture(organization_id, version_id, %{
       from_stop_id: "PSA-1",

@@ -180,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
       assert requested_bogus.filters.direction_id == 1
     end
 
-    test "the pattern filter accepts a UUID or a natural ID and otherwise falls back to all",
+    test "the pattern filter selects a row UUID or a route_pattern_id and otherwise falls back to all",
          context do
       route_fixture(context.organization.id, context.version.id, %{route_id: "12p"})
       service = weekly_calendar!(context, %{name: "Patterns"})
@@ -228,9 +228,21 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
              ]
 
       assert {:ok, by_natural_id} =
-               load(context, "12p", %{pattern: crosstown.pattern.route_pattern_id})
+               load(context, "12p", %{route_pattern_id: crosstown.pattern.route_pattern_id})
 
       assert by_natural_id.filters.pattern == crosstown.pattern.id
+
+      # The row selector no longer matches a natural ID, and the natural selector
+      # no longer matches a row UUID.
+      assert {:ok, natural_as_row} =
+               load(context, "12p", %{pattern: crosstown.pattern.route_pattern_id})
+
+      assert natural_as_row.filters.pattern == :all
+
+      assert {:ok, row_as_natural} =
+               load(context, "12p", %{route_pattern_id: crosstown.pattern.id})
+
+      assert row_as_natural.filters.pattern == :all
 
       # A pattern of the other direction never resolves.
       assert {:ok, other_direction} = load(context, "12p", %{pattern: inbound.pattern.id})
@@ -238,6 +250,93 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
 
       assert {:ok, unknown} = load(context, "12p", %{pattern: Ecto.UUID.generate()})
       assert unknown.filters.pattern == :all
+    end
+
+    test "a route_pattern_id spelled like another pattern's row UUID selects exactly the requested kind",
+         context do
+      route_fixture(context.organization.id, context.version.id, %{route_id: "12u"})
+      service = weekly_calendar!(context, %{name: "Lookalike"})
+
+      by_row =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12u",
+          direction_id: 0,
+          route_pattern_name: "Chosen by row",
+          stops: [{"A", 0, 0, 1}]
+        })
+
+      # This pattern's feed ID is the other pattern's row UUID.
+      by_feed_id =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12u",
+          direction_id: 0,
+          route_pattern_name: "Chosen by feed ID",
+          route_pattern_id: by_row.pattern.id,
+          stops: [{"B", 0, 0, 1}]
+        })
+
+      for bundle <- [by_row, by_feed_id] do
+        schedule_trip_fixture(context.organization.id, context.version.id, "12u", bundle, %{
+          service_id: service
+        })
+      end
+
+      assert {:ok, row} = load(context, "12u", %{pattern: by_row.pattern.id})
+      assert row.filters.pattern == by_row.pattern.id
+      assert Enum.map(row.sections, & &1.pattern.id) == [by_row.pattern.id]
+
+      assert {:ok, feed_id} = load(context, "12u", %{route_pattern_id: by_row.pattern.id})
+      assert feed_id.filters.pattern == by_feed_id.pattern.id
+      assert Enum.map(feed_id.sections, & &1.pattern.id) == [by_feed_id.pattern.id]
+
+      assert {:ok, string_keys} = load(context, "12u", %{"route_pattern_id" => by_row.pattern.id})
+      assert string_keys.filters.pattern == by_feed_id.pattern.id
+    end
+
+    test "naming a row UUID and a route_pattern_id together is invalid and shows all patterns",
+         context do
+      route_fixture(context.organization.id, context.version.id, %{route_id: "12b"})
+      service = weekly_calendar!(context, %{name: "Both"})
+
+      first =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12b",
+          direction_id: 0,
+          stops: [{"A", 0, 0, 1}]
+        })
+
+      second =
+        schedule_pattern_fixture(context.organization.id, context.version.id, %{
+          route_id: "12b",
+          direction_id: 0,
+          stops: [{"B", 0, 0, 1}]
+        })
+
+      for bundle <- [first, second] do
+        schedule_trip_fixture(context.organization.id, context.version.id, "12b", bundle, %{
+          service_id: service
+        })
+      end
+
+      # Even two selectors that name the same pattern are refused.
+      for natural <- [first.pattern.route_pattern_id, second.pattern.route_pattern_id] do
+        assert {:ok, both} =
+                 load(context, "12b", %{
+                   pattern: first.pattern.id,
+                   route_pattern_id: natural
+                 })
+
+        assert both.filters.pattern == :all
+        assert length(both.sections) == 2
+      end
+
+      assert {:ok, string_keys} =
+               load(context, "12b", %{
+                 "pattern" => first.pattern.id,
+                 "route_pattern_id" => first.pattern.route_pattern_id
+               })
+
+      assert string_keys.filters.pattern == :all
     end
 
     test "stops defaults to timepoints and accepts all", context do
@@ -286,7 +385,7 @@ defmodule GtfsPlanner.Gtfs.SchedulesTest do
                load(context, "12k", %{
                  "service_id" => service,
                  "direction" => "1",
-                 "pattern" => bundle.pattern.route_pattern_id,
+                 "route_pattern_id" => bundle.pattern.route_pattern_id,
                  "stops" => "all"
                })
 
