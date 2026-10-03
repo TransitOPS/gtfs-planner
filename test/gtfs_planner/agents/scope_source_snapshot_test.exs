@@ -6,6 +6,12 @@ defmodule GtfsPlanner.Agents.ScopeSourceSnapshotTest do
   whole-context size admission and the session-key binding. The resource IDs
   inside a payload belong to a pack's `authorize_context/1`, which is exercised
   where a pack exists.
+
+  These cases describe the canonical seam as it stands on
+  `spec/ai-04-timetable-assistance` (`81b100042`), which this branch consumes
+  rather than reimplements: a payload's own `"digest"` is source content and is
+  admitted, `source_snapshot/1` is a plain read that recomputes nothing, and
+  `context_digest/1` binds the snapshot's kind and content.
   """
 
   use GtfsPlanner.DataCase, async: true
@@ -30,7 +36,7 @@ defmodule GtfsPlanner.Agents.ScopeSourceSnapshotTest do
       assert snapshot.digest =~ ~r/\A[0-9a-f]{64}\z/
     end
 
-    test "refuses a blank or overlong kind, a non-JSON payload and a caller-supplied digest" do
+    test "refuses a blank or overlong kind and a non-JSON payload" do
       context = Scope.context({:version, id()})
 
       assert {:error, :invalid_snapshot} =
@@ -57,11 +63,45 @@ defmodule GtfsPlanner.Agents.ScopeSourceSnapshotTest do
       assert {:error, :invalid_snapshot} =
                Scope.with_source_snapshot(context, %{
                  kind: "station_results",
-                 payload: %{"digest" => String.duplicate("0", 64)}
+                 payload: %{:station_id => "atom keys are not a JSON map"}
                })
 
       # A snapshot that was never attached leaves the context unchanged.
       assert Scope.context({:version, id()}).source_snapshot == nil
+    end
+
+    test "refuses a caller-supplied digest on the envelope" do
+      context = Scope.context({:version, id()})
+
+      for envelope <- [
+            %{kind: "station_results", payload: %{}, digest: String.duplicate("0", 64)},
+            %{
+              "kind" => "station_results",
+              "payload" => %{},
+              "digest" => String.duplicate("0", 64)
+            }
+          ] do
+        assert {:error, :invalid_snapshot} = Scope.with_source_snapshot(context, envelope)
+      end
+    end
+
+    test "admits a payload whose own \"digest\" is source content" do
+      content_digest = String.duplicate("a", 64)
+      context = Scope.context({:version, id()})
+
+      assert {:ok, admitted} =
+               Scope.with_source_snapshot(context, %{
+                 kind: "station_results",
+                 payload: %{"digest" => content_digest}
+               })
+
+      snapshot = Scope.source_snapshot(scope_with(admitted))
+
+      assert snapshot.payload["digest"] == content_digest
+      # The envelope's own digest is the server's hash of `{kind, payload}`, so
+      # the payload's content hash can never stand in for it.
+      assert snapshot.digest =~ ~r/\A[0-9a-f]{64}\z/
+      refute snapshot.digest == content_digest
     end
 
     test "measures the whole serialized resource context against 65,536 bytes" do
@@ -85,18 +125,21 @@ defmodule GtfsPlanner.Agents.ScopeSourceSnapshotTest do
   end
 
   describe "source_snapshot/1" do
-    test "reads back an admitted envelope and refuses a forged digest" do
+    test "reads back an admitted envelope as a plain read" do
       assert {:ok, context} =
                Scope.with_source_snapshot(Scope.context({:version, id()}), @snapshot)
 
       assert %{kind: "station_results"} = Scope.source_snapshot(scope_with(context))
 
-      forged = %{
+      # `source_snapshot/1` recomputes nothing: the boundary that refuses a
+      # replaced envelope is `authorized_context/1`, which reports a tampered
+      # snapshot as `{:error, :unavailable}` rather than as no snapshot at all.
+      swapped = %{
         context
         | source_snapshot: %{context.source_snapshot | digest: String.duplicate("0", 64)}
       }
 
-      assert Scope.source_snapshot(scope_with(forged)) == nil
+      assert Scope.source_snapshot(scope_with(swapped)).kind == "station_results"
     end
 
     test "treats a legacy context without the key as no snapshot" do
@@ -127,13 +170,23 @@ defmodule GtfsPlanner.Agents.ScopeSourceSnapshotTest do
                  payload: %{}
                })
 
+      # The same content admitted under a different kind is a different
+      # conversation, so the snapshot's kind is bound too.
+      assert {:ok, other_kind} =
+               Scope.with_source_snapshot(Scope.context({:version, id()}), %{
+                 kind: "station_imports",
+                 payload: @snapshot.payload
+               })
+
       scope_one = scope_with(one)
       scope_other = scope_with(other)
+      scope_other_kind = scope_with(other_kind)
       bare = scope_with(no_snapshot)
       bare_no_kind = scope_with(Map.put(no_snapshot, :source_snapshot, nil))
 
       assert Scope.context_digest(scope_one) == Scope.context_digest(scope_one)
       assert Scope.context_digest(scope_one) != Scope.context_digest(scope_other)
+      assert Scope.context_digest(scope_one) != Scope.context_digest(scope_other_kind)
       assert Scope.context_digest(bare) != Scope.context_digest(scope_one)
       assert Scope.context_digest(bare) != Scope.context_digest(bare_no_kind)
 
