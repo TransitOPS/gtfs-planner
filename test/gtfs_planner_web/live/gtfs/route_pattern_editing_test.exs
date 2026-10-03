@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Ecto.Query
   import Phoenix.LiveViewTest

@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
   #
   # The 1440x1000 density, sticky header, zoom and overflow measurements are
   # browser cases and live in `assets/e2e/blocks.spec.js`.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.Component
   import Phoenix.LiveViewTest

@@ -33,7 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersSettingsLiveTest do
     the drawer says which day type replaced it rather than showing a blank or a
     silently different week (INV-6).
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Mox
   import Phoenix.LiveViewTest

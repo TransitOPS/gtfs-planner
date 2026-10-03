@@ -29,7 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersOperatorDeleteLiveTest do
     inside the caller's organization, never a cross-tenant write (domain rule
     13).
   """
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures

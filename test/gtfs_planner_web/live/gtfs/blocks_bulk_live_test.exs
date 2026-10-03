@@ -8,7 +8,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
   #
   # The browser scenarios (the bar across pages, the mixed-eligibility dialog and
   # the 375px layout) belong to `assets/e2e/blocks.spec.js`.
-  use GtfsPlannerWeb.ConnCase, async: false
+  use GtfsPlannerWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
