@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         relief_additions: [String.t()],
         assumptions: [atom()],
         warnings: [run_warning()],
-        exclusions: [%{subject: Ecto.UUID.t(), reason: atom()}],
+        exclusions: [%{subject: Ecto.UUID.t(), reason: atom(), block_id: String.t() | nil}],
         counts: %{...},
         day_type_keys: [String.t()]}
 
@@ -135,7 +135,16 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
           day_type_keys: [String.t()]
         }
 
-  @type exclusion :: %{subject: Ecto.UUID.t(), reason: atom()}
+  @typedoc """
+  One piece of work the candidate does not present, and the block it sits in.
+
+  `subject` is the trip UUID and `reason` names the decision that reported it.
+  `block_id` is the block the trip holds in the candidate, or `nil` when it holds
+  none: a trip the generator placed in a single-trip block it cannot stand behind is
+  *kept and reported*, and a trip it could not place at all is not, and the stored
+  block ID is what tells the two apart without re-reading `assignments`/`blocks`.
+  """
+  @type exclusion :: %{subject: Ecto.UUID.t(), reason: atom(), block_id: String.t() | nil}
 
   @typedoc """
   One derived run day's warnings and notices, tagged with the day type they were
@@ -154,9 +163,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         }
 
   @typedoc """
-  The figures the block stage reports: how many blocks the run read, how many it
-  created, how many trips it moved, how many blocks already held trips, and how
-  many blocks it refused.
+  The figures the block stage reports: how many blocks the candidate presents, how
+  many it created, how many trips it moved, how many blocks already held trips, and
+  how many blocks it refused.
   """
   @type block_counts :: %{
           blocks: non_neg_integer(),
@@ -418,17 +427,20 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
 
   # --- exclusions ------------------------------------------------------------
 
-  # Two sources that never overlap: what the generator could not place on any
-  # day, and a new move lost with the block it was going onto. `subject` is the
-  # trip UUID, so one trip excluded on three day types is one exclusion, and the
-  # reason names which decision refused it.
+  # The two sources of work the candidate does not present, which can name the same
+  # trip: the leftovers a day's run reported — including a trip it kept in a
+  # single-trip block too long for its vehicle or relief limit — and a new move lost
+  # with the block it was going onto. `subject` is the trip UUID, so a trip reported
+  # on several day types is one exclusion once the preview's list is deduped, and
+  # `block_id` is the block the trip holds, which is what separates "kept and
+  # reported" from "not placed at all".
   defp exclusions(runs, frozen, refused) do
     unplaced = Enum.flat_map(runs, &leftover_exclusions/1)
 
     lost =
       Enum.flat_map(frozen, fn {trip_id, block_id} ->
         case Map.fetch(refused, block_id) do
-          {:ok, reason} -> [%{subject: trip_id, reason: reason}]
+          {:ok, reason} -> [%{subject: trip_id, reason: reason, block_id: block_id}]
           :error -> []
         end
       end)
@@ -437,20 +449,25 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   end
 
   defp leftover_exclusions(run) do
-    Enum.map(run.result.leftovers, &%{subject: &1.trip.id, reason: &1.reason})
+    Enum.map(
+      run.result.leftovers,
+      &%{subject: &1.trip.id, reason: &1.reason, block_id: &1.block_id}
+    )
   end
 
-  # `blocks` is every block the run read, whatever became of it;
-  # `preserved_blocks` is the subset that already held trips in the database; and
-  # `rejected_blocks` is the new ones whose moves were refused. `preserved` and
-  # `new` therefore partition `blocks` the same way `preserved_block_ids/2` does, so
-  # the count and the list cannot disagree.
+  # `blocks` is the blocks the candidate presents: the new ones `new_blocks/4`
+  # emits plus the ones it preserved, so it is exactly `new_blocks +
+  # preserved_blocks` and reconciles with the `blocks` list and
+  # `preserved_block_ids/2`. A block a refused move was destined for is not
+  # presented, so it is counted in `rejected_blocks` alone — while a preserved
+  # block that lost a new move is in `preserved_blocks` as well, because the two
+  # figures answer different questions and are not a partition of one another.
   defp counts(memberships, assignments, refused, source) do
     new_ids = MapSet.new(Map.values(assignments))
     preserved = preserved_block_ids(memberships, source)
 
     %{
-      blocks: map_size(memberships),
+      blocks: MapSet.size(new_ids) + length(preserved),
       new_blocks: MapSet.size(new_ids),
       new_assignments: map_size(assignments),
       preserved_blocks: length(preserved),
@@ -705,8 +722,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     end
   end
 
-  # Every trip of a refused run, with the reason its run was refused. The trips go
-  # back to uncovered, and this names which one they went back for.
+  # Every trip of a refused run, with the reason its run was refused and the block
+  # the piece was cut from. The trips go back to uncovered, and this names which one
+  # they went back for and which block they are still in.
   defp refusals(_derived, refused) when map_size(refused) == 0, do: []
 
   defp refusals(derived, refused) do
@@ -714,7 +732,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     |> Enum.filter(&Map.has_key?(refused, &1.run_id))
     |> Enum.flat_map(fn run ->
       reason = Map.fetch!(refused, run.run_id)
-      run.pieces |> Enum.flat_map(& &1.trips) |> Enum.map(&%{subject: &1.id, reason: reason})
+
+      run.pieces
+      |> Enum.flat_map(fn piece ->
+        Enum.map(piece.trips, &%{subject: &1.id, reason: reason, block_id: piece.block_id})
+      end)
     end)
   end
 

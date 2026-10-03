@@ -303,7 +303,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       exclusions: candidate.exclusions,
       counts: candidate.counts,
       day_type_keys: candidate.day_type_keys,
-      no_work?: candidate.counts.blocks == 0 and candidate.counts.new_runs == 0
+      # `no_work?` is about what generating here would write: a preview that only
+      # preserves blocks the database already has, or that only reports exclusions,
+      # adds nothing and says so. `counts.blocks` is the blocks the candidate
+      # presents — preserved ones included — so it is not this question's answer.
+      no_work?:
+        candidate.blocks == [] and candidate.assignments == %{} and candidate.counts.new_runs == 0
     }
   end
 
@@ -375,6 +380,13 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   Exposed as a public function so the step that applies a reviewed candidate
   compares hashes produced by this one function, rather than two
   implementations agreeing by coincidence.
+
+  It covers the normalized input, every affected day type with its services and
+  dates, the completed trip rows with their endpoints, the raw stop-time, stop,
+  parent-station and frequency rows behind them, the block IDs the affected
+  services use — a wider read than the completed rows, which reaches the blocks a
+  new ID is numbered above — the blocking context through its own digest, and the
+  crew and roster rules.
   """
   @spec fingerprint(map(), map(), Ecto.UUID.t()) :: String.t()
   def fingerprint(source, input, garage_id) do
@@ -384,6 +396,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       input: Map.put(input, "garage_id", garage_id),
       day_types: facts.day_types,
       rows: identity_rows(source),
+      used_block_ids: Enum.sort(Map.fetch!(source, :used_block_ids)),
       raw: facts.raw,
       context: Context.digest(Map.fetch!(source, :context)),
       rules: rules_projection(Map.fetch!(source, :rules))
@@ -443,8 +456,14 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
           days:
             line.days
             |> Enum.sort_by(&{&1.weekday, &1.day_type_key, &1.run_id})
-            |> Enum.map(&Map.take(&1, [:weekday, :day_type_key, :run_id]))
-            |> Enum.map(&Map.put(&1, :times, {&1.run_sign_on_secs, &1.run_sign_off_secs}))
+            |> Enum.map(fn day ->
+              %{
+                weekday: day.weekday,
+                day_type_key: day.day_type_key,
+                run_id: day.run_id,
+                times: {day.run_sign_on_secs, day.run_sign_off_secs}
+              }
+            end)
         }
       end)
       |> Enum.sort_by(&{&1.line_number, &1.operator_id})

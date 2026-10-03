@@ -135,6 +135,44 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       refute retimed.source_fingerprint == moved.source_fingerprint
     end
 
+    test "the fingerprint covers a stored roster slot" do
+      world = tods_world_fixture(extra_trips: [weekday_trip()])
+      day = roster_line_fixture(world, %{run_id: "9001"})
+
+      # A version that has been rostered — the state this feature itself creates, and
+      # the state a version with manual slots is already in — is previewed at all,
+      # and the slot's stored times are a rule the save path re-reads, so moving one
+      # has to move the hash.
+      assert {:ok, stored} = preview(world)
+
+      set_sign_on(day, 29_400)
+
+      assert {:ok, edited} = preview(world)
+      refute edited.source_fingerprint == stored.source_fingerprint
+    end
+
+    test "the fingerprint covers a block ID no completed row carries" do
+      world = tods_world_fixture(extra_trips: [weekday_trip(), far_block_trip()])
+
+      # One date outside the selected range, on a service the version's own weekday
+      # service runs there too: the date derives a day type of its own, which no
+      # selected date reaches while the completed weekday rows still reach *it*. Its
+      # service is therefore read into the used block set without any completed row
+      # carrying its trip, which is the block a new ID is numbered above.
+      calendar_service_fixture(world.organization.id, world.version.id, %{
+        service_id: "SP",
+        name: "Special",
+        dates: [~D[2026-03-03]]
+      })
+
+      assert {:ok, unassigned} = preview(world)
+
+      set_stored_block_id(world, "far-block", "901")
+
+      assert {:ok, assigned} = preview(world)
+      refute assigned.source_fingerprint == unassigned.source_fingerprint
+    end
+
     test "the preview writes no trip's block_id" do
       world = tods_world_fixture(extra_trips: [weekday_trip(), clear_monday_trip()])
 
@@ -269,6 +307,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       assert preview.counts.new_blocks == 0
       assert preview.counts.rejected_blocks == 1
 
+      # `counts.blocks` is the blocks the candidate presents, so the refused block
+      # `"103"` is in none of it and the count reconciles with the two lists.
+      assert preview.counts.preserved_blocks == 2
+      assert preview.counts.blocks == length(preview.blocks) + length(preview.preserved_block_ids)
+
       # Both moves go, on both days. Clipping rather than rejecting would have kept
       # `gen-a` on its own on the weekday day type; half a chain is not a smaller
       # wrong answer, it is the same wrong answer with fewer rows to explain it.
@@ -381,6 +424,30 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       assert by_trip_id(world, preview.exclusions) == [
                {"gen-a", :block_attributes_conflict},
                {"mon-clear", :block_attributes_conflict}
+             ]
+    end
+  end
+
+  describe "the work the candidate keeps and reports" do
+    test "a single trip too long for the block it opens stays in the candidate with its block" do
+      world = tods_world_fixture(extra_trips: [long_single_trip()])
+
+      assert {:ok, preview} = preview(world)
+
+      # The block holds one trip and no other shape was possible, so the generator
+      # keeps the trip and reports the block rather than dropping the only thing it
+      # holds — which is where the trip lands in `blocks` and `assignments` too.
+      [block] = preview.blocks
+      trip_id = trip_uuid(world, "gen-long")
+
+      assert preview.assignments == %{trip_id => block.block_id}
+      assert Enum.map(block.trips, & &1.id) == [trip_id]
+
+      # The exclusion names that same block, so a consumer can tell work that was kept
+      # and reported from work that was never placed. The reason alone cannot: the
+      # shape a reader gets here is otherwise identical to an unplottable trip's.
+      assert by_trip_id_with_block(world, preview.exclusions) == [
+               {"gen-long", :exceeds_relief_limit, block.block_id}
              ]
     end
   end
@@ -504,6 +571,16 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
   # on both derived day types.
   defp weekday_trip, do: {"gen-a", "WK", "RIV", "RIV", "04:00:00", "04:30:00"}
 
+  # One unblocked weekday trip of six hours against the fixture's 330-minute piece
+  # limit: the generator opens a block for it, has nothing else to put in it, and so
+  # keeps the only trip the block holds and reports it.
+  defp long_single_trip, do: {"gen-long", "WK", "RIV", "RIV", "04:00:00", "10:00:00"}
+
+  # A trip of a service the selected range never reaches, so no completed row carries
+  # it and only the affected day types its service shares with a read row put its
+  # block ID in the read used set.
+  defp far_block_trip, do: {"far-block", "SP", "RIV", "RIV", "09:00:00", "09:30:00"}
+
   # A weekday trip the generator chains onto the case's own existing block rather
   # than opening one for it: it is on the extra route, and it departs after that
   # block's last arrival with the drive and the minimum layover in between.
@@ -593,6 +670,26 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     _ = uuid
   end
 
+  # Moves a stored roster slot's sign-on behind the feature's back, the way an edit
+  # to the line would, so the fingerprint's claim about the roster facts is testable.
+  defp set_sign_on(day, secs) do
+    {1, nil} =
+      Repo.update_all(
+        from(d in GtfsPlanner.Gtfs.RosterLineDay, where: d.id == ^day.id),
+        set: [run_sign_on_secs: secs]
+      )
+  end
+
+  # Writes a trip's stored block ID behind the feature's back, the way a block
+  # assignment outside it would.
+  defp set_stored_block_id(world, trip_id, block_id) do
+    {1, nil} =
+      Repo.update_all(
+        from(t in GtfsPlanner.Gtfs.Trip, where: t.id == ^trip_uuid(world, trip_id)),
+        set: [block_id: block_id]
+      )
+  end
+
   # The exclusions are keyed by trip UUID and sorted by it, which is the identity a
   # consumer looks them up by. This reads them back as the fixture's own `trip_id`
   # strings so the assertion says which trips were refused rather than which
@@ -602,6 +699,18 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
 
     exclusions
     |> Enum.map(fn %{subject: uuid, reason: reason} -> {Map.fetch!(names, uuid), reason} end)
+    |> Enum.sort()
+  end
+
+  # The same read as `by_trip_id/2` with the block each exclusion names, for a case
+  # that asserts where the trip landed as well as why it was reported.
+  defp by_trip_id_with_block(world, exclusions) do
+    names = Map.new(world.trip_ids, fn {trip_id, uuid} -> {uuid, trip_id} end)
+
+    exclusions
+    |> Enum.map(fn %{subject: uuid, reason: reason, block_id: block_id} ->
+      {Map.fetch!(names, uuid), reason, block_id}
+    end)
     |> Enum.sort()
   end
 

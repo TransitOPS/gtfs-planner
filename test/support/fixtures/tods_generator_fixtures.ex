@@ -278,6 +278,36 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   end
 
   @doc """
+  Adds one stored roster line holding one slot, so a case can read the roster facts a
+  preview's fingerprint covers.
+
+  Returns the day row, which is the row a case moves to change a stored sign-on. The
+  line is numbered one and holds no operator, and the slot's day type defaults to the
+  version's weekday day type.
+  """
+  def roster_line_fixture(world, attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    line =
+      Repo.insert!(%RosterLine{
+        organization_id: world.organization.id,
+        gtfs_version_id: world.version.id,
+        line_number: 1
+      })
+
+    Repo.insert!(%RosterLineDay{
+      roster_line_id: line.id,
+      organization_id: world.organization.id,
+      gtfs_version_id: world.version.id,
+      weekday: Map.get(attrs, :weekday, 1),
+      day_type_key: Map.get(attrs, :day_type_key, world.weekday_day_type),
+      run_id: Map.get(attrs, :run_id, "9001"),
+      run_sign_on_secs: Map.get(attrs, :run_sign_on_secs, 28_800),
+      run_sign_off_secs: Map.get(attrs, :run_sign_off_secs, 46_800)
+    })
+  end
+
+  @doc """
   The five normalized inputs for one day type: `world`'s first active week.
 
   That week's Monday is the day before the calendars start, so the fixture's
