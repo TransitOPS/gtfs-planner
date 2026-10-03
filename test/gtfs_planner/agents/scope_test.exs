@@ -155,6 +155,107 @@ defmodule GtfsPlanner.Agents.ScopeTest do
     end
   end
 
+  describe "the source snapshot seam" do
+    test "an envelope that carries its own digest is refused, and a payload whose content is a digest is admitted" do
+      context = resources_fixture()
+      resources = Scope.context({:version, context.version.id})
+
+      # The attack half: a caller asserting what the payload hashes to. The
+      # envelope is admitted only as exactly `kind` and `payload`, so this is
+      # refused rather than admitted with the caller's value overwritten.
+      assert Scope.with_source_snapshot(
+               resources,
+               %{kind: "timetable", payload: %{"rows" => []}, digest: digest_stub()}
+             ) == {:error, :invalid_snapshot}
+
+      assert Scope.with_source_snapshot(
+               resources,
+               %{"kind" => "timetable", "payload" => %{"rows" => []}, "digest" => digest_stub()}
+             ) == {:error, :invalid_snapshot}
+
+      # The legitimate half: a GTFS source that carries its own content hash, as
+      # a file manifest or a hash column does. It is content, it is admitted,
+      # and it is kept verbatim; the envelope's digest beside it is the
+      # server's own hash of `{kind, payload}` and ignores the payload's field.
+      payload = %{
+        "digest" => digest_stub(),
+        "label" => "school",
+        "rows" => [%{"source_row_id" => 1, "text" => "Mon 07:10 to Main St"}]
+      }
+
+      assert {:ok, admitted} =
+               Scope.with_source_snapshot(resources, %{kind: "timetable", payload: payload})
+
+      assert admitted.source_snapshot.payload == payload
+      assert admitted.source_snapshot.digest == server_digest("timetable", payload)
+      refute admitted.source_snapshot.digest == digest_stub()
+
+      scope = %{context.scope | resource_context: admitted}
+
+      assert Scope.source_snapshot(scope).payload["digest"] == digest_stub()
+      assert Scope.authorized_context(scope) == :ok
+    end
+
+    test "a snapshot whose content was replaced after admission is refused, not read as no source" do
+      context = resources_fixture()
+      resources = Scope.context({:version, context.version.id})
+
+      assert {:ok, admitted} =
+               Scope.with_source_snapshot(resources, %{
+                 kind: "timetable",
+                 payload: %{"rows" => []}
+               })
+
+      snapshot = admitted.source_snapshot
+      swapped = %{snapshot | payload: %{"rows" => [%{"text" => "someone else's table"}]}}
+      tampered = %{context.scope | resource_context: %{admitted | source_snapshot: swapped}}
+
+      # The read is unchanged — it is the boundary that refuses, and it refuses
+      # as unavailable rather than degrading the tampered snapshot to `nil`.
+      assert Scope.source_snapshot(tampered) == swapped
+      assert Scope.authorized_context(tampered) == {:error, :unavailable}
+    end
+
+    test "context_digest/1 binds the kind and the content, and is defined without a snapshot" do
+      context = resources_fixture()
+      resources = Scope.context({:version, context.version.id})
+      payload = %{"rows" => [%{"text" => "Mon 07:10"}]}
+
+      assert {:ok, one} =
+               Scope.with_source_snapshot(resources, %{kind: "timetable", payload: payload})
+
+      assert {:ok, same} =
+               Scope.with_source_snapshot(resources, %{kind: "timetable", payload: payload})
+
+      assert {:ok, other_kind} =
+               Scope.with_source_snapshot(resources, %{kind: "agency_note", payload: payload})
+
+      assert {:ok, other_content} =
+               Scope.with_source_snapshot(resources, %{
+                 kind: "timetable",
+                 payload: %{"rows" => [%{"text" => "Tue 08:25"}]}
+               })
+
+      without = %{context.scope | resource_context: resources}
+      first = %{context.scope | resource_context: one}
+      same = %{context.scope | resource_context: same}
+      relabelled = %{context.scope | resource_context: other_kind}
+      replaced = %{context.scope | resource_context: other_content}
+
+      assert byte_size(Scope.context_digest(without)) == 64
+      assert Scope.context_digest(without) != "none"
+      assert Scope.context_digest(first) == Scope.context_digest(same)
+      assert Scope.context_digest(first) != Scope.context_digest(without)
+      assert Scope.context_digest(first) != Scope.context_digest(relabelled)
+      assert Scope.context_digest(first) != Scope.context_digest(replaced)
+
+      # The approval's own digest is untouched by any of this, so a host can
+      # still reason about the approval alone.
+      assert Scope.approved_digest(without) == "none"
+      assert Scope.approved_digest(first) == "none"
+    end
+  end
+
   describe "authorized_context/1" do
     test "returns :ok for the scope's own version identity" do
       context = resources_fixture()
@@ -256,6 +357,18 @@ defmodule GtfsPlanner.Agents.ScopeTest do
       assert Scope.authorized_context(blank) == {:error, :unavailable}
       assert Scope.authorized_context(incomplete) == {:error, :unavailable}
     end
+  end
+
+  # A well-formed 64-character lowercase digest that hashes nothing here.
+  defp digest_stub, do: "a" <> String.duplicate("0", 63)
+
+  # Lowercase SHA-256 of the server's own deterministic term encoding, written
+  # out here rather than read back from the module under test.
+  defp server_digest(kind, payload) do
+    {kind, payload}
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp scope_fixture(user, organization) do

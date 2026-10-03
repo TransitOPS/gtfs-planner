@@ -43,9 +43,13 @@ defmodule GtfsPlanner.Agents.Scope do
   through `with_source_snapshot/2`. The copy is ephemeral and lives only in this
   map: the panel drops it when the context is replaced, and a lost source is
   re-pasted rather than retained. The server normalizes the envelope, hashes the
-  normalized `{kind, payload}` itself, and refuses a caller-supplied digest, so a
-  pack tool reads source content the server admitted rather than content a model
-  or a tool argument asserts. Admission is bounded by the whole serialized
+  normalized `{kind, payload}` itself, and refuses a caller-supplied digest key on
+  the envelope, so a pack tool reads source content the server admitted rather
+  than content a model or a tool argument asserts. That exactness is about the
+  envelope's own keys and nothing else: a *payload* field named `digest` is
+  ordinary source content — a feed manifest's, or a content hash column's — and
+  is admitted and kept, because the envelope's digest is the server's own hash
+  and never reads anything the caller put in the payload. Admission is bounded by the whole serialized
   resource context, not by the payload alone, and `authorized_context/1` re-checks
   shape, digest and that byte limit on every boundary, so replacing a Calendar
   approval or the payload cannot smuggle an oversized or tampered source past the
@@ -155,6 +159,11 @@ defmodule GtfsPlanner.Agents.Scope do
   else, including a caller-supplied `:digest`, is `{:error, :invalid_snapshot}`,
   because only the server may say what a payload hashes to.
 
+  That exactness is about the envelope's keys and nothing else. `payload` is
+  content, so a source that carries its own content hash under `"digest"` is
+  admitted and keeps that field; it can never stand in for the envelope's digest,
+  which this function always computes itself.
+
   The admitted context is refused with `{:error, :too_large}` when its whole
   serialized form, identity and approval and this envelope included, exceeds
   65,536 bytes. The original context is returned unchanged in every error case,
@@ -179,6 +188,15 @@ defmodule GtfsPlanner.Agents.Scope do
   `with_source_snapshot/2`, reads as no snapshot; `authorized_context/1` is what
   refuses the second case before any provider request, tool read, delivered
   result or prepared lookup.
+
+  This is a plain read and recomputes nothing. The stored digest is the server's
+  own hash of server-admitted content, this map is built by the server rather than
+  by a client, and every boundary that could observe a replacement is already
+  behind `authorized_context/1`, which re-checks shape, digest and the byte limit.
+  Re-hashing the envelope per read would `term_to_binary/1` a payload of up to
+  64KiB on a hot tool path, and reporting a mismatch here as `nil` would make a
+  tampered snapshot indistinguishable from no snapshot at all, where
+  `authorized_context/1` refuses it as `{:error, :unavailable}` instead.
   """
   @spec source_snapshot(t()) :: source_snapshot() | nil
   def source_snapshot(%__MODULE__{resource_context: context}) do
@@ -188,6 +206,10 @@ defmodule GtfsPlanner.Agents.Scope do
     end
   end
 
+  # The envelope is rebuilt here from the two admitted fields and the server's own
+  # hash, so nothing a caller supplied survives inside it. Nothing inside
+  # `payload` is filtered or renamed: a source's own `"digest"` field is content
+  # the host copied, not a claim about the envelope beside it.
   defp admit_snapshot(context, %{kind: kind, payload: payload}) do
     if valid_kind?(kind) and map_payload?(payload) do
       snapshot = %{kind: kind, payload: payload, digest: snapshot_digest(kind, payload)}
@@ -290,6 +312,11 @@ defmodule GtfsPlanner.Agents.Scope do
   rather than continuing one whose tools were answered from the old source
   (INV-1). `approved_digest/1` stays available unchanged for a host that needs to
   reason about the approval alone.
+
+  The snapshot contributes its `kind` and its content, not the server's digest
+  of them: one payload admitted under two kinds is two conversations, and a
+  context with no snapshot hashes the string `"none"` in that position, so the
+  two cases are distinct and neither can raise.
   """
   @spec context_digest(t()) :: String.t()
   def context_digest(%__MODULE__{} = scope) do
