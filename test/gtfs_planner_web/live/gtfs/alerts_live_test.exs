@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
   use GtfsPlannerWeb.ConnCase, async: true
 
+  import Ecto.Query, only: [from: 2]
   import Phoenix.LiveViewTest
 
   import GtfsPlanner.AccountsFixtures
@@ -36,6 +37,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
     version = gtfs_version_fixture(organization.id)
     actor = editor_fixture(organization)
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/Los_Angeles"})
+
+    # The list resolves every alert's routes against the active schedule.
+    activate_version!(organization, version, actor)
 
     %{
       organization: organization,
@@ -236,7 +240,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
       assert has_element?(view, "#alert-row-#{alert.id}", "22")
     end
 
-    test "a route ID two source versions share shows each alert its own route", context do
+    test "a route ID two source versions share shows the active schedule's route on each alert",
+         context do
       other = gtfs_version_fixture(context.organization.id)
 
       agency_fixture(context.organization.id, other.id, %{agency_timezone: "America/Los_Angeles"})
@@ -260,10 +265,33 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLiveTest do
 
       {:ok, view, _html} = live(context.conn, alerts_path())
 
+      # Both resolve against the active version, so the alert written against the
+      # sibling reads the active route and its own source version's `LK` is unused.
       assert has_element?(view, "#alert-row-#{here.id}", "XT")
-      refute has_element?(view, "#alert-row-#{here.id}", "LK")
-      assert has_element?(view, "#alert-row-#{there.id}", "LK")
-      refute has_element?(view, "#alert-row-#{there.id}", "XT")
+      assert has_element?(view, "#alert-row-#{there.id}", "XT")
+      refute has_element?(view, "#alert-row-#{there.id}", "LK")
+      refute has_element?(view, "[data-role='alert-needs-attention']")
+    end
+
+    test "an organization with no active schedule lists no alerts and offers no create",
+         context do
+      {:ok, _current} = current_delay(context)
+
+      Repo.update_all(
+        from(o in GtfsPlanner.Organizations.Organization,
+          where: o.id == ^context.organization.id
+        ),
+        set: [active_gtfs_version_id: nil]
+      )
+
+      {:ok, view, _html} = live(context.conn, alerts_path())
+
+      assert has_element?(view, "#alerts-no-active")
+      refute has_element?(view, "#alerts-list")
+      refute has_element?(view, "#alerts-tabs")
+      refute has_element?(view, "#alerts-first-use")
+      refute has_element?(view, "#create-alert")
+      refute has_element?(view, "#create-alert-first-use")
     end
 
     test "a draft with no route answer does not read All routes", context do

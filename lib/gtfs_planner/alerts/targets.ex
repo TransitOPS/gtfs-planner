@@ -21,6 +21,11 @@ defmodule GtfsPlanner.Alerts.Targets do
   keeps when its source version disappears, from the same scoped reads the
   editor's options come from (CR-5).
 
+  `resolve/2` answers the list page's question for every alert at once: which of
+  the selectors each alert retains the active schedule lacks (missing) or holds
+  but does not fit (inapplicable). It runs a fixed number of scoped queries,
+  however many alerts are listed.
+
   A context with no `gtfs_version_id` has no schedule to read: every
   version-scoped reader below answers its own empty result for one - no options,
   no labels, no row maps, and no identity resolved - instead of building a query
@@ -52,9 +57,11 @@ defmodule GtfsPlanner.Alerts.Targets do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
@@ -364,8 +371,7 @@ defmodule GtfsPlanner.Alerts.Targets do
   being adopted (R1, CR-5).
 
   An identity that does not resolve is recorded as such and never replaced by a
-  guess, and `Alerts.Listing.missing_target_ids/1` reads exactly these entries
-  once the source version is gone. `scope_digest` is
+  guess. `scope_digest` is
   `Alerts.ScopeAnswer.digest/1` of the answer the capture was taken from, so a
   later save can tell whether the selection it carries still describes the
   answer.
@@ -591,13 +597,13 @@ defmodule GtfsPlanner.Alerts.Targets do
   Returns the rider-facing labels of the routes, stops and trips an alert names.
 
   The keys are the feed IDs the alert's stored scope holds - the same
-  identities `Alerts.Listing` reports as missing - so a list row and a review
-  text read from one source and cannot disagree about which row an identity is.
+  identities `resolve/2` reports as missing - so a list row and a review text
+  read from one source and cannot disagree about which row an identity is.
 
   An identity that no longer resolves has no label, because the label is the
   row's own name and inventing one would let a message appear to name a stop
-  that was deleted. `Alerts.Listing.missing_target_ids/2` reports exactly those
-  identities, and the caller shows the flagged row beside them.
+  that was deleted. `resolve/2` reports exactly those identities as missing, and
+  the caller shows the flagged row beside them.
   """
   @spec labels_for(AuditContext.t(), Alert.t()) :: %{
           routes: %{optional(String.t()) => String.t()},
@@ -711,25 +717,361 @@ defmodule GtfsPlanner.Alerts.Targets do
 
   defp unresolved(_schema, _audit_context, []), do: []
 
-  defp unresolved(schema, %AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
-    key = feed_key(schema)
-
-    present =
-      from(row in schema,
-        where: row.organization_id == ^o and row.gtfs_version_id == ^v,
-        where: field(row, ^key) in ^exact_ids(ids),
-        select: field(row, ^key)
-      )
-      |> Repo.all()
-      |> MapSet.new()
+  defp unresolved(schema, %AuditContext{} = audit_context, ids) do
+    present = present_ids(schema, audit_context, ids)
 
     Enum.reject(ids, &MapSet.member?(present, &1))
+  end
+
+  # The feed IDs among `ids` that name a row of the context's organization and
+  # version, in one query.
+  defp present_ids(_schema, _audit_context, []), do: MapSet.new()
+
+  defp present_ids(schema, %AuditContext{organization_id: o, gtfs_version_id: v}, ids) do
+    key = feed_key(schema)
+
+    from(row in schema,
+      where: row.organization_id == ^o and row.gtfs_version_id == ^v,
+      where: field(row, ^key) in ^exact_ids(ids),
+      select: field(row, ^key)
+    )
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   # The column that holds the feed ID each alert target names.
   defp feed_key(Route), do: :route_id
   defp feed_key(Stop), do: :stop_id
   defp feed_key(Trip), do: :trip_id
+
+  # -- Resolution against one schedule ------------------------------------
+
+  @typedoc """
+  One selector an alert retains that the active schedule cannot honour.
+
+  `missing` means the route, stop or trip ID names no row of the schedule.
+  `inapplicable` means every ID exists but the selector does not fit: the stop is
+  not on the pair's route, no trip of a named route runs the stretch in order, or
+  the dated trip does not run on its service date or at its frequency start.
+  `id` is the feed ID the diagnostic is about (a pair reports its stop, a stretch
+  its first end) and `selector` is the retained value exactly as stored, so a
+  caller can show and repair the raw selection.
+  """
+  @type diagnostic :: %{
+          kind: :missing | :inapplicable,
+          target_type: :route | :stop | :trip | :route_stop_pair | :stretch,
+          id: String.t(),
+          reason: atom(),
+          selector: map()
+        }
+
+  @doc """
+  Resolves every selector the alerts retain against the context's one schedule.
+
+  Returns the route rows the alerts name, keyed by feed ID, and each alert's
+  diagnostics (an empty list when it has none). Every alert is read against the
+  same organization and version, whatever version it was first written against,
+  and an ID that exists only in a sibling version or another organization is
+  missing. A missing target never produces a second, inapplicable diagnostic for
+  a selector built on it, and one alert's diagnostics never depend on another's.
+
+  Reads are batched by kind across all alerts, so the query count is fixed. A
+  stretch and a pair look up every requested route against every requested stop
+  and keep the tuples asked for; that over-reads the cross product, which is
+  bounded by the stops and routes the listed alerts name.
+
+  A context with no version resolves nothing, so every retained target is missing.
+  """
+  @spec resolve(AuditContext.t(), [Alert.t()]) :: %{
+          routes_by_id: %{optional(String.t()) => Route.t()},
+          diagnostics_by_alert: %{optional(Ecto.UUID.t()) => [diagnostic()]}
+        }
+  def resolve(%AuditContext{} = audit_context, alerts) when is_list(alerts) do
+    wanted = Map.new(alerts, &{&1.id, wanted(&1)})
+    found = found(audit_context, Map.values(wanted))
+
+    %{
+      routes_by_id: found.routes,
+      diagnostics_by_alert: Map.new(wanted, fn {id, want} -> {id, diagnose(want, found)} end)
+    }
+  end
+
+  # What one alert retains, in the shapes the checks need.
+  defp wanted(%Alert{scope: scope} = alert) do
+    %{
+      ids: Listing.referenced_ids(alert),
+      pairs: scope |> scope_list(:route_stop_pairs) |> Enum.map(&{&1.route_id, &1.stop_id}),
+      trips: scope_list(scope, :trips),
+      stretch: stretch(scope)
+    }
+  end
+
+  defp scope_list(nil, _field), do: []
+  defp scope_list(scope, field), do: Map.get(scope, field) || []
+
+  defp stretch(%{stretch_from_stop_id: from, stretch_to_stop_id: to} = scope)
+       when is_binary(from) and is_binary(to),
+       do: %{route_ids: scope.route_ids || [], from: from, to: to}
+
+  defp stretch(_scope), do: nil
+
+  # Everything the checks read, fetched once for all the alerts.
+  defp found(%AuditContext{gtfs_version_id: nil}, _wanted), do: empty_found()
+
+  defp found(%AuditContext{} = audit_context, wanted) do
+    ids = fn kind -> wanted |> Enum.flat_map(& &1.ids[kind]) |> Enum.uniq() end
+
+    routes = routes_by_id(audit_context, ids.(:routes))
+    stops = present_ids(Stop, audit_context, ids.(:stops))
+    trips = trips_by_id(audit_context, ids.(:trips))
+    window_trips = wanted |> Enum.flat_map(& &1.trips) |> Enum.filter(& &1.start_time)
+
+    %{
+      routes: routes,
+      stops: stops,
+      trips: trips,
+      services: trip_services(audit_context, trips),
+      frequencies: frequencies_by_trip(audit_context, Enum.map(window_trips, & &1.trip_id)),
+      served: served_pairs(audit_context, wanted, routes, stops),
+      ordered: ordered_stretches(audit_context, wanted, routes, stops)
+    }
+  end
+
+  defp empty_found do
+    %{
+      routes: %{},
+      stops: MapSet.new(),
+      trips: %{},
+      services: %{calendars: %{}, exceptions: %{}},
+      frequencies: %{},
+      served: MapSet.new(),
+      ordered: MapSet.new()
+    }
+  end
+
+  defp trip_services(_audit_context, trips) when map_size(trips) == 0,
+    do: %{calendars: %{}, exceptions: %{}}
+
+  defp trip_services(audit_context, trips),
+    do: service_exceptions(audit_context, Map.values(trips))
+
+  defp trips_by_id(_audit_context, []), do: %{}
+
+  defp trips_by_id(%AuditContext{organization_id: o, gtfs_version_id: v}, trip_ids) do
+    from(t in Trip,
+      where: t.organization_id == ^o and t.gtfs_version_id == ^v,
+      where: t.trip_id in ^exact_ids(trip_ids)
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.trip_id, &1})
+  end
+
+  defp frequencies_by_trip(_audit_context, []), do: %{}
+
+  defp frequencies_by_trip(%AuditContext{organization_id: o, gtfs_version_id: v}, trip_ids) do
+    from(f in Frequency,
+      where: f.organization_id == ^o and f.gtfs_version_id == ^v,
+      where: f.trip_id in ^exact_ids(trip_ids)
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.trip_id)
+  end
+
+  # {route, stop} pairs some trip of the route serves, among the pairs whose route
+  # and stop both exist. A trip serves a stop when it has a stop time there.
+  defp served_pairs(audit_context, wanted, routes, stops) do
+    pairs =
+      wanted
+      |> Enum.flat_map(& &1.pairs)
+      |> Enum.filter(fn {route_id, stop_id} ->
+        Map.has_key?(routes, route_id) and MapSet.member?(stops, stop_id)
+      end)
+      |> Enum.uniq()
+
+    case pairs do
+      [] ->
+        MapSet.new()
+
+      pairs ->
+        route_ids = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+        stop_ids = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+        from([st, t] in trip_stop_times(audit_context),
+          where: t.route_id in ^route_ids and st.stop_id in ^stop_ids,
+          distinct: true,
+          select: {t.route_id, st.stop_id}
+        )
+        |> Repo.all()
+        |> MapSet.new()
+    end
+  end
+
+  # {route, from, to} triples some trip of the route runs in order: the `from` stop
+  # time precedes the `to` stop time within one trip. Comparing positions inside a
+  # trip, never one global position per stop, keeps a stop that a loop visits twice
+  # from making either order impossible.
+  defp ordered_stretches(audit_context, wanted, routes, stops) do
+    stretches =
+      wanted
+      |> Enum.flat_map(&List.wrap(&1.stretch))
+      |> Enum.filter(&(MapSet.member?(stops, &1.from) and MapSet.member?(stops, &1.to)))
+      |> Enum.map(
+        &%{&1 | route_ids: Enum.filter(&1.route_ids, fn id -> Map.has_key?(routes, id) end)}
+      )
+      |> Enum.reject(&(&1.route_ids == []))
+
+    case stretches do
+      [] ->
+        MapSet.new()
+
+      stretches ->
+        route_ids = stretches |> Enum.flat_map(& &1.route_ids) |> Enum.uniq()
+        froms = stretches |> Enum.map(& &1.from) |> Enum.uniq()
+        tos = stretches |> Enum.map(& &1.to) |> Enum.uniq()
+
+        from([a, t] in trip_stop_times(audit_context),
+          join: b in StopTime,
+          on:
+            b.trip_id == a.trip_id and b.organization_id == a.organization_id and
+              b.gtfs_version_id == a.gtfs_version_id and b.stop_sequence > a.stop_sequence,
+          where: t.route_id in ^route_ids and a.stop_id in ^froms and b.stop_id in ^tos,
+          distinct: true,
+          select: {t.route_id, a.stop_id, b.stop_id}
+        )
+        |> Repo.all()
+        |> MapSet.new()
+    end
+  end
+
+  # Stop times joined to their trip, inside the context's organization and version.
+  defp trip_stop_times(%AuditContext{organization_id: o, gtfs_version_id: v}) do
+    from(st in StopTime,
+      join: t in Trip,
+      on:
+        t.trip_id == st.trip_id and t.organization_id == st.organization_id and
+          t.gtfs_version_id == st.gtfs_version_id,
+      where: st.organization_id == ^o and st.gtfs_version_id == ^v
+    )
+  end
+
+  defp diagnose(want, found) do
+    missing(:route, want.ids.routes, &Map.has_key?(found.routes, &1)) ++
+      missing(:stop, want.ids.stops, &MapSet.member?(found.stops, &1)) ++
+      Enum.flat_map(want.trips, &trip_diagnostics(&1, found)) ++
+      Enum.flat_map(want.pairs, &pair_diagnostics(&1, found)) ++
+      stretch_diagnostics(want.stretch, found)
+  end
+
+  defp missing(type, ids, present?) do
+    for id <- ids, not present?.(id) do
+      diagnostic(:missing, type, id, :not_in_active_schedule, %{selector_key(type) => id})
+    end
+  end
+
+  defp selector_key(:route), do: :route_id
+  defp selector_key(:stop), do: :stop_id
+
+  defp diagnostic(kind, type, id, reason, selector),
+    do: %{kind: kind, target_type: type, id: id, reason: reason, selector: selector}
+
+  defp trip_diagnostics(target, found) do
+    selector = %{
+      trip_id: target.trip_id,
+      service_date: target.service_date,
+      start_time: target.start_time
+    }
+
+    case Map.fetch(found.trips, target.trip_id) do
+      :error ->
+        [diagnostic(:missing, :trip, target.trip_id, :not_in_active_schedule, selector)]
+
+      {:ok, trip} ->
+        case trip_fit(trip, target, found) do
+          :ok -> []
+          {:error, reason} -> [diagnostic(:inapplicable, :trip, target.trip_id, reason, selector)]
+        end
+    end
+  end
+
+  # The service date is checked first: a trip that does not run that day has no
+  # instance whose start could be judged.
+  defp trip_fit(trip, target, found) do
+    cond do
+      not runs_on?(trip, target.service_date, found.services) ->
+        {:error, :service_not_running_on_date}
+
+      not departs_at?(target.start_time, Map.get(found.frequencies, trip.trip_id, [])) ->
+        {:error, :start_time_not_a_departure}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp runs_on?(trip, %Date{} = date, services), do: running_on?(trip, services, date)
+  defp runs_on?(_trip, _date, _services), do: false
+
+  # No start time selects the trip on the date, whatever its windows. A start time
+  # must be a departure of one of the trip's frequency windows, so a trip without
+  # frequencies has none to match.
+  defp departs_at?(nil, _windows), do: true
+
+  defp departs_at?(start_time, windows) do
+    case GtfsTime.parse(start_time) do
+      {:ok, seconds} -> Enum.any?(windows, &(seconds in window_departures(&1)))
+      {:error, :invalid_time} -> false
+    end
+  end
+
+  defp window_departures(%Frequency{} = window) do
+    with {:ok, start_secs} <- GtfsTime.parse(window.start_time),
+         {:ok, end_secs} <- GtfsTime.parse(window.end_time),
+         true <- is_integer(window.headway_secs) and window.headway_secs > 0 do
+      FrequencyWindows.departures(%{
+        start_secs: start_secs,
+        end_secs: end_secs,
+        headway_secs: window.headway_secs
+      })
+    else
+      _unreadable -> []
+    end
+  end
+
+  # A pair on a missing route or stop is already reported as missing.
+  defp pair_diagnostics({route_id, stop_id} = pair, found) do
+    if Map.has_key?(found.routes, route_id) and MapSet.member?(found.stops, stop_id) and
+         not MapSet.member?(found.served, pair) do
+      [
+        diagnostic(:inapplicable, :route_stop_pair, stop_id, :stop_not_on_route, %{
+          route_id: route_id,
+          stop_id: stop_id
+        })
+      ]
+    else
+      []
+    end
+  end
+
+  defp stretch_diagnostics(nil, _found), do: []
+
+  # A stretch is judged only when both ends exist and a named route does; a missing
+  # end or route is already reported as missing.
+  defp stretch_diagnostics(%{route_ids: route_ids, from: from, to: to}, found) do
+    routes = Enum.filter(route_ids, &Map.has_key?(found.routes, &1))
+
+    if routes != [] and MapSet.member?(found.stops, from) and MapSet.member?(found.stops, to) and
+         not Enum.any?(routes, &MapSet.member?(found.ordered, {&1, from, to})) do
+      [
+        diagnostic(:inapplicable, :stretch, from, :stretch_not_on_route, %{
+          route_ids: route_ids,
+          stretch_from_stop_id: from,
+          stretch_to_stop_id: to
+        })
+      ]
+    else
+      []
+    end
+  end
 
   # -- Options -------------------------------------------------------------
 

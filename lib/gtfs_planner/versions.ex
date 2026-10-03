@@ -474,6 +474,9 @@ defmodule GtfsPlanner.Versions do
   Returns the locked `%{version: version, token: token}`. Otherwise the surrounding
   transaction rolls back with `:forbidden` (membership), `:stale_active` (the selection
   moved since `expected_token` was read) or `:no_active_schedule`.
+
+  A reader that holds no earlier token passes `:current` instead and is given whatever
+  is active, under the same locks. The caller (never a client) chooses `:current`.
   """
   @spec lock_active_schedule!(map(), term()) :: active_schedule()
   def lock_active_schedule!(scope, expected_token) do
@@ -484,7 +487,7 @@ defmodule GtfsPlanner.Versions do
     organization = lock_selection!(scope, "FOR SHARE")
 
     cond do
-      not current_token?(organization, expected_token) ->
+      expected_token != :current and not current_token?(organization, expected_token) ->
         Repo.rollback(:stale_active)
 
       is_nil(organization.active_gtfs_version_id) ->

@@ -57,12 +57,17 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       }
     end
 
-    test "the list opens without a version and offers the editor", context do
+    test "the list opens without a version and says there is no active schedule", context do
       assert {:ok, view, _html} = live(context.conn, "/alerts")
 
       assert has_element?(view, "#alerts-page")
-      assert has_element?(view, "#alerts-first-use", "No alerts yet")
-      assert has_element?(view, "#create-alert-first-use", "Create alert")
+
+      # Alerts resolve against the active schedule, and this organization has none,
+      # so the list offers neither rows nor a way to start one.
+      assert has_element?(view, "#alerts-no-active")
+      refute has_element?(view, "#alerts-first-use")
+      refute has_element?(view, "#create-alert-first-use")
+      refute has_element?(view, "#create-alert")
 
       # The organization's first task is Alerts, and it points at the
       # organization path rather than at a version this organization has not got.
@@ -72,14 +77,8 @@ defmodule GtfsPlannerWeb.Gtfs.AlertOrganizationRoutesTest do
       refute has_element?(view, "#gtfs-version-switcher")
     end
 
-    test "an editor creates a private system alert through ordinary navigation", context do
-      assert {:ok, view, _html} = live(context.conn, "/alerts")
-
-      # **Create alert** is a live navigation to the organization's editor, not a
-      # version's.
-      assert {:error, {:live_redirect, %{to: "/alerts/new"}}} =
-               view |> element("#create-alert-first-use") |> render_click()
-
+    test "an editor creates a private system alert at the organization's editor route",
+         context do
       assert {:ok, view, _html} = live(context.conn, "/alerts/new")
       assert has_element?(view, "#alert-urgency-now", "Happening now")
 

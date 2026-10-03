@@ -3,14 +3,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   LiveView for the Alerts list: the organization's alerts grouped into Current,
   Upcoming, In progress and Past.
 
-  Every row is a rendering of `Alerts.list_alerts/2`, which is the only place a
-  tab, a count or a badge is decided. The page reads that read model with one UTC
-  instant, and each row is classified and stamped in that alert's own retained
-  zone, so a tab cannot disagree with its own count and an alert written against
-  another version's zone is read on its own civil day rather than the version the
-  editor last selected (AC-8, AC-9, CR-7). The read model is organization
-  scoped, so the list is the organization's alerts and never a slice of one
-  selected version (AC-8).
+  Every row is a rendering of `Alerts.workspace/2`, which is the only place a
+  tab, a count, a route badge or a Needs attention flag is decided. The page reads
+  that workspace with one UTC instant, and each row is classified and stamped in
+  that alert's own retained zone, so a tab cannot disagree with its own count and
+  an alert written against another version's zone is read on its own civil day
+  rather than the version the editor last selected (AC-8, AC-9, CR-7). The
+  workspace is organization scoped and resolves every target against the
+  organization's one active schedule, so the list is the organization's alerts
+  and never a slice of one selected version (AC-8, AC-19). An organization with no
+  active schedule lists nothing.
 
   The page shows what an editor is working on now and what is coming. It
   carries no publication action, but it does carry one piece of publication
@@ -109,10 +111,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   defp load_alerts_for_organization(socket, tab) do
     audit_context = audit_context(socket)
 
-    case Alerts.list_alerts(audit_context, DateTime.utc_now()) do
-      {:ok, grouped} ->
+    case Alerts.workspace(audit_context, DateTime.utc_now()) do
+      {:ok, %{groups: grouped, routes_by_id: routes}} ->
         counts = Map.new(@tabs, &{&1, length(Map.fetch!(grouped, &1))})
-        rows = prepare_rows(Map.fetch!(grouped, tab), socket)
+        rows = prepare_rows(Map.fetch!(grouped, tab), socket, routes)
 
         socket
         |> assign(:tab, tab)
@@ -122,6 +124,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
         |> assign(:pending_removals, pending_removals(audit_context))
         |> stream(:alerts, rows, reset: true)
         |> stream(:alerts_mobile, rows, reset: true)
+
+      # Every target resolves against the active schedule, so without one there is
+      # nothing to list or create against.
+      {:error, :no_active_schedule} ->
+        socket
+        |> assign(:alerts_state, :no_active_schedule)
+        |> assign(:alerts_empty?, true)
+        |> assign(:pending_removals, pending_removals(audit_context))
+        |> stream(:alerts, [], reset: true)
+        |> stream(:alerts_mobile, [], reset: true)
 
       # `EnsureRole` already refuses a member without the editor role, so this
       # branch is the fail-closed answer to a membership that lapsed between
@@ -145,21 +157,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
   # -- Rows ----------------------------------------------------------------
 
   # One pass per row, so a row carries everything its markup reads and the
-  # template never queries. The route rows come from `Alerts.routes_for/2`, the
-  # same scoped read the editor's own labels are built from, so a row cannot
-  # name a route the editor's text does not (CR-4).
+  # template never queries. The route rows come from the workspace's own
+  # `routes_by_id`, read from the same active schedule as the row's Needs
+  # attention flag, so a row cannot name a route its own flag contradicts (CR-4).
   #
   # Each row's change stamp is localized in that alert's own retained zone, so an
   # organization holding alerts from several versions reads every row against the
   # day its own answers were written in. One conversion query is issued per
   # distinct zone, which for a single-zone organization is one.
-  defp prepare_rows(rows, socket) do
+  defp prepare_rows(rows, socket, routes) do
     audit_context = audit_context(socket)
     alerts = Enum.map(rows, & &1.alert)
     organization_timezone = Alerts.organization_zone(audit_context)
 
     emails = editor_emails(Enum.map(alerts, & &1.updated_by_id))
-    routes = Alerts.routes_for(audit_context, alerts)
     now_utc = DateTime.utc_now()
 
     stamps =
@@ -196,13 +207,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
       title: alert_title(alert),
       situation_label: Map.get(@situations, alert.situation),
       # Walking the stored identities keeps the alert's own order and drops an
-      # identity the version no longer has, which is the one the row's Needs
+      # identity the active schedule lacks, which is the one the row's Needs
       # attention badge names.
-      routes:
-        Enum.flat_map(
-          referenced.routes,
-          &(routes |> Map.get(alert.id, %{}) |> Map.get(&1, []) |> List.wrap())
-        ),
+      routes: referenced.routes |> Enum.map(&Map.get(routes, &1)) |> Enum.reject(&is_nil/1),
       # Only an alert that said it is about the whole system, or about a place on
       # every route, reads "All routes". A draft that has not reached the routes
       # question, or whose routes were all deselected, names nothing yet.
@@ -370,6 +377,16 @@ defmodule GtfsPlannerWeb.Gtfs.AlertsLive do
           title="Alerts need an organization."
         >
           Choose an organization to see and write its alerts.
+        </.message>
+
+        <.message
+          :if={@alerts_state == :no_active_schedule}
+          id="alerts-no-active"
+          kind="warning"
+          title="No active schedule."
+        >
+          Alerts resolve their routes, stops and departures against the organization's active
+          schedule, and this organization has none.
         </.message>
 
         <.message

@@ -34,11 +34,13 @@ defmodule GtfsPlanner.Alerts do
   action that replaces the complete target selection within one owned version and
   revalidates every identity in it.
 
-  `list_alerts/2` takes one UTC instant and classifies each row in that alert's
+  `workspace/2` takes one UTC instant and classifies each row in that alert's
   own retained zone, so an organization holding alerts from several versions and
   several timezones sees each row on its own civil day. The UTC fallback an alert
   with no zone reads in is a presentation answer and never a publication consent
-  (CR-5, CR-7).
+  (CR-5, CR-7). Its targets are resolved against the organization's one active
+  schedule in the same short transaction, never against the version an alert was
+  first written against; `list_alerts/2` returns only its tabs.
 
   `save_draft/4` carries the client's expected revision. At the current revision
   it increments the revision and recomputes `effect`, `complete`, `first_date`
@@ -93,6 +95,7 @@ defmodule GtfsPlanner.Alerts do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   @type error :: :forbidden | :not_found | Changeset.t()
 
@@ -129,6 +132,14 @@ defmodule GtfsPlanner.Alerts do
           upcoming: [Listing.row()],
           in_progress: [Listing.row()],
           past: [Listing.row()]
+        }
+
+  @typedoc "What `workspace/2` reads, all from one active schedule."
+  @type workspace :: %{
+          active: Versions.active_schedule(),
+          groups: tabs(),
+          routes_by_id: %{optional(String.t()) => GtfsPlanner.Gtfs.Route.t()},
+          diagnostics_by_alert: %{optional(Ecto.UUID.t()) => [Targets.diagnostic()]}
         }
 
   @typedoc """
@@ -203,26 +214,66 @@ defmodule GtfsPlanner.Alerts do
   end
 
   @doc """
-  Returns the alerts list page's four tabs as of one UTC instant.
+  Reads the alerts workspace as of one UTC instant: the organization's alerts, grouped
+  into the four tabs, resolved against its one active schedule.
 
-  Every alert of the organization is listed, whichever version it was written
-  against, and each row is classified in that alert's own retained zone rather
-  than in the zone of the version the editor has selected. `organization_zone/1`
-  is the organization's explicit zone, used for an alert whose source version
-  declared none; an alert with neither reads the disclosed UTC fallback, which
-  never grants publication consent (CR-5, CR-7).
+  The result is a single coherent read:
+
+    * `active` is the schedule every target below was resolved against, and its token;
+    * `groups` holds the four tabs, each row classified in that alert's own retained
+      zone rather than the active schedule's, so a switch to a schedule in another
+      zone moves no existing alert to another civil day;
+    * `routes_by_id` holds the route rows the alerts name, keyed by feed ID, read from
+      the active schedule;
+    * `diagnostics_by_alert` maps every listed alert to its missing and inapplicable
+      selectors (`Targets.diagnostic()`), empty when it has none.
+
+  One short transaction takes the organization row `FOR SHARE`, the actor's editor
+  membership and the active version `FOR UPDATE` (`Versions.lock_active_schedule!/2`)
+  and reads every alert and target before releasing them. A selection change or a
+  mutation of the active version's routes, stops or trips therefore waits for the
+  read or is seen whole by it; the read never mixes two schedules. The window holds
+  only batched queries, no external call and no query per alert.
+
+  Returns `{:error, :forbidden}` without a current editor membership, and
+  `{:error, :no_active_schedule}` when the organization has none, in which case no list
+  data is returned.
   """
-  @spec list_alerts(AuditContext.t(), DateTime.t()) :: {:ok, tabs()} | {:error, :forbidden}
-  def list_alerts(%AuditContext{} = audit_context, %DateTime{} = now_utc) do
-    with :ok <- Authorization.authorize_editor(audit_context) do
+  @spec workspace(AuditContext.t(), DateTime.t()) ::
+          {:ok, workspace()} | {:error, :forbidden | :no_active_schedule}
+  def workspace(%AuditContext{} = audit_context, %DateTime{} = now_utc) do
+    Repo.transaction(fn ->
+      active = Versions.lock_active_schedule!(audit_context, :current)
+
       alerts =
         from(a in Alert,
           where: a.organization_id == ^audit_context.organization_id and is_nil(a.deleted_at)
         )
         |> Repo.all()
 
-      {:ok, Listing.rows(alerts, now_utc, organization_zone(audit_context))}
-    end
+      %{routes_by_id: routes_by_id, diagnostics_by_alert: diagnostics} =
+        Targets.resolve(%{audit_context | gtfs_version_id: active.version.id}, alerts)
+
+      %{
+        active: active,
+        groups: Listing.rows(alerts, now_utc, organization_zone(audit_context), diagnostics),
+        routes_by_id: routes_by_id,
+        diagnostics_by_alert: diagnostics
+      }
+    end)
+  end
+
+  @doc """
+  Returns the alerts list page's four tabs as of one UTC instant.
+
+  This is `workspace/2`'s `groups`, kept for callers that need only the tabs. It is
+  the same read, not a second query, so it fails the same way: `{:error,
+  :no_active_schedule}` lists nothing.
+  """
+  @spec list_alerts(AuditContext.t(), DateTime.t()) ::
+          {:ok, tabs()} | {:error, :forbidden | :no_active_schedule}
+  def list_alerts(%AuditContext{} = audit_context, %DateTime{} = now_utc) do
+    with {:ok, %{groups: groups}} <- workspace(audit_context, now_utc), do: {:ok, groups}
   end
 
   @doc """

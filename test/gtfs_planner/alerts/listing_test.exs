@@ -5,6 +5,10 @@ defmodule GtfsPlanner.Alerts.ListingTest do
   Organization ownership and the mixed-zone instants belong to
   `organization_scope_test.exs`.
 
+  `Alerts.workspace/2` resolves every alert against the organization's one active
+  schedule, so each case that reads Needs attention builds its rows in the version
+  the setup activated.
+
   Every expectation is a literal from the spec's rules, not a value recomputed by
   the module under test. One UTC instant is passed in and each alert is
   localized in its own retained zone, so no assertion depends on a real clock;
@@ -15,28 +19,40 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.AlertsFixtures
+  import GtfsPlanner.ConcurrencyHelpers
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Alerts
   alias GtfsPlanner.Alerts.Alert
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.ScopeAnswer.RouteStopPair
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Organizations.Organization
+  alias GtfsPlanner.Versions
 
   # 5 October 17:00 UTC is 5 October 10:00 in the fixture's America/Los_Angeles
   # agency zone, so the existing literal expectations keep reading the same civil
   # day while the command now takes one UTC instant.
   @now_utc ~U[2026-10-05 17:00:00Z]
 
+  @contention_timeout 10_000
+  @collect_timeout 15_000
+
   setup do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     actor = editor_fixture(organization)
     agency_fixture(organization.id, version.id)
+
+    # Needs attention is read against the organization's active schedule, so the
+    # fixture rows go in the version the workspace resolves against.
+    activate_version!(organization, version, actor)
 
     %{
       organization: organization,
@@ -159,6 +175,225 @@ defmodule GtfsPlanner.Alerts.ListingTest do
       audit = audit_context(context.organization, context.version, viewer)
 
       assert {:error, :forbidden} = Alerts.list_alerts(audit, @now_utc)
+      assert {:error, :forbidden} = Alerts.workspace(audit, @now_utc)
+    end
+  end
+
+  describe "workspace/2" do
+    test "returns the active schedule, the tabs, the routes and a diagnostics entry per alert",
+         context do
+      route =
+        route_fixture(context.organization.id, context.version.id, %{
+          route_id: "r_1",
+          route_short_name: "11"
+        })
+
+      named = route_delay(context, route.route_id)
+      unnamed = open_ended_delay(context, "2026-10-01", nil)
+
+      assert {:ok, workspace} = Alerts.workspace(context.audit, @now_utc)
+
+      assert {:ok, active} = Versions.active_schedule(context.audit)
+      assert workspace.active == active
+      assert workspace.active.version.id == context.version.id
+
+      assert Enum.sort(Enum.map(workspace.groups.current, & &1.alert.id)) ==
+               Enum.sort([named.id, unnamed.id])
+
+      assert %{"r_1" => %{route_short_name: "11"}} = workspace.routes_by_id
+      assert workspace.diagnostics_by_alert == %{named.id => [], unnamed.id => []}
+      assert {:ok, workspace.groups} == Alerts.list_alerts(context.audit, @now_utc)
+    end
+
+    test "resolves alerts from different source versions against the active schedule once",
+         context do
+      # `RA` exists in the active version and, under another name, in the sibling.
+      # `RB` exists only in the sibling.
+      route_fixture(context.organization.id, context.version.id, %{
+        route_id: "RA",
+        route_short_name: "Active A"
+      })
+
+      other = gtfs_version_fixture(context.organization.id)
+      agency_fixture(context.organization.id, other.id)
+      other_audit = audit_context(context.organization, other, context.actor)
+
+      route_fixture(context.organization.id, other.id, %{
+        route_id: "RA",
+        route_short_name: "Sibling A"
+      })
+
+      route_fixture(context.organization.id, other.id, %{route_id: "RB", route_short_name: "B"})
+
+      in_active = route_delay(context, "RA")
+      sibling_only = route_delay(%{audit: other_audit}, "RB")
+      sibling_shared = route_delay(%{audit: other_audit}, "RA")
+
+      assert {:ok, workspace} = Alerts.workspace(context.audit, @now_utc)
+
+      # Only the alert that names a route the active schedule lacks is flagged. The
+      # sibling alert that names a route both versions have is judged by the active
+      # one, and the sibling's own `RB` cannot clear the alert that names it.
+      assert workspace.diagnostics_by_alert[in_active.id] == []
+      assert workspace.diagnostics_by_alert[sibling_shared.id] == []
+
+      assert [
+               %{
+                 kind: :missing,
+                 target_type: :route,
+                 id: "RB",
+                 reason: :not_in_active_schedule,
+                 selector: %{route_id: "RB"}
+               }
+             ] = workspace.diagnostics_by_alert[sibling_only.id]
+
+      attention =
+        workspace.groups.current
+        |> Enum.filter(& &1.needs_attention?)
+        |> Enum.map(& &1.alert.id)
+
+      assert attention == [sibling_only.id]
+
+      # The labels come from the active schedule too, never the sibling's row.
+      assert Map.keys(workspace.routes_by_id) == ["RA"]
+      assert workspace.routes_by_id["RA"].route_short_name == "Active A"
+
+      # The version the navigation has selected decides nothing.
+      assert {:ok, ^workspace} = Alerts.workspace(other_audit, @now_utc)
+    end
+
+    test "reads a fixed number of times however many alerts it lists", context do
+      route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
+      stop = stop_fixture(context.organization.id, context.version.id, %{stop_id: "s_1"})
+
+      queries = fn ->
+        {:ok, count} = Agent.start_link(fn -> 0 end)
+        handler = {__MODULE__, make_ref()}
+
+        :telemetry.attach(
+          handler,
+          [:gtfs_planner, :repo, :query],
+          fn _event, _measurements, _metadata, count ->
+            Agent.update(count, &(&1 + 1))
+          end,
+          count
+        )
+
+        {:ok, _workspace} = Alerts.workspace(context.audit, @now_utc)
+        :telemetry.detach(handler)
+        Agent.get(count, & &1)
+      end
+
+      # One alert of each kind of target, then four more of each: the same reads.
+      route_delay(context, route.route_id)
+      stop_closure(context, stop.stop_id)
+      few = queries.()
+
+      for _alert <- 1..4 do
+        route_delay(context, route.route_id)
+        stop_closure(context, stop.stop_id)
+      end
+
+      assert queries.() == few
+    end
+
+    test "an organization with no active schedule lists nothing", context do
+      _alert = open_ended_delay(context, "2026-10-01", nil)
+
+      from(o in Organization, where: o.id == ^context.organization.id)
+      |> Repo.update_all(set: [active_gtfs_version_id: nil])
+
+      assert {:error, :no_active_schedule} = Alerts.workspace(context.audit, @now_utc)
+      assert {:error, :no_active_schedule} = Alerts.list_alerts(context.audit, @now_utc)
+    end
+  end
+
+  describe "workspace/2 under a concurrent active switch" do
+    setup do
+      %{supervisor: start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})}
+    end
+
+    test "a switch started during the read waits, so the read keeps one schedule", %{
+      supervisor: supervisor
+    } do
+      %{organization: organization, scope: scope, spring: spring, fall: fall, alert: alert} =
+        unboxed(&committed_switch_fixture/0)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      audit = audit_context(organization, spring, %{id: scope.actor_id, email: nil})
+      {:ok, %{token: token}} = unboxed(fn -> Versions.active_schedule(scope) end)
+
+      # A schedule writer holds the active version, as the stop and route editors do.
+      holder =
+        start_holder(supervisor, fn ->
+          Versions.lock_for_exclusive_write!(organization.id, spring.id)
+        end)
+
+      read = start_command(supervisor, fn -> Alerts.workspace(audit, @now_utc) end)
+      send(read.pid, :go)
+      assert_blocked_by(read, holder)
+
+      # The read already holds the organization row, so the switch queues behind it.
+      switch =
+        start_command(supervisor, fn -> Versions.set_active_schedule(scope, fall.id, token) end)
+
+      send(switch.pid, :go)
+      assert_blocked_by(switch, read)
+
+      send(holder.pid, :release)
+
+      assert {:ok, workspace} = Task.await(read.task, @collect_timeout)
+      assert {:ok, %{token: %{revision: switched}}} = Task.await(switch.task, @collect_timeout)
+
+      # Tabs, counts, labels and diagnostics all come from the schedule that was
+      # active when the read began, though the switch committed before it returned.
+      assert workspace.active.version.id == spring.id
+      assert workspace.active.token.revision == switched - 1
+      assert [row] = workspace.groups.current
+      assert row.alert.id == alert.id
+      assert row.needs_attention? == false
+      assert workspace.routes_by_id["R1"].route_short_name == "Spring 1"
+      assert workspace.diagnostics_by_alert == %{alert.id => []}
+
+      # The next read is entirely the new schedule's.
+      assert {:ok, after_switch} = unboxed(fn -> Alerts.workspace(audit, @now_utc) end)
+
+      assert after_switch.active.version.id == fall.id
+      assert [after_row] = after_switch.groups.current
+      assert after_row.needs_attention? == true
+      assert after_switch.routes_by_id == %{}
+      assert [%{kind: :missing, id: "R1"}] = after_switch.diagnostics_by_alert[alert.id]
+    end
+
+    test "a membership command holding the organization row does not deadlock with the read", %{
+      supervisor: supervisor
+    } do
+      %{organization: organization, scope: scope, spring: spring} =
+        unboxed(&committed_switch_fixture/0)
+
+      on_exit(fn -> unboxed(fn -> delete_committed_scope!([organization.id]) end) end)
+
+      admin = unboxed(fn -> admin_for(organization) end)
+      audit = audit_context(organization, spring, %{id: scope.actor_id, email: nil})
+
+      # A membership command takes the organization row, then the member's row. The
+      # read queues behind it for the organization before it holds anything, so the
+      # two cannot wait on each other.
+      command =
+        start_holder(
+          supervisor,
+          fn -> Authorization.lock_member_admin!(admin, organization.id) end,
+          fn -> revoke_editor(scope.actor_id, organization.id) end
+        )
+
+      read = start_command(supervisor, fn -> Alerts.workspace(audit, @now_utc) end)
+      send(read.pid, :go)
+      assert_blocked_by(read, command)
+      send(command.pid, :release)
+
+      assert {:ok, :held} = Task.await(command.task, @collect_timeout)
+      assert {:error, :forbidden} = Task.await(read.task, @collect_timeout)
     end
   end
 
@@ -310,7 +545,15 @@ defmodule GtfsPlanner.Alerts.ListingTest do
 
     test "a cancelled trip deleted from the version is flagged", context do
       route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_1"})
-      trip = trip_fixture(context.organization.id, context.version.id, route.id)
+
+      # The alert's service date is a Monday and the fixture calendar runs Monday
+      # to Friday, so the trip is on its date until it is deleted.
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
+      trip =
+        trip_fixture(context.organization.id, context.version.id, route.route_id, %{
+          service_id: "weekday"
+        })
 
       _alert = cancellation(context, route.route_id, trip.trip_id)
 
@@ -410,6 +653,105 @@ defmodule GtfsPlanner.Alerts.ListingTest do
     }
 
     save!(context.audit, alert, %{"timing" => timing})
+  end
+
+  # Committed rows for the interleaving case: its holder, read and switch each run
+  # on their own connection and must see the same data. `R1` is in the spring
+  # version the alert names and the first active schedule, and absent from fall.
+  defp committed_switch_fixture do
+    organization = organization_fixture()
+    actor = editor_fixture(organization)
+    spring = gtfs_version_fixture(organization.id, %{name: "Spring"})
+    fall = gtfs_version_fixture(organization.id, %{name: "Fall"})
+    agency_fixture(organization.id, spring.id)
+    agency_fixture(organization.id, fall.id)
+
+    route_fixture(organization.id, spring.id, %{route_id: "R1", route_short_name: "Spring 1"})
+    activate_version!(organization, spring, actor)
+
+    audit = audit_context(organization, spring, actor)
+    alert = route_delay(%{audit: audit}, "R1")
+
+    %{
+      organization: organization,
+      scope: %{actor_id: actor.id, organization_id: organization.id},
+      spring: spring,
+      fall: fall,
+      alert: alert
+    }
+  end
+
+  # A command parked on its own connection until `:go`.
+  defp start_command(supervisor, command) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          send(parent, {:ready, self(), backend_pid()})
+
+          receive do
+            :go -> :ok
+          after
+            @contention_timeout -> raise "command was not released"
+          end
+
+          command.()
+        end)
+      end)
+
+    assert_receive {:ready, pid, backend}, @contention_timeout
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  # A transaction that holds what `acquire` locks until `:release`, then runs
+  # `finish` in the same transaction before it commits.
+  defp start_holder(supervisor, acquire, finish \\ fn -> :ok end) do
+    parent = self()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn -> hold(parent, acquire, finish) end)
+      end)
+
+    assert_receive {:held, pid, backend}, @contention_timeout
+    %{task: task, pid: pid, backend: backend}
+  end
+
+  defp hold(parent, acquire, finish) do
+    Repo.transaction(fn ->
+      acquire.()
+      send(parent, {:held, self(), backend_pid()})
+
+      receive do
+        :release -> :ok
+      after
+        @contention_timeout -> raise "holder was not released"
+      end
+
+      finish.()
+      :held
+    end)
+  end
+
+  defp admin_for(organization) do
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+    admin
+  end
+
+  defp revoke_editor(actor_id, organization_id) do
+    Repo.update_all(
+      from(m in UserOrgMembership,
+        where: m.user_id == ^actor_id and m.organization_id == ^organization_id
+      ),
+      set: [deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+    )
+  end
+
+  defp assert_blocked_by(waiting, holder) do
+    deadline = System.monotonic_time(:millisecond) + @contention_timeout
+    assert :ok == unboxed(fn -> await_blocker(waiting.backend, holder.backend, deadline) end)
   end
 
   defp stop_closure(context, stop_id) do

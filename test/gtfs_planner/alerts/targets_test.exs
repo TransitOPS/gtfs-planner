@@ -20,9 +20,9 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Alerts
-  alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.ScopeAnswer
   alias GtfsPlanner.Alerts.ScopeAnswer.TripTarget
+  alias GtfsPlanner.Alerts.Targets
   alias GtfsPlanner.Gtfs.AuditContext
 
   # The first Monday of October 2026: the fixture calendar runs Monday to Friday.
@@ -765,6 +765,7 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
       trip = serving_trip(context, route, "t_0815", "weekday", 0, "Depot", "08:15:00")
 
       alert = cancellation(context, route.route_id, stop.stop_id, trip.trip_id)
+      alert_id = alert.id
 
       delete!(GtfsPlanner.Gtfs.Stop, stop.id)
 
@@ -773,8 +774,10 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       # The same reading the list row uses: the identity is still named, and the
       # list flags it rather than the message inventing a name for it.
-      assert %{stops: missing} = Map.fetch!(Listing.missing_target_ids([alert]), alert.id)
-      assert MapSet.member?(missing, "S1")
+      assert %{diagnostics_by_alert: %{^alert_id => diagnostics}} =
+               Targets.resolve(context.audit, [alert])
+
+      assert Enum.any?(diagnostics, &match?(%{kind: :missing, target_type: :stop, id: "S1"}, &1))
     end
 
     test "a member without the editor role reads no labels", context do
@@ -816,6 +819,8 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
           trip_attrs(@trip_id, "weekday")
         )
 
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
       alert = cancellation(context, @route_id, stop.stop_id, @trip_id)
 
       assert alert.scope.route_ids == [@route_id]
@@ -834,10 +839,13 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
 
       assert Map.keys(trips) == [@trip_id]
 
-      assert %{routes: no_routes, stops: no_stops, trips: no_trips} =
-               Map.fetch!(Listing.missing_target_ids([alert]), alert.id)
+      assert %{
+               routes_by_id: %{@route_id => %{route_short_name: "7"}},
+               diagnostics_by_alert: found
+             } =
+               Targets.resolve(context.audit, [alert])
 
-      assert Enum.all?([no_routes, no_stops, no_trips], &(MapSet.size(&1) == 0))
+      assert found == %{alert.id => []}
     end
 
     test "a differently cased spelling is another target and is refused", context do
@@ -931,26 +939,262 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
                  }
                })
     end
+  end
 
-    test "a feed ID missing from one version does not flag another version's alert", context do
+  describe "resolve/2" do
+    test "a duplicate in a sibling version or another organization never clears a missing ID",
+         context do
       other = sibling_version(context)
-      other_audit = audit_context(context.organization, other.version, context.actor)
-
-      mine = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      sibling_audit = audit_context(context.organization, other.version, context.actor)
       route_fixture(context.organization.id, other.gtfs_version_id, route_attrs("R1", "1"))
 
-      here =
+      foreign = organization_fixture()
+      foreign_version = gtfs_version_fixture(foreign.id)
+      route_fixture(foreign.id, foreign_version.id, route_attrs("R1", "1"))
+
+      alert =
+        alert_fixture(sibling_audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
+
+      # The alert's own version still has R1, but the context under test does not.
+      assert %{diagnostics_by_alert: %{} = at_home} = Targets.resolve(sibling_audit, [alert])
+      assert at_home[alert.id] == []
+
+      assert %{routes_by_id: routes, diagnostics_by_alert: elsewhere} =
+               Targets.resolve(context.audit, [alert])
+
+      assert routes == %{}
+
+      assert [%{kind: :missing, target_type: :route, id: "R1", selector: %{route_id: "R1"}}] =
+               elsewhere[alert.id]
+    end
+
+    test "one alert's missing target does not mark another alert missing", context do
+      gone = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      route_fixture(context.organization.id, context.version.id, route_attrs("R2", "2"))
+
+      first =
         alert_fixture(context.audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
 
-      there =
-        alert_fixture(other_audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
+      second =
+        alert_fixture(context.audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R2"]}})
 
-      Repo.delete!(mine)
+      delete!(GtfsPlanner.Gtfs.Route, gone.id)
 
-      missing = Listing.missing_target_ids([here, there])
+      assert %{routes_by_id: routes, diagnostics_by_alert: found} =
+               Targets.resolve(context.audit, [first, second])
 
-      assert MapSet.to_list(missing[here.id].routes) == ["R1"]
-      assert MapSet.to_list(missing[there.id].routes) == []
+      assert Map.keys(routes) == ["R2"]
+      assert [%{kind: :missing, id: "R1"}] = found[first.id]
+      assert found[second.id] == []
+    end
+
+    test "a stop that exists but is not on the pair's route is inapplicable, not missing",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      on_route = stop_fixture(context.organization.id, context.version.id, stop_attrs("S1", "A"))
+      off_route = stop_fixture(context.organization.id, context.version.id, stop_attrs("S2", "B"))
+      sequence(context, directed_trip(context, route, "T1", 0), [on_route])
+
+      # Another route serves S2, so the stop is served somewhere but not on R1.
+      other_route =
+        route_fixture(context.organization.id, context.version.id, route_attrs("R2", "2"))
+
+      sequence(context, directed_trip(context, other_route, "T2", 0), [off_route])
+
+      alert =
+        scoped_alert(context, %{
+          "shape" => "route_stops",
+          "route_ids" => ["R1"],
+          "route_stop_pairs" => [
+            %{"route_id" => "R1", "stop_id" => on_route.stop_id},
+            %{"route_id" => "R1", "stop_id" => off_route.stop_id},
+            %{"route_id" => "R2", "stop_id" => off_route.stop_id}
+          ]
+        })
+
+      assert %{diagnostics_by_alert: found} = Targets.resolve(context.audit, [alert])
+
+      assert [
+               %{
+                 kind: :inapplicable,
+                 target_type: :route_stop_pair,
+                 id: "S2",
+                 reason: :stop_not_on_route,
+                 selector: %{route_id: "R1", stop_id: "S2"}
+               }
+             ] = found[alert.id]
+    end
+
+    test "a stretch is judged in trip order, so a stop a loop visits twice works both ways",
+         context do
+      line = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      loop = route_fixture(context.organization.id, context.version.id, route_attrs("R2", "2"))
+      [a, b, c, off] = for id <- ~w(A B C OFF), do: stop(context, id)
+
+      sequence(context, directed_trip(context, line, "line", 0), [a, b, c])
+      sequence(context, directed_trip(context, loop, "loop", 0), [a, b, a])
+
+      stretch = fn route, from, to ->
+        scoped_alert(context, %{
+          "shape" => "route_stops",
+          "route_ids" => [route],
+          "stop_ids" => [from, to],
+          "stretch_from_stop_id" => from,
+          "stretch_to_stop_id" => to
+        })
+      end
+
+      forward = stretch.("R1", "A", "C")
+      reversed = stretch.("R1", "C", "A")
+      loop_out = stretch.("R2", "A", "B")
+      loop_back = stretch.("R2", "B", "A")
+      unserved = stretch.("R1", "A", off.stop_id)
+
+      assert %{diagnostics_by_alert: found} =
+               Targets.resolve(context.audit, [forward, reversed, loop_out, loop_back, unserved])
+
+      assert found[forward.id] == []
+      assert found[loop_out.id] == []
+      assert found[loop_back.id] == []
+
+      for alert <- [reversed, unserved] do
+        assert [%{kind: :inapplicable, target_type: :stretch, reason: :stretch_not_on_route}] =
+                 found[alert.id]
+      end
+
+      assert [%{id: "C", selector: selector}] = found[reversed.id]
+      assert selector == %{route_ids: ["R1"], stretch_from_stop_id: "C", stretch_to_stop_id: "A"}
+
+      # An end the schedule lacks is missing, and is not also called inapplicable.
+      delete!(GtfsPlanner.Gtfs.Stop, c.id)
+      assert %{diagnostics_by_alert: after_delete} = Targets.resolve(context.audit, [forward])
+      assert [%{kind: :missing, target_type: :stop, id: "C"}] = after_delete[forward.id]
+    end
+
+    test "a dated trip whose service no longer runs that day is inapplicable, not missing",
+         context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
+      calendar_date_fixture(context.organization.id, context.version.id, %{
+        service_id: "weekday",
+        date: ~D[2026-10-12],
+        exception_type: 2
+      })
+
+      trip_fixture(
+        context.organization.id,
+        context.version.id,
+        route.route_id,
+        trip_attrs("T1", "weekday")
+      )
+
+      removed =
+        trip_fixture(
+          context.organization.id,
+          context.version.id,
+          route.route_id,
+          trip_attrs("T9", "weekday")
+        )
+
+      alert =
+        scoped_alert(context, %{
+          "shape" => "trips",
+          "route_ids" => ["R1"],
+          "trips" => [
+            %{"trip_id" => "T1", "service_date" => "2026-10-05"},
+            %{"trip_id" => "T1", "service_date" => "2026-10-10"},
+            %{"trip_id" => "T1", "service_date" => "2026-10-12"},
+            %{"trip_id" => "T9", "service_date" => "2026-10-05"}
+          ]
+        })
+
+      delete!(GtfsPlanner.Gtfs.Trip, removed.id)
+
+      assert %{diagnostics_by_alert: found} = Targets.resolve(context.audit, [alert])
+
+      # Monday runs. Saturday is outside the weekly pattern and the 12th was removed
+      # by an exception; both keep the raw dated selector. T9 is not in the schedule.
+      assert [
+               %{
+                 kind: :inapplicable,
+                 target_type: :trip,
+                 id: "T1",
+                 reason: :service_not_running_on_date,
+                 selector: %{service_date: ~D[2026-10-10], start_time: nil}
+               },
+               %{kind: :inapplicable, selector: %{service_date: ~D[2026-10-12]}},
+               %{
+                 kind: :missing,
+                 target_type: :trip,
+                 id: "T9",
+                 reason: :not_in_active_schedule,
+                 selector: %{trip_id: "T9", service_date: ~D[2026-10-05]}
+               }
+             ] = found[alert.id]
+    end
+
+    test "a frequency start must be a departure of one of the trip's windows", context do
+      route = route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "weekday"})
+
+      for trip_id <- ["every20", "scheduled"] do
+        trip_fixture(
+          context.organization.id,
+          context.version.id,
+          route.route_id,
+          trip_attrs(trip_id, "weekday")
+        )
+      end
+
+      frequency_fixture(context.organization.id, context.version.id, "every20", %{
+        start_time: "09:00:00",
+        end_time: "10:00:00",
+        headway_secs: 1200
+      })
+
+      starts = fn trip_id, times ->
+        for time <- times do
+          %{"trip_id" => trip_id, "service_date" => "2026-10-05", "start_time" => time}
+        end
+      end
+
+      alert =
+        scoped_alert(context, %{
+          "shape" => "trips",
+          "route_ids" => ["R1"],
+          "trips" =>
+            starts.("every20", ["09:20:00", "09:10:00", "10:00:00"]) ++
+              starts.("scheduled", ["08:00:00"]) ++
+              [%{"trip_id" => "every20", "service_date" => "2026-10-05"}]
+        })
+
+      assert %{diagnostics_by_alert: found} = Targets.resolve(context.audit, [alert])
+
+      # 09:20 is the second departure. 09:10 is between departures and 10:00 is the
+      # exclusive end. A trip without frequencies has no start to match, and a
+      # selector with no start time selects the trip on the date.
+      assert Enum.map(found[alert.id], &{&1.id, &1.selector.start_time, &1.reason}) == [
+               {"every20", "09:10:00", :start_time_not_a_departure},
+               {"every20", "10:00:00", :start_time_not_a_departure},
+               {"scheduled", "08:00:00", :start_time_not_a_departure}
+             ]
+
+      assert Enum.all?(found[alert.id], &(&1.kind == :inapplicable))
+    end
+
+    test "a context with no version resolves nothing, so every target is missing", context do
+      route_fixture(context.organization.id, context.version.id, route_attrs("R1", "1"))
+
+      alert =
+        alert_fixture(context.audit, %{"scope" => %{"shape" => "routes", "route_ids" => ["R1"]}})
+
+      assert %{routes_by_id: routes, diagnostics_by_alert: found} =
+               Targets.resolve(%{context.audit | gtfs_version_id: nil}, [alert])
+
+      assert routes == %{}
+      assert [%{kind: :missing, id: "R1"}] = found[alert.id]
     end
   end
 
@@ -1112,6 +1356,18 @@ defmodule GtfsPlanner.Alerts.TargetsTest do
         "check_in_at" => "2026-10-06 09:00:00"
       }
     })
+  end
+
+  defp scoped_alert(context, scope) do
+    alert_fixture(context.audit, %{"urgency" => "now", "situation" => "detour", "scope" => scope})
+  end
+
+  defp stop(context, stop_id) do
+    stop_fixture(
+      context.organization.id,
+      context.version.id,
+      stop_attrs(stop_id, "Stop #{stop_id}")
+    )
   end
 
   defp save!(audit, alert, attrs) do

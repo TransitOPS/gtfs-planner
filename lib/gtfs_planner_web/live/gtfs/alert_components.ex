@@ -5,7 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
   frame - the mode control with its preference link, the step progress row, the
   question card, the Rider preview and the bottom save bar.
 
-  The list components are renderings of what `Alerts.list_alerts/2` already
+  The list components are renderings of what `Alerts.workspace/2` already
   derived. Nothing here computes a tab, a count or a badge: the read model owns
   those, so a row cannot disagree with the count in its own tab (AC-9, R8).
 

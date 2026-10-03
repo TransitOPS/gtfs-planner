@@ -1030,6 +1030,19 @@ defmodule GtfsPlanner.VersionsTest do
                Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, c.token) end)
     end
 
+    test "`:current` locks whatever is active, and still refuses without an editor", c do
+      {:ok, %{token: moved}} = Versions.set_active_schedule(c.scope, c.second.id, c.token)
+      second_id = c.second.id
+
+      assert {:ok, %{version: %GtfsVersion{id: ^second_id}, token: ^moved}} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, :current) end)
+
+      deactivate_membership_fixture(Repo.get_by!(UserOrgMembership, user_id: c.scope.actor_id))
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Versions.lock_active_schedule!(c.scope, :current) end)
+    end
+
     test "rolls the transaction back when nothing is selected", c do
       clear_pointer(c.organization)
       {:ok, %{token: empty}} = Versions.active_schedule(c.scope)

@@ -197,6 +197,47 @@ defmodule GtfsPlanner.Alerts.OrganizationScopeTest do
     end
   end
 
+  describe "an active schedule in another zone" do
+    test "existing alerts keep reading their own civil day after a switch", context do
+      # At 02:30 UTC it is 4 October 22:30 in New York and 5 October 11:30 in Tokyo.
+      # The New York alert ends on the 4th, so it is still current in its own zone and
+      # would be past in Tokyo's. The Tokyo alert starts on the 5th, so it is current
+      # in its own zone and would be upcoming in New York's.
+      new_york =
+        delay_about(context, context.spring, "NY ends the 4th", nil, "2026-10-01", "2026-10-04")
+
+      tokyo =
+        delay_about(
+          context,
+          context.fall,
+          "Tokyo starts the 5th",
+          nil,
+          "2026-10-05",
+          "2026-10-06"
+        )
+
+      tabs_under = fn version ->
+        activate_version!(context.organization, version, context.actor)
+
+        assert {:ok, %{active: active, groups: groups}} =
+                 Alerts.workspace(context.audit, @tokyo_morning)
+
+        assert active.version.id == version.id
+
+        Map.new(groups, fn {tab, rows} ->
+          {tab, rows |> Enum.map(& &1.alert.id) |> Enum.sort()}
+        end)
+      end
+
+      in_new_york = tabs_under.(context.spring)
+      in_tokyo = tabs_under.(context.fall)
+
+      assert new_york.id in in_new_york.current
+      assert tokyo.id in in_new_york.current
+      assert in_tokyo == in_new_york
+    end
+  end
+
   describe "retained targets after the source version is deleted" do
     setup context do
       # `Targets.route_label/1` presents `route_short_name` before `route_long_name`,
