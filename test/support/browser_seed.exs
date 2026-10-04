@@ -3995,6 +3995,74 @@ case Accounts.register_first_admin(%{
       "the North Coast version reports a review item"
     )
 
+    # ── Fare assistance fixture version (package ai-06) ──
+    #
+    # "Browser Fare Assistance Version" is the managed North Coast sample with
+    # the zone of DEPOE, AGATE and NTC cleared, so "the unzoned Route 1 stops" is a
+    # real selection for the fare helpers' journeys: route 1 (Coast Highway) calls
+    # at LCTC (zone CST), DEPOE, AGATE and NTC. DEPOE is also on route 6, AGATE on
+    # route 11 and NTC on routes 2, 3, 4, 10, 11 and 30, which is what the helper
+    # review shows as shared routes. CORVALLIS is in no `stop_areas` row of the
+    # feed, so it has no zone in this version either (4 stops with no zone in
+    # all). The zone inventory is NPT, TOL and CST and the version is managed with
+    # `local_ride_adult_cash` at USD 1.50 and `local_ride_reduced_cash` at USD
+    # 0.75.
+    #
+    # The three clears are fixture data written directly, like the fare-zones
+    # fixtures above: no changeset casts `stops.zone_id` and the production writer
+    # is the review the journeys drive. The version is created before the "latest
+    # default" restore below, with the other fare versions.
+    {:ok, fares_assist_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Fare Assistance Version"})
+
+    FaresFixtures.import!(org, fares_assist_version, "north_coast_v2")
+    convert!.(fares_assist_version)
+
+    {3, nil} =
+      Stop
+      |> where(
+        [stop],
+        stop.organization_id == ^org.id and stop.gtfs_version_id == ^fares_assist_version.id and
+          stop.stop_id in ["DEPOE", "AGATE", "NTC"]
+      )
+      |> Repo.update_all(set: [zone_id: nil, updated_at: DateTime.utc_now()])
+
+    %{zones: fares_assist_zones, unassigned_count: fares_assist_unassigned} =
+      FareZones.inventory(org.id, fares_assist_version.id)
+
+    fares_assist_unzoned =
+      Stop
+      |> where(
+        [stop],
+        stop.organization_id == ^org.id and stop.gtfs_version_id == ^fares_assist_version.id and
+          stop.location_type == 0 and is_nil(stop.zone_id)
+      )
+      |> select([stop], stop.stop_id)
+      |> Repo.all()
+      |> Enum.sort()
+
+    fares_expect.(
+      Fares.managed?(org.id, fares_assist_version.id),
+      "the fare assistance version is not managed"
+    )
+
+    fares_expect.(
+      Enum.sort(Enum.map(fares_assist_zones, & &1.zone_id)) == ["CST", "NPT", "TOL"],
+      "the fare assistance version's zones are #{inspect(Enum.map(fares_assist_zones, & &1.zone_id))}"
+    )
+
+    fares_expect.(
+      fares_assist_unzoned == ["AGATE", "CORVALLIS", "DEPOE", "NTC"] and
+        fares_assist_unassigned == 4,
+      "the fare assistance version's unzoned stops are #{inspect(fares_assist_unzoned)}"
+    )
+
+    IO.puts(
+      "Browser seed: #{fares_assist_version.name} (#{fares_assist_version.id}, managed) — " <>
+        "unzoned Route 1 stops DEPOE, AGATE and NTC (CORVALLIS has no zone in the feed), " <>
+        "zones NPT, TOL and CST"
+    )
+
     # ── Flex fixture version (package 22; the data steps 18–27 capture) ──
     #
     # "Browser Flex Version" gives the flex pages their data: an agency, weekday

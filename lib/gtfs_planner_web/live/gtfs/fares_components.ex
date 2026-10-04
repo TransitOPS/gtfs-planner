@@ -1034,11 +1034,22 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   def assignment_dialog(assigns) do
     assignment = assigns.assignment
     preview = assignment.preview
-    rows = if preview, do: Enum.take(preview.rows, @review_row_limit), else: []
+    origin = Map.get(assignment, :origin)
+
+    # A manual review shows the first 100 rows and counts the rest. A review the
+    # helper prepared lists every row of its fixed selection: it is the only place
+    # the whole set can be read before it is saved.
+    rows =
+      cond do
+        is_nil(preview) -> []
+        origin -> preview.rows
+        true -> Enum.take(preview.rows, @review_row_limit)
+      end
 
     assigns =
       assigns
       |> assign(:preview, preview)
+      |> assign(:origin, origin)
       |> assign(:rows, rows)
       |> assign(:more, if(preview, do: length(preview.rows) - length(rows), else: 0))
       |> assign(:selected_count, if(preview, do: length(preview.rows), else: 0))
@@ -1062,9 +1073,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       on_cancel="cancel_assignment"
       cancel_label="Keep selection"
       confirm_disabled={@confirm_disabled}
-      return_focus_id={
-        if @remove?, do: "fare-zone-unassign-selection", else: "fare-zone-assign-selection"
-      }
+      return_focus_id={assignment_return_focus(@origin, @remove?)}
       described_by="fare-zone-assignment-dialog-body"
       size="lg"
     >
@@ -1083,6 +1092,33 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           tabindex="-1"
           phx-mounted={JS.focus()}
         />
+
+        <.message
+          :if={@origin && @origin.changed?}
+          id="fare-zone-assignment-changed"
+          kind="warning"
+          title="The routes' stops or zones changed after this was prepared."
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        >
+          Nothing was saved. Close this review and ask the helper again.
+        </.message>
+
+        <div
+          :if={@origin}
+          id="fare-zone-assignment-helper"
+          class="rounded-card border border-subtle px-3 py-3"
+        >
+          <p class="text-[13px] font-[650] text-default">Prepared by the helper</p>
+          <ul class="mt-1.5 grid gap-1 text-sm text-default">
+            <li
+              :for={{line, index} <- Enum.with_index(@origin.summary.lines, 1)}
+              id={"fare-zone-assignment-helper-line-#{index}"}
+            >
+              {line}
+            </li>
+          </ul>
+        </div>
 
         <form
           :if={!@remove?}
@@ -1139,9 +1175,26 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
             <li
               :for={{row, index} <- Enum.with_index(@rows, 1)}
               id={"fare-zone-assignment-row-#{index}"}
-              class="flex items-center justify-between gap-3 px-3 py-2"
+              class={
+                [
+                  "flex px-3 py-2",
+                  # A helper row also carries the stop's other routes, so below 640px
+                  # the zone change wraps under the name instead of truncating both.
+                  if(@origin,
+                    do: "flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3",
+                    else: "items-center justify-between gap-3"
+                  )
+                ]
+              }
             >
-              <span class="min-w-0 truncate text-strong">{row.stop_name || row.stop_id}</span>
+              <span class="min-w-0">
+                <span class={["block text-strong", if(@origin, do: "break-words", else: "truncate")]}>
+                  {row.stop_name || row.stop_id}
+                </span>
+                <span :if={@origin} class="block break-words text-[13px] text-muted">
+                  <span :if={other_routes?(@origin, row.id)}>Also on route </span><span id={"fare-zone-assignment-row-#{index}-routes"}>{other_routes_copy(@origin, row.id)}</span>
+                </span>
+              </span>
               <span class="flex shrink-0 items-center gap-2 text-[13px] text-default">
                 <.review_zone
                   id={"fare-zone-assignment-row-#{index}-from"}
@@ -1174,8 +1227,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           tabindex="-1"
           phx-mounted={JS.focus()}
         >
-          Nothing was saved. Refresh the review to see the current zones.
-          <:action>
+          <%= if @origin do %>
+            Nothing was saved. Close this review and ask the helper again.
+          <% else %>
+            Nothing was saved. Refresh the review to see the current zones.
+          <% end %>
+          <:action :if={is_nil(@origin)}>
             <.button
               id="fare-zone-assignment-refresh"
               type="button"
@@ -1758,6 +1815,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   # A review that would change nothing is not a failure, so it says what the
   # selection already is rather than leaving the disabled button unexplained.
   defp confirm_reason(%{mode: :assign, target: nil}), do: "Create a fare zone first."
+  defp confirm_reason(%{origin: %{changed?: true}}), do: nil
   defp confirm_reason(%{stale: stale}) when stale > 0, do: nil
   defp confirm_reason(%{error: error}) when is_binary(error), do: nil
   defp confirm_reason(%{preview: nil}), do: nil
@@ -1772,11 +1830,28 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   # A stale review, an unknown target and a lost selection each carry their own
   # visible reason, so they are not also "nothing to change".
+  defp confirmable?(%{origin: %{changed?: true}}), do: false
   defp confirmable?(%{stale: stale}) when stale > 0, do: false
   defp confirmable?(%{error: error}) when is_binary(error), do: false
   defp confirmable?(%{mode: :assign, target: nil}), do: false
   defp confirmable?(%{preview: %{changed_count: count}}) when count > 0, do: true
   defp confirmable?(_assignment), do: false
+
+  # The helper's review returns focus to the prepared card that opened it, a
+  # stable container that outlives its Review button; a manual review returns to
+  # the selection bar's button.
+  defp assignment_return_focus(%{return_focus_id: id}, _remove?), do: id
+  defp assignment_return_focus(nil, true), do: "fare-zone-unassign-selection"
+  defp assignment_return_focus(nil, false), do: "fare-zone-assign-selection"
+
+  defp other_routes?(origin, stop_uuid), do: Map.get(origin.stop_routes, stop_uuid, []) != []
+
+  defp other_routes_copy(origin, stop_uuid) do
+    case Map.get(origin.stop_routes, stop_uuid, []) do
+      [] -> "No other routes"
+      names -> Enum.join(names, ", ")
+    end
+  end
 
   defp stale_stops_copy(1), do: "1 selected stop changed since you opened this review."
 

@@ -5473,64 +5473,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
           />
         </div>
 
-        <div
+        <.price_rows_table
           id="price-change-preview"
-          class="max-h-[260px] overflow-auto rounded-card border border-subtle bg-white"
-        >
-          <table class="w-full border-collapse text-sm">
-            <caption class="sr-only">
-              The prices these choices change, with what each one is now.
-            </caption>
-            <thead class="sticky top-0">
-              <tr>
-                <th
-                  scope="col"
-                  class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
-                >
-                  Fare
-                </th>
-                <th
-                  scope="col"
-                  class="border-b border-subtle bg-canvas px-3 py-2 text-left text-[13px] font-semibold text-strong"
-                >
-                  Rider type
-                </th>
-                <th
-                  scope="col"
-                  class="border-b border-subtle bg-canvas px-3 py-2 text-right text-[13px] font-semibold text-strong"
-                >
-                  Now
-                </th>
-                <th
-                  scope="col"
-                  class="border-b border-subtle bg-canvas px-3 py-2 text-right text-[13px] font-semibold text-strong"
-                >
-                  New
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr :for={row <- @rows} id={"price-change-row-#{row.fare_product_id}"}>
-                <td class="border-b border-subtle px-3 py-2 text-strong">{row.fare}</td>
-                <td class="border-b border-subtle px-3 text-muted">
-                  {row.rider}
-                  <span :if={row.medium} class="text-[13px]">· {row.medium}</span>
-                </td>
-                <td class="border-b border-subtle px-3 text-right tabular-nums text-muted">
-                  {row.now_text}
-                </td>
-                <td class="border-b border-subtle px-3 text-right font-semibold tabular-nums text-strong">
-                  {row.new_text}
-                </td>
-              </tr>
-              <tr :if={@rows == []}>
-                <td colspan="4" class="px-3 py-4 text-center text-muted" id="price-change-empty">
-                  No prices change with these choices.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+          rows={@rows}
+          row_id={&"price-change-row-#{&1.fare_product_id}"}
+          caption="The prices these choices change, with what each one is now."
+          empty_id="price-change-empty"
+          empty_text="No prices change with these choices."
+        />
 
         <p id="price-change-note" class="text-[13px] text-muted">
           App prices change by the same rule. A fare change usually starts with a new service
@@ -5543,6 +5493,208 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
           {if @change.error,
             do: @change.error,
             else: "Nothing changes until you update. #{export_phrase(@version_name, @published?)}"}
+        </p>
+      </:status>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc false
+  # The rows table both price dialogs share: the fare, the rider type (with the
+  # payment method when it is not the fare's own), what each price is now and what
+  # it becomes. The table is the only thing that scrolls, so a dialog's actions
+  # stay in view however many prices change.
+  attr :id, :string, required: true
+  attr :rows, :list, required: true, doc: "rows as `change_rows/2` returns them"
+  attr :row_id, :any, required: true, doc: "a function from a row to its DOM id"
+  attr :caption, :string, required: true
+  attr :empty_id, :string, required: true
+  attr :empty_text, :string, required: true
+
+  defp price_rows_table(assigns) do
+    ~H"""
+    <div id={@id} class="max-h-[260px] overflow-auto rounded-card border border-subtle bg-white">
+      <table class="w-full border-collapse text-sm">
+        <caption class="sr-only">
+          {@caption}
+        </caption>
+        <thead class="sticky top-0">
+          <tr>
+            <th
+              scope="col"
+              class="border-b border-subtle bg-canvas px-2 py-2 sm:px-3 text-left text-[13px] font-semibold text-strong"
+            >
+              Fare
+            </th>
+            <th
+              scope="col"
+              class="border-b border-subtle bg-canvas px-2 py-2 sm:px-3 text-left text-[13px] font-semibold text-strong"
+            >
+              Rider type
+            </th>
+            <th
+              scope="col"
+              class="border-b border-subtle bg-canvas px-2 py-2 sm:px-3 text-right text-[13px] font-semibold text-strong"
+            >
+              Now
+            </th>
+            <th
+              scope="col"
+              class="border-b border-subtle bg-canvas px-2 py-2 sm:px-3 text-right text-[13px] font-semibold text-strong"
+            >
+              New
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={row <- @rows} id={@row_id.(row)}>
+            <td class="border-b border-subtle px-2 py-2 sm:px-3 text-strong">{row.fare}</td>
+            <td class="border-b border-subtle px-2 text-muted sm:px-3">
+              {row.rider}
+              <span :if={row.medium} class="text-[13px]">· {row.medium}</span>
+            </td>
+            <td class="border-b border-subtle px-2 text-right sm:px-3 tabular-nums text-muted">
+              {row.now_text}
+            </td>
+            <td class="border-b border-subtle px-2 text-right sm:px-3 font-semibold tabular-nums text-strong">
+              {row.new_text}
+            </td>
+          </tr>
+          <tr :if={@rows == []}>
+            <td colspan="4" class="px-2 py-4 sm:px-3 text-center text-muted" id={@empty_id}>
+              {@empty_text}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the review of the prices the helper prepared: the exact before and after
+  of each cell, the cells already at their amount and what the save will do.
+
+  `review` is the LiveView's state: the `rows` and `unchanged` cells
+  `Fares.preview_price_cells/4` returned, an `error` the last save left, `stale?`
+  when the prices changed since the review opened and the `origin` card it came
+  from. The review is a fixed set: it has no way to edit an amount or refresh itself
+  into prices the helper did not prepare.
+
+  Nothing here writes. Save is disabled while the review has no rows or is stale,
+  and the status line then says why.
+  """
+  attr :review, :map, required: true
+  attr :workspace, :map, required: true
+  attr :version_name, :string, default: nil
+  attr :published?, :boolean, default: true
+  attr :return_focus_id, :string, default: nil
+  attr :pending?, :boolean, default: false
+
+  def price_review_dialog(assigns) do
+    rows = change_rows(assigns.review.rows, assigns.workspace)
+
+    assigns =
+      assigns
+      |> assign(:rows, rows)
+      |> assign(:unchanged, unchanged_rows(assigns.review.unchanged, assigns.workspace))
+      |> assign(:currency, assigns.workspace.currency)
+      |> assign(:blocked?, rows == [] or assigns.review.stale?)
+
+    ~H"""
+    <.confirm_dialog
+      id="price-review-dialog"
+      chrome="planner"
+      size="2xl"
+      open={true}
+      pending={@pending?}
+      title="Review prices"
+      confirm_label={
+        if @rows == [],
+          do: "Save prices",
+          else: "Save #{counted(length(@rows), "price", "prices")}"
+      }
+      pending_label="Saving…"
+      confirm_disabled={@blocked?}
+      on_confirm="save_price_review"
+      on_cancel="cancel_price_review"
+      cancel_label="Keep prices"
+      return_focus_id={@return_focus_id}
+    >
+      <p id="price-review-context" class="flex flex-wrap items-center gap-2 text-[13px] text-muted">
+        <span>{version_phrase(@version_name, @published?)}</span>
+        <.badge id="price-review-badge" tone="warning">Review · not saved</.badge>
+      </p>
+
+      <div class="mt-4 grid gap-4">
+        <.message
+          :if={@review.error}
+          id="price-review-error"
+          kind="error"
+          title={@review.error}
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        />
+
+        <.message
+          :if={@review.stale?}
+          id="price-review-stale"
+          kind="warning"
+          title="Prices changed after the helper prepared this."
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+        >
+          Nothing was saved. Close this review and ask the helper again.
+        </.message>
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <.price_change_tile
+            id="price-review-count"
+            number={to_string(length(@rows))}
+            label="prices change"
+          />
+          <.price_change_tile
+            id="price-review-largest"
+            number={largest_move_text(@review.rows, @currency)}
+            label="largest change"
+          />
+          <.price_change_tile
+            id="price-review-fares"
+            number={to_string(change_fare_count(@rows, @workspace))}
+            label="fares affected"
+          />
+        </div>
+
+        <.price_rows_table
+          id="price-review-preview"
+          rows={@rows}
+          row_id={
+            &"price-review-row-#{&1.fare_product_id}-#{&1.rider_category_id}-#{&1.fare_media_id}"
+          }
+          caption="The prices the helper prepared, with what each one is now."
+          empty_id="price-review-empty"
+          empty_text="No price would change."
+        />
+
+        <div :if={@unchanged != []} id="price-review-unchanged">
+          <p class="mb-1 text-[13px] font-[650] text-default">
+            {counted(length(@unchanged), "price is", "prices are")} already at the amount you gave
+          </p>
+          <ul class="divide-y divide-subtle rounded-card border border-subtle text-sm">
+            <li
+              :for={cell <- @unchanged}
+              class="flex items-center justify-between gap-3 px-3 py-2"
+            >
+              <span class="min-w-0 break-words text-strong">{cell.label}</span>
+              <span class="shrink-0 tabular-nums text-muted">{cell.amount_text}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <:status>
+        <p id="price-review-status" class="mb-2 text-[13px] text-muted">
+          {review_status(@review, @rows, @version_name, @published?)}
         </p>
       </:status>
     </.confirm_dialog>
@@ -5645,6 +5797,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
 
       %{
         fare_product_id: row.fare_product_id,
+        rider_category_id: row.rider_category_id,
+        fare_media_id: row.fare_media_id,
         fare: if(fare, do: fare.name, else: row.fare_product_id),
         rider: rider_name(workspace, row.rider_category_id),
         medium: if(base?, do: nil, else: medium_name(workspace, row.fare_media_id)),
@@ -5654,6 +5808,50 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorComponents do
       }
     end)
   end
+
+  # The review's cells that already hold the amount, named the way its rows are.
+  defp unchanged_rows(cells, workspace) do
+    Enum.map(cells, fn cell ->
+      fare = change_fare(cell.fare_product_id, workspace)
+      base? = fare && cell.fare_media_id == fare.base_media_id
+
+      label =
+        [
+          if(fare, do: fare.name, else: cell.fare_product_id),
+          rider_name(workspace, cell.rider_category_id),
+          if(base?, do: nil, else: medium_name(workspace, cell.fare_media_id))
+        ]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" · ")
+
+      %{label: label, amount_text: Money.format(cell.amount, workspace.currency) || ""}
+    end)
+  end
+
+  # The biggest single move the review makes, signed: a review may lower prices,
+  # which the Change prices tile (increases only) never has to say.
+  defp largest_move_text([], _currency), do: "—"
+
+  defp largest_move_text(rows, currency) do
+    row = Enum.max_by(rows, &Decimal.abs(Decimal.sub(&1.new, &1.now)), Decimal)
+    move = Decimal.sub(row.new, row.now)
+
+    if Decimal.negative?(move),
+      do: "−#{Money.format(Decimal.negate(move), currency)}",
+      else: "+#{Money.format(move, currency)}"
+  end
+
+  defp review_status(%{error: error}, _rows, _version_name, _published?) when is_binary(error),
+    do: error
+
+  defp review_status(%{stale?: true}, _rows, _version_name, _published?),
+    do: "Nothing was saved. The prices changed after the helper prepared this."
+
+  defp review_status(_review, [], _version_name, _published?),
+    do: "Nothing to save: every price already has that amount."
+
+  defp review_status(_review, _rows, version_name, published?),
+    do: "Nothing changes until you save. #{export_phrase(version_name, published?)}"
 
   defp change_fare(nil, _workspace), do: nil
 

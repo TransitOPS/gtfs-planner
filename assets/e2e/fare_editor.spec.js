@@ -589,7 +589,8 @@ test("shell", async ({ page }, testInfo) => {
   await expect(page.locator("#settings-nav")).toHaveCount(0);
   await expect(page.locator("#fare-editor-loading")).toHaveCount(0);
 
-  // One primary per view, and it follows the tab.
+  // One primary per view, and it follows the tab. The quiet "Open helper"
+  // button beside it is not a primary, so the count is of primary buttons.
   for (const [tab, suffix] of [
     ["prices", ""],
     ["where", "/where"],
@@ -599,7 +600,9 @@ test("shell", async ({ page }, testInfo) => {
     await page.goto(`/gtfs/${versionId}/settings/fares${suffix}`);
     await waitForLiveView(page);
 
-    const primaries = page.locator("#fare-editor-page header button");
+    const primaries = page.locator(
+      "#fare-editor-page header button.btn-primary",
+    );
     const expected = tab === "checks" ? 0 : 1;
 
     await expect(primaries).toHaveCount(expected);

@@ -108,6 +108,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
@@ -129,6 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
@@ -136,6 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -146,6 +150,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @invalid_selection_message "Some selected stops are no longer in this version. Clear your selection and select again."
 
   @save_failed_message "Changes couldn’t be saved. Your edits are still here."
+
+  # The helper handoff's refusals. Each names what stopped the review and what to
+  # do next; none changes the page's own state (AC-6).
+  @helper_unavailable_notice "That prepared assignment is no longer available. Ask the helper again."
+
+  @helper_close_first_notice "Close the open review, drawer or dialog first, then review the assignment again."
+
+  @helper_selection_notice "Clear your selection first, or select exactly the prepared stops."
+
+  @helper_changed_notice "The routes' stops or zones changed after this was prepared. Ask the helper again."
+
+  @helper_zone_gone_notice "The target zone is no longer in this version. Ask the helper again."
+
+  @helper_edited_notice "Your edited assignment was saved. The original prepared assignment was not applied."
 
   @undo_stale_message "Undo wasn’t applied because some stops changed after the save."
 
@@ -197,7 +215,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:map_mounted?, false)
      |> assign(:map_filter, nil)
      |> assign(:map_snapshot_after_load, false)
-     |> stream(:stops, [])}
+     |> stream(:stops, [])
+     |> AgentPanel.mount("fare_zones")}
   end
 
   @impl true
@@ -383,6 +402,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @impl true
   def handle_event("refresh_assignment", _params, socket) do
     case socket.assigns.assignment do
+      # A review the helper prepared is a fixed selection: refreshing it would
+      # bless stops the helper never prepared, so it is closed and asked for again.
+      %{origin: %{}} ->
+        {:noreply, socket}
+
       %{mode: mode, target: target} ->
         {:noreply, socket |> load_workspace() |> review(mode, target: target)}
 
@@ -409,6 +433,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   def handle_event("undo_assignment", _params, socket) do
     {:noreply, undo_assignment(socket)}
   end
+
+  # The helper's prepared card asks for its review. The entry ID comes from the
+  # browser, so it is parsed, looked up in this socket's own conversation and
+  # checked against the current data before anything on the page changes.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_assignment(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   # Opening the drawer is a read of the inventory the page already holds: create
   # starts from an empty form, and edit starts from the entry the panel shows,
@@ -525,6 +559,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           empty state carries its own single primary, so the header's goes away. --%>
           <:actions :if={@live_action == :zones and not first_use?(assigns)}>
             <.button
+              :if={@load_state == :ready}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
+            <.button
               id="fare-zone-create"
               variant={if MapSet.size(@selection) > 0, do: "secondary", else: "primary"}
               class="min-h-11"
@@ -544,101 +590,144 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           checks_tone={if @load_state == :ready, do: checks_tone(@checks), else: nil}
         />
 
-        <%!-- One column that may shrink below its content: a card is `overflow-clip`,
-        so without `minmax(0, 1fr)` a wide table would stretch the page instead. --%>
-        <div class="mt-4 grid grid-cols-1 gap-4">
-          <.loading :if={@load_state == :loading} />
+        <%!-- The workspace and the helper panel share one row from 1024px. Below that the
+        panel stacks above the workspace, where the `Open helper` button that opened it
+        sits. The panel's focus listener belongs to this wrapper, which survives the
+        panel and the assignment dialog. --%>
+        <div
+          id="fares-helper-layout"
+          phx-hook=".FaresHelperFocus"
+          class={[
+            "flex flex-col lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
+        >
+          <div class="min-w-0">
+            <%!-- One column that may shrink below its content: a card is `overflow-clip`,
+            so without `minmax(0, 1fr)` a wide table would stretch the page instead. --%>
+            <div class="mt-4 grid grid-cols-1 gap-4">
+              <.loading :if={@load_state == :loading} />
 
-          <.message :if={@notice} id="fare-zone-notice" kind="success" title={@notice} />
+              <.message :if={@notice} id="fare-zone-notice" kind="success" title={@notice} />
 
-          <.load_error :if={@load_state == :unavailable} />
+              <.load_error :if={@load_state == :unavailable} />
 
-          <%= if @load_state == :ready do %>
-            <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
+              <%= if @load_state == :ready do %>
+                <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
 
-            <.saved_callout
-              :if={@undo && @live_action == :zones && @inventory.zones != []}
-              undo={@undo}
-            />
-
-            <section
-              :if={@live_action == :zones and @inventory.zones != []}
-              id="fare-zones-panel"
-              aria-label="Fare zones and stops"
-              class="overflow-clip rounded-card border border-subtle bg-white"
-            >
-              <div class="flex flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 sm:px-5">
-                <.zone_inventory
-                  inventory={@inventory}
-                  filter={@filter}
-                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                <.saved_callout
+                  :if={@undo && @live_action == :zones && @inventory.zones != []}
+                  undo={@undo}
                 />
-                <.stop_search q={@q} />
-              </div>
 
-              <.stage_header
-                title={stage_title(@filter, @inventory)}
-                subtitle={stage_subtitle(@filter, @inventory)}
-                view={@view}
-              >
-                <:actions :if={stage_zone_id(@filter, @inventory)}>
-                  <.button
-                    id="fare-zone-edit"
-                    variant="secondary"
-                    class="min-h-11"
-                    phx-click="open_zone_drawer"
-                    phx-value-zone_id={stage_zone_id(@filter, @inventory)}
-                    phx-value-opener_id="fare-zone-edit"
-                  >
-                    Edit zone
-                  </.button>
-                </:actions>
-              </.stage_header>
-
-              <%!-- The workspace is one fixed-height region from 1024px: the map and
-              the list are equal columns and each scrolls on its own, so the map never
-              leaves the screen while the list scrolls. Below that they stack, map
-              first. --%>
-              <div
-                id="fare-zone-stage"
-                class={[
-                  "grid grid-cols-1",
-                  @view == :map && "lg:h-[clamp(420px,calc(100dvh-486px),760px)] lg:grid-cols-2",
-                  @view == :list && "lg:h-[clamp(420px,calc(100dvh-486px),760px)]"
-                ]}
-              >
-                <%!-- The map is the stage's first surface in Map and list view:
-                choosing List removes the root and its hook, and Retry map renders it
-                again, where the new mount hydrates from its own reply. The legend
-                stays under the fallback: the colors it names are the ones the list
-                shows. --%>
-                <div
-                  :if={@view == :map}
-                  id="fare-zone-map-panel"
-                  class="flex min-h-0 min-w-0 flex-col max-lg:border-b max-lg:border-subtle lg:border-r lg:border-subtle"
+                <section
+                  :if={@live_action == :zones and @inventory.zones != []}
+                  id="fare-zones-panel"
+                  aria-label="Fare zones and stops"
+                  class="overflow-clip rounded-card border border-subtle bg-white"
                 >
-                  <.zone_map :if={@map_state == :ready} />
-                  <.map_unavailable :if={@map_state == :unavailable} />
-                  <.map_legend zones={@inventory.zones} />
-                </div>
+                  <div class="flex flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 sm:px-5">
+                    <.zone_inventory
+                      inventory={@inventory}
+                      filter={@filter}
+                      patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                    />
+                    <.stop_search q={@q} />
+                  </div>
 
-                <.stop_list
-                  stops={@streams.stops}
-                  stop_page={@stop_page}
-                  zones={@inventory.zones}
-                  filter={@filter}
-                  q={@q}
-                  view={@view}
-                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
-                  selection={@selection}
-                  matching_count={MapSet.size(@matching_ids)}
-                />
-              </div>
+                  <.stage_header
+                    title={stage_title(@filter, @inventory)}
+                    subtitle={stage_subtitle(@filter, @inventory)}
+                    view={@view}
+                  >
+                    <:actions :if={stage_zone_id(@filter, @inventory)}>
+                      <.button
+                        id="fare-zone-edit"
+                        variant="secondary"
+                        class="min-h-11"
+                        phx-click="open_zone_drawer"
+                        phx-value-zone_id={stage_zone_id(@filter, @inventory)}
+                        phx-value-opener_id="fare-zone-edit"
+                      >
+                        Edit zone
+                      </.button>
+                    </:actions>
+                  </.stage_header>
 
-              <.selection_bar selection={@selection} matching_ids={@matching_ids} />
-            </section>
-          <% end %>
+                  <%!-- The workspace is one fixed-height region from 1024px: the map and
+                  the list are equal columns and each scrolls on its own, so the map never
+                  leaves the screen while the list scrolls. Below that they stack, map
+                  first. --%>
+                  <div
+                    id="fare-zone-stage"
+                    class={[
+                      "grid grid-cols-1",
+                      @view == :map && "lg:h-[clamp(420px,calc(100dvh-486px),760px)] lg:grid-cols-2",
+                      @view == :list && "lg:h-[clamp(420px,calc(100dvh-486px),760px)]"
+                    ]}
+                  >
+                    <%!-- The map is the stage's first surface in Map and list view:
+                    choosing List removes the root and its hook, and Retry map renders it
+                    again, where the new mount hydrates from its own reply. The legend
+                    stays under the fallback: the colors it names are the ones the list
+                    shows. --%>
+                    <div
+                      :if={@view == :map}
+                      id="fare-zone-map-panel"
+                      class="flex min-h-0 min-w-0 flex-col max-lg:border-b max-lg:border-subtle lg:border-r lg:border-subtle"
+                    >
+                      <.zone_map :if={@map_state == :ready} />
+                      <.map_unavailable :if={@map_state == :unavailable} />
+                      <.map_legend zones={@inventory.zones} />
+                    </div>
+
+                    <.stop_list
+                      stops={@streams.stops}
+                      stop_page={@stop_page}
+                      zones={@inventory.zones}
+                      filter={@filter}
+                      q={@q}
+                      view={@view}
+                      patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                      selection={@selection}
+                      matching_count={MapSet.size(@matching_ids)}
+                    />
+                  </div>
+
+                  <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+                </section>
+              <% end %>
+            </div>
+          </div>
+
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 mt-4 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Fare zones · #{@current_gtfs_version.name}"}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label="Review assignment"
+              composer_hint="Prepares a review. You save it on this page."
+            />
+          </div>
         </div>
+
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".FaresHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
 
         <.assignment_dialog
           :if={@assignment}
@@ -1287,13 +1376,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp review(socket, mode, opts) do
     target = if mode == :assign, do: Keyword.get(opts, :target, default_target(socket)), else: nil
     error = Keyword.get(opts, :error)
+    origin = current_origin(socket)
 
     if mode == :assign and is_nil(target) do
-      assign(socket, :assignment, assignment_state(mode, nil, nil, error))
+      assign(socket, :assignment, assignment_state(mode, nil, nil, error, origin))
     else
       case preview(socket, target) do
         {:ok, preview} ->
-          assign(socket, :assignment, assignment_state(mode, target, preview, error))
+          assign(socket, :assignment, assignment_state(mode, target, preview, error, origin))
 
         {:error, :unknown_zone} when mode == :assign ->
           socket
@@ -1304,10 +1394,146 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           assign(
             socket,
             :assignment,
-            assignment_state(mode, target, nil, error || @invalid_selection_message)
+            assignment_state(mode, target, nil, error || @invalid_selection_message, origin)
           )
       end
     end
+  end
+
+  # A review the helper opened keeps its origin while the editor changes the target
+  # or the review is rebuilt; a manual review has none.
+  defp current_origin(%{assigns: %{assignment: %{origin: origin}}}), do: origin
+  defp current_origin(_socket), do: nil
+
+  # The helper handoff. Every refusal is a notice in the panel and no change to the
+  # page: an open review, drawer or delete dialog is the editor's work, and a
+  # selection of other stops is too. A prepared assignment opens only when the
+  # entry is this conversation's, the routes still serve exactly the prepared stops
+  # with the zones they had, and the target zone still exists.
+  defp review_prepared_assignment(socket, id) do
+    with {:ok, entry_id} <- parse_entry_id(id),
+         :ok <- require_ready(socket),
+         :ok <- require_no_open_work(socket),
+         {:ok, prepared} <- fetch_prepared(socket, entry_id),
+         {:ok, %{predicate: predicate, stop_ids: stop_ids, target: target} = command} <-
+           zone_command(prepared),
+         :ok <- require_compatible_selection(socket, stop_ids),
+         {:ok, selection} <- current_selection(socket, command),
+         :ok <- require_target(socket, stop_ids, predicate, target) do
+      open_prepared_assignment(socket, entry_id, prepared, command, selection)
+    else
+      {:refuse, notice} -> assign(socket, :agent_notice, notice)
+    end
+  end
+
+  defp parse_entry_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} when entry_id > 0 -> {:ok, entry_id}
+      _other -> {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  defp parse_entry_id(_id), do: {:refuse, @helper_unavailable_notice}
+
+  defp require_ready(%{assigns: %{load_state: :ready, inventory: %{}}}), do: :ok
+  defp require_ready(_socket), do: {:refuse, @helper_unavailable_notice}
+
+  defp require_no_open_work(socket) do
+    assigns = socket.assigns
+
+    if assigns.assignment || assigns.zone_drawer_open || assigns.zone_delete,
+      do: {:refuse, @helper_close_first_notice},
+      else: :ok
+  end
+
+  defp fetch_prepared(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, prepared} -> {:ok, prepared}
+      _stale_or_unknown -> {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  defp zone_command(%{command: {:zone_assignment, %{stop_ids: [_ | _]} = command}}),
+    do: {:ok, command}
+
+  defp zone_command(_prepared), do: {:refuse, @helper_unavailable_notice}
+
+  # The page holds either nothing or exactly the prepared stops: a different
+  # selection is work the handoff must not replace.
+  defp require_compatible_selection(socket, stop_ids) do
+    selection = socket.assigns.selection
+
+    if MapSet.size(selection) == 0 or selection == MapSet.new(stop_ids),
+      do: :ok,
+      else: {:refuse, @helper_selection_notice}
+  end
+
+  defp current_selection(socket, command) do
+    case FareZones.route_selection(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           command.predicate
+         ) do
+      {:ok, %{fingerprint: fingerprint, stops: stops} = selection}
+      when fingerprint == command.fingerprint ->
+        if Enum.sort(Enum.map(stops, & &1.id)) == Enum.sort(command.stop_ids),
+          do: {:ok, selection},
+          else: {:refuse, @helper_changed_notice}
+
+      _changed_or_unresolved ->
+        {:refuse, @helper_changed_notice}
+    end
+  end
+
+  defp require_target(socket, stop_ids, _predicate, target) do
+    case FareZones.preview_assignment(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           stop_ids,
+           target
+         ) do
+      {:ok, _preview} -> :ok
+      {:error, :unknown_zone} -> {:refuse, @helper_zone_gone_notice}
+      {:error, :invalid_selection} -> {:refuse, @helper_changed_notice}
+    end
+  end
+
+  # Each selected stop's other serving routes, by name: the part of the helper's
+  # summary the review shows per row.
+  defp other_routes(selection, predicate) do
+    Map.new(selection.stops, fn stop ->
+      names =
+        (stop.route_ids -- predicate.route_ids)
+        |> Enum.map(&Map.fetch!(selection.route_names, &1))
+
+      {stop.id, names}
+    end)
+  end
+
+  # The review opens on exactly the prepared stops, against the prepared target,
+  # and remembers which card of which conversation it came from.
+  defp open_prepared_assignment(socket, entry_id, prepared, command, selection) do
+    origin = %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: entry_id,
+      command: {:zone_assignment, command},
+      summary: prepared.summary,
+      stop_routes: other_routes(selection, command.predicate),
+      return_focus_id: "agent-prepared-#{entry_id}",
+      changed?: false
+    }
+
+    socket
+    |> assign_selection(MapSet.new(command.stop_ids))
+    |> restream_page()
+    |> assign(:agent_notice, nil)
+    |> assign(:assignment, %{origin: origin})
+    |> review(:assign, target: command.target)
   end
 
   defp preview(socket, target) do
@@ -1319,8 +1545,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     )
   end
 
-  defp assignment_state(mode, target, preview, error) do
-    %{mode: mode, target: target, preview: preview, error: error, stale: 0}
+  defp assignment_state(mode, target, preview, error, origin) do
+    %{mode: mode, target: target, preview: preview, error: error, stale: 0, origin: origin}
   end
 
   # Only a current review with something to save is a write. A review whose
@@ -1337,7 +1563,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     case FareZones.apply_assignment(
            AuditContext.from_assigns(socket.assigns),
-           assignment.preview.changes
+           assignment.preview.changes,
+           apply_options(assignment)
          ) do
       {:ok, %{applied: applied}} ->
         # The review is done: the selection it was made from is cleared, and the
@@ -1350,12 +1577,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           |> load_workspace()
           |> assign(:assignment, nil)
           |> push_map_points_changed(applied)
+          |> record_prepared_applied(assignment)
 
         assign(socket, :undo, %{
           kind: "success",
           applied: applied,
           message: assigned_copy(assignment.mode, applied, zone_name(socket, assignment.target))
         })
+
+      # The routes' stops or zones differ from what the helper prepared: nothing
+      # was written, and the review says so instead of offering a Refresh.
+      {:error, :selection_changed} ->
+        assign(socket, :assignment, %{assignment | origin: %{assignment.origin | changed?: true}})
 
       # A stale result is the whole point of the fence: nothing was written, the
       # stops that moved are counted, and the review stays open to be refreshed.
@@ -1380,6 +1613,40 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         assign(socket, :assignment, %{assignment | error: @save_failed_message})
     end
   end
+
+  # A helper-origin review is written under the fence of the selection it was
+  # prepared from; a manual review has none and calls the same two-argument path
+  # as before.
+  defp apply_options(%{origin: %{command: {:zone_assignment, command}}}) do
+    [
+      selection: %{
+        predicate: command.predicate,
+        fingerprint: command.fingerprint,
+        stop_ids: command.stop_ids
+      }
+    ]
+  end
+
+  defp apply_options(_assignment), do: []
+
+  # One receipt per applied helper review: the command actually saved is the
+  # prepared command with the target the editor confirmed (the stops and the
+  # fingerprint are the ones the fence just verified), so the card is marked
+  # applied only when nothing was edited. Everything here is presentation: the
+  # write already succeeded, so a reset or ended conversation changes nothing.
+  defp record_prepared_applied(
+         socket,
+         %{origin: %{command: {:zone_assignment, command}} = origin} = assignment
+       ) do
+    saved = {:zone_assignment, %{command | target: assignment.target}}
+
+    case Agents.record_applied(origin.session_pid, origin.conversation_id, origin.entry_id, saved) do
+      {:error, :command_changed} -> assign(socket, :agent_notice, @helper_edited_notice)
+      _applied_or_ended -> socket
+    end
+  end
+
+  defp record_prepared_applied(socket, _assignment), do: socket
 
   defp undo_assignment(%{assigns: %{undo: nil}} = socket), do: socket
   defp undo_assignment(%{assigns: %{undo: %{applied: nil}}} = socket), do: socket

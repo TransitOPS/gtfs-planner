@@ -42,7 +42,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   is `stop_name` with names missing last, then `stop_id`, so the list pages, the
   current match and the map points stay deterministic.
 
-  Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/2`
+  `route_selection/3` resolves named routes into the boardable stops they serve
+  (stop_times joined to trips), with exclusions, an only-unzoned filter and each
+  stop's serving routes. It is a read of ordinary queries, not one snapshot; its
+  `fingerprint` covers the predicate and every served stop's zone and serving
+  routes, so a later read can tell whether the selection still means the same.
+
+  Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/3`
   and `undo_assignment/2`. A preview is a read that reports
   each selected boardable stop's current and target zone; an apply writes the
   reviewed changes in one transaction that first locks the actor's membership
@@ -101,6 +107,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegRule
@@ -111,6 +118,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
   @type zone :: %{
@@ -196,12 +205,49 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           unselected_sibling_count: non_neg_integer()
         }
 
+  @type selection_fence :: %{
+          predicate: route_selection_input(),
+          fingerprint: String.t(),
+          stop_ids: [Ecto.UUID.t()]
+        }
+
   @type stale_stop :: %{
           id: Ecto.UUID.t(),
           stop_id: String.t(),
           stop_name: String.t() | nil,
           reviewed: String.t() | nil,
           current: String.t() | nil
+        }
+
+  @type route_selection_input :: %{
+          route_ids: [String.t()],
+          only_unzoned?: boolean(),
+          exclude_stop_ids: [String.t()]
+        }
+
+  @type route_selection :: %{
+          routes: [
+            %{
+              route_id: String.t(),
+              route_short_name: String.t() | nil,
+              route_long_name: String.t() | nil
+            }
+          ],
+          served_count: non_neg_integer(),
+          stops: [
+            %{
+              id: Ecto.UUID.t(),
+              stop_id: String.t(),
+              stop_name: String.t() | nil,
+              zone_id: String.t() | nil,
+              route_ids: [String.t()]
+            }
+          ],
+          already_zoned_count: non_neg_integer(),
+          excluded: [%{stop_id: String.t(), stop_name: String.t() | nil}],
+          unmatched_exclusions: [String.t()],
+          route_names: %{String.t() => String.t()},
+          fingerprint: String.t()
         }
 
   @type combined_fare :: %{
@@ -476,6 +522,88 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     |> Repo.all()
   end
 
+  @selection_limits %{routes: 5, stops: 1_000, exclusions: 100}
+
+  @doc """
+  The ceilings of a route selection: named routes, route-served boardable stops
+  and exclusions.
+  """
+  @spec selection_limits() :: %{routes: 5, stops: 1_000, exclusions: 100}
+  def selection_limits, do: @selection_limits
+
+  @doc """
+  Resolves named routes into the boardable stops they serve.
+
+  A route serves a stop when a stop_time of one of its trips calls at the stop's
+  natural `stop_id`, the join `Gtfs.get_routes_for_stops/3` uses. Only boardable
+  stops (`location_type` 0) count, so a station, or a stop no trip calls at, is
+  never selected. `only_unzoned?` keeps the served stops whose `zone_id` is nil;
+  an empty string is a zone value and counts as zoned. Each `exclude_stop_ids`
+  entry is a natural `stop_id` of a boardable stop of the version: a served one
+  moves from the selection to `excluded` before the unzoned filter runs, and one
+  no named route serves is listed in `unmatched_exclusions`.
+
+  `stops` is ordered by `stop_name` (missing last) then `stop_id`, as
+  `list_stops/3` is, and each stop carries the sorted `route_ids` of every route
+  serving it. `fingerprint` is the lowercase hex SHA-256 of the de-duplicated,
+  sorted predicate and, for every served stop (before the exclusion and unzoned
+  filters) sorted by UUID, its stop ID, zone and serving route IDs; stop names and
+  timestamps are not in it. `served_count` counts the served stops before
+  exclusions and the unzoned filter; `already_zoned_count` counts the stops the unzoned filter
+  dropped. `route_names` maps every route in `stops` to its short name, or its ID
+  when it has none.
+
+  Refusals: `:no_routes`, `:too_many_routes`, `:too_many_exclusions`,
+  `{:unknown_route, id}`, `{:unknown_stop, id}` and `{:too_many_stops, count}`
+  (see `selection_limits/0`). Repeated IDs count once.
+
+  The result is a set of ordinary queries, not one snapshot. Consistency with a
+  later write is the caller's to enforce, which is what `apply_assignment/3`'s
+  `selection:` option does.
+  """
+  @spec route_selection(Ecto.UUID.t(), Ecto.UUID.t(), route_selection_input()) ::
+          {:ok, route_selection()}
+          | {:error,
+             :no_routes
+             | :too_many_routes
+             | :too_many_exclusions
+             | {:unknown_route, String.t()}
+             | {:unknown_stop, String.t()}
+             | {:too_many_stops, pos_integer()}}
+  def route_selection(organization_id, gtfs_version_id, %{
+        route_ids: route_ids,
+        only_unzoned?: only_unzoned?,
+        exclude_stop_ids: exclude_stop_ids
+      }) do
+    route_ids = Enum.uniq(route_ids)
+    exclude_stop_ids = Enum.uniq(exclude_stop_ids)
+
+    with :ok <- check_selection_caps(route_ids, exclude_stop_ids),
+         {:ok, routes} <- named_routes(organization_id, gtfs_version_id, route_ids),
+         :ok <- check_exclusions(organization_id, gtfs_version_id, exclude_stop_ids),
+         {:ok, served} <- served_stops(organization_id, gtfs_version_id, route_ids) do
+      {served, names} = with_serving_routes(organization_id, gtfs_version_id, served)
+      {excluded, kept} = Enum.split_with(served, &(&1.stop_id in exclude_stop_ids))
+
+      {zoned, selected} =
+        if only_unzoned?, do: Enum.split_with(kept, &(not is_nil(&1.zone_id))), else: {[], kept}
+
+      served_ids = MapSet.new(served, & &1.stop_id)
+
+      {:ok,
+       %{
+         routes: routes,
+         served_count: length(served),
+         stops: selected,
+         already_zoned_count: length(zoned),
+         excluded: Enum.map(excluded, &Map.take(&1, [:stop_id, :stop_name])),
+         unmatched_exclusions: Enum.reject(exclude_stop_ids, &MapSet.member?(served_ids, &1)),
+         route_names: Map.take(names, Enum.flat_map(selected, & &1.route_ids)),
+         fingerprint: selection_fingerprint(route_ids, only_unzoned?, exclude_stop_ids, served)
+       }}
+    end
+  end
+
   @doc """
   Lists the map points of the version's located boardable stops.
 
@@ -574,17 +702,27 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   zone ID (nil for unassign) and `updated_at`, and the applied changes are
   returned for `undo_assignment/2`. A pair that is not a published version of the
   organization returns `:not_found` and changes nothing.
+
+  The `:selection` option fences a prepared assignment on the route selection it
+  was built from (`route_selection/3`). Right after the version row is locked, and
+  before the targets are validated, the stops are locked or anything is written,
+  the predicate is resolved again: a fingerprint that differs, a stop set that is
+  not the one prepared, or a predicate that no longer resolves (a deleted route or
+  stop) is `:selection_changed`. A change whose stop is not in the prepared
+  `stop_ids` is `:invalid_selection`. Every refusal writes nothing. Without the
+  option the call is `apply_assignment/2`.
   """
-  @spec apply_assignment(AuditContext.t(), [assignment_change()]) ::
+  @spec apply_assignment(AuditContext.t(), [assignment_change()], selection: selection_fence()) ::
           {:ok, %{applied: [assignment_change()]}}
           | {:error,
              {:stale, [stale_stop()]}
+             | :selection_changed
              | :invalid_selection
              | :unknown_zone
              | :not_found
              | :forbidden}
-  def apply_assignment(%AuditContext{} = audit, changes) do
-    write_assignment(audit, changes, validate_targets?: true)
+  def apply_assignment(%AuditContext{} = audit, changes, opts \\ []) do
+    write_assignment(audit, changes, true, Keyword.get(opts, :selection))
   end
 
   @doc """
@@ -603,7 +741,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           | {:error, {:stale, [stale_stop()]} | :invalid_selection | :not_found | :forbidden}
   def undo_assignment(%AuditContext{} = audit, applied) do
     changes = Enum.map(applied, &%{id: &1.id, from: &1.to, to: &1.from})
-    write_assignment(audit, changes, validate_targets?: false)
+    write_assignment(audit, changes, false, nil)
   end
 
   @doc """
@@ -867,13 +1005,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
-  defp write_assignment(%AuditContext{} = audit, changes, opts) do
+  defp write_assignment(%AuditContext{} = audit, changes, validate_targets?, selection) do
     changes = Enum.uniq_by(changes, & &1.id)
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
     VersionLock.transact(audit, fn ->
-      validate_targets(organization_id, gtfs_version_id, changes, opts)
+      verify_selection!(organization_id, gtfs_version_id, changes, selection)
+      validate_targets(organization_id, gtfs_version_id, changes, validate_targets?)
       locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
       stale = stale_changes(locked_stops, changes)
 
@@ -884,6 +1023,31 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       write_zone_changes(organization_id, gtfs_version_id, changes)
       %{applied: changes}
     end)
+  end
+
+  # Runs after the version row is locked, so a writer that already holds that row
+  # (every membership and zone writer does) has committed before the recompute
+  # reads. Any result but the exact prepared selection rolls back.
+  defp verify_selection!(_organization_id, _gtfs_version_id, _changes, nil), do: :ok
+
+  defp verify_selection!(organization_id, gtfs_version_id, changes, %{
+         predicate: predicate,
+         fingerprint: fingerprint,
+         stop_ids: stop_ids
+       }) do
+    case route_selection(organization_id, gtfs_version_id, predicate) do
+      {:ok, %{fingerprint: ^fingerprint, stops: stops}} ->
+        if Enum.sort(stop_ids) != Enum.sort(Enum.map(stops, & &1.id)),
+          do: Repo.rollback(:selection_changed)
+
+        prepared = MapSet.new(stop_ids)
+
+        if not Enum.all?(changes, &MapSet.member?(prepared, &1.id)),
+          do: Repo.rollback(:invalid_selection)
+
+      _changed_or_unresolved ->
+        Repo.rollback(:selection_changed)
+    end
   end
 
   # A preview has no lock to roll back to, so it returns the target error instead.
@@ -899,14 +1063,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   # One check per distinct target: a select-all review sends thousands of changes
   # that share a single target, and each check is up to three queries.
-  defp validate_targets(organization_id, gtfs_version_id, changes, validate_targets?: true) do
+  defp validate_targets(organization_id, gtfs_version_id, changes, true) do
     changes
     |> Enum.map(& &1.to)
     |> Enum.uniq()
     |> Enum.each(&validate_target!(organization_id, gtfs_version_id, &1))
   end
 
-  defp validate_targets(_organization_id, _gtfs_version_id, _changes, _opts), do: :ok
+  defp validate_targets(_organization_id, _gtfs_version_id, _changes, false), do: :ok
 
   defp validate_target!(organization_id, gtfs_version_id, target) do
     case validate_target(organization_id, gtfs_version_id, target) do
@@ -1474,6 +1638,142 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           z.zone_id == ^zone_id
     )
     |> Repo.delete_all()
+  end
+
+  # Hashes the predicate and every served stop before the unzoned and exclusion
+  # filters. A stop that joins or leaves a named route, a serving-route change and
+  # the zone of a stop the selection would not touch all change it, because each
+  # can make "all unzoned stops of these routes" mean something else. Names and
+  # timestamps are not part of it.
+  defp selection_fingerprint(route_ids, only_unzoned?, exclude_stop_ids, served) do
+    rows =
+      served
+      |> Enum.sort_by(& &1.id)
+      |> Enum.map(&{&1.id, &1.stop_id, &1.zone_id, &1.route_ids})
+
+    term =
+      {:fare_zone_selection, 1, Enum.sort(route_ids), only_unzoned?, Enum.sort(exclude_stop_ids),
+       rows}
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(term)) |> Base.encode16(case: :lower)
+  end
+
+  defp check_selection_caps([], _exclusions), do: {:error, :no_routes}
+
+  defp check_selection_caps(route_ids, exclusions) do
+    cond do
+      length(route_ids) > @selection_limits.routes -> {:error, :too_many_routes}
+      length(exclusions) > @selection_limits.exclusions -> {:error, :too_many_exclusions}
+      true -> :ok
+    end
+  end
+
+  # Routes keep the order the caller named them in; the first unknown ID is the
+  # refusal.
+  defp named_routes(organization_id, gtfs_version_id, route_ids) do
+    found =
+      Repo.all(
+        from(r in Route,
+          where:
+            r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+              r.route_id in ^route_ids,
+          select: {r.route_id, r.route_short_name, r.route_long_name}
+        )
+      )
+
+    by_id = Map.new(found, fn {id, short, long} -> {id, {short, long}} end)
+
+    case Enum.find(route_ids, &(not Map.has_key?(by_id, &1))) do
+      nil ->
+        {:ok,
+         Enum.map(route_ids, fn id ->
+           {short, long} = Map.fetch!(by_id, id)
+           %{route_id: id, route_short_name: short, route_long_name: long}
+         end)}
+
+      unknown ->
+        {:error, {:unknown_route, unknown}}
+    end
+  end
+
+  defp check_exclusions(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp check_exclusions(organization_id, gtfs_version_id, stop_ids) do
+    found =
+      organization_id
+      |> boardable_query(gtfs_version_id)
+      |> where([s], s.stop_id in ^stop_ids)
+      |> select([s], s.stop_id)
+      |> Repo.all()
+      |> MapSet.new()
+
+    case Enum.find(stop_ids, &(not MapSet.member?(found, &1))) do
+      nil -> :ok
+      unknown -> {:error, {:unknown_stop, unknown}}
+    end
+  end
+
+  defp served_stops(organization_id, gtfs_version_id, route_ids) do
+    served_stop_ids =
+      from(st in StopTime,
+        join: t in Trip,
+        on:
+          st.trip_id == t.trip_id and st.organization_id == t.organization_id and
+            st.gtfs_version_id == t.gtfs_version_id,
+        where:
+          st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+            t.route_id in ^route_ids,
+        distinct: true,
+        select: st.stop_id
+      )
+
+    served =
+      where(
+        boardable_query(organization_id, gtfs_version_id),
+        [s],
+        s.stop_id in subquery(served_stop_ids)
+      )
+
+    case count_stops(served) do
+      count when count > @selection_limits.stops ->
+        {:error, {:too_many_stops, count}}
+
+      _count ->
+        {:ok,
+         served
+         |> order_by([s], asc_nulls_last: s.stop_name, asc: s.stop_id)
+         |> select([s], %{
+           id: s.id,
+           stop_id: s.stop_id,
+           stop_name: s.stop_name,
+           zone_id: s.zone_id
+         })
+         |> Repo.all()}
+    end
+  end
+
+  # Every route serving each stop, not only the named ones: shared routes are part
+  # of what the review shows. Returns the stops with their sorted route IDs and a
+  # map from every route seen to its short name (its ID when it has none).
+  defp with_serving_routes(organization_id, gtfs_version_id, stops) do
+    routes_by_stop =
+      Gtfs.get_routes_for_stops(organization_id, gtfs_version_id, Enum.map(stops, & &1.stop_id))
+
+    names =
+      for {_stop_id, routes} <- routes_by_stop,
+          route <- routes,
+          into: %{},
+          do: {route.route_id, route.route_short_name || route.route_id}
+
+    stops =
+      Enum.map(stops, fn stop ->
+        route_ids =
+          routes_by_stop |> Map.get(stop.stop_id, []) |> Enum.map(& &1.route_id) |> Enum.sort()
+
+        Map.put(stop, :route_ids, route_ids)
+      end)
+
+    {stops, names}
   end
 
   defp boardable_query(organization_id, gtfs_version_id) do
