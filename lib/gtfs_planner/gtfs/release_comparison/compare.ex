@@ -223,7 +223,9 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   evidence in its own right, and hiding one behind a narrower view would turn
   disclosed uncertainty into apparent certainty. They travel through unchanged,
   and the scope is recorded in `:scope` so a later consumer can tell a narrowed
-  result from the full one.
+  result from the full one. Stop, trip and agency entries of
+  `:structural_changes` carry no route identity here, so they travel through
+  unchanged too, and `:exclusions` says so.
   """
   @spec narrow(map(), map()) :: {:ok, map()} | {:error, :invalid_scope}
   def narrow(result, %{route_pair_keys: keys, dates: dates})
@@ -233,7 +235,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
 
     if keys != [] and dates != [] and Enum.all?(keys, &MapSet.member?(available, &1)) and
          Enum.all?(dates, &(&1 in window)) do
-      {:ok, scope_result(result, keys, dates)}
+      scope_result(result, keys, dates)
     else
       {:error, :invalid_scope}
     end
@@ -250,21 +252,27 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     omitted =
       Enum.reject(result.groups, &unit_in_scope?(&1, selected, in_scope))
 
-    narrowed =
-      result
-      |> Map.merge(%{
-        groups: units,
-        effective_changes:
-          Enum.filter(result.effective_changes, &change_in_scope?(&1, selected, in_scope)),
-        structural_changes:
-          Enum.filter(result.structural_changes, &structural_in_scope?(&1, kept_route_ids)),
-        totals: scoped_totals(units, result.totals),
-        completeness: scoped_completeness(units, result.completeness),
-        exclusions: result.exclusions ++ omitted_units(omitted) ++ [non_narrowed_disclosure()],
-        scope: %{route_pair_keys: Enum.sort(keys), dates: Enum.sort(dates)}
-      })
+    # A selection that names no unit this result states is an empty scope. Its
+    # totals would otherwise read as a measured zero.
+    if units == [] do
+      {:error, :invalid_scope}
+    else
+      narrowed =
+        result
+        |> Map.merge(%{
+          groups: units,
+          effective_changes:
+            Enum.filter(result.effective_changes, &change_in_scope?(&1, selected, in_scope)),
+          structural_changes:
+            Enum.filter(result.structural_changes, &structural_in_scope?(&1, kept_route_ids)),
+          totals: scoped_totals(units, result.totals),
+          completeness: scoped_completeness(units, result.completeness),
+          exclusions: result.exclusions ++ omitted_units(omitted) ++ [non_narrowed_disclosure()],
+          scope: %{route_pair_keys: Enum.sort(keys), dates: Enum.sort(dates, Date)}
+        })
 
-    Map.put(narrowed, :digest, digest(narrowed))
+      {:ok, Map.put(narrowed, :digest, digest(narrowed))}
+    end
   end
 
   defp unit_in_scope?(unit, selected, in_scope),
@@ -283,8 +291,10 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   # Only a route's own change is attributable to a selected route pair. Stop,
   # trip and agency changes carry no route identity in this result, so they
   # stay in the narrowed result and the disclosure below says so.
-  defp structural_in_scope?(change, kept_route_ids),
-    do: change.entity == :route and change.id in kept_route_ids
+  defp structural_in_scope?(%{entity: :route} = change, kept_route_ids),
+    do: change.id in kept_route_ids
+
+  defp structural_in_scope?(_change, _kept_route_ids), do: true
 
   defp route_ids_of(units) do
     Enum.flat_map(units, fn unit ->
@@ -316,7 +326,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
       entity: :unknowns,
       reason: :not_narrowed_by_scope,
       detail:
-        "Unknown rows and unresolved entity matches are not narrowed by a route or date scope"
+        "Unknown rows, unresolved entity matches and stop, trip and agency changes " <>
+          "are not narrowed by a route or date scope"
     }
   end
 

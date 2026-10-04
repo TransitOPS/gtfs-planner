@@ -547,13 +547,12 @@ defmodule GtfsPlanner.Agents.ReleaseComparisonPackTest do
     end
 
     test "an empty completed page is a valid zero", context do
-      # Narrowed to R1 on the 25th, where both files run 2 trips: nothing differs
-      # and nothing in scope is unresolved.
       quiet =
-        frozen_scope(context, context.result, %{
-          route_pair_keys: ["R1/R1"],
-          dates: [~D[2026-11-25]]
-        })
+        readmit(context, fn payload ->
+          payload
+          |> put_in(["changes", "effective"], [])
+          |> put_in(["changes", "structural"], [])
+        end)
 
       assert {:ok, page, evidence} =
                Dispatch.call(Pack, quiet, "inspect_service_difference", "{}")
@@ -563,10 +562,32 @@ defmodule GtfsPlanner.Agents.ReleaseComparisonPackTest do
       assert page["returned_count"] == 0
       assert page["next_cursor"] == nil
       assert evidence.total == 0
+    end
+
+    test "a narrowed page keeps the structural changes that name no route", context do
+      # Narrowed to R1 on the 25th, where both files run 2 trips: no effective
+      # difference is in scope. The trip changes carry no route, so they stay,
+      # while the rename of route R2 is not R1's and does not.
+      narrowed =
+        frozen_scope(context, context.result, %{
+          route_pair_keys: ["R1/R1"],
+          dates: [~D[2026-11-25]]
+        })
+
+      assert {:ok, page, evidence} =
+               Dispatch.call(Pack, narrowed, "inspect_service_difference", "{}")
+
+      assert Enum.map(page["records"], &{&1["type"], &1["entity"], &1["id"]}) == [
+               {"structural", "trip", "T2"},
+               {"structural", "trip", "U1"}
+             ]
+
+      assert page["true_total"] == 2
+      assert evidence.total == 2
 
       # Unresolved matches are never narrowed away, so all three stay disclosed.
       assert {:ok, unresolved, _evidence} =
-               Dispatch.call(Pack, quiet, "inspect_unresolved_entity_matches", "{}")
+               Dispatch.call(Pack, narrowed, "inspect_unresolved_entity_matches", "{}")
 
       assert unresolved["true_total"] == 3
     end

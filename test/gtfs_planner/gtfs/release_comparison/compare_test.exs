@@ -1030,6 +1030,64 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
     end
   end
 
+  describe "narrow/2" do
+    test "keeps stop, trip and agency changes that have no route to narrow by" do
+      left =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      right =
+        project(
+          trips: [{"R1", "WEEK", "T_RENAMED", "0"}],
+          stop_times: [{"T_RENAMED", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+      assert [%{entity: :trip, change: :identifier}] = result.structural_changes
+
+      selection = %{route_pair_keys: ["R1/R1"], dates: [@monday]}
+      assert {:ok, narrowed} = Compare.narrow(result, selection)
+
+      # The rename is not attributable to a route pair, so narrowing keeps it and
+      # the exclusions say that it was not narrowed.
+      assert narrowed.structural_changes == result.structural_changes
+
+      assert Enum.any?(
+               narrowed.exclusions,
+               &(&1.reason == :not_narrowed_by_scope and &1.detail =~ "stop, trip and agency")
+             )
+    end
+
+    test "refuses a scope whose route pair states no service on the chosen dates" do
+      # R2 runs on a dates-only service that exists on Tuesday alone, so its pair
+      # is real but has no unit on Monday.
+      project_opts = [
+        routes: [{"R1", "AGENCY", "1", "Main", "3"}, {"R2", "AGENCY", "2", "Side", "3"}],
+        trips: [{"R1", "WEEK", "T1", "0"}, {"R2", "EXTRA", "T2", "0"}],
+        stop_times: [
+          {"T1", "08:00:00", "08:00:00", "S1", "1"},
+          {"T2", "09:00:00", "09:00:00", "S1", "1"}
+        ],
+        calendar_dates: [{"EXTRA", "20261124", "1"}]
+      ]
+
+      projection = project(project_opts)
+      assert {:ok, result} = Compare.run(projection, projection, @window)
+      assert "R2/R2" in Enum.map(Compare.route_pairs(result), & &1.key)
+
+      # Without this refusal the empty scope would read as a measured zero.
+      assert Compare.narrow(result, %{route_pair_keys: ["R2/R2"], dates: [@monday]}) ==
+               {:error, :invalid_scope}
+
+      assert {:ok, narrowed} =
+               Compare.narrow(result, %{route_pair_keys: ["R2/R2"], dates: [~D[2026-11-24]]})
+
+      assert narrowed.totals.total_units == 1
+    end
+  end
+
   # -- fixtures ---------------------------------------------------------------
 
   defp every_weekday(service_id) do
