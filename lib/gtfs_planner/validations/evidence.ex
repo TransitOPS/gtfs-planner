@@ -79,7 +79,9 @@ defmodule GtfsPlanner.Validations.Evidence do
 
     * `checked` needs a ready, unexpired selected artifact whose known SHA-256
       equals the digest a completed check recorded *and* whose durable profile
-      equals that check's recorded profile. Nothing else is evidence of it;
+      equals that check's recorded profile, or a completed native review of that
+      export run's slot that recorded the same SHA-256. Nothing else is
+      evidence of it;
     * `different_bytes` is a known matching profile with different bytes;
     * `different_profile` is a known check profile that is not this artifact's;
     * `unknown` is missing or unreadable provenance, a nil digest, a nil
@@ -101,6 +103,7 @@ defmodule GtfsPlanner.Validations.Evidence do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.ServiceQueries.Snapshot
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations
@@ -143,6 +146,7 @@ defmodule GtfsPlanner.Validations.Evidence do
   @profile_export_types ["full", "pathways", "operations"]
   @profile_artifact_kinds ["primary", "flex"]
   @profile_estimate_methods [nil, "distance", "even"]
+  @profile_keys [:schema_version, :export_type, :include_flex, :artifact_kind, :estimate_method]
   @recent_check_limit 5
 
   @default_group_limit 20
@@ -325,6 +329,10 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   def locate(_scope, _run_ref, _instance_ref), do: {:error, :invalid_arguments}
 
+  @doc "The number of completed checks a readiness read lists; more may exist."
+  @spec recent_check_limit() :: pos_integer()
+  def recent_check_limit, do: @recent_check_limit
+
   @doc """
   Returns the scoped readiness of one native export selection.
 
@@ -364,15 +372,21 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   # The membership and the version were resolved above; these reads then see one
   # committed snapshot, so the defaults, the preflight totals and the export
-  # being inspected cannot come from three different points in time.
+  # being inspected cannot come from three different points in time. The
+  # isolation is set by the service-query snapshot boundary as the first
+  # statement of the transaction; Postgrex ignores an `:isolation` option.
   defp export_snapshot(scope, organization, type, reference, artifact) do
-    case Repo.transaction(
-           fn -> readiness_snapshot(scope, organization, type, reference, artifact) end,
-           isolation: :repeatable_read
-         ) do
+    case Repo.transaction(fn ->
+           snapshot_module().begin_read()
+           readiness_snapshot(scope, organization, type, reference, artifact)
+         end) do
       {:ok, snapshot} -> bounded(snapshot)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp snapshot_module do
+    Application.get_env(:gtfs_planner, :gtfs_service_query_snapshot, Snapshot.Repo)
   end
 
   defp readiness_snapshot(scope, organization, type, reference, artifact_kind) do
@@ -380,6 +394,7 @@ defmodule GtfsPlanner.Validations.Evidence do
       {:ok, run} ->
         checks = recent_checks(scope)
         artifact = selected_artifact(run, type, artifact_kind)
+        reviewed? = artifact_reviewed?(scope, artifact)
 
         %{
           export_type: type,
@@ -389,7 +404,7 @@ defmodule GtfsPlanner.Validations.Evidence do
             Preflight.inspect_summary(scope.organization_id, scope.gtfs_version_id, type),
           recent_checks: checks,
           selected_artifact: artifact,
-          relationship: relationship(artifact, checks),
+          relationship: relationship(artifact, checks, reviewed?),
           digest: artifact_digest(artifact),
           currentness: "unknown",
           publication_status: "unsupported"
@@ -482,10 +497,13 @@ defmodule GtfsPlanner.Validations.Evidence do
   # no check that recorded a known profile at all is `unknown`, a known profile
   # that is not this artifact's is `different_profile`, and a matching profile
   # with different bytes is `different_bytes`.
-  defp relationship(nil, _checks), do: "unavailable"
+  defp relationship(nil, _checks, _reviewed?), do: "unavailable"
 
-  defp relationship(%{available: true} = artifact, checks) do
-    known = Enum.filter(checks, & &1.checked_profile)
+  # A completed review of this very artifact is byte-exact by construction.
+  defp relationship(%{available: true}, _checks, true), do: "checked"
+
+  defp relationship(%{available: true} = artifact, checks, false) do
+    known = Enum.filter(checks, &(&1.checked_profile && is_binary(&1.checked_digest)))
     comparable = Enum.filter(known, &same_profile?(&1.checked_profile, artifact.profile))
 
     cond do
@@ -496,7 +514,27 @@ defmodule GtfsPlanner.Validations.Evidence do
     end
   end
 
-  defp relationship(_artifact, _checks), do: "unavailable"
+  defp relationship(_artifact, _checks, _reviewed?), do: "unavailable"
+
+  # A native artifact review pins the selected export's file, and the validator
+  # re-hashes it against the digest the review recorded before it reads a byte,
+  # so a completed review of this run's slot with this digest read these bytes.
+  defp artifact_reviewed?(%Scope{} = scope, %{available: true, sha256: sha256} = artifact)
+       when is_binary(sha256) do
+    slot = if artifact.artifact_kind == :flex, do: :flex, else: :main
+
+    Repo.exists?(
+      from(run in ValidationRun,
+        where: run.organization_id == ^scope.organization_id,
+        where: run.gtfs_version_id == ^scope.gtfs_version_id,
+        where: run.run_type == "mobility_data_artifact" and run.status == "completed",
+        where: run.artifact_export_run_id == ^artifact.run_id,
+        where: run.artifact_slot == ^slot and run.artifact_sha256 == ^sha256
+      )
+    )
+  end
+
+  defp artifact_reviewed?(_scope, _artifact), do: false
 
   defp same_bytes?(check, artifact),
     do: is_binary(check.checked_digest) and check.checked_digest == artifact.sha256
@@ -544,8 +582,11 @@ defmodule GtfsPlanner.Validations.Evidence do
     include_flex = read.(:include_flex)
     estimate_method = read.(:estimate_method)
 
-    if read.("schema_version") == 1 and export_type in @profile_export_types and
-         artifact_kind in @profile_artifact_kinds and is_boolean(include_flex) and
+    # All five keys must be present: a profile that omits `estimate_method` is
+    # a partial profile, not one that never estimates.
+    if Enum.all?(@profile_keys, &profile_key?(profile, &1)) and read.(:schema_version) == 1 and
+         export_type in @profile_export_types and artifact_kind in @profile_artifact_kinds and
+         is_boolean(include_flex) and
          (is_nil(estimate_method) or estimate_method in @profile_estimate_methods) do
       %{
         schema_version: 1,
@@ -562,6 +603,9 @@ defmodule GtfsPlanner.Validations.Evidence do
   # A stored profile comes back from jsonb with string keys and a freshly built
   # one with atom keys; a key that is present but `false` or `nil` is read as
   # itself rather than as an absent key.
+  defp profile_key?(profile, key),
+    do: Map.has_key?(profile, key) or Map.has_key?(profile, Atom.to_string(key))
+
   defp profile_value(profile, key) do
     case Map.fetch(profile, key) do
       {:ok, value} -> value

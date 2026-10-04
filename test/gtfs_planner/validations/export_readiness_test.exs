@@ -191,6 +191,64 @@ defmodule GtfsPlanner.Validations.ExportReadinessTest do
       assert recent.checked_profile == nil
     end
 
+    test "a partial stored profile and a missing digest are unknown, never different bytes", %{
+      organization: organization,
+      version: version,
+      scope: scope
+    } do
+      ready_export_run(organization, version, artifact_sha256: @primary_digest)
+
+      # No estimate_method key: a partial profile, not one that never estimates.
+      completed_check(organization, version,
+        checked_zip_sha256: @other_digest,
+        checked_export_profile: Map.delete(@primary_profile, "estimate_method")
+      )
+
+      # No schema_version key at all.
+      completed_check(organization, version,
+        checked_zip_sha256: @other_digest,
+        checked_export_profile: Map.delete(@primary_profile, "schema_version")
+      )
+
+      # A known profile that recorded no digest compares no bytes.
+      completed_check(organization, version, checked_export_profile: @primary_profile)
+
+      assert {:ok, readiness} = Evidence.readiness(scope, :full, nil)
+      assert readiness.relationship == "unknown"
+      assert length(readiness.recent_checks) == 3
+    end
+
+    test "a completed native review of the selected artifact's bytes is checked", %{
+      organization: organization,
+      version: version,
+      scope: scope
+    } do
+      run = ready_export_run(organization, version, artifact_sha256: @primary_digest)
+
+      # No MobilityData check recorded any digest; the review pinned the stored
+      # file and re-hashed it against this digest before the validator ran.
+      artifact_review(organization, version, run, :main, @primary_digest)
+
+      assert {:ok, readiness} = Evidence.readiness(scope, :full, nil)
+      assert readiness.relationship == "checked"
+      assert readiness.recent_checks == []
+    end
+
+    test "a native review of other bytes, another slot or no finished review is not checked", %{
+      organization: organization,
+      version: version,
+      scope: scope
+    } do
+      run = ready_export_run(organization, version, artifact_sha256: @primary_digest)
+
+      artifact_review(organization, version, run, :main, @other_digest)
+      artifact_review(organization, version, run, :flex, @primary_digest)
+      artifact_review(organization, version, run, :main, @primary_digest, status: "running")
+
+      assert {:ok, readiness} = Evidence.readiness(scope, :full, nil)
+      assert readiness.relationship == "unknown"
+    end
+
     test "a known check profile that is not this artifact's is different_profile", %{
       organization: organization,
       version: version,
@@ -678,6 +736,25 @@ defmodule GtfsPlanner.Validations.ExportReadinessTest do
       started_at: DateTime.utc_now(),
       finished_at: DateTime.utc_now()
     }
+  end
+
+  # A native review of one export run's stored artifact: bound to the run, the
+  # slot and the digest it pinned, whatever the version's current rows are.
+  defp artifact_review(organization, version, run, slot, digest, opts \\ []) do
+    Repo.insert!(
+      ValidationRun.system_changeset(
+        %ValidationRun{organization_id: organization.id, gtfs_version_id: version.id},
+        %{
+          run_type: "mobility_data_artifact",
+          status: Keyword.get(opts, :status, "completed"),
+          started_at: DateTime.utc_now(),
+          artifact_sha256: digest,
+          artifact_slot: slot,
+          artifact_export_run_id: run.id,
+          artifact_pin_token: Ecto.UUID.generate()
+        }
+      )
+    )
   end
 
   defp completed_check(organization, version, opts) do
