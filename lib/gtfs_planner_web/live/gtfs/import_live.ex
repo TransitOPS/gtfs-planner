@@ -1455,6 +1455,29 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     }
   end
 
+  # The frozen rows are what the helper and the confirmation read back, and each
+  # read re-normalizes them. A journal-backed row therefore keeps the revision its
+  # note had when it was captured, so a note edited afterwards is reported as a
+  # changed row instead of being read again at its new revision (CR-3). A row the
+  # normalizer collapsed into an identical one is never read as evidence and keeps
+  # the revision it was entered with.
+  defp freeze_source_revisions(input_rows, display_rows) do
+    revisions =
+      Map.new(
+        display_rows,
+        &{{&1["source_ref"], &1["target"]["pathway_id"]}, &1["source_revision"]}
+      )
+
+    Enum.map(input_rows, fn
+      %{"source_revision" => nil} = row ->
+        revision = Map.get(revisions, {row["source_ref"], row["target"]["pathway_id"]})
+        %{row | "source_revision" => revision}
+
+      row ->
+        row
+    end)
+  end
+
   defp observation_source_ref(params) do
     case Map.get(params, "journal_entry_id") do
       entry_id when is_binary(entry_id) and entry_id != "" -> entry_id
@@ -1468,7 +1491,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     captures =
       Map.put(socket.assigns.observation_captures, station.stop_id, %{
         station: station,
-        input_rows: input_rows,
+        input_rows: freeze_source_revisions(input_rows, display_rows),
         display_rows: display_rows
       })
 

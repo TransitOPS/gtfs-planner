@@ -279,6 +279,42 @@ defmodule GtfsPlannerWeb.Gtfs.StationObservationMappingTest do
       refute encoded =~ ctx.user.email
     end
 
+    test "a journal note edited after capture is reported, not re-read at its new revision",
+         ctx do
+      view = computed_import_view(ctx)
+      entry = journal_entry(ctx, "Measured at the fare array.")
+
+      choose_station(view, "STATION_A")
+
+      capture_measurement(
+        view,
+        measurement("PW_W14", "105", "cm") |> Map.put("journal_entry_id", entry.id)
+      )
+
+      # The revision the note had when it was captured is frozen into the row.
+      assert [row] = snapshot_payload(view)["observations"]
+      assert row["source_revision"] == DateTime.to_iso8601(entry.updated_at)
+
+      # A colleague edits the note afterwards.
+      entry
+      |> Ecto.Changeset.change(%{
+        body: "Edited since.",
+        updated_at: DateTime.add(entry.updated_at, 60, :second)
+      })
+      |> Repo.update!()
+
+      pid = open_helper(view)
+      expect_reply(tool_calls_reply([{"call_1", "get_observation_provenance", @tool_arguments}]))
+      expect_reply(text_reply("The measurement needs to be captured again."))
+
+      submit(view, @first_message)
+      assert await_settled(pid).status == :done
+
+      card = view |> element("[data-evidence-kind=station_observation_provenance]") |> render()
+      assert card =~ "unresolved as foreign_journal_reference"
+      refute card =~ "1 accepted observation"
+    end
+
     test "an unsupported unit, a missing meaning and a non-finite or nonpositive value each keep the draft",
          ctx do
       view = computed_import_view(ctx)
