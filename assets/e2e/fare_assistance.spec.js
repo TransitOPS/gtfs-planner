@@ -40,6 +40,7 @@ const CAPTURE_DIR = process.env.FARE_ASSISTANCE_CAPTURE_DIR;
 
 const ZONES_REQUEST =
   "Put unzoned Route 1 stops in the Coast zone except Newport Transit Center";
+const PRICES_REQUEST = "Raise the Local ride adult and reduced cash prices to 1.75 and 0.85";
 
 // A 1×1 transparent PNG. The zone workspace's map requests tiles, and answering
 // them locally keeps a journey from depending on the Geoapify plan or on network
@@ -137,6 +138,20 @@ async function prepareZoneAssignment(page) {
   return card;
 }
 
+// Opens the panel on a fresh conversation, asks the scripted helper for the Local
+// ride changes and waits for its prepared card.
+async function preparePriceChanges(page) {
+  await page.locator("#agent-helper-open").click();
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  await page.locator("#agent-new-conversation").click();
+  await ask(page, PRICES_REQUEST);
+
+  const card = page.locator("#agent-prepared-2");
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  await expect(card).toContainText("Change 2 prices");
+  return card;
+}
+
 async function focusInside(page, selector) {
   return page.evaluate(
     (sel) => document.querySelector(sel)?.contains(document.activeElement) ?? false,
@@ -151,6 +166,10 @@ async function capture(page, testInfo, name, { fullPage = true } = {}) {
     mkdirSync(CAPTURE_DIR, { recursive: true });
     path = resolve(CAPTURE_DIR, `${name}.png`);
   }
+
+  // A dialog or panel that is still transitioning in would be captured half
+  // transparent, so every running animation finishes first.
+  await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
 
   // The selection bar is sticky to the viewport's bottom; from the top of the
   // page a full-page capture shows it where a reader sees it.
@@ -394,6 +413,54 @@ test.describe("prices helper panel", () => {
       // Restore the seeded grid: the draft is local to this page.
       await page.reload();
       await waitForLiveView(page);
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+    });
+  }
+});
+
+test.describe("prices review", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`shows the exact before and after in the review at ${viewport.label}`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(90_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openPrices(page);
+      const card = await preparePriceChanges(page);
+
+      // Nothing is saved by preparing.
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+      await page.locator("#agent-review-prepared-2").click();
+
+      const dialog = page.locator("#price-review-dialog");
+      await expect(dialog).toBeVisible();
+      expect(await focusInside(page, "#price-review-dialog")).toBe(true);
+      await expect(page.locator("#price-review-badge")).toHaveText("Review · not saved");
+
+      await expect(page.locator("#price-review-count")).toContainText("2");
+      await expect(page.locator("#price-review-largest")).toContainText("+$0.25");
+      await expect(page.locator("#price-review-fares")).toContainText("1");
+
+      const adult = page.locator("#price-review-row-local_ride_adult_cash-adult-cash");
+      await expect(adult).toContainText("$1.50");
+      await expect(adult).toContainText("$1.75");
+      const reduced = page.locator("#price-review-row-local_ride_reduced_cash-reduced-cash");
+      await expect(reduced).toContainText("$0.75");
+      await expect(reduced).toContainText("$0.85");
+
+      await expect(page.locator("#price-review-dialog-confirm")).toHaveText("Save 2 prices");
+      await expect(page.locator("#price-review-dialog-confirm")).toBeEnabled();
+      await expect(page.locator("#price-review-dialog-cancel")).toBeInViewport();
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await capture(page, testInfo, `prices-review-${viewport.label}`, { fullPage: false });
+
+      // Keeping the prices closes the review onto the prepared card and saves nothing.
+      await page.locator("#price-review-dialog-cancel").click();
+      await expect(dialog).toHaveCount(0);
+      await expect(card).toBeFocused();
       await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
     });
   }

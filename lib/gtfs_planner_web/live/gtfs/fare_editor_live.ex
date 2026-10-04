@@ -73,6 +73,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       media_drawer: 1,
       passes_card: 1,
       price_change_dialog: 1,
+      price_review_dialog: 1,
       price_save_bar: 1,
       rider_delete_dialog: 1,
       rider_drawer: 1,
@@ -90,6 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Fares
@@ -105,6 +107,15 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
+
+  # The helper handoff's refusals. Each names what stopped the review and what to do
+  # next; none changes the page's own state, and none closes another overlay: a
+  # draft is the editor's manual work.
+  @helper_unmanaged_notice "This version's fares are not edited here yet."
+  @helper_unsaved_notice "Save or discard your unsaved prices before reviewing the helper's prices."
+  @helper_close_first_notice "Close the open drawer or dialog first."
+  @helper_unavailable_notice "That prepared change is no longer available. Ask the helper again."
+  @helper_changed_notice "Prices changed after the helper prepared this. Ask the helper again."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -143,6 +154,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:media_delete, nil)
      |> assign(:price_change, nil)
      |> assign(:price_change_focus, nil)
+     |> assign(:price_review, nil)
      |> assign(:setup, nil)
      |> assign(:setup_form, to_form(%{}, as: :setup))
      |> assign(:conversion, nil)
@@ -1035,6 +1047,25 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   def handle_event("cancel_change_prices", _params, socket) do
     {:noreply, assign(socket, :price_change, nil)}
   end
+
+  # The helper's prepared card asks for its review. The entry ID comes from the
+  # browser, so it is parsed, looked up in this socket's own conversation and
+  # checked against the stored prices before anything on the page changes.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_prices(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Keeping the prices closes the review and writes nothing.
+  @impl true
+  def handle_event("cancel_price_review", _params, socket) do
+    {:noreply, assign(socket, :price_review, nil)}
+  end
+
+  @impl true
+  def handle_event("save_price_review", _params, socket), do: {:noreply, socket}
 
   # The write is exactly the preview the operator reviewed: the rows
   # `Fares.preview_price_change/3` returned, each carrying the amount it was
@@ -3563,6 +3594,14 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           media_delete={@media_delete}
           return_focus_id={@media_focus}
         />
+        <.price_review_dialog
+          :if={@price_review}
+          review={@price_review}
+          workspace={@workspace}
+          version_name={@current_gtfs_version.name}
+          published?={published?(@current_gtfs_version)}
+          return_focus_id={@price_review.origin.return_focus_id}
+        />
         <.price_change_dialog
           :if={@price_change}
           change={@price_change}
@@ -4008,6 +4047,136 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       true -> :grid
     end
   end
+
+  defp review_prepared_prices(socket, id) do
+    with {:ok, entry_id} <- parse_entry_id(id),
+         :ok <- require_helper_available(socket),
+         :ok <- require_no_manual_work(socket),
+         {:ok, prepared, command} <- fetch_prepared_prices(socket, entry_id),
+         {:ok, preview} <- current_price_preview(socket, command) do
+      assign(socket, :agent_notice, nil)
+      |> assign(:price_review, %{
+        rows: preview.rows,
+        unchanged: preview.unchanged,
+        error: nil,
+        stale?: false,
+        origin: %{
+          session_pid: socket.assigns.agent_session,
+          conversation_id: socket.assigns.agent_conversation_id,
+          entry_id: entry_id,
+          command: {:price_cells, command},
+          summary: prepared.summary,
+          return_focus_id: "agent-prepared-#{entry_id}"
+        }
+      })
+    else
+      {:refuse, notice} -> assign(socket, :agent_notice, notice)
+    end
+  end
+
+  defp parse_entry_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} when entry_id > 0 -> {:ok, entry_id}
+      _other -> {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  defp parse_entry_id(_id), do: {:refuse, @helper_unavailable_notice}
+
+  defp require_helper_available(socket) do
+    if helper_available?(socket.assigns),
+      do: :ok,
+      else: {:refuse, @helper_unmanaged_notice}
+  end
+
+  defp require_no_manual_work(socket) do
+    assigns = socket.assigns
+
+    cond do
+      assigns.price_edits != %{} ->
+        {:refuse, @helper_unsaved_notice}
+
+      Enum.any?(
+        [
+          assigns.price_change,
+          assigns.fare_draft,
+          assigns.fare_delete,
+          assigns.rider_draft,
+          assigns.rider_delete,
+          assigns.media_draft,
+          assigns.media_delete,
+          assigns.conversion,
+          assigns.price_review
+        ],
+        & &1
+      ) ->
+        {:refuse, @helper_close_first_notice}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp fetch_prepared_prices(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok,
+       %{command: {:price_cells, %{currency: _, rows: [_ | _], unchanged: _} = command}} =
+           prepared} ->
+        {:ok, prepared, command}
+
+      _stale_or_unknown ->
+        {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  # The review is built from a fresh preview of the prepared cells, never from the
+  # card: it opens only when every row still holds the amount the helper saw and
+  # every unchanged cell is still at its amount.
+  defp current_price_preview(socket, command) do
+    cells =
+      Enum.map(command.rows, &price_cell(&1, &1.new)) ++
+        Enum.map(command.unchanged, &price_cell(&1, &1.amount))
+
+    case Fares.preview_price_cells(
+           organization_id(socket),
+           version_id(socket),
+           command.currency,
+           cells
+         ) do
+      {:ok, %{rows: rows, unchanged: unchanged} = preview} ->
+        if same_prepared?(rows, unchanged, command),
+          do: {:ok, preview},
+          else: {:refuse, @helper_changed_notice}
+
+      {:error, _reason} ->
+        {:refuse, @helper_changed_notice}
+    end
+  end
+
+  defp price_cell(cell, amount) do
+    %{
+      fare_product_id: cell.fare_product_id,
+      rider_category_id: cell.rider_category_id,
+      fare_media_id: cell.fare_media_id,
+      amount: amount
+    }
+  end
+
+  defp same_prepared?(rows, unchanged, command) do
+    price_keys(rows) == price_keys(command.rows) and
+      price_keys(unchanged) == price_keys(command.unchanged) and
+      Enum.all?(Enum.zip(rows, command.rows), fn {row, prepared} ->
+        not is_nil(row.now) and not is_nil(prepared.now) and
+          Decimal.equal?(row.now, Decimal.new(prepared.now))
+      end)
+  end
+
+  defp price_keys(cells),
+    do: Enum.map(cells, &{&1.fare_product_id, &1.rider_category_id, &1.fare_media_id})
 
   # The helper reads and prepares only the managed price grid, so the button and
   # the panel exist only there: not while loading, not in the first-use setup, the
