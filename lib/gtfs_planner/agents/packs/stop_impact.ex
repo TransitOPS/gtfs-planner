@@ -22,12 +22,15 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.StopEditing
+  alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Values
 
   @snapshot_kind "stop_focus"
   @source_ref "gtfs_stop_references"
   @listed_labels 10
   @no_pin "No pin is placed. Move the pin on the map, then ask again."
+  # The host's own no-move threshold: a pin this close to the saved position is not a move.
+  @no_move_metres 0.5
 
   # What a dependency answer does not check, always stated, never guessed.
   @unchecked [
@@ -105,6 +108,22 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_stop_move",
+        description:
+          "Prepare a pointer to the native move review for the stop open on this page at the " <>
+            "pin placed on the map, keeping the stop's ID. Use it only when the person " <>
+            "explicitly asks to keep the stop and prepare the move; a question about what a " <>
+            "move affects is never such a request. It takes no arguments and saves nothing: " <>
+            "the editor reviews and applies the move on the map.",
+        activity: "Prepared the move for review",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{},
+          "required" => [],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -127,6 +146,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   @impl true
   def call("get_stop_dependencies", _args, %Scope{} = scope), do: get_stop_dependencies(scope)
   def call("preview_stop_move", _args, %Scope{} = scope), do: preview_stop_move(scope)
+  def call("prepare_stop_move", _args, %Scope{} = scope), do: prepare_stop_move(scope)
 
   # -- get_stop_dependencies --------------------------------------------------
 
@@ -344,6 +364,93 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
       ],
       source_ref: "gtfs_stop_move_impact",
       digest: digest(result),
+      source_revision: nil,
+      scope: Pack.evidence_scope(scope),
+      exclusions: [],
+      resources: [%{kind: "stop", id: stop.stop_id, label: stop.stop_name}]
+    }
+  end
+
+  # -- prepare_stop_move ------------------------------------------------------
+
+  # The prepared command is only a pointer: the host re-checks the stop and pin and
+  # opens the native move review, which keeps its own routing request and band
+  # choices. Coordinates are 6-decimal strings so the host can rebuild the identical
+  # term. No tool here applies, deletes or replaces anything (CR-1, CR-4).
+  defp prepare_stop_move(scope) do
+    with {:ok, %{stop: stop, candidate: candidate}} <- require_bound(scope),
+         {:ok, {lon, lat}} <- require_pin(candidate),
+         :ok <- require_move(stop, {lon, lat}) do
+      command =
+        {:stop_move,
+         %{
+           stop_uuid: stop.id,
+           lat: :erlang.float_to_binary(lat, decimals: 6),
+           lon: :erlang.float_to_binary(lon, decimals: 6)
+         }}
+
+      {:prepared, move_summary(stop, command), move_prepared_result(stop, command),
+       move_prepared_evidence(stop, command, scope)}
+    end
+  end
+
+  # A pin on top of the saved position is not a move; a stop with no saved position
+  # has nothing to compare and is movable.
+  defp require_move(stop, point) do
+    with lon when not is_nil(lon) <- float(stop.stop_lon),
+         lat when not is_nil(lat) <- float(stop.stop_lat),
+         true <- StopPlacement.distance({lon, lat}, point) < @no_move_metres do
+      {:error, "The pin is on the stop's saved position, so there is no move to prepare."}
+    else
+      _movable -> :ok
+    end
+  end
+
+  defp float(%Decimal{} = value), do: Decimal.to_float(value)
+  defp float(value) when is_number(value), do: value * 1.0
+  defp float(_value), do: nil
+
+  defp move_summary(stop, command) do
+    %{
+      command: command,
+      summary: %{
+        title: "Move #{stop.stop_id} to the selected point",
+        detail: "Same stop ID, new position",
+        lines: [
+          "Nothing is saved",
+          "The native move review checks the street path and asks for your choices",
+          "Retirement and replacement stay native actions"
+        ]
+      }
+    }
+  end
+
+  defp move_prepared_result(stop, {:stop_move, %{lat: lat, lon: lon}}) do
+    %{
+      "prepared" => true,
+      "stop_id" => stop.stop_id,
+      "lat" => lat,
+      "lon" => lon,
+      "note" =>
+        "Prepared a pointer to the native move review only. Nothing is saved until the " <>
+          "editor reviews and applies the move on the map."
+    }
+  end
+
+  defp move_prepared_evidence(stop, {:stop_move, %{lat: lat, lon: lon}}, scope) do
+    %{
+      kind: "stop_move_prepared",
+      title: "Move #{stop.stop_id}",
+      total: 1,
+      total_label: "stop move to review",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [
+        %{label: "New position", value: "#{lat}, #{lon}"},
+        %{label: "Prepared", value: "A pointer to the native move review; nothing is saved"}
+      ],
+      source_ref: "gtfs_stop_move_prepared",
+      digest: digest(%{stop_uuid: stop.id, lat: lat, lon: lon}),
       source_revision: nil,
       scope: Pack.evidence_scope(scope),
       exclusions: [],
