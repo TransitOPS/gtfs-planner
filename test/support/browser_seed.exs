@@ -2726,6 +2726,27 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: stop review save stops (BROWSER_TXT_C1..C3)")
 
+    # Three stops for the stop text journey (`stops journey: text`), which approves them
+    # and saves a naming convention to them: two directional twins that abbreviate
+    # "Street", and one stop the approval finds by its code.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_D1", "Txt Main St @ Elm EB", "TXT-D1"},
+          {"BROWSER_TXT_D2", "Txt Main St @ Elm WB", "TXT-D2"},
+          {"BROWSER_TXT_D3", "Txt Cedar Ave", "TXT-D3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop text journey stops (BROWSER_TXT_D1..D3)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

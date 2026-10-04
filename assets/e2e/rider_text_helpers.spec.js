@@ -839,3 +839,98 @@ test("stops journey: impact", async ({ page }) => {
     await expect(page.locator("#stops-map-edit-lon")).toHaveValue(savedLon);
   }
 });
+
+// -- stops journey: text -----------------------------------------------------------
+
+// The stop text helper from approval to a saved batch, by keyboard: the approval form
+// resolves a stop ID, a code and an ambiguous name (settled by choosing a candidate),
+// the helper prepares a naming convention for the two directional twins, and the review
+// and save write it. The only stops written are BROWSER_TXT_D1 and D2; the ambiguous
+// name's candidates, BROWSER_TXT_A2 and A3, are read and never changed.
+test("stops journey: text", async ({ page }) => {
+  test.setTimeout(240_000);
+  await signInHeadsignEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/stops`);
+    await waitForLiveView(page);
+
+    // Approval: a stop ID, a code and a name two stops share.
+    await activate(page.locator("#stop-set-toggle"));
+    await page
+      .locator("#stop-set-refs")
+      .fill("BROWSER_TXT_D1\nBROWSER_TXT_D2\nTXT-D3\nTxt Main St @ Elm");
+    await activate(page.locator("#stop-set-find"));
+    await expect(page.locator("#stop-set-resolution-heading")).toContainText(
+      "3 stops found, 1 line needs a choice",
+    );
+    await expect(page.locator("#stop-set-resolved")).toContainText("Matched by code: TXT-D3");
+    await expect(page.locator("#stop-set-approve")).toBeDisabled();
+    const candidate = page.locator("#stop-set-choice-0-BROWSER_TXT_A3");
+    await candidate.focus();
+    await page.keyboard.press("Space");
+    await expect(candidate).toBeChecked();
+    await activate(page.locator("#stop-set-approve"));
+    await expect(page.locator("#stop-set-summary")).toContainText("4 stops approved");
+
+    // The helper opens with the approved count in its scope line.
+    await activate(page.locator("#agent-helper-open"));
+    await expect(page.locator("#agent-panel")).toContainText("4 approved stops");
+    await page.locator("#agent-new-conversation").click();
+    await expect(page.locator("#agent-composer-input")).toBeVisible();
+
+    const twin = (side) =>
+      `Txt Main Street @ Elm ${side}${label === "390" ? " (390)" : ""}`;
+    await ask(
+      page,
+      `Prepare stop changes: BROWSER_TXT_D1 stop_name=${twin("EB")}; BROWSER_TXT_D2 stop_name=${twin("WB")}`,
+    );
+    const card = await preparedCard(page);
+    const cardId = await card.getAttribute("id");
+    // The reply says prepared and never saved; the card's own "Nothing is saved" is not it.
+    const reply = page.locator("#agent-entries").getByText("I prepared the stop changes");
+    await expect(reply).toBeVisible();
+    await expect(reply).not.toContainText(/saved/i);
+    await expect(
+      page.locator(`#agent-entries a[href="/gtfs/${versionId}/stops/BROWSER_TXT_D1"]`).first(),
+    ).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+
+    // Review: both renames with their stored current names.
+    const review = card.locator('button[id^="agent-review-prepared-"]');
+    await expect(review).toHaveText("Review stop changes");
+    await activate(review);
+    const drawer = page.locator("#stop-review");
+    await expect(drawer).toBeVisible();
+    await waitDrawerSettled(page, "stop-review");
+    const table = page.locator("#stop-review-table");
+    await expect(
+      table.locator("tbody tr").filter({ has: page.locator('td[data-label="Field"]') }),
+    ).toHaveCount(2);
+    await expect(table).toContainText("BROWSER_TXT_D1");
+    await expect(table).toContainText(twin("EB"));
+    await expect(table).toContainText(twin("WB"));
+    await expect(page.locator("#stop-review-invalid")).toHaveCount(0);
+    expect(await fitsViewport(page)).toBe(true);
+    await captureViewport(page, "stops-text-journey", `review-${label}`);
+
+    // Save: the drawer closes, the catalog shows the new names and the card is applied.
+    await activate(page.locator("#stop-review-save"));
+    await expect(drawer).toHaveCount(0);
+    await expect(page.locator("#flash-info")).toContainText("Saved 2 stops");
+    await expect(card).toContainText("Applied");
+    await expect(page.locator("#agent-notice")).toHaveCount(0);
+    await expect.poll(() => focusedId(page)).toBe(cardId);
+
+    await page.locator("#stop-search-form input").fill(twin("EB"));
+    await expect(page.locator("#stops-count")).toContainText("1 stop or station matches");
+    await expect(page.locator("#stops")).toContainText(twin("EB"));
+    expect(await fitsViewport(page)).toBe(true);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await captureViewport(page, "stops-text-journey", `saved-${label}`);
+  }
+});
