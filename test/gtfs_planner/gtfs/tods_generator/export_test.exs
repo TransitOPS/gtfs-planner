@@ -11,9 +11,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ExportTest do
       the worker's ZIP carries — the run IDs of `run_events.txt` and the employee
       IDs of `employee_run_dates.txt` are read from the database, not supplied by a
       case;
-    * a run whose sign-on falls before midnight is written on the `_prev` service a
-      day earlier, and every `(service_id, date)` and `(service_id, run_id)` an
-      assignment names resolves in the same ZIP;
+    * a run whose sign-on falls before midnight keeps the day type's own service
+      and date with its clocks read a day later, and every `(service_id, date)` and
+      `(service_id, run_id)` an assignment names resolves in the same ZIP;
     * the holiday Monday the version carries runs a day type no weekday base
       reaches, so no generated employee works it, the day type's own date is still
       known to the supplement, and the export warns that the date runs other
@@ -146,19 +146,20 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ExportTest do
       assert garage_row["TODS_location_type"] == "garage"
     end
 
-    test "dates a before-midnight sign-on one _prev service earlier and keeps every reference resolvable",
+    test "keeps a before-midnight sign-on on the day type's service and every reference resolvable",
          %{world: world, run: run, entries: entries} do
       rows = rows(entries, @employee_run_dates)
       events = rows(entries, @run_events)
 
-      # Run "1" is the run cut from the just-after-midnight trip, so every row of it
-      # is on the day type's previous-day service and one date earlier than the date
-      # that service's own calendar row lists.
+      # Run "1" is the run cut from the just-after-midnight trip on each day type it
+      # belongs to. Its trips operate on that day type's own dates, so the run keeps
+      # that service and date rather than moving to a previous-day service its run
+      # dates would not share.
       run_one = Enum.filter(rows, &(&1["run_id"] == "1"))
       assert run_one != [], "the fixture produced no run for its just-after-midnight trip"
 
-      assert Enum.all?(run_one, &String.ends_with?(&1["service_id"], "_prev")),
-             "a run signing on before midnight was dated on its own service"
+      assert Enum.all?(run_one, &(not String.ends_with?(&1["service_id"], "_prev"))),
+             "a run signing on before midnight was dated on a previous-day service"
 
       assert Enum.any?(events, fn event ->
                event["trip_id"] == "gen-a" and clock_secs(event["end_time"]) > 86_400

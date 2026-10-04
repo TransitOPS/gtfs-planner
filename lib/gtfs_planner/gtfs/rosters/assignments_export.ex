@@ -8,9 +8,9 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
   day type that **is** its weekday's base, so the rows can never name a
   `(service_id, date)` the same ZIP's `calendar_dates_supplement.txt` does not
   list (INV-14). The service ID is that day type's own, and a run signing on
-  before midnight moves to the previous date on the day type's `_prev` service,
-  which is exactly the shift `Runs.TodsExport` gives the same run in
-  `run_events.txt`.
+  before midnight keeps that date and service: the same service day its trips
+  operate on, which `Runs.TodsExport` names there too, so a consumer can require
+  the run's dates to be a subset of every trip it works.
 
   Three things are deliberately absent from a row's date. A date whose day type
   is not its weekday's base runs different service: nothing is emitted for it, the
@@ -25,8 +25,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
   an operator's name or seniority number (AC-24).
 
   `services` is the export's `ids.service_ids`, or `nil` for the page, which
-  shows the rows without service IDs. The date shift does not depend on it: a run
-  signing on before midnight is dated a day earlier either way.
+  shows the rows without service IDs.
 
   Pure: it reads its arguments and calls no repository, clock, file or network.
   Slots, stale states and findings come from `Rosters.Roster.build/1` and runs
@@ -148,22 +147,14 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
         do: row(date, day_type, run, line.operator, services)
   end
 
-  # The previous-day shift is the run's, not the date's: a run signing on before
-  # midnight belongs to the service day before, so it is dated `d - 1` on the
-  # `_prev` service, whose supplement dates are the day type's dates minus one
-  # day. Which of the two services to name is decided once, here, the way
-  # `Runs.TodsExport.service_for/2` decides it for the same run.
+  # A row is written on the day type's own date and service. A run signing on
+  # before midnight shares that service day with its trips, so it is not dated a
+  # day earlier: the run's service dates must be a subset of every trip it works,
+  # and `Runs.TodsExport` names the same service for the same run.
   defp row(date, day_type, run, operator, services) do
-    {date, service_id} =
-      if run.work.sign_on_secs < 0 do
-        {Date.add(date, -1), service(services, day_type.key, :prev_service_id)}
-      else
-        {date, service(services, day_type.key, :service_id)}
-      end
-
     %{
       date: date,
-      service_id: service_id,
+      service_id: service(services, day_type.key, :service_id),
       run_id: run.run_id,
       employee_id: operator.employee_id,
       operator_name: operator.display_name

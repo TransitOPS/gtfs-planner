@@ -8,7 +8,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   that day type's dates, and a second service with the `_prev` suffix listing the
   same dates one day earlier for the movements that start before midnight — a
   23:45 pull-out belongs to the previous service day, and a `calendar_dates` row
-  is the only place a TODS feed can say so.
+  is the only place a TODS feed can say so. A day type carrying a run that signs
+  on before midnight is the exception: its before-midnight movements stay on the
+  day type's own service, read one day later, because a consumer requires the
+  run's service dates to be a subset of every trip it works and the run names
+  that service, not `_prev`.
 
   The IDs are generated rather than read, because a supplement ID equal to a
   public one would silently attach a deadhead to public service. Every
@@ -33,10 +37,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   previous trip's last stop at its arrival and reaches the next trip's first stop
   one drive later, with the remaining wait left at the destination. A
   time at or above 24:00 is kept, as GTFS allows, so a 25:10 pull-back reads
-  `25:10:00` rather than being wrapped back into the morning. A negative time is
-  never formatted: the movement moves to the `_prev` service and its clock is read
-  one day later, which is why a 00:05 first departure behind a 20-minute pull-out
-  leaves the garage at `23:45:00` on the previous service day.
+  `25:10:00` rather than being wrapped back into the morning. On a day type with
+  no before-midnight run, a negative time is never formatted: the movement moves
+  to the `_prev` service and its clock is read one day later, which is why a 00:05
+  first departure behind a 20-minute pull-out leaves the garage at `23:45:00` on
+  the previous service day. On a day type whose run signs on before midnight, the
+  same movement stays on the day type's own service with one day added to its
+  clock, so its `23:45:00` reads against the same service day as the run's
+  `30:00:00` trip.
 
   Garages are written by their correctable `garage_id`, the only place a planning
   reference becomes a public one; every other endpoint is a public
@@ -110,7 +118,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
           end_secs: integer()
         }
 
-  @type run_day_type :: %{optional(:prev?) => boolean()}
+  @type run_day_type :: %{optional(:shifted?) => boolean()}
 
   @type result :: %{
           calendar_dates: [map()],
@@ -172,9 +180,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   contributes no `routes` row, since the deadhead route exists only to carry
   movements.
 
-  A `run_day_types` entry may carry `prev?: true` to reserve that day type's
-  `_prev` service and its shifted dates, which is what a run reaching before
-  midnight needs even when no movement on that day type starts before it.
+  A `run_day_types` entry may carry `shifted?: true` to write that day type's
+  before-midnight movements with one day added to their clocks on that day type's
+  own service, which is what a run reaching before midnight needs: the run names
+  the day type's own service, so a movement it works may not sit on `_prev`.
 
   `garages_by_id` must cover every garage a movement names: a pull's endpoint is
   resolved with `Map.fetch!/2`, so a caller that passed the wrong map is told
@@ -209,19 +218,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   # a day type with nothing to write is known before an identifier is spent on it.
   #
   # A day type listed in `run_day_types` is the exception: it is kept with no legs
-  # at all, because a run on it still needs a service to hang on. `prev?` is
-  # carried onto the day so the reservation is made where the service is minted,
+  # at all, because a run on it still needs a service to hang on. `shifted?` is
+  # carried onto the day so the clock choice is made where the movement is written,
   # rather than by threading the whole map into `day_rows/3`.
   defp collect(day_types, blocks_by_day_type, garages_by_id, run_day_types) do
     Enum.reduce(day_types, %{days: [], omitted: 0}, fn day_type, acc ->
       run? = Map.has_key?(run_day_types, day_type.key)
-      prev? = prev?(Map.get(run_day_types, day_type.key))
+      shifted? = shifted?(Map.get(run_day_types, day_type.key))
 
       case legs_for(Map.get(blocks_by_day_type, day_type.key, []), garages_by_id, day_type.key) do
         {[], omitted} when run? ->
           %{
             acc
-            | days: acc.days ++ [%{day_type: day_type, legs: [], prev?: prev?}],
+            | days: acc.days ++ [%{day_type: day_type, legs: [], shifted?: shifted?}],
               omitted: acc.omitted + omitted
           }
 
@@ -231,15 +240,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
         {legs, omitted} ->
           %{
             acc
-            | days: acc.days ++ [%{day_type: day_type, legs: legs, prev?: prev?}],
+            | days: acc.days ++ [%{day_type: day_type, legs: legs, shifted?: shifted?}],
               omitted: acc.omitted + omitted
           }
       end
     end)
   end
 
-  defp prev?(nil), do: false
-  defp prev?(run_day_type), do: Map.get(run_day_type, :prev?, false)
+  defp shifted?(nil), do: false
+  defp shifted?(run_day_type), do: Map.get(run_day_type, :shifted?, false)
 
   defp legs_for(blocks, garages_by_id, day_type_key) do
     Enum.flat_map_reduce(blocks, 0, fn block, omitted ->
@@ -382,15 +391,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
     MapSet.new(public_ids.service_ids ++ public_ids.trip_ids ++ public_ids.route_ids)
   end
 
-  defp day_rows(%{day_type: day_type, legs: legs, prev?: prev?}, route_id, used) do
+  defp day_rows(%{day_type: day_type, legs: legs, shifted?: shifted?}, route_id, used) do
     {service_id, used} = reserve(service_candidates(day_type.key), used)
 
-    # The `_prev` service exists when something actually starts before midnight, or
-    # when the caller says a run reaches before it: a service listing previous
-    # dates with no movement on it is a row no consumer can act on, so it is
-    # reserved for one of those two reasons and not otherwise.
+    # The `_prev` service exists when a movement actually starts before midnight
+    # and no run on the day type signs on before it: a service listing previous
+    # dates with no movement on it is a row no consumer can act on. A day type
+    # with such a run instead keeps those movements on its own service, so the
+    # run's service dates stay a subset of the trips it works.
     {prev_id, used} =
-      if prev? or Enum.any?(legs, &(&1.start_secs < 0)) do
+      if not shifted? and Enum.any?(legs, &(&1.start_secs < 0)) do
         reserve(fixed_candidates(service_id <> @prev_suffix), used)
       else
         {nil, used}
@@ -420,18 +430,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
     {trips_with_times, used} =
       Enum.map_reduce(sequenced, used, fn {leg, seq}, used ->
         {trip_id, used} = reserve(trip_candidates(leg.block_id, hex, seq), used)
-        previous? = leg.start_secs < 0
+        read_on = read_on(leg.start_secs, shifted?)
 
         trip = %{
           route_id: route_id,
-          service_id: if(previous?, do: prev_id, else: service_id),
+          service_id: if(read_on == :previous, do: prev_id, else: service_id),
           trip_id: trip_id,
           tods_trip_type: leg.kind
         }
 
         stop_times = [
-          stop_time(trip_id, leg.from, leg.start_secs, previous?, 1),
-          stop_time(trip_id, leg.to, leg.end_secs, previous?, 2)
+          stop_time(trip_id, leg.from, leg.start_secs, read_on, 1),
+          stop_time(trip_id, leg.to, leg.end_secs, read_on, 2)
         ]
 
         {{trip, stop_times, {leg.movement_key, trip_id}}, used}
@@ -466,14 +476,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   end
 
   # A movement is written on the previous service day when it *starts* before
-  # midnight, and both of its times are then read against that day: a start of
-  # −900 s is 23:45:00 of the day before, and an end of 300 s is 00:05:00 of the
-  # day the movement actually starts in. A movement that starts at or after
+  # midnight and its day type has no before-midnight run, and both of its times
+  # are then read against that day: a start of −900 s is 23:45:00 of the day
+  # before, and an end of 300 s is 00:05:00 of the day the movement actually
+  # starts in. On a day type whose run signs on before midnight the movement stays
+  # on the day type's own service and every one of its times moves a day later, so
+  # a start of −900 s reads `23:45:00` and an end of 300 s reads `24:05:00`, the
+  # same service day the run's own events use. A movement that starts at or after
   # midnight keeps its own day, so a 25:10 pull-back stays `25:10:00` — GTFS
   # allows a time past 24:00 and wrapping it would move the pull-back to the
   # wrong morning.
-  defp stop_time(trip_id, stop_id, secs, previous?, sequence) do
-    clock = clock(secs, previous?)
+  defp stop_time(trip_id, stop_id, secs, read_on, sequence) do
+    clock = clock(secs, read_on)
 
     %{
       trip_id: trip_id,
@@ -483,6 +497,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
       stop_sequence: sequence
     }
   end
+
+  # How a leg's clock is read: on its own day, on the day before when it starts
+  # before midnight on a day type without a before-midnight run, or one day later
+  # on the day type's own service when a run signs on before it.
+  defp read_on(secs, true) when secs < 0, do: :extended
+  defp read_on(secs, _shifted?) when secs < 0, do: :previous
+  defp read_on(_secs, _shifted?), do: :own
 
   defp route_row(route_id) do
     %{
@@ -547,13 +568,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
     end
   end
 
-  # Service-day seconds as a clock. A negative time is read against the previous
-  # service day, so it is never formatted as a negative clock string; a time past
-  # 24:00 on a day's own service is kept, as GTFS allows.
-  defp clock(secs, true) when secs < @seconds_per_day,
-    do: clock(rem(secs + @seconds_per_day, @seconds_per_day), false)
+  # Service-day seconds as a clock. A time read against the previous service day
+  # is read one day earlier, so it is never formatted as a negative clock string;
+  # a time read one day later on the day's own service keeps its hours, so a
+  # negative start becomes an evening clock and a post-midnight end past 24:00; a
+  # time read on its own service past 24:00 is kept, as GTFS allows.
+  defp clock(secs, :previous) when secs < @seconds_per_day,
+    do: clock(rem(secs + @seconds_per_day, @seconds_per_day), :own)
 
-  defp clock(secs, _previous?), do: clock_secs(secs)
+  defp clock(secs, :extended), do: clock_secs(secs + @seconds_per_day)
+  defp clock(secs, :own), do: clock_secs(secs)
 
   defp clock_secs(secs) when secs >= 0, do: GtfsTime.format(secs)
 

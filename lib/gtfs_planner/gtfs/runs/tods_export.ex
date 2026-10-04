@@ -13,15 +13,18 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   Identifiers are read, never generated. `service_id` is the movement export's
   per-day-type service, and the `Pull-Out`, `Deadhead` and `Pull-Back` trip IDs come from
   `Blocking.TodsExport`'s `ids`, because those are the IDs the movement files were
-  actually written under. A caller that appended a suffix to reach the
-  previous-day service would name a service nobody wrote: reservation suffixes the
-  ID when it collides, so `_prev` can really be `_prev_2`.
+  actually written under. The movement export writes a run that signs on before
+  midnight on that same day type service, so this module names it directly rather
+  than appending a suffix: a caller that guessed a suffix would name a service
+  nobody wrote.
 
-  A run signing on before midnight is a run of the *previous* service day, so it
-  is written on that day's `_prev` service with every one of its times 86,400
-  seconds later. A time is never negative, and a revenue event past midnight
-  reads above 24:00 rather than being wrapped into the morning — a run that works
-  to 06:00 has genuinely worked to 06:00.
+  A run signing on before midnight shares the day type's own service, because a
+  consumer requires a run's service dates to be a subset of every trip it works,
+  and the trips this run works operate on that day type's dates. Its times are
+  read 86,400 seconds later so the sign-on and the post-midnight trips stay in
+  order on one service day: a time is never negative, and a revenue event past
+  midnight reads above 24:00 rather than being wrapped into the morning — a run
+  that works to 06:00 has genuinely worked to 06:00.
 
   A run with any error-severity finding is left out and counted, not written with
   a caveat: a file carrying a run nobody can roster is worse than a warning saying
@@ -70,31 +73,33 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   @doc """
   The `run_day_types/1` map `Blocking.TodsExport.rows/1` takes.
 
-  One entry per day type that has runs, each saying whether that day type needs
-  its `_prev` service. `prev?` is true only when some run on the day type signs on
-  before midnight, which is the only thing that makes a previous-day service carry
-  a row a consumer can act on.
+  One entry per day type that has runs, each saying whether that day type's
+  before-midnight movements are written with extended times on its own service.
+  `shifted?` is true only when some run on the day type signs on before midnight:
+  that run shares the day type's service day, so a movement starting before it
+  belongs on the same service, read one day later, rather than on a `_prev`
+  service whose dates the run's trips do not share.
 
   A day type with **no runs at all** is left out of the map altogether, not listed
-  with `prev?: false`. This is the rule that keeps a version with blocks but no
+  with `shifted?: false`. This is the rule that keeps a version with blocks but no
   runs from gaining an empty `calendar_dates_supplement.txt`: asking for a service
   makes `Blocking.TodsExport` mint one and list the day type's dates on it, which
   is precisely the header-only file the movement export refuses to write. A day type is asked
   for a service when it has something to hang on that service.
 
-  A run with an error finding does not count towards `prev?`: it is left out of
-  `run_events.txt` entirely, so reserving a service for it would write one listing
-  dates with nothing on it. It does not remove the day type from the map, because
-  the day type's other runs are still written.
+  A run with an error finding does not count towards `shifted?`: it is left out of
+  `run_events.txt` entirely, so shifting a movement for it would write a service
+  row a consumer cannot act on. It does not remove the day type from the map,
+  because the day type's other runs are still written.
   """
   @spec run_day_types(%{optional(String.t()) => map()}) :: %{optional(String.t()) => map()}
   def run_day_types(run_days) when is_map(run_days) do
     for {key, day} <- run_days, day.runs != [], into: %{} do
-      {key, %{prev?: prev?(day)}}
+      {key, %{shifted?: shifted?(day)}}
     end
   end
 
-  defp prev?(day) do
+  defp shifted?(day) do
     day.runs
     |> Enum.reject(&error_run?/1)
     |> Enum.any?(&(&1.work.sign_on_secs < 0))
@@ -212,11 +217,12 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
     events
   end
 
-  # A run that signs on before midnight belongs to the previous service day, so it
-  # is written on that day's `_prev` service and every one of its times moves a
-  # day later. The `_prev` service must exist: a day type with such a run is
-  # `prev?`, which is what reserved it. Writing the run on the day's own service
-  # would place it on dates the service does not run.
+  # A run that signs on before midnight is written on the day type's own service:
+  # a consumer requires the run's service dates to be a subset of every trip it
+  # works, and the trips it works operate on that day type's dates. Every one of
+  # its times moves a day later so the sign-on and the post-midnight trips stay in
+  # order on that one service day, which is also why the movement export writes the
+  # pull-out it references with extended times on the same service.
   # Each segment is tagged with the index of the next piece, which is the piece a
   # report and its travel belong to: an operator reports *for* a piece, so the two
   # rows are read together. A break and a sign-off belong to no piece and keep
@@ -240,18 +246,9 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   end
 
   defp service_for(run, services) do
-    if run.work.sign_on_secs < 0 do
-      case services.prev_service_id do
-        nil ->
-          raise ArgumentError,
-                "run #{run.run_id} signs on before midnight but its day type reserved no _prev service"
+    shift = if run.work.sign_on_secs < 0, do: @seconds_per_day, else: 0
 
-        prev ->
-          {prev, @seconds_per_day}
-      end
-    else
-      {services.service_id, 0}
-    end
+    {services.service_id, shift}
   end
 
   defp segment_event(

@@ -11,8 +11,8 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
 
   The world is `RunsFixtures.runs_version_fixture/1` — a published version whose
   one calendar runs Monday to Friday — plus one block pulling out at 00:05, whose
-  run signs on before midnight and so must be written on the day type's `_prev`
-  service a day earlier. That is the case where `employee_run_dates.txt` and
+  run signs on before midnight and so keeps the day type's own service with every
+  clock read a day later. That is the case where `employee_run_dates.txt` and
   `run_events.txt` could disagree about a run's service day.
 
   On that world the cases add roster lines through the writers the Rosters page
@@ -125,39 +125,42 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
              "a row names a run neither line works"
     end
 
-    test "a run signing on before midnight is written on the _prev service a day earlier", %{
-      entries: entries,
-      rows: rows,
-      early: early
-    } do
+    test "a run signing on before midnight keeps the day type's service and reaches past midnight",
+         %{
+           entries: entries,
+           rows: rows,
+           early: early
+         } do
       # Read from the file rather than assumed: the fixture's early block is what
       # makes this case meaningful, and a fixture that stopped producing a
       # before-midnight run would otherwise pass it vacuously.
       assert before_midnight?(entries, early),
              "fixture run #{early} no longer signs on before midnight, so this case proves nothing"
 
-      shifted = Enum.filter(rows, &(&1["run_id"] == early))
+      written = Enum.filter(rows, &(&1["run_id"] == early))
 
-      assert shifted != [], "the run signing on before midnight produced no rows"
+      assert written != [], "the run signing on before midnight produced no rows"
 
-      assert [prev_service] = shifted |> Enum.map(& &1["service_id"]) |> Enum.uniq(),
+      assert [service] = written |> Enum.map(& &1["service_id"]) |> Enum.uniq(),
              "expected one service for the before-midnight run"
 
-      assert String.contains?(prev_service, "_prev"),
-             "#{prev_service} is not the day type's previous-day service"
+      # A run reaching past midnight shares the day type's own service day with its
+      # trips; it is not moved to a previous-day service, because a consumer
+      # requires the run's dates to be a subset of every trip it works.
+      refute String.contains?(service, "_prev"),
+             "#{service} is a previous-day service, which the run's trips do not share"
 
       # A shifted date is only right if the same ZIP's supplement lists that
       # service on it, which is the pair a consumer follows.
       listed =
         entries["calendar_dates_supplement.txt"]
         |> csv_rows_of()
-        |> Enum.filter(&(&1["service_id"] == prev_service))
+        |> Enum.filter(&(&1["service_id"] == service))
         |> MapSet.new(& &1["date"])
 
-      for row <- shifted do
+      for row <- written do
         assert MapSet.member?(listed, row["date"]),
-               "shifted row is on #{row["date"]}, which no supplement row lists on " <>
-                 prev_service
+               "row is on #{row["date"]}, which no supplement row lists on " <> service
       end
     end
 
@@ -344,7 +347,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   # ---- the world -------------------------------------------------------
 
   # The fixture's own blocks all start after 05:00, so without this one no run
-  # in the fixture signs on before midnight and the `_prev` service is never
+  # in the fixture signs on before midnight and the before-midnight read is never
   # exercised. Added before the cut, so its run exists in the same one cut every
   # case reads its run IDs from.
   defp add_early_block(world) do
@@ -499,17 +502,14 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRostersTest do
   # "Signs on before midnight" read from the file the case is about rather than
   # assumed of a fixture that might have drifted: the early block is what makes
   # this case meaningful, and a fixture that stopped producing a before-midnight
-  # run would otherwise pass it vacuously. On the `_prev` service that run's
-  # clocks are shifted, so it appears against a `_prev` service and its work
-  # reaches past 24:00.
+  # run would otherwise pass it vacuously. A run signing on before midnight has
+  # its work read one day later on the day type's own service, so it reaches past
+  # 24:00 in the file.
   defp before_midnight?(entries, run_id) do
-    events =
-      entries["run_events.txt"]
-      |> csv_rows_of()
-      |> Enum.filter(&(&1["run_id"] == run_id))
-
-    Enum.any?(events, &String.contains?(&1["service_id"], "_prev")) and
-      Enum.any?(events, &(secs(&1["end_time"]) > 86_400))
+    entries["run_events.txt"]
+    |> csv_rows_of()
+    |> Enum.filter(&(&1["run_id"] == run_id))
+    |> Enum.any?(&(secs(&1["end_time"]) > 86_400))
   end
 
   defp secs(clock) do

@@ -14,8 +14,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
     * a base the version already answers — a stored choice, or a weekday holding
       slots a planner set by hand — is never moved, and the request's work it
       refuses is named rather than delivered by moving the operator's own choice;
-    * a run signing on before midnight is dated the previous day by the export's own
-      rule, read through `AssignmentsExport.rows/1` rather than re-derived;
+    * a run signing on before midnight keeps the day type's own date and service,
+      read through `AssignmentsExport.rows/1` rather than re-derived;
     * every free run-day gets one single-slot line and one fictional operator of its
       own, with the derived run's own canonical times, and no free pair proposes
       none at all;
@@ -167,23 +167,23 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
   end
 
   describe "the recurring dates" do
-    test "a run signing on before midnight is dated the previous day by the export" do
+    test "a run signing on before midnight keeps the day type's own date and service" do
       world = roster_world_fixture(extra_trips: [early_trip()])
 
       assert {:ok, preview} = roster_preview(world)
 
-      # A duty signing on before midnight is dated the previous day on the `_prev`
-      # service. The preview holds no supplement to name that service, so it
-      # reports the date the exporter shifts to — the same shift the Rosters page's
-      # own preview shows — and leaves the service reference to the export that
-      # writes it.
+      # A duty signing on before midnight shares the day type's service day with
+      # its trips, so the export writes it on the day type's own date and service.
+      # The preview holds no supplement to name that service, so it reports the
+      # date and leaves the service reference to the export that writes it — the
+      # same date `Runs.TodsExport` and the file both use for the same run.
       early = run_for_trip(preview, world.monday_day_type, "early-a")
       assert early.work.sign_on_secs < 0
 
-      assert %{date: Date.add(roster_monday(world), -1), service_id: nil} in preview.coverage.exported_dates
+      assert %{date: roster_monday(world), service_id: nil} in preview.coverage.exported_dates
 
-      # The service date itself is staffed: it is the date the range names, and the
-      # earlier date is only where a row is written.
+      # The service date itself is staffed: it is the date the range names and the
+      # date the row is written on, so no earlier date is exported for this duty.
       assert roster_monday(world) in preview.coverage.affected_dates
       assert Date.add(roster_monday(world), -1) not in preview.coverage.affected_dates
     end
@@ -412,7 +412,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
 
   # One unblocked weekday trip departing before midnight, so its duty signs on the
   # previous day: 00:05 minus the pull-out allowance is a negative service-day
-  # second, which is what the export dates a day earlier.
+  # second, which is what makes the export read the whole duty one day later on the
+  # day type's own service.
   defp early_trip, do: {"early-a", "WK", "RIV", "RIV", "00:05:00", "01:00:00"}
 
   # One weekday trip timed to chain onto the stored block "201"

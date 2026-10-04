@@ -164,6 +164,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
     |> Enum.sort()
   end
 
+  defp stop_times(rows, trip_id) do
+    rows
+    |> Enum.filter(&(&1.trip_id == trip_id))
+    |> Enum.sort_by(& &1.stop_sequence)
+  end
+
   describe "a day type with runs but no movement" do
     setup do
       rows =
@@ -217,45 +223,77 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
     end
   end
 
-  describe "prev? reserves the previous-day service" do
+  describe "a day type whose run signs on before midnight" do
     setup do
-      # No leg starts before midnight here, so the only reason to reserve `_prev`
-      # is that a run reaches before it.
+      # A pull-out 15 minutes before midnight to a first trip at 00:05. The run
+      # that works this block shares the day type's own service, so the movement is
+      # written there too, read one day later, rather than on `_prev`.
+      block = %{
+        block_id: "101",
+        trips: [trip(@t1_id, "S1", "S2", 5 * 60, 35 * 60)],
+        movements:
+          movements(pull_out: pull({:garage, @garage_uuid}, {:stop, "S1"}, -900, 300, 20 * 60))
+      }
+
       rows =
         TodsExport.rows(
           input(
             day_types: [day_type(@weekday_key, [@d1, @d2])],
-            blocks_by_day_type: %{@weekday_key => [two_gap_block("101")]},
-            run_day_types: %{@weekday_key => %{prev?: true}}
+            blocks_by_day_type: %{@weekday_key => [block]},
+            run_day_types: %{@weekday_key => %{shifted?: true}}
           )
         )
 
-      %{rows: rows, service: service_id(@weekday_key), prev: service_id(@weekday_key) <> "_prev"}
+      %{rows: rows, service: service_id(@weekday_key)}
     end
 
-    test "the _prev service and its shifted dates exist without a pre-midnight movement",
-         %{rows: rows, service: service, prev: prev} do
-      assert dates_of(rows.calendar_dates, prev) == [Date.add(@d1, -1), Date.add(@d2, -1)]
+    test "writes the movement on the day type's own service with extended times",
+         %{rows: rows, service: service} do
       assert dates_of(rows.calendar_dates, service) == [@d1, @d2]
 
-      # Without a pre-midnight movement, no trip is written on the previous
-      # service: the reservation is for the run, not for a movement.
-      assert Enum.all?(rows.trips, &(&1.service_id == service))
+      assert [pull_out] = Enum.filter(rows.trips, &(&1.tods_trip_type == :pull_out))
+      assert pull_out.service_id == service
+
+      assert [from, to] = stop_times(rows.stop_times, pull_out.trip_id)
+      assert from.departure_time == "23:45:00"
+      assert to.arrival_time == "24:05:00"
+      assert to.departure_time == "24:05:00"
     end
 
-    test "the reservation is not made when prev? is false or absent" do
-      for run_day_type <- [%{}, %{prev?: false}] do
+    test "does not reserve a previous-day service", %{rows: rows} do
+      prev = service_id(@weekday_key) <> "_prev"
+
+      refute Enum.any?(rows.calendar_dates, &(&1.service_id == prev))
+      assert rows.ids.service_ids[@weekday_key].prev_service_id == nil
+    end
+
+    test "without shifted?, the movement is still read on the previous-day service" do
+      block = %{
+        block_id: "101",
+        trips: [trip(@t1_id, "S1", "S2", 5 * 60, 35 * 60)],
+        movements:
+          movements(pull_out: pull({:garage, @garage_uuid}, {:stop, "S1"}, -900, 300, 20 * 60))
+      }
+
+      for run_day_type <- [%{}, %{shifted?: false}] do
         rows =
           TodsExport.rows(
             input(
               day_types: [day_type(@weekday_key, [@d1])],
-              blocks_by_day_type: %{@weekday_key => [two_gap_block("101")]},
+              blocks_by_day_type: %{@weekday_key => [block]},
               run_day_types: %{@weekday_key => run_day_type}
             )
           )
 
         prev = service_id(@weekday_key) <> "_prev"
-        refute Enum.any?(rows.calendar_dates, &(&1.service_id == prev))
+
+        assert rows.ids.service_ids[@weekday_key].prev_service_id == prev
+        assert [pull_out] = Enum.filter(rows.trips, &(&1.tods_trip_type == :pull_out))
+        assert pull_out.service_id == prev
+
+        assert [from, to] = stop_times(rows.stop_times, pull_out.trip_id)
+        assert from.departure_time == "23:45:00"
+        assert to.arrival_time == "00:05:00"
       end
     end
   end
