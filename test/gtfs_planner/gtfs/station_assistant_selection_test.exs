@@ -454,6 +454,29 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       end
     end
 
+    test "a conflict or unaccepted row for the same width blocks it whichever row is first",
+         ctx do
+      run = width_run(ctx)
+      clean = accepted_observation("OBS88", "PW_W14", "105", "cm")
+
+      for flags <- [%{"conflict" => true}, %{"accepted" => false}] do
+        flagged = clean |> Map.put("source_ref", "OBS89") |> Map.merge(flags)
+
+        for rows <- [[clean, flagged], [flagged, clean]] do
+          scope = selection_scope(ctx, ctx.station, run, rows)
+
+          assert {:ok, result, _evidence} =
+                   StationAssistant.prepare_import_selection(scope, ["pathway:PW_W14"])
+
+          assert result["selected"] == [], "#{inspect(flags)} in order #{inspect(rows)}"
+
+          assert result["unresolved"] == [
+                   %{"decision_id" => "pathway:PW_W14", "reason" => "no_accepted_observation"}
+                 ]
+        end
+      end
+    end
+
     test "a mixed endpoint or direction edit stays unresolved even when the width matches", ctx do
       run = width_run(ctx)
 

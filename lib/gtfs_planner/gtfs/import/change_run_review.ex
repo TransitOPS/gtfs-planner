@@ -1041,11 +1041,16 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
 
   # Two accepted rows that disagree about the same target and field are both
   # dropped: neither is authoritative, and choosing one would silently resolve a
-  # conflict staff have not resolved. Identical duplicates collapse to one row,
-  # because they say the same thing twice and are not a disagreement.
+  # conflict staff have not resolved. Duplicates collapse to one row only when
+  # their value and their accepted and conflict flags all agree: a row flagged as
+  # conflicting or not accepted must survive beside a clean row of the same value,
+  # or which of them wins would depend on the order they were entered in.
   defp dedupe_observations(observations) do
     observations
-    |> Enum.uniq_by(&{&1["target"]["pathway_id"], &1["field"], &1["normalized_value"]})
+    |> Enum.uniq_by(
+      &{&1["target"]["pathway_id"], &1["field"], &1["normalized_value"], &1["accepted"],
+       &1["conflict"]}
+    )
     |> Enum.reject(&conflicting?(&1, observations))
   end
 
@@ -1462,12 +1467,18 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   # `1.20` to `1.2`, and an accepted 120 cm is the same width. String comparison
   # would call a measured width a mismatch and refuse a row staff did accept.
   defp matching_observation(observations, row) do
-    candidates =
+    for_target =
       Enum.filter(observations["observations"], fn observation ->
         observation["target"]["pathway_id"] == row["natural_key"] and
-          observation["field"] == @observation_field and observation["accepted"] and
-          not observation["conflict"]
+          observation["field"] == @observation_field
       end)
+
+    # One recorded conflict, or one row staff have not accepted, leaves the width
+    # unresolved whatever else was accepted for it.
+    candidates =
+      if Enum.all?(for_target, &(&1["accepted"] and not &1["conflict"])),
+        do: for_target,
+        else: []
 
     cond do
       candidates == [] ->
