@@ -21,12 +21,16 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
   alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Values
 
   @snapshot_kind "headsign_scope"
   @source_ref "gtfs_headsign_usage"
   @listed_limit 10
+  @page_size 25
+  @max_value_length 200
+  @max_offset 100_000
 
   @stop_level_note "Stop-level headsigns are never changed by a headsign rename."
 
@@ -83,6 +87,24 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "find_headsign_variants",
+        description:
+          "List the trips whose headsign differs from this page's default, grouped by exact " <>
+            "text, 25 trips per page, each with its trip_id so one can be excluded later. " <>
+            "Pass value to list one group instead: the default's own text lists the trips " <>
+            "that follow it. offset continues a listing from next_offset.",
+        activity: "Listed headsign variants",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "value" => %{"type" => "string", "maxLength" => @max_value_length},
+            "offset" => %{"type" => "integer", "minimum" => 0, "maximum" => @max_offset}
+          },
+          "required" => [],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -104,6 +126,7 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
 
   @impl true
   def call("summarize_headsigns", _args, %Scope{} = scope), do: summarize_headsigns(scope)
+  def call("find_headsign_variants", args, %Scope{} = scope), do: find_variants(args, scope)
 
   # -- summarize_headsigns ----------------------------------------------------
 
@@ -135,6 +158,13 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
       "stop_level_note" => @stop_level_note
     }
   end
+
+  # The scope's default text: the timing's nonblank headsign, else the pattern's.
+  defp effective_default(%{timing: nil, pattern: pattern}),
+    do: Headsigns.normalize(pattern.headsign)
+
+  defp effective_default(%{timing: timing, pattern: pattern}),
+    do: Headsigns.effective_default(timing.headsign, pattern.headsign)
 
   # The timing's own nonblank headsign, else the pattern's, else none: the same
   # order `Headsigns.effective_default/2` applies, reported as the row that owns it.
@@ -187,6 +217,81 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  # -- find_headsign_variants ---------------------------------------------------
+
+  # Reads the native usage with `from:` set to the default, so the followers form
+  # their own group, then pages the chosen groups' trips in native group order and
+  # native departure order. Nothing is re-sorted or re-compared here (CR-3).
+  defp find_variants(args, scope) do
+    with {:ok, bound} <- require_bound(scope),
+         {:ok, usage} <- read_usage(scope, bound, from: effective_default(bound)) do
+      groups = chosen_groups(usage.groups, args)
+      trips = Enum.flat_map(groups, &group_trips/1)
+      offset = Map.get(args, "offset", 0)
+      page = trips |> Enum.drop(offset) |> Enum.take(@page_size)
+
+      result = %{
+        "group_count" => length(groups),
+        "trip_count" => length(trips),
+        "offset" => offset,
+        "returned" => length(page),
+        "next_offset" => if(offset + length(page) < length(trips), do: offset + length(page)),
+        "trips" => page
+      }
+
+      {:ok, result, variants_evidence(result, scope)}
+    end
+  end
+
+  # No value lists the differing groups; a value lists the group with that exact
+  # normalized text, which is the follower group for the default's own text.
+  defp chosen_groups(groups, %{"value" => value}) do
+    wanted = Headsigns.normalize(value)
+    Enum.filter(groups, &(&1.value == wanted))
+  end
+
+  defp chosen_groups(groups, _args), do: Enum.reject(groups, &(&1.kind == :follows))
+
+  defp group_trips(group) do
+    Enum.map(group.trips, fn trip ->
+      %{
+        "trip_id" => trip.trip_id,
+        "service_id" => trip.service_id,
+        "departure" => trip.departure_secs && GtfsTime.display(trip.departure_secs),
+        "timing_name" => trip.timing_name,
+        "custom" => trip.custom?,
+        "group_value" => group.value,
+        "group_kind" => Atom.to_string(group.kind),
+        "next_block_route" => trip.next_block && trip.next_block.route_short_name,
+        "mid_trip_change" => trip.mid_trip_change
+      }
+    end)
+  end
+
+  defp variants_evidence(result, scope) do
+    next = result["next_offset"]
+
+    %{
+      kind: "headsign_variants",
+      title: "Headsign variants",
+      total: result["trip_count"],
+      total_label: "trips in the listed groups",
+      completeness: if(next, do: :incomplete, else: :complete),
+      completeness_reason:
+        if(next, do: "Showing #{result["returned"]} of #{result["trip_count"]}", else: nil),
+      facts: [
+        %{label: "Groups listed", value: Integer.to_string(result["group_count"])},
+        %{label: "Starting at trip", value: Integer.to_string(result["offset"] + 1)}
+      ],
+      source_ref: @source_ref,
+      digest: digest(result),
+      source_revision: nil,
+      scope: Pack.evidence_scope(scope),
+      exclusions: [],
+      resources: []
+    }
   end
 
   # -- the host-bound target --------------------------------------------------
