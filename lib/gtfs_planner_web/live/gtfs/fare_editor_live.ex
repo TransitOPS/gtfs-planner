@@ -87,6 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       zone_matrix: 1
     ]
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
   alias GtfsPlanner.Gtfs
@@ -100,6 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
   alias GtfsPlanner.Gtfs.Fares.Transfers
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -161,7 +163,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
      |> assign(:rule_form, to_form(%{}, as: :rule))
      |> assign(:rule_focus, nil)
      |> assign(:show_rule_ids?, false)
-     |> assign(:drawer_pending?, false)}
+     |> assign(:drawer_pending?, false)
+     |> AgentPanel.mount("fare_prices")}
   end
 
   @impl true
@@ -3314,6 +3317,18 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
             formats.
           </:subtitle>
           <:actions>
+            <.button
+              :if={helper_available?(assigns)}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
             <.header_primary
               active_tab={@live_action}
               ready?={@load_state == :ready}
@@ -3331,124 +3346,167 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           checks_tone={if @load_state == :ready, do: checks_tone(@checks), else: nil}
         />
 
-        <div class="mt-4 grid min-w-0 grid-cols-1 gap-4">
-          <.loading :if={@load_state == :loading} />
-          <.load_error :if={@load_state == :unavailable} />
-          <%!-- The tab's own body arrives with the tab that owns it; the shell
+        <%!-- The workspace and the helper panel share one row from 1024px. Below that the
+        panel stacks above the grid, where the `Open helper` button that opened it sits.
+        The panel's focus listener belongs to this wrapper, which survives the panel and
+        the drawers. --%>
+        <div
+          id="fare-editor-helper-layout"
+          phx-hook=".FareEditorHelperFocus"
+          class={[
+            "flex flex-col lg:grid lg:gap-6",
+            helper_open?(assigns) && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
+        >
+          <div class="min-w-0">
+            <div class="mt-4 grid min-w-0 grid-cols-1 gap-4">
+              <.loading :if={@load_state == :loading} />
+              <.load_error :if={@load_state == :unavailable} />
+              <%!-- The tab's own body arrives with the tab that owns it; the shell
           owns the frame above and the load states beside it. --%>
-          <div :if={@load_state == :ready} id="fare-editor-panel" class="min-w-0">
-            <div
-              :if={@live_action == :where}
-              id="fare-where-panel"
-              class="grid min-w-0 grid-cols-1 gap-4"
-            >
-              <.fare_note note={@price_note} />
-              <p id="where-lede" class="max-w-[80ch] text-sm text-default">
-                A ride’s fare depends on its <b class="font-semibold text-strong">route group</b>
-                and, where you price by zone,
-                the <b class="font-semibold text-strong">zones</b>
-                where it starts and ends. What a
-                rider pays when they change buses is on the Transfers tab.
-              </p>
-              <.route_groups_card workspace={@workspace} />
-              <.zone_matrix
-                :for={matrix <- @workspace.matrices}
-                matrix={matrix}
-                workspace={@workspace}
-              />
-              <.passes_card
-                workspace={@workspace}
-                version_name={@current_gtfs_version.name}
-                published?={published?(@current_gtfs_version)}
-              />
-              <.time_periods_card workspace={@workspace} />
-              <.rule_list_card
-                rules={editor_rules(@workspace)}
-                workspace={@workspace}
-                show_ids?={@show_rule_ids?}
-              />
-            </div>
-
-            <div :if={@live_action == :transfers} id="fare-transfers-panel">
-              <.fare_note note={@price_note} />
-              <.transfers_tab
-                workspace={@workspace}
-                older_allowances={@older_allowances}
-                has_rules?={@has_transfer_rules?}
-              />
-            </div>
-
-            <div :if={@live_action == :checks} id="fare-checks-panel" class="grid min-w-0 gap-4">
-              <.fares_checks_tab checks={@checks} version_id={@current_gtfs_version.id} />
-              <.journey_check
-                workspace={@workspace}
-                form={@journey_form}
-                routes={@journey_routes}
-                stops={@journey_stops}
-                result={@journey_result}
-                note={@journey_note}
-              />
-              <.saved_journeys journeys={@saved_journeys} currency={@workspace.currency} />
-              <.formats_section counts={@format_counts} />
-            </div>
-
-            <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
-              <.fare_note note={@price_note} />
-              <.fare_setup
-                :if={@prices_mode == :setup and @setup != nil}
-                setup={@setup}
-                form={@setup_form}
-                version_name={@current_gtfs_version.name}
-              />
-              <.fare_free_summary
-                :if={@prices_mode == :free}
-                workspace={@workspace}
-                version_name={@current_gtfs_version.name}
-              />
-              <.unmanaged_fares
-                :if={@prices_mode == :unmanaged}
-                workspace={@workspace}
-                unmanaged={@workspace.unmanaged}
-              />
-              <%= if @prices_mode == :grid do %>
-                <.fares_mismatch_banner
-                  :if={@older_mismatches != []}
-                  differences={@older_mismatches}
-                  currency={@workspace.currency}
-                />
-                <.fares_conflict
-                  :if={@price_conflict}
-                  conflict={@price_conflict}
-                  workspace={@workspace}
-                />
-                <.form
-                  for={@price_form}
-                  id="fare-table-form"
-                  phx-change="edit_price"
-                  class="min-w-0"
+              <div :if={@load_state == :ready} id="fare-editor-panel" class="min-w-0">
+                <div
+                  :if={@live_action == :where}
+                  id="fare-where-panel"
+                  class="grid min-w-0 grid-cols-1 gap-4"
                 >
-                  <.fare_table
+                  <.fare_note note={@price_note} />
+                  <p id="where-lede" class="max-w-[80ch] text-sm text-default">
+                    A ride’s fare depends on its <b class="font-semibold text-strong">route group</b>
+                    and, where you price by zone,
+                    the <b class="font-semibold text-strong">zones</b>
+                    where it starts and ends. What a
+                    rider pays when they change buses is on the Transfers tab.
+                  </p>
+                  <.route_groups_card workspace={@workspace} />
+                  <.zone_matrix
+                    :for={matrix <- @workspace.matrices}
+                    matrix={matrix}
                     workspace={@workspace}
-                    edits={@price_edits}
-                    lens?={@lens?}
-                    carried={@carried}
                   />
-                </.form>
-                <.price_save_bar
-                  :if={@price_edits != %{}}
-                  workspace={@workspace}
-                  edits={@price_edits}
-                  journeys={@price_impacts}
-                  blocked?={blocked?(assigns)}
-                  blocking_reason={blocking_reason(assigns)}
-                  version_name={@current_gtfs_version.name}
-                  published?={published?(@current_gtfs_version)}
-                />
-                <.fare_cards workspace={@workspace} history={@workspace.history} />
-              <% end %>
+                  <.passes_card
+                    workspace={@workspace}
+                    version_name={@current_gtfs_version.name}
+                    published?={published?(@current_gtfs_version)}
+                  />
+                  <.time_periods_card workspace={@workspace} />
+                  <.rule_list_card
+                    rules={editor_rules(@workspace)}
+                    workspace={@workspace}
+                    show_ids?={@show_rule_ids?}
+                  />
+                </div>
+
+                <div :if={@live_action == :transfers} id="fare-transfers-panel">
+                  <.fare_note note={@price_note} />
+                  <.transfers_tab
+                    workspace={@workspace}
+                    older_allowances={@older_allowances}
+                    has_rules?={@has_transfer_rules?}
+                  />
+                </div>
+
+                <div :if={@live_action == :checks} id="fare-checks-panel" class="grid min-w-0 gap-4">
+                  <.fares_checks_tab checks={@checks} version_id={@current_gtfs_version.id} />
+                  <.journey_check
+                    workspace={@workspace}
+                    form={@journey_form}
+                    routes={@journey_routes}
+                    stops={@journey_stops}
+                    result={@journey_result}
+                    note={@journey_note}
+                  />
+                  <.saved_journeys journeys={@saved_journeys} currency={@workspace.currency} />
+                  <.formats_section counts={@format_counts} />
+                </div>
+
+                <div :if={@live_action == :prices} id="fare-prices-panel" class="grid gap-4">
+                  <.fare_note note={@price_note} />
+                  <.fare_setup
+                    :if={@prices_mode == :setup and @setup != nil}
+                    setup={@setup}
+                    form={@setup_form}
+                    version_name={@current_gtfs_version.name}
+                  />
+                  <.fare_free_summary
+                    :if={@prices_mode == :free}
+                    workspace={@workspace}
+                    version_name={@current_gtfs_version.name}
+                  />
+                  <.unmanaged_fares
+                    :if={@prices_mode == :unmanaged}
+                    workspace={@workspace}
+                    unmanaged={@workspace.unmanaged}
+                  />
+                  <%= if @prices_mode == :grid do %>
+                    <.fares_mismatch_banner
+                      :if={@older_mismatches != []}
+                      differences={@older_mismatches}
+                      currency={@workspace.currency}
+                    />
+                    <.fares_conflict
+                      :if={@price_conflict}
+                      conflict={@price_conflict}
+                      workspace={@workspace}
+                    />
+                    <.form
+                      for={@price_form}
+                      id="fare-table-form"
+                      phx-change="edit_price"
+                      class="min-w-0"
+                    >
+                      <.fare_table
+                        workspace={@workspace}
+                        edits={@price_edits}
+                        lens?={@lens?}
+                        carried={@carried}
+                      />
+                    </.form>
+                    <.price_save_bar
+                      :if={@price_edits != %{}}
+                      workspace={@workspace}
+                      edits={@price_edits}
+                      journeys={@price_impacts}
+                      blocked?={blocked?(assigns)}
+                      blocking_reason={blocking_reason(assigns)}
+                      version_name={@current_gtfs_version.name}
+                      published?={published?(@current_gtfs_version)}
+                    />
+                    <.fare_cards workspace={@workspace} history={@workspace.history} />
+                  <% end %>
+                </div>
+              </div>
             </div>
           </div>
+
+          <div
+            :if={helper_open?(assigns)}
+            class="order-first mb-5 mt-4 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Fare prices · #{@current_gtfs_version.name}"}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label="Review prices"
+              composer_hint="Nothing changes until you review and save."
+            />
+          </div>
         </div>
+
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".FareEditorHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
 
         <%!-- The drawers are siblings of the grid, not cells inside it: a drawer
           is fixed to the edge of the viewport, and a grid container would place it
@@ -3950,6 +4008,22 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
       true -> :grid
     end
   end
+
+  # The helper reads and prepares only the managed price grid, so the button and
+  # the panel exist only there: not while loading, not in the first-use setup, the
+  # fare-free summary or an unmanaged version's read-only view, and not on the other
+  # tabs. A panel left open when the tab or the mode changes is hidden with them.
+  defp helper_available?(%{
+         live_action: :prices,
+         load_state: :ready,
+         prices_mode: :grid,
+         workspace: %{managed?: true}
+       }),
+       do: true
+
+  defp helper_available?(_assigns), do: false
+
+  defp helper_open?(assigns), do: assigns.agent_open? and helper_available?(assigns)
 
   # The setup is open only while the version is in it, so a write that gives the
   # version its first fare closes it on the same load that redraws the tab.

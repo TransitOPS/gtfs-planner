@@ -353,3 +353,48 @@ test.describe("zones journey", () => {
     });
   }
 });
+
+test.describe("prices helper panel", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`opens beside the grid at ${viewport.label}`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openPrices(page);
+
+      // The grid works before the panel opens.
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+      await page.locator("#agent-helper-open").click();
+
+      const panel = page.locator("#agent-panel");
+      await expect(panel).toBeVisible();
+      await expect(page.locator("#agent-composer-input")).toBeFocused();
+      await expect(page.locator("#agent-helper-open")).toHaveAttribute("aria-expanded", "true");
+
+      const grid = await page.locator("#fare-prices-panel").boundingBox();
+      const box = await panel.boundingBox();
+
+      if (viewport.width >= 1024) {
+        // A 24rem column to the right of the grid, which keeps its width.
+        expect(Math.round(box.width)).toBe(384);
+        expect(box.x).toBeGreaterThanOrEqual(grid.x + grid.width);
+        expect(grid.width).toBeGreaterThan(600);
+      } else {
+        // Stacked above the grid the Open helper button belongs to.
+        expect(box.y + box.height).toBeLessThanOrEqual(grid.y + 1);
+      }
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      // The grid is still usable with the panel open: an edit raises the save bar.
+      await page.locator("#price-local_ride-adult").fill("1.75");
+      await page.locator("#price-local_ride-adult").blur();
+      await expect(page.locator("#save-prices")).toBeVisible();
+
+      await capture(page, testInfo, `prices-panel-${viewport.label}`);
+
+      // Restore the seeded grid: the draft is local to this page.
+      await page.reload();
+      await waitForLiveView(page);
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+    });
+  }
+});
