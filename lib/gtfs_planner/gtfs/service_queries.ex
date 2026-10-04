@@ -410,24 +410,7 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
   # digest is derived from the rows it returned. The transaction is closed
   # before the caller builds a model request, so no provider call is ever made
   # while the snapshot is held.
-  defp in_snapshot(fun) when is_function(fun, 0) do
-    Repo.transaction(
-      fn ->
-        snapshot_module().begin_read()
-        fun.()
-      end,
-      timeout: :infinity
-    )
-    |> case do
-      {:ok, {:ok, result}} -> {:ok, result}
-      {:ok, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp snapshot_module do
-    Application.get_env(:gtfs_planner, :gtfs_service_query_snapshot, Snapshot.Repo)
-  end
+  defp in_snapshot(fun) when is_function(fun, 0), do: Snapshot.read_snapshot(fun)
 
   # -- scope and selection ---------------------------------------------------
 
@@ -817,14 +800,15 @@ defmodule GtfsPlanner.Gtfs.ServiceQueries do
   # same snapshot. `DisplayClock`'s UTC fallback is a presentation fallback and
   # is refused here, so an ambiguous, invalid or missing zone never becomes a
   # service time claim.
-  defp service_timezone(organization_id, gtfs_version_id, %Route{agency_id: nil}) do
+  @doc false
+  def service_timezone(organization_id, gtfs_version_id, %Route{agency_id: nil}) do
     case DisplayClock.resolve_zone(organization_id, gtfs_version_id) do
       %{fallback?: false, timezone: timezone} -> {:ok, timezone}
       %{fallback_reason: reason} -> {:error, {:timezone_unavailable, reason}}
     end
   end
 
-  defp service_timezone(organization_id, gtfs_version_id, %Route{agency_id: agency_id}) do
+  def service_timezone(organization_id, gtfs_version_id, %Route{agency_id: agency_id}) do
     query =
       from(a in Agency,
         where:

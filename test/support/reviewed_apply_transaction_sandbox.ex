@@ -1,5 +1,12 @@
 defmodule GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox do
-  @moduledoc false
+  @moduledoc """
+  The sandbox adapter: a plain `Repo.transaction/1` inside the enclosing savepoint.
+
+  A sandbox connection already holds an open transaction, so this adapter cannot
+  change the enclosing transaction's isolation level and therefore drops the
+  `:isolation` option, exactly as it drops every option but `:timeout`. The
+  production level is proved by the unboxed independent-connection cases instead.
+  """
 
   @behaviour GtfsPlanner.Gtfs.ReviewedApplyTransaction
 

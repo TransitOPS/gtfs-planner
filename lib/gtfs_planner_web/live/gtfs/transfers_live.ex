@@ -94,12 +94,27 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.TransferComponents
+  import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, drawer_scroll: 1]
 
+  import GtfsPlannerWeb.Gtfs.TransferHelperComponents,
+    only: [
+      policy_outcome: 1,
+      policy_outcome?: 2,
+      policy_review_body: 1,
+      transfer_policy_source: 1
+    ]
+
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Transfer
+  alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.AgentPanel
   alias LiveSelect.Component, as: LiveSelectComponent
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -141,6 +156,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   # The applied filters a chip can remove, by the key its button sends.
   @filter_keys %{"q" => :q, "type" => :type, "stop" => :stop, "route" => :route}
 
+  # --- transfer helper -------------------------------------------------------
+
+  # The source the helper may read is the one selection this page's own editor
+  # draft states, so every direction, type and time in it came from an operator
+  # form action rather than from the model (INV-1, INV-2).
+  @source_kind "transfer_policy"
+  @source_schema_version 1
+  @selection_id_prefix "selection"
+  @empty_policy_counts %{saved: 0, skipped: 0, conflict: 0, not_applied: 0}
+
+  # The helper's refusals this page renders next to its own draft, so an operator
+  # reads the same sentence the pack returned to the model.
+  @prepared_missing_notice "That prepared change is no longer in this conversation. Ask the helper again."
+  @source_error "This version or your access changed, so the helper has no transfer rules to work from."
+
+  # An entry whose proposal did not apply exactly stays unconfirmed rather than
+  # claiming a receipt the operator did not earn (INV-7).
+  @prepared_edited_notice "Only part of the helper's proposal was saved. Ask the helper again for the rest."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -176,7 +210,39 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:pick, nil)
      |> assign(:next_pick_id, 1)
      |> assign_filters(@empty_filters)
-     |> stream(:transfers, [])}
+     |> assign(:policy_selections, [])
+     |> assign(:policy_review, nil)
+     |> assign(:policy_remaining, [])
+     |> assign(:policy_origin, nil)
+     |> assign(:policy_open?, false)
+     |> assign(:policy_pending?, false)
+     |> assign(:policy_status, nil)
+     |> assign(:policy_notice, nil)
+     |> assign(:policy_counts, @empty_policy_counts)
+     |> assign(:policy_generation, 0)
+     |> assign(:policy_return_focus, "transfer-policy-select")
+     |> stream(:transfers, [])
+     |> AgentPanel.mount("transfers")}
+  end
+
+  # The reviewed apply runs in this page's own async task under a generation the
+  # socket carries, so the result of a superseded review never rewrites the review
+  # now on screen (AC-5, AC-12).
+  @impl true
+  def handle_async({:transfer_policy_apply, generation}, result, socket) do
+    if generation == socket.assigns.policy_generation do
+      {:noreply, settle_policy(socket, result)}
+    else
+      # Presentation only: a committed operation is never described as cancelled
+      # here, and the review the reviewer reopened keeps its own state. The
+      # operator is told an answer went unanswered, so they re-read the list.
+      {:noreply,
+       assign(
+         socket,
+         :policy_notice,
+         "A confirmation went unanswered. Refresh the list to see what it wrote."
+       )}
+    end
   end
 
   @impl true
@@ -458,6 +524,73 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     {:noreply, search_stops(socket, params)}
   end
 
+  # --- transfer helper -------------------------------------------------------
+
+  @impl true
+  def handle_event("transfer_policy_select", _params, socket) do
+    {:noreply, admit_policy_source(socket)}
+  end
+
+  @impl true
+  def handle_event("transfer_policy_clear", _params, socket) do
+    {:noreply, reset_policy(socket)}
+  end
+
+  # Removing one selection drops it from the admitted source with the others, so
+  # the helper never reads a direction the operator took back.
+  @impl true
+  def handle_event("transfer_policy_remove", %{"id" => id}, socket) do
+    selections = Enum.reject(socket.assigns.policy_selections, &(&1["id"] == id))
+
+    {:noreply,
+     socket
+     |> assign(:policy_selections, selections)
+     |> push_policy_context()}
+  end
+
+  def handle_event("transfer_policy_remove", _params, socket), do: {:noreply, socket}
+
+  # The prepared card hands over one entry id and nothing else: the proposal this
+  # page reviews is the one that entry prepared, never one the client names.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_change(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Re-reads the open review from the catalog the reviewer is looking at, so what
+  # they confirm is what the fence compares.
+  @impl true
+  def handle_event("transfer_policy_review", _params, socket) do
+    {:noreply, refresh_policy_review(socket)}
+  end
+
+  # A second confirmation while the first is in flight is refused: the reviewed
+  # change is already being applied.
+  @impl true
+  def handle_event(
+        "transfer_policy_apply",
+        _params,
+        %{assigns: %{policy_pending?: true}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event("transfer_policy_apply", _params, socket),
+    do: {:noreply, dispatch_policy(socket)}
+
+  # Skipping writes nothing and counts the item, so a partly applied sequence
+  # reads truthfully.
+  @impl true
+  def handle_event("transfer_policy_skip", _params, socket) do
+    {:noreply, skip_policy_item(socket)}
+  end
+
+  @impl true
+  def handle_event("transfer_policy_close", _params, socket) do
+    {:noreply, close_policy(socket)}
+  end
+
   @impl true
   def handle_event("save", params, socket), do: {:noreply, submit_draft(socket, params)}
 
@@ -708,6 +841,502 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     |> assign(:map_missing, payload.missing_coordinates)
     |> push_event("transfer_map:show", Map.put(payload, :fit, true))
   end
+
+  # --- transfer helper -------------------------------------------------------
+
+  # A selection the helper may read is one direction from the operator's own open
+  # draft, plus the rows they ticked to keep. Every value comes from the
+  # server-held editor and catalog, never from a client payload (INV-1). A draft
+  # with no direction is refused here rather than sent on.
+  defp admit_policy_source(socket) do
+    case socket.assigns.editor do
+      %{mode: :create} = editor ->
+        stage_policy_selection(socket, editor)
+
+      _other ->
+        assign(
+          socket,
+          :policy_notice,
+          "Open a new transfer rule first, then ask the helper to work on it."
+        )
+    end
+  end
+
+  # The draft stays open and stays on screen: staging a selection offers the rule
+  # to the helper, it never saves it and never closes what the operator is writing.
+  defp stage_policy_selection(socket, editor) do
+    case policy_selection(socket, editor) do
+      {:ok, selection} ->
+        socket
+        |> assign(:policy_selections, socket.assigns.policy_selections ++ [selection])
+        |> push_policy_context()
+
+      :incomplete ->
+        assign(
+          socket,
+          :policy_notice,
+          "Choose both stops before asking the helper to work on this rule."
+        )
+    end
+  end
+
+  defp policy_selection(socket, %{params: params}) do
+    from = policy_side(params, "from_stop_id", "from_route_id", "from_trip_id")
+    to = policy_side(params, "to_stop_id", "to_route_id", "to_trip_id")
+
+    case {from["stop_id"], to["stop_id"]} do
+      {from_stop, to_stop} when is_binary(from_stop) and is_binary(to_stop) ->
+        type = policy_type(params["transfer_type"])
+
+        {:ok,
+         %{
+           "id" => "#{@selection_id_prefix}-#{length(socket.assigns.policy_selections) + 1}",
+           "from" => from,
+           "to" => to,
+           "transfer_type" => type,
+           "min_time" => policy_min_time(params, type),
+           "protected_ids" => socket.assigns.checked |> Map.keys() |> Enum.sort()
+         }}
+
+      _incomplete ->
+        :incomplete
+    end
+  end
+
+  # A side carries the stop the operator chose plus the selectors this draft's
+  # scope states; an unfilled selector is absent, never an empty string the pack
+  # would read as a stated one.
+  defp policy_side(params, stop_key, route_key, trip_key) do
+    %{
+      "stop_id" => Values.presence(params[stop_key]),
+      "route_id" => Values.presence(params[route_key]),
+      "trip_id" => Values.presence(params[trip_key])
+    }
+  end
+
+  defp policy_type(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {type, ""} -> type
+      _other -> 2
+    end
+  end
+
+  defp policy_type(type) when is_integer(type), do: type
+
+  # Only a minimum-time rule states a time, and only in seconds. The page's own
+  # editor is where any other unit would be refused, so a draft reaching here
+  # never carried one (INV-8).
+  defp policy_min_time(params, 2) do
+    case params["min_transfer_time"] do
+      value when is_binary(value) and value != "" ->
+        case Integer.parse(value) do
+          {seconds, ""} when seconds >= 0 -> %{"value" => seconds, "unit" => "seconds"}
+          _other -> nil
+        end
+
+      _empty ->
+        nil
+    end
+  end
+
+  defp policy_min_time(_params, _type), do: nil
+
+  # The admitted context is the one the helper reads for the rest of this
+  # conversation. A context the server did not build is never handed on, and a
+  # refused admission leaves the panel with no source to read at all
+  # (INV-2, INV-11).
+  defp push_policy_context(socket) do
+    base = Scope.context({:version, version_id(socket)})
+
+    case Scope.with_source_snapshot(base, %{kind: @source_kind, payload: policy_payload(socket)}) do
+      {:ok, context} ->
+        socket
+        |> assign(:policy_notice, nil)
+        |> AgentPanel.set_context(context)
+
+      {:error, _reason} ->
+        socket
+        |> assign(:policy_selections, [])
+        |> assign(:policy_notice, @source_error)
+        |> AgentPanel.set_context(base)
+    end
+  end
+
+  defp policy_payload(socket) do
+    %{
+      "schema_version" => @source_schema_version,
+      "selections" => Enum.map(socket.assigns.policy_selections, &selection_payload/1)
+    }
+  end
+
+  defp selection_payload(selection) do
+    %{
+      "id" => selection["id"],
+      "from" => selection["from"],
+      "to" => selection["to"],
+      "transfer_type" => selection["transfer_type"],
+      "min_time" => selection["min_time"],
+      "protected_ids" => selection["protected_ids"]
+    }
+  end
+
+  # Clearing the selection drops the snapshot with it, so the panel has nothing to
+  # read until the operator supplies a direction again.
+  defp reset_policy(socket) do
+    socket
+    |> assign(:policy_selections, [])
+    |> assign(:policy_notice, nil)
+    |> AgentPanel.set_context(Scope.context({:version, version_id(socket)}))
+  end
+
+  # --- prepared review -------------------------------------------------------
+
+  # The prepared card hands over one entry id and this page asks the session for
+  # that entry's own proposal. Only a transfer-policy sequence prepared against
+  # the source this page admitted is reviewed; anything else is refused, and a
+  # proposal whose source digest no longer matches is dropped rather than
+  # reviewed (INV-5, INV-10).
+  defp review_prepared_change(socket, id) do
+    with {entry_id, ""} when entry_id > 0 <- Integer.parse(to_string(id)),
+         {:ok,
+          %{
+            command: %{
+              kind: :transfer_policy_sequence,
+              items: [_first | _rest] = items,
+              source_digest: digest
+            }
+          }} <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         :ok <- policy_digest_matches(socket, digest) do
+      open_policy_review(socket, entry_id, items, digest)
+    else
+      _other ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # The admitted snapshot's own digest is what the helper prepared against, so a
+  # proposal built from an earlier selection never reaches this page's review.
+  defp policy_digest_matches(socket, digest) do
+    case socket.assigns.agent_context do
+      %{source_snapshot: %{digest: admitted}} -> if admitted == digest, do: :ok, else: :error
+      _no_snapshot -> :error
+    end
+  end
+
+  # A sequence closed or skipped after some of its rules were saved is not opened
+  # again from its first rule: that rule would read as a new one and be refused as
+  # a duplicate, with the rules after it out of reach. The helper is asked again
+  # for the rest instead. Simplification: only the entry opened last is remembered
+  # (`policy_origin`); an older partly saved card opened after another proposal
+  # reviews from its first rule, and Apply still refuses the saved rule. Tracking
+  # the saved rules per entry would close that.
+  defp open_policy_review(
+         %{assigns: %{policy_origin: %{entry_id: entry_id, saved: saved}}} = socket,
+         entry_id,
+         items,
+         _digest
+       )
+       when saved > 0 and saved < length(items),
+       do: assign(socket, :agent_notice, @prepared_edited_notice)
+
+  # Every item of the sequence gets its own review against the catalog as it
+  # stands now, so each confirmation the operator gives covers exactly one rule.
+  defp open_policy_review(socket, entry_id, items, digest) do
+    case review_next(socket, items) do
+      {:ok, review, rest, refused} ->
+        socket
+        |> assign(:policy_review, review)
+        |> assign(:policy_remaining, rest)
+        |> assign(:policy_origin, %{
+          session_pid: socket.assigns.agent_session,
+          conversation_id: socket.assigns.agent_conversation_id,
+          entry_id: entry_id,
+          saved: 0,
+          command: %{kind: :transfer_policy_sequence, items: items, source_digest: digest}
+        })
+        |> assign(:policy_open?, true)
+        |> assign(:policy_pending?, false)
+        |> assign(:policy_generation, socket.assigns.policy_generation + 1)
+        |> assign(:policy_return_focus, "agent-prepared-#{entry_id}")
+        # The outcome shown is this proposal's, not a running total of earlier ones.
+        |> assign(:policy_status, nil)
+        |> assign(:policy_counts, @empty_policy_counts)
+        |> count_refused(refused)
+
+      {:none, refused} ->
+        assign(socket, :agent_notice, policy_refusal_message(none_reviewed_reason(refused)))
+    end
+  end
+
+  # The first item that reviews cleanly against the catalog as it stands, the items
+  # after it, and the reasons the earlier ones were refused.
+  defp review_next(socket, items), do: review_next(socket, items, [])
+
+  defp review_next(_socket, [], refused), do: {:none, Enum.reverse(refused)}
+
+  defp review_next(socket, [item | rest], refused) do
+    case review_policy_item(socket, item) do
+      {:ok, review} -> {:ok, review, rest, Enum.reverse(refused)}
+      {:error, reason} -> review_next(socket, rest, [reason | refused])
+    end
+  end
+
+  defp none_reviewed_reason([reason]), do: reason
+  defp none_reviewed_reason(_several), do: :empty
+
+  defp count_refused(socket, refused) do
+    counts = Enum.reduce(refused, socket.assigns.policy_counts, &count_policy_outcome(&2, &1))
+
+    assign(socket, :policy_counts, counts)
+  end
+
+  defp review_policy_item(socket, item) do
+    Transfers.review_policy_change(
+      policy_scope(socket),
+      item,
+      AuditContext.from_assigns(socket.assigns)
+    )
+  end
+
+  defp policy_scope(socket),
+    do: %{organization_id: organization_id(socket), gtfs_version_id: version_id(socket)}
+
+  defp policy_refusal_message(:empty),
+    do:
+      "The helper's proposal no longer reads against these transfer rules, so nothing was reviewed."
+
+  defp policy_refusal_message(:stale),
+    do: "A competing transfer rule changed, so this proposal was not reviewed."
+
+  defp policy_refusal_message(:forbidden),
+    do: "You may not change that transfer rule, so this proposal was not reviewed."
+
+  defp policy_refusal_message(:not_found),
+    do: "That transfer rule is gone, so this proposal was not reviewed."
+
+  defp policy_refusal_message({:conflict, _witnesses}),
+    do: "A competing transfer rule would change meaning, so this proposal was not reviewed."
+
+  defp policy_refusal_message(_other),
+    do: "This proposal could not be reviewed against the current transfer rules."
+
+  # A refusal the catalog itself gives is shown with the drawer still open and
+  # the operator's draft untouched: nothing is retried or undone on their behalf.
+  defp settle_policy(socket, {:ok, {:applied, {:error, reason}}}) do
+    socket
+    |> assign(:policy_pending?, false)
+    |> assign(:policy_counts, count_policy_outcome(socket.assigns.policy_counts, reason))
+    |> assign(:policy_status, "Not applied: " <> policy_apply_refusal(reason))
+    |> refresh_policy_review()
+  end
+
+  # A saved rule changes the catalog every remaining item was reviewed against, so
+  # each is reviewed again against the catalog as it now stands (AC-5): the first
+  # that still reviews opens next, and every one the new catalog refuses is counted
+  # rather than applied from a stale read.
+  defp settle_policy(socket, {:ok, {:applied, {:ok, transfer}}}) do
+    counts = socket.assigns.policy_counts
+
+    socket
+    |> assign(:policy_pending?, false)
+    |> assign(:policy_counts, %{counts | saved: counts.saved + 1})
+    |> update_policy_origin(&%{&1 | saved: &1.saved + 1})
+    |> reload_policy_catalog()
+    |> review_remaining(policy_saved_message(transfer), socket.assigns.policy_remaining)
+  end
+
+  # An exit or an answer this page does not recognize is left unconfirmed: the
+  # drawer says the attempt was not confirmed and the catalog is re-read, rather
+  # than claiming a write either way (AC-12).
+  defp settle_policy(socket, _other) do
+    socket
+    |> assign(:policy_pending?, false)
+    |> assign(:policy_status, "Not confirmed. Re-read the transfer rules before trying again.")
+    |> reload_policy_catalog()
+  end
+
+  defp review_remaining(socket, saved_message, remaining) do
+    case review_next(socket, remaining) do
+      {:ok, review, rest, refused} ->
+        socket
+        |> assign(:policy_review, review)
+        |> assign(:policy_remaining, rest)
+        |> assign(:policy_generation, socket.assigns.policy_generation + 1)
+        |> assign(:policy_status, saved_message <> " Review the next rule.")
+        |> count_refused(refused)
+
+      {:none, refused} ->
+        socket
+        |> assign(:policy_review, nil)
+        |> assign(:policy_open?, false)
+        |> assign(:policy_remaining, [])
+        |> assign(:policy_status, saved_message)
+        |> count_refused(refused)
+        |> record_policy_applied()
+    end
+  end
+
+  defp update_policy_origin(%{assigns: %{policy_origin: nil}} = socket, _update), do: socket
+
+  defp update_policy_origin(socket, update),
+    do: assign(socket, :policy_origin, update.(socket.assigns.policy_origin))
+
+  defp policy_saved_message(transfer),
+    do:
+      "Saved transfer type #{transfer.transfer_type} from #{transfer.from_stop_id} to #{transfer.to_stop_id}."
+
+  defp count_policy_outcome(counts, {:conflict, _witnesses}),
+    do: %{counts | conflict: counts.conflict + 1, not_applied: counts.not_applied + 1}
+
+  defp count_policy_outcome(counts, _reason),
+    do: %{counts | not_applied: counts.not_applied + 1}
+
+  defp policy_apply_refusal(:stale), do: "a competing transfer rule changed."
+  defp policy_apply_refusal(:forbidden), do: "you may not change that transfer rule."
+  defp policy_apply_refusal(:not_found), do: "that transfer rule is gone."
+
+  defp policy_apply_refusal({:conflict, _witnesses}),
+    do: "a competing transfer rule would change meaning."
+
+  defp policy_apply_refusal({:duplicate, _collision}), do: "an identical rule already exists."
+  defp policy_apply_refusal(:protected), do: "that rule is protected from this change."
+  defp policy_apply_refusal(_other), do: "the change could not be applied."
+
+  # Re-reads the review on screen from the catalog the reviewer is looking at, so
+  # what they confirm is what the fence will compare (AC-4).
+  defp refresh_policy_review(socket) do
+    case socket.assigns.policy_review do
+      %{command: command} ->
+        case review_policy_item(socket, command) do
+          {:ok, review} -> assign(socket, :policy_review, review)
+          {:error, reason} -> assign(socket, :policy_notice, policy_refusal_message(reason))
+        end
+
+      _none ->
+        socket
+    end
+  end
+
+  # Only Apply runs the reviewed apply, against the reviewed change itself and the
+  # audit this page's own scope built. No other path on this page writes from a
+  # proposal.
+  defp dispatch_policy(socket) do
+    case socket.assigns.policy_review do
+      nil ->
+        socket
+
+      review ->
+        generation = socket.assigns.policy_generation + 1
+        audit = AuditContext.from_assigns(socket.assigns)
+
+        socket
+        |> assign(:policy_generation, generation)
+        |> assign(:policy_pending?, true)
+        |> start_async({:transfer_policy_apply, generation}, fn ->
+          {:applied, Transfers.apply_reviewed_policy_change(review, audit)}
+        end)
+    end
+  end
+
+  # A receipt is recorded with the exact command the entry prepared, and only when
+  # every item of that sequence was saved. A partly applied proposal leaves the
+  # entry unconfirmed and says so, rather than claiming a whole (INV-7).
+  defp record_policy_applied(%{assigns: %{policy_origin: nil}} = socket), do: socket
+
+  defp record_policy_applied(%{assigns: %{policy_origin: origin}} = socket) do
+    if origin.saved == length(origin.command.items) do
+      record_policy_receipt(socket, origin)
+    else
+      assign(socket, :agent_notice, @prepared_edited_notice)
+    end
+  end
+
+  defp record_policy_receipt(socket, origin) do
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           origin.command
+         ) do
+      :ok ->
+        socket
+
+      {:error, :command_changed} ->
+        assign(socket, :agent_notice, @prepared_edited_notice)
+
+      _stale_or_ended ->
+        socket
+    end
+  end
+
+  # The saved rule is not on this page until the catalog behind it is read again.
+  defp reload_policy_catalog(socket) do
+    {:noreply, socket} = load_catalog(socket, socket.assigns.url_params)
+
+    socket
+  end
+
+  # Skipping counts the item and leaves the rest of the proposal unapplied; it
+  # writes nothing.
+  defp skip_policy_item(socket) do
+    remaining = socket.assigns.policy_remaining
+
+    socket
+    |> assign(:policy_review, nil)
+    |> assign(:policy_open?, false)
+    |> assign(:policy_pending?, false)
+    |> assign(:policy_remaining, remaining)
+    |> assign(:policy_counts, %{
+      socket.assigns.policy_counts
+      | skipped: socket.assigns.policy_counts.skipped + 1 + length(remaining),
+        not_applied: socket.assigns.policy_counts.not_applied + length(remaining)
+    })
+    |> assign(:policy_status, skipped_message(socket.assigns.policy_origin))
+  end
+
+  defp skipped_message(%{saved: saved}) when saved > 0,
+    do: "Skipped. The rules already saved from this proposal stay saved."
+
+  defp skipped_message(_origin), do: "Skipped. Nothing was written for this proposal."
+
+  # Closing bumps the generation, so a result still in flight lands on no review
+  # at all (AC-12).
+  defp close_policy(socket) do
+    socket
+    |> abandon_unreviewed()
+    |> assign(:policy_open?, false)
+    |> assign(:policy_pending?, false)
+    |> assign(:policy_review, nil)
+    |> assign(:policy_generation, socket.assigns.policy_generation + 1)
+  end
+
+  # Closing leaves the rule on screen and the rules after it unapplied. When an
+  # earlier rule of the sequence was saved they are counted as not applied, the
+  # "Review the next rule." status of a drawer that is gone is replaced, and the
+  # entry is reported as partly saved, as when the rest is refused. With nothing
+  # saved the proposal is untouched and can be reviewed again from its first rule.
+  # A rule whose apply is still in flight has no known outcome, so it is not counted.
+  defp abandon_unreviewed(
+         %{assigns: %{policy_review: %{}, policy_pending?: false, policy_origin: %{saved: saved}}} =
+           socket
+       )
+       when saved > 0 do
+    counts = socket.assigns.policy_counts
+    unreviewed = 1 + length(socket.assigns.policy_remaining)
+
+    socket
+    |> assign(:policy_counts, %{counts | not_applied: counts.not_applied + unreviewed})
+    |> assign(:policy_remaining, [])
+    |> assign(:policy_status, "Closed. The rules already saved from this proposal stay saved.")
+    |> assign(:agent_notice, @prepared_edited_notice)
+  end
+
+  defp abandon_unreviewed(socket), do: socket
 
   # --- create editor ---------------------------------------------------------
 
@@ -1355,122 +1984,265 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           <:subtitle>
             Rules that tell trip planners where riders can change routes, how much time they need, and where a connection won’t work.
           </:subtitle>
-          <%!-- With no rules yet, the first-use panel carries the one create action. --%>
-          <:actions :if={create_action?(assigns)}>
-            <.button id="transfers-create" type="button" class="min-h-11" phx-click="open_create">
+          <%!--
+          Two independent calls to action: the helper, offered wherever the general workspace is, and the
+          create action, which the first-use panel carries instead while a version has no rules. --%>
+          <:actions :if={create_action?(assigns) or helper_action?(assigns)}>
+            <.button
+              :if={helper_action?(assigns)}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
+            <.button
+              :if={create_action?(assigns)}
+              id="transfers-create"
+              type="button"
+              class="min-h-11"
+              phx-click="open_create"
+            >
               <.icon name="hero-plus" class="size-4" /> Create transfer rule
             </.button>
           </:actions>
         </.header>
 
-        <.workspace detail={workspace_detail(assigns)} class="mt-6">
-          <:list>
-            <.load_failure
-              :if={@catalog_state == :unavailable}
-              version_name={@current_gtfs_version.name}
-            />
-            <div :if={@catalog_state == :ready}>
-              <.editor
-                :if={editor_open?(@editor, @view)}
-                editor={@editor}
-                version_name={@current_gtfs_version.name}
-                in_seat_path={@in_seat_path}
-              />
-              <div :if={list_mode?(@editor, @view)}>
-                <.view_chips view={@view} counts={@catalog.counts} />
-                <.first_use :if={first_use?(@catalog, @view)}>
-                  <:action>
-                    <.button
-                      id="transfers-first-use-create"
-                      type="button"
-                      class="min-h-11"
-                      phx-click="open_create"
-                    >
-                      <.icon name="hero-plus" class="size-4" /> Create transfer rule
-                    </.button>
-                  </:action>
-                </.first_use>
-                <div :if={list?(@catalog, @view)}>
-                  <.list_toolbar
-                    search_form={@search_form}
-                    filter_form={@filter_form}
-                    filter_options={@catalog.filter_options}
-                    filter_count={filter_count(@filters)}
-                    filters_open?={@filters_open?}
+        <%!--
+        The panel's focus listener belongs to this persistent element, not to the panel: the
+        closing panel cannot own a handler that runs after its own removal. It owns no other DOM,
+        so the patch cycle ignores it. --%>
+        <div id="transfer-helper-focus" phx-hook=".TransferHelperFocus" phx-update="ignore"></div>
+
+        <%!--
+        What a reviewed proposal did stays on the page once its drawer closes; while the drawer is open
+        the same status and counts render inside it, so each id exists once. --%>
+        <section
+          :if={not @policy_open? and policy_outcome?(@policy_status, @policy_counts)}
+          id="transfer-policy-outcome"
+          aria-label="Helper proposal outcome"
+          class="mt-4 rounded-lg border border-subtle p-3"
+        >
+          <.policy_outcome status={@policy_status} counts={@policy_counts} />
+        </section>
+
+        <%!--
+        The grid gives the workspace the full width while the panel is closed and a fixed 24rem
+        column while it is open, and the workspace column is hidden at phone width so the panel
+        replaces the list. --%>
+        <div class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}>
+          <div class={@agent_open? && "hidden lg:block"}>
+            <.workspace detail={workspace_detail(assigns)} class="mt-6">
+              <:list>
+                <.load_failure
+                  :if={@catalog_state == :unavailable}
+                  version_name={@current_gtfs_version.name}
+                />
+                <div :if={@catalog_state == :ready}>
+                  <.editor
+                    :if={editor_open?(@editor, @view)}
+                    editor={@editor}
+                    version_name={@current_gtfs_version.name}
+                    in_seat_path={@in_seat_path}
                   />
-                  <.rule_count
-                    total_count={@total_count}
-                    all_count={view_count(@catalog, @view)}
-                    in_seat?={@view == :in_seat}
-                    chips={filter_chips(@filters, @catalog.filter_options)}
-                    attention?={@filters.attention}
-                    checked_count={checked_count(@checked)}
-                  />
-                  <.no_results
-                    :if={@total_count == 0}
-                    all_count={view_count(@catalog, @view)}
-                    in_seat?={@view == :in_seat}
-                  />
-                  <.rules_table
-                    :if={@total_count > 0}
-                    rows={@streams.transfers}
-                    selected_id={@selected_id}
-                    sort_by={@sort_by}
-                    sort_dir={@sort_dir}
-                    page={@page}
-                    per_page={@per_page}
-                    total_count={@total_count}
-                    in_seat?={@view == :in_seat}
-                    checked={@checked}
-                    all_checked?={all_shown_checked?(@page_ids, @checked)}
-                  />
+                  <div :if={list_mode?(@editor, @view)}>
+                    <.view_chips view={@view} counts={@catalog.counts} />
+                    <.first_use :if={first_use?(@catalog, @view)}>
+                      <:action>
+                        <.button
+                          id="transfers-first-use-create"
+                          type="button"
+                          class="min-h-11"
+                          phx-click="open_create"
+                        >
+                          <.icon name="hero-plus" class="size-4" /> Create transfer rule
+                        </.button>
+                      </:action>
+                    </.first_use>
+                    <div :if={list?(@catalog, @view)}>
+                      <.list_toolbar
+                        search_form={@search_form}
+                        filter_form={@filter_form}
+                        filter_options={@catalog.filter_options}
+                        filter_count={filter_count(@filters)}
+                        filters_open?={@filters_open?}
+                      />
+                      <.rule_count
+                        total_count={@total_count}
+                        all_count={view_count(@catalog, @view)}
+                        in_seat?={@view == :in_seat}
+                        chips={filter_chips(@filters, @catalog.filter_options)}
+                        attention?={@filters.attention}
+                        checked_count={checked_count(@checked)}
+                      />
+                      <.no_results
+                        :if={@total_count == 0}
+                        all_count={view_count(@catalog, @view)}
+                        in_seat?={@view == :in_seat}
+                      />
+                      <.rules_table
+                        :if={@total_count > 0}
+                        rows={@streams.transfers}
+                        selected_id={@selected_id}
+                        sort_by={@sort_by}
+                        sort_dir={@sort_dir}
+                        page={@page}
+                        per_page={@per_page}
+                        total_count={@total_count}
+                        in_seat?={@view == :in_seat}
+                        checked={@checked}
+                        all_checked?={all_shown_checked?(@page_ids, @checked)}
+                      />
+                    </div>
+                    <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
+                  </div>
                 </div>
-                <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
-              </div>
-            </div>
-          </:list>
-          <:context :if={@catalog_state == :ready}>
-            <.back_to_list :if={not editor_open?(@editor, @view) and @selected} path={@back_path} />
-            <.map_region
-              :if={editor_open?(@editor, @view) or not is_nil(@selected)}
-              editor_open?={editor_open?(@editor, @view)}
-              pick={@pick}
-              map_state={@map_state}
-              generation={@map_generation}
-              extent={@map_extent}
-              missing={@map_missing}
-            />
-            <.draft_preview :if={editor_open?(@editor, @view)} editor={@editor} />
-            <.inspector
-              :if={not editor_open?(@editor, @view) and @selected}
+              </:list>
+              <:context :if={@catalog_state == :ready}>
+                <.back_to_list :if={not editor_open?(@editor, @view) and @selected} path={@back_path} />
+                <.map_region
+                  :if={editor_open?(@editor, @view) or not is_nil(@selected)}
+                  editor_open?={editor_open?(@editor, @view)}
+                  pick={@pick}
+                  map_state={@map_state}
+                  generation={@map_generation}
+                  extent={@map_extent}
+                  missing={@map_missing}
+                />
+                <.draft_preview :if={editor_open?(@editor, @view)} editor={@editor} />
+                <.inspector
+                  :if={not editor_open?(@editor, @view) and @selected}
+                  row={@selected}
+                  competitors={@competitors}
+                  version_id={@current_gtfs_version.id}
+                  in_seat?={@view == :in_seat}
+                />
+                <.context_empty
+                  :if={not editor_open?(@editor, @view) and is_nil(@selected)}
+                  none?={not list?(@catalog, @view)}
+                  in_seat?={@view == :in_seat}
+                />
+              </:context>
+            </.workspace>
+
+            <.compare_dialog
+              :if={@catalog_state == :ready and not editor_open?(@editor, @view) and @compare_open?}
               row={@selected}
               competitors={@competitors}
-              version_id={@current_gtfs_version.id}
-              in_seat?={@view == :in_seat}
             />
-            <.context_empty
-              :if={not editor_open?(@editor, @view) and is_nil(@selected)}
-              none?={not list?(@catalog, @view)}
-              in_seat?={@view == :in_seat}
+            <.delete_dialog
+              :if={@delete_dialog}
+              dialog={@delete_dialog}
+              version_name={@current_gtfs_version.name}
             />
-          </:context>
-        </.workspace>
+            <.discard_dialog open={not is_nil(@pending_discard)} mode={@editor && @editor.mode} />
+          </div>
 
-        <.compare_dialog
-          :if={@catalog_state == :ready and not editor_open?(@editor, @view) and @compare_open?}
-          row={@selected}
-          competitors={@competitors}
+          <div
+            :if={@agent_open?}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Transfers · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label={&agent_review_label/1}
+            />
+          </div>
+        </div>
+
+        <.drawer
+          :if={@policy_open?}
+          id="transfer-policy-drawer"
+          chrome="planner"
+          open={@policy_open?}
+          pending={@policy_pending?}
+          on_close="transfer_policy_close"
+          title="Review prepared transfer rule"
+          initial_focus={:heading}
+          return_focus_id={@policy_return_focus}
+          class="max-w-[560px]"
+        >
+          <:lede>The helper proposed this. Nothing is saved until you confirm.</:lede>
+          <.drawer_scroll>
+            <p
+              :if={@policy_notice}
+              id="transfer-policy-notice"
+              role="status"
+              class="text-[13px] text-muted"
+            >
+              {@policy_notice}
+            </p>
+            <.policy_outcome status={@policy_status} counts={@policy_counts} />
+            <.policy_review_body :if={@policy_review} review={@policy_review} />
+          </.drawer_scroll>
+          <.drawer_footer>
+            <.button
+              id="transfer-policy-refresh"
+              type="button"
+              phx-click="transfer_policy_review"
+              variant="quiet"
+            >
+              Re-read rules
+            </.button>
+            <.button
+              id="transfer-policy-skip"
+              type="button"
+              phx-click="transfer_policy_skip"
+              variant="secondary"
+              disabled={@policy_pending?}
+            >
+              Skip
+            </.button>
+            <.button
+              id="transfer-policy-confirm"
+              type="button"
+              phx-click="transfer_policy_apply"
+              disabled={@policy_pending? or is_nil(@policy_review)}
+            >
+              {if @policy_pending?, do: "Applying…", else: "Apply reviewed change"}
+            </.button>
+          </.drawer_footer>
+        </.drawer>
+
+        <.transfer_policy_source
+          :if={editor_open?(@editor, @view)}
+          selections={@policy_selections}
+          notice={@policy_notice}
         />
-        <.delete_dialog
-          :if={@delete_dialog}
-          dialog={@delete_dialog}
-          version_name={@current_gtfs_version.name}
-        />
-        <.discard_dialog open={not is_nil(@pending_discard)} mode={@editor && @editor.mode} />
       </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".TransferHelperFocus">
+        export default {
+          mounted() {
+            this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
+
+  # The helper is offered wherever the general workspace is, which is the only
+  # place a transfer-policy draft exists to admit. An unavailable catalog has no
+  # rules to read, and the in-seat list is a different policy with no draft here.
+  defp helper_action?(assigns),
+    do: assigns.catalog_state == :ready and assigns.view == :general
+
+  # The panel's action label is named for this page's one prepared command kind, so
+  # a button label never promises another page's review (INV-1).
+  defp agent_review_label(_prepared), do: "Review prepared transfer rule"
 
   # The header's one primary is the create action, except where the first-use panel
   # carries it: a version without rules has nothing to compare, so the panel is the
