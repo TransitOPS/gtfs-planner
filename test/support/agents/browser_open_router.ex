@@ -1229,7 +1229,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp stop_impact_list(_title, rows, _describe) when rows in [nil, []], do: nil
 
   defp stop_impact_list(title, rows, describe),
-    do: "#{title}: #{rows |> Enum.map(describe) |> Enum.join("; ")}."
+    do: "#{title}: #{Enum.map_join(rows, "; ", describe)}."
 
   defp stop_impact_point(%{"label" => label}), do: label
   defp stop_impact_point(point), do: to_string(point)

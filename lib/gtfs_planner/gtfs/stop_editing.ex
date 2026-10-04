@@ -617,12 +617,7 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
       for row <- renamed,
           key = name_key(row.new["stop_name"]),
-          others =
-            (elsewhere ++ siblings)
-            |> Enum.filter(fn {stop_id, name} -> name == key and stop_id != row.stop_id end)
-            |> Enum.map(&elem(&1, 0))
-            |> Enum.uniq()
-            |> Enum.sort(),
+          others = other_stop_ids(elsewhere ++ siblings, key, row.stop_id),
           others != [] do
         %{
           kind: :duplicate_name,
@@ -632,6 +627,15 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
         }
       end
     end
+  end
+
+  # The stop IDs, other than `stop_id`, whose name key is `key`.
+  defp other_stop_ids(named, key, stop_id) do
+    named
+    |> Enum.filter(fn {other_id, name} -> name == key and other_id != stop_id end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   @doc """

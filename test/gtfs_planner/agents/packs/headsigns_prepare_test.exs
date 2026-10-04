@@ -20,6 +20,7 @@ defmodule GtfsPlanner.Agents.Packs.HeadsignsPrepareTest do
 
   alias GtfsPlanner.Agents.Dispatch
   alias GtfsPlanner.Agents.Packs.Headsigns
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.RoutePattern
@@ -101,7 +102,7 @@ defmodule GtfsPlanner.Agents.Packs.HeadsignsPrepareTest do
                "new_text" => "Central Station"
              })
 
-    audit = GtfsPlanner.Agents.Scope.audit_context(scope)
+    audit = Scope.audit_context(scope)
 
     assert {:ok, %{proposed: %{headsign_changes: changes}}} =
              Gtfs.review(

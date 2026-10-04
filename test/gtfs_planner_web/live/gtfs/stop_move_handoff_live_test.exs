@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Agents.Packs.StopImpact
   alias GtfsPlanner.Agents.ScriptedProvider
   alias GtfsPlanner.GeocodingMock
   alias GtfsPlanner.Gtfs.ChangeLog
@@ -235,7 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
     assert has_element?(view, "#agent-panel")
 
     refute Enum.any?(
-             GtfsPlanner.Agents.Packs.StopImpact.tools(),
+             StopImpact.tools(),
              &(&1.name =~ ~r/delete|replace/)
            )
   end
