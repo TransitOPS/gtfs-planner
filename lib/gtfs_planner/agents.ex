@@ -28,7 +28,10 @@ defmodule GtfsPlanner.Agents do
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
   approved_digest, subject_id}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1).
-  `subject_id` is `nil` for a pack with no subject record.
+  `subject_id` is `nil` for a pack with no subject record. The key also carries
+  the context digest, which covers the approved extension and any admitted source
+  snapshot together, so attaching a different source starts its own conversation
+  instead of continuing one whose tools already answered from the previous source.
 
   `packs/0` and the session key are the only places here that name a concrete
   pack (INV-1). The Alerts pack is keyed by a subject: its tools read one alert of
@@ -47,7 +50,8 @@ defmodule GtfsPlanner.Agents do
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
-    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries
+    "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
+    "timetables" => GtfsPlanner.Agents.Packs.Timetables
   }
 
   @doc "Every shipped capability pack, keyed by `Pack.id/0`."
@@ -158,7 +162,8 @@ defmodule GtfsPlanner.Agents do
 
   defp base_key(%Scope{} = scope) do
     {scope.user_id, scope.organization_id, scope.gtfs_version_id, scope.pack_id,
-     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id}
+     Scope.identity(scope), Scope.approved_digest(scope), scope.subject_id,
+     Scope.context_digest(scope)}
   end
 
   defp start_session(scope, pack) do

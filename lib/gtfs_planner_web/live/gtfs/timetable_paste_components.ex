@@ -29,15 +29,34 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   `.PasteLeaveGuard` hook (`leave_guard/1`) that intercepts tab, header
   and version-switcher navigation plus `beforeunload` while the form holds
   text, and the Open Schedules link's dirty-only `data-confirm`.
+
+  Step 3 adds `source_review_step/1`: its own `#timetable-source-form`
+  beside `#paste-form`, the staff-supplied provenance, the inclusive
+  interval, the reviewed date policy, the acceptance confirmation, the
+  unresolved list and the assistant refusal. It reuses the columns step's
+  mapping rather than keeping a second one.
+
+  Step 5 adds `batches_step/1`: the saved and unsaved state of the batches
+  the helper prepared from that source, beside the source card it belongs
+  to. The card renders only when a batch exists, so an ordinary paste is
+  unchanged. Its counts are the native result's own, never the proposal's.
+
+  Step 8 adds `comparison_step/1`: the provider-independent Compare timetable
+  action, the server's exact totals with their units, the disclosure of what
+  the comparison could not settle, and one page of retained witnesses at a
+  time. It reuses this module's card shape, message tones and muted tokens, and
+  keeps the totals outside the streamed rows so a bounded sample never reads as
+  the whole answer.
   """
   use GtfsPlannerWeb, :html
 
   alias Phoenix.LiveView.JS
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
+    only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.TimetableSource
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
@@ -775,6 +794,570 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   def column_value(%{target: :trip_headsign}), do: "trip_headsign"
   def column_value(%{target: :ignore}), do: "ignore"
   def column_value(_column), do: ""
+
+  @doc """
+  Renders the prepared-batch states (step 5): one row per batch the helper
+  prepared from the accepted source, its calendar and rows, and whether it
+  was saved, refused or is still under review.
+
+  The card exists only while a batch does, so a paste that was never
+  prepared sees no change. `#timetable-batches-remaining` states how many of
+  the source's rows are still unsaved, which is the honest answer when a
+  save leaves the page here rather than navigating away: those rows are the
+  next batch, and nothing about them has been written.
+  """
+  attr :batches, :list, default: [], doc: "the prepared batches, oldest first"
+  attr :remaining, :integer, default: 0, doc: "source rows no saved batch covered"
+
+  def batches_step(assigns) do
+    ~H"""
+    <section
+      :if={@batches != []}
+      id="timetable-batches"
+      aria-label="Prepared batches"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Prepared batches</h2>
+          <p class="text-[13px] text-muted">
+            Each batch is saved on its own, after you review and apply it here
+          </p>
+        </div>
+      </div>
+      <ul id="timetable-batches-list" class="grid gap-0 px-5">
+        <li
+          :for={batch <- @batches}
+          id={"timetable-batch-#{batch.entry_id}"}
+          class="grid gap-1 border-b border-subtle py-3 last:border-0"
+        >
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span class={["badge badge-sm", elem(batch_badge(batch.status), 1)]}>
+              {elem(batch_badge(batch.status), 0)}
+            </span>
+            <span class="text-[13px] font-semibold text-strong">
+              {batch.service_id || "Calendar"}
+            </span>
+            <span class="text-[13px] text-muted">
+              {length(batch.row_ids)} {batch_row_word(length(batch.row_ids))}
+            </span>
+          </div>
+          <p :if={batch.status == :saved} class="text-[13px] text-muted">
+            {batch_saved_text(batch)}
+          </p>
+          <p :if={batch.status == :pending} class="text-[13px] text-muted">
+            Waiting for you to apply it from the review above.
+          </p>
+          <p :if={batch.status == :failed} class="text-[13px] text-muted">
+            Not saved. The timetable it projected is still in the review above.
+          </p>
+          <p :if={batch.status == :unknown} class="text-[13px] text-muted">
+            The connection dropped while saving, so whether it was written is unknown. Check the
+            schedule before applying it again.
+          </p>
+        </li>
+      </ul>
+      <div id="timetable-batches-remaining" role="status" aria-live="polite" class="px-5 pb-4">
+        <.message
+          :if={@remaining == 0}
+          id="timetable-batches-complete"
+          kind="success"
+          title="Every row of this source has been saved."
+        >
+          Nothing is left to prepare from this source.
+        </.message>
+        <.message
+          :if={@remaining > 0}
+          id="timetable-batches-unsaved"
+          kind="info"
+          title={unsaved_title(@remaining)}
+        >
+          {unsaved_text(@remaining)}
+        </.message>
+      </div>
+    </section>
+    """
+  end
+
+  defp batch_badge(:saved), do: {"Saved", "badge-success"}
+  defp batch_badge(:failed), do: {"Not saved", "badge-warning"}
+  defp batch_badge(:unknown), do: {"Unknown", "badge-warning"}
+  defp batch_badge(_status), do: {"Under review", "badge-info"}
+
+  defp batch_row_word(1), do: "source row"
+  defp batch_row_word(_count), do: "source rows"
+
+  defp batch_saved_text(batch) do
+    counts =
+      [
+        {"Added", batch.added, "trip"},
+        {"changed", batch.changed, "trip"},
+        {"removed", batch.removed, "trip"}
+      ]
+      |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{Wording.noun(count, one)}" end)
+
+    case counts do
+      [] -> "Saved. This batch changed nothing that was already stored."
+      counts -> "Saved: " <> Enum.join(counts, ", ") <> "."
+    end
+  end
+
+  defp unsaved_title(1), do: "1 source row is still unsaved."
+  defp unsaved_title(count), do: "#{count} source rows are still unsaved."
+
+  defp unsaved_text(1),
+    do: "Ask the helper to prepare it, or review it yourself. Nothing about it has been written."
+
+  defp unsaved_text(_count),
+    do:
+      "Ask the helper to prepare them, or review them yourself. Nothing about them has been written."
+
+  @doc """
+  Renders the reviewed-source card beside the native steps (step 3).
+
+  `#timetable-source-form` is its own form: it cannot nest inside `#paste-form`,
+  and the two are separate pieces of work — the paste decides what is written,
+  this records what the copied table means. Its fields are the staff-supplied
+  provenance (label, revision, notes), the inclusive interval, the reviewed
+  date policy and the acceptance confirmation; the mapping is never a second
+  one here, it is the columns the native review already resolved.
+
+  The card shows, in order, what has been reviewed so far
+  (`#timetable-source-state`), what the paste did not settle
+  (`#timetable-source-unresolved`), an assistant refusal
+  (`#timetable-helper-too-large`) and the refusal summary for a bad submit
+  (`#timetable-source-errors`). Acceptance states the provenance the staff
+  typed and that the source lives in this page only, because it does.
+  """
+  attr :form, :any, required: true, doc: "the reviewed-source form from `to_form`"
+  attr :errors, :map, default: %{}, doc: "field errors from `TimetableSource.normalize/2`"
+  attr :draft, :any, default: nil, doc: "the last normalized, unaccepted source"
+  attr :source, :any, default: nil, doc: "the accepted immutable source, if any"
+  attr :unresolved, :list, default: [], doc: "unresolved reasons to disclose"
+  attr :notice, :atom, default: nil, values: [nil, :draft, :accepted, :unresolved, :invalid]
+  attr :too_large, :boolean, default: false, doc: "the helper refused the source"
+
+  attr :scope, :map,
+    required: true,
+    doc: "the loaded paste scope with patterns, calendar and stops"
+
+  def source_review_step(assigns) do
+    assigns =
+      assigns
+      |> assign(:reviewed, assigns.source || assigns.draft)
+      |> assign(:failures, source_failures(assigns.errors))
+      |> assign(:exclusions, source_exclusions(assigns.source || assigns.draft))
+
+    ~H"""
+    <section
+      id="timetable-source"
+      aria-label="Reviewed source"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Reviewed source</h2>
+          <p class="text-[13px] text-muted">
+            What this copied table means: where it came from and which dates it covers
+          </p>
+        </div>
+      </div>
+      <div class="grid gap-4 px-5 py-5 [&>*]:min-w-0">
+        <!-- The reviewed source's own feedback lives inside its own form, so
+          the page's FormErrorFocus hook can move focus to it: the hook only
+          ever focuses a target it owns. -->
+        <.form
+          for={@form}
+          id="timetable-source-form"
+          phx-change="source_change"
+          phx-submit="source_review"
+          phx-hook="FormErrorFocus"
+          class="grid gap-4"
+        >
+          <.form_error_summary
+            id="timetable-source-errors"
+            title="Nothing was accepted."
+            failures={@failures}
+            class=""
+          />
+          <div id="timetable-source-state" tabindex="-1" role="status" class="outline-none">
+            <.message
+              :if={@notice == :accepted and @source}
+              id="timetable-source-accepted"
+              kind="success"
+              title="Source accepted for comparison."
+            >
+              {source_accepted_text(@source, @scope)}
+            </.message>
+            <.message
+              :if={@notice == :draft and @draft}
+              id="timetable-source-drafted"
+              kind="info"
+              title="Reviewed, not accepted yet."
+            >
+              {source_draft_text(@draft)}
+            </.message>
+            <.message
+              :if={@notice == :invalid}
+              id="timetable-source-invalid"
+              kind="warning"
+              title="Fix the fields below to review this source."
+            >
+              Your notes and dates are still here.
+            </.message>
+            <p :if={is_nil(@notice)} class="text-[13px] text-muted">
+              Comparing this table with the feed needs an accepted source. Fill in the interval and
+              confirm the review below; nothing is written and nothing is stored.
+            </p>
+          </div>
+          <div
+            :if={@unresolved != []}
+            id="timetable-source-unresolved"
+            role="alert"
+            aria-live="assertive"
+            class="rounded-card border border-warning-line bg-warning-bg px-4 py-3 text-sm text-warning-fg"
+          >
+            <p class="font-bold">{unresolved_title(@source, @unresolved)}</p>
+            <ul class="mt-1 list-disc pl-5">
+              <li :for={reason <- @unresolved}>{unresolved_text(reason)}</li>
+            </ul>
+            <p :if={@exclusions != []} class="mt-2">
+              {exclusion_text(@exclusions)}
+            </p>
+          </div>
+          <div
+            :if={@too_large}
+            id="timetable-helper-too-large"
+            role="status"
+            aria-live="polite"
+            class="rounded-card border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
+          >
+            <p class="font-bold">The helper was not given this source.</p>
+            <p class="mt-1">
+              It is larger than the helper accepts, so nothing was attached. Your timetable, its
+              review and this comparison stay here and unchanged.
+            </p>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <.input
+              field={@form[:label]}
+              id="timetable-source-label"
+              label="Source label"
+              errors={@errors["label"] || []}
+              help="Where this table came from, in your words."
+            />
+            <.input
+              field={@form[:revision]}
+              id="timetable-source-revision"
+              label="Revision"
+              errors={@errors["revision"] || []}
+            />
+            <div class="sm:col-span-2">
+              <.input
+                field={@form[:notes]}
+                type="textarea"
+                id="timetable-source-notes"
+                label="Source notes"
+                errors={@errors["notes"] || []}
+                rows="3"
+                class="w-full textarea text-[13px]"
+              />
+            </div>
+            <div class="sm:col-span-2 grid gap-4 sm:grid-cols-2">
+              <.input
+                field={@form[:first_date]}
+                type="date"
+                id="timetable-source-first-date"
+                label="First date"
+                errors={@errors["first_date"] || []}
+              />
+              <.input
+                field={@form[:last_date]}
+                type="date"
+                id="timetable-source-last-date"
+                label="Last date"
+                errors={@errors["last_date"] || []}
+              />
+            </div>
+            <div class="sm:col-span-2">
+              <.input
+                field={@form[:date_policy]}
+                type="select"
+                id="timetable-source-policy"
+                label="Dates are"
+                options={[{"Weekly weekdays", "weekly"}, {"Exact school dates", "school"}]}
+                errors={@errors["date_policy"] || []}
+              />
+            </div>
+            <!-- The boxes stay in the form under a school policy so their
+              choices survive the switch. The wrapper carries the hiding: the
+              daisyUI fieldset class outranks a utility on the fieldset. -->
+            <div class={[
+              "sm:col-span-2",
+              @form[:date_policy].value == "school" && "hidden"
+            ]}>
+              <fieldset
+                id="timetable-source-weekdays"
+                class="fieldset"
+                aria-invalid={to_string(@errors["weekdays"] not in [nil, []])}
+              >
+                <legend class="label text-base">Weekdays</legend>
+                <div class="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                  <label
+                    :for={{day, number} <- weekday_options()}
+                    class="inline-flex min-h-11 items-center gap-2"
+                  >
+                    <input
+                      type="checkbox"
+                      id={"timetable-source-weekday-#{number}"}
+                      name="source[weekdays][]"
+                      value={number}
+                      checked={number in (@form[:weekdays].value || [])}
+                      class="size-4 accent-action"
+                    />
+                    {day}
+                  </label>
+                </div>
+                <p :if={@errors["weekdays"]} class="mt-1 text-sm text-error">
+                  {Enum.join(@errors["weekdays"], " ")}
+                </p>
+              </fieldset>
+            </div>
+            <.input
+              :if={@form[:date_policy].value == "school"}
+              field={@form[:school_dates]}
+              id="timetable-source-school-dates"
+              label="School dates"
+              errors={@errors["school_dates"] || []}
+              help="Exact dates inside the interval, separated by commas."
+            />
+            <.input
+              field={@form[:added_dates]}
+              id="timetable-source-added-dates"
+              label="Added dates"
+              errors={@errors["added_dates"] || []}
+              help="Service days added inside the interval."
+            />
+            <.input
+              field={@form[:removed_dates]}
+              id="timetable-source-removed-dates"
+              label="Removed dates"
+              errors={@errors["removed_dates"] || []}
+              help="Service days removed inside the interval, such as a holiday."
+            />
+            <div class="sm:col-span-2 rounded-control border border-subtle bg-canvas px-4 py-3">
+              <.input
+                type="checkbox"
+                field={@form[:confirm]}
+                id="timetable-source-confirm"
+                label="I reviewed this mapping and these dates."
+                class="size-4 accent-action"
+              />
+              <p class="mt-1 text-[13px] text-muted">
+                Accepting records a reviewed configuration, not agency approval. It is kept in this
+                page only: leaving, refreshing or re-reading the timetable clears it.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-subtle pt-4 sm:col-span-2">
+              <p class="text-[13px] text-muted">{source_mapping_text(@reviewed, @scope)}</p>
+              <.button
+                id="timetable-source-accept"
+                type="submit"
+                class="min-h-11"
+                phx-disable-with="Reviewing…"
+              >
+                Review source
+              </.button>
+            </div>
+          </div>
+        </.form>
+      </div>
+    </section>
+    """
+  end
+
+  # Every rejection names the field it belongs to, so the summary links into the
+  # control the editor has to change.
+  defp source_failures(errors) when is_map(errors) do
+    Enum.flat_map(errors, fn {field, messages} ->
+      Enum.map(List.wrap(messages), fn message ->
+        %{href: "#" <> source_field_id(field), msg: "#{source_field_label(field)} #{message}."}
+      end)
+    end)
+  end
+
+  defp source_field_id("mapping.columns" <> _rest), do: "columns-table"
+  defp source_field_id(field), do: "timetable-source-" <> String.replace(field, "_", "-")
+
+  defp source_field_label("text"), do: "The timetable"
+  defp source_field_label("first_date"), do: "The first date"
+  defp source_field_label("last_date"), do: "The last date"
+  defp source_field_label("date_policy"), do: "The date policy"
+  defp source_field_label("weekdays"), do: "The weekdays"
+  defp source_field_label("added_dates"), do: "The added dates"
+  defp source_field_label("removed_dates"), do: "The removed dates"
+  defp source_field_label("school_dates"), do: "The school dates"
+  defp source_field_label("notes"), do: "The notes"
+  defp source_field_label("label"), do: "The source label"
+  defp source_field_label("revision"), do: "The revision"
+  defp source_field_label("mapping.columns" <> _rest), do: "The column mapping"
+  defp source_field_label(_field), do: "This field"
+
+  defp source_exclusions(%{exclusions: exclusions}) when is_list(exclusions), do: exclusions
+  defp source_exclusions(_source), do: []
+
+  defp weekday_options do
+    [
+      {"Mon", "1"},
+      {"Tue", "2"},
+      {"Wed", "3"},
+      {"Thu", "4"},
+      {"Fri", "5"},
+      {"Sat", "6"},
+      {"Sun", "7"}
+    ]
+  end
+
+  defp source_accepted_text(source, scope) do
+    provenance =
+      [source.label, source.revision]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" · ")
+
+    {first, last} = source.interval
+
+    [
+      provenance,
+      source_pattern_name(scope),
+      "#{service_date_count(source)} service dates",
+      "in #{Date.to_iso8601(first)} – #{Date.to_iso8601(last)}",
+      "#{length(source.rows)} mapped rows"
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
+
+  defp source_draft_text(draft) do
+    "#{service_date_count(draft)} service dates · #{length(draft.rows)} mapped rows"
+  end
+
+  # The interval's own span and the dates the reviewed rules actually produce
+  # are different numbers, and a reader who is told only one of them would
+  # read a 29-day interval as 29 service days.
+  defp service_date_count(%{rows: [row | _rest]}), do: length(row.dates)
+  defp service_date_count(_source), do: 0
+
+  defp source_pattern_name(scope) do
+    case columns_pattern(scope) do
+      %{name: name} when is_binary(name) and name != "" -> "on #{name}"
+      _no_pattern -> ""
+    end
+  end
+
+  defp source_mapping_text(nil, _scope) do
+    "The Columns step decides which pasted column is which stop; this form never maps it again."
+  end
+
+  defp source_mapping_text(reviewed, scope) do
+    "#{map_size(reviewed.mapping.columns)} pasted columns mapped to stops #{source_pattern_name(scope)}."
+  end
+
+  defp unresolved_title(source, unresolved) when is_list(unresolved) do
+    if is_nil(source) or Enum.any?(unresolved, &TimetableSource.blocking_reason?/1) do
+      "This source cannot be accepted yet."
+    else
+      "Accepted with #{length(unresolved)} things this table did not settle."
+    end
+  end
+
+  defp unresolved_text(:missing_school_dates) do
+    "No school dates were supplied. Enter the exact school dates, or choose weekly weekdays."
+  end
+
+  defp unresolved_text(:unreviewed_twelve_hour) do
+    "A trip row uses 12-hour language that has not been reviewed. Choose its reading in the rows above."
+  end
+
+  defp unresolved_text({:unreviewed_twelve_hour, row}) do
+    "Row #{row} uses 12-hour language that has not been reviewed. Choose its reading in the rows above."
+  end
+
+  defp unresolved_text(:missing_mapping) do
+    "A trip row has no feed trip in this calendar and direction. Check its first departure or map the row."
+  end
+
+  defp unresolved_text({:missing_mapping, row}) do
+    "Row #{row} has no feed trip in this calendar and direction. Check its first departure or map the row."
+  end
+
+  defp unresolved_text(:ambiguous_mapping) do
+    "Several feed trips match a trip row. Map that row to the trip it copies."
+  end
+
+  defp unresolved_text({:ambiguous_mapping, row, _count}) do
+    "Several feed trips match row #{row}. Map that row to the trip it copies."
+  end
+
+  defp unresolved_text(:unknown_feed_trip) do
+    "A mapped feed trip is not in this calendar and direction."
+  end
+
+  defp unresolved_text({:unknown_feed_trip, row, trip_id}) do
+    "Row #{row} is mapped to feed trip #{trip_id}, which is not in this calendar and direction."
+  end
+
+  defp unresolved_text(:duplicate_feed_trip) do
+    "Two trip rows are mapped to the same feed trip."
+  end
+
+  defp unresolved_text({:duplicate_feed_trip, trip_id}) do
+    "Two trip rows are mapped to the same feed trip (#{trip_id})."
+  end
+
+  defp unresolved_text(:mapping_conflict) do
+    "A mapped feed trip belongs to another direction or pattern."
+  end
+
+  defp unresolved_text({:mapping_conflict, row, trip_id}) do
+    "Row #{row} is mapped to feed trip #{trip_id}, which belongs to another direction or pattern."
+  end
+
+  defp unresolved_text({:addition_outside_interval, date}) do
+    "The added date #{date} falls outside the interval, so it was excluded."
+  end
+
+  defp unresolved_text({:removal_outside_interval, date}) do
+    "The removed date #{date} falls outside the interval, so it was excluded."
+  end
+
+  defp unresolved_text({:unsupported_clock, col, text}) do
+    "Column #{column_letter(col)} holds #{text}, which the timetable grammar does not read as a time."
+  end
+
+  defp unresolved_text({:unsupported_column, row, col}) do
+    "Row #{row}, column #{column_letter(col)} holds text the grammar does not read. Map or clear that column."
+  end
+
+  defp unresolved_text({:missing_school_dates, interval}) do
+    "#{missing_school_dates_text(interval)} were not supplied, so nothing was assumed."
+  end
+
+  defp unresolved_text(reason) do
+    "This source still carries an unreviewed item: #{inspect(reason)}."
+  end
+
+  defp missing_school_dates_text({first, last}) do
+    "The school dates between #{Date.to_iso8601(first)} and #{Date.to_iso8601(last)}"
+  end
+
+  defp missing_school_dates_text(interval) do
+    "#{inspect(interval)}"
+  end
+
+  defp exclusion_text(exclusions) do
+    "#{length(exclusions)} supplied dates fall outside the interval and were excluded."
+  end
 
   defp columns_pattern(scope) when is_map(scope) do
     patterns = Map.get(scope, :patterns, []) || []
@@ -3081,4 +3664,415 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   defp transfer_are(1), do: "is"
   defp transfer_are(_count), do: "are"
+
+  # --- Approved comparison (step 8) -------------------------------------------
+
+  # The report's own vocabulary, in the order a reader meets it. `matched` is
+  # the answer rather than a difference, so it is separated from the rest.
+  @comparison_differences [:missing, :extra, :time_mismatch, :date_mismatch]
+  @comparison_category_labels %{
+    matched: "Matched",
+    missing: "Missing from the feed",
+    extra: "Not in the table",
+    time_mismatch: "Different times",
+    date_mismatch: "Different dates"
+  }
+
+  @doc """
+  Renders the approved comparison beside the native review matrix (step 8).
+
+  `#timetable-compare` is the provider-independent action: it compares the
+  accepted source with this route's current feed and never reads the helper, so
+  it works with the helper closed, disabled or failing.
+
+  `#timetable-comparison-state` is the single announced state of the card: not
+  compared yet, comparing, complete with differences, complete and matching,
+  stale, or refused. A report that could not be computed in full never reads as
+  a match, and a stale report keeps its last numbers beside the notice that says
+  they describe a feed this page has not re-read.
+
+  The totals are the report's own exact counts beside the report's own units,
+  rendered outside the stream, so they never move with a page of witnesses.
+  `#timetable-comparison-rows` streams only the current page of retained
+  witnesses and `#timetable-comparison-next` pages through that retained sample;
+  both the retained count and the category total are stated above it, because a
+  bounded sample is not every difference (AC-13, AC-14, AC-17).
+  """
+  attr :source, :any, default: nil, doc: "the accepted source, if any"
+
+  attr :state, :atom,
+    default: :idle,
+    values: [:idle, :comparing, :checking, :ready, :stale, :unavailable]
+
+  attr :report, :any, default: nil, doc: "the typed server report, if one has been computed"
+  attr :error, :any, default: nil, doc: "the refusal copy for an unavailable comparison"
+  attr :stale, :any, default: nil, doc: "why a report is stale"
+  attr :checked, :any, default: nil, doc: "when the report was last checked against the feed"
+  attr :category, :atom, default: :missing, doc: "the witness category on screen"
+  attr :page, :any, default: nil, doc: "the page number on screen"
+  attr :page_size, :integer, default: 0, doc: "how many witnesses one page holds"
+  attr :total, :integer, default: 0, doc: "the category's exact total for the whole comparison"
+  attr :retained, :integer, default: 0, doc: "how many examples the bounded sample kept"
+  attr :shown, :integer, default: 0, doc: "how many examples this page shows"
+  attr :rows, :any, required: true, doc: "the streamed page of witnesses"
+
+  def comparison_step(assigns) do
+    assigns =
+      assigns
+      |> assign(:accepted?, not is_nil(assigns.source))
+      |> assign(:comparing?, assigns.state in [:comparing, :checking])
+      # The template reads these as assigns rather than as module attributes,
+      # which a HEEx body cannot expand.
+      |> assign(:differences, @comparison_differences)
+      |> assign(:labels, @comparison_category_labels)
+
+    ~H"""
+    <section
+      id="timetable-comparison"
+      aria-label="Feed comparison"
+      class="mt-4 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Feed comparison</h2>
+          <p class="text-[13px] text-muted">
+            What this route runs today against the table you reviewed. Comparing reads the feed; it
+            changes nothing
+          </p>
+        </div>
+        <div class="ms-auto flex flex-wrap items-center gap-2">
+          <.button
+            :if={@accepted? and not @comparing?}
+            id="timetable-compare"
+            type="button"
+            phx-click="compare"
+            class="min-h-11"
+          >
+            {if @report, do: "Compare again", else: "Compare timetable"}
+          </.button>
+          <.button
+            :if={@accepted? and not @comparing?}
+            id="timetable-comparison-freshness"
+            type="button"
+            variant="quiet"
+            phx-click="comparison_freshness"
+            aria-label="Check whether this comparison is still current"
+            class="min-h-11"
+          >
+            Check freshness
+          </.button>
+        </div>
+      </div>
+      <div class="grid gap-4 px-5 py-5 [&>*]:min-w-0">
+        <div
+          id="timetable-comparison-state"
+          tabindex="-1"
+          role="status"
+          aria-live="polite"
+          aria-busy={to_string(@comparing?)}
+          class="outline-none"
+        >
+          <p :if={not @accepted?} class="text-[13px] text-muted">
+            {comparison_idle_text(@state)}
+          </p>
+          <.message
+            :if={@accepted? and @comparing?}
+            id="timetable-comparison-busy"
+            kind="info"
+            title={comparison_busy_title(@state)}
+          >
+            {comparison_busy_text(@state)}
+          </.message>
+          <.message
+            :if={@state == :unavailable and @error}
+            id="timetable-comparison-unavailable"
+            kind="error"
+            title="This comparison was not computed."
+          >
+            {@error}
+          </.message>
+          <.message
+            :if={@state == :stale}
+            id="timetable-comparison-stale"
+            kind="warning"
+            title="This comparison is out of date."
+          >
+            {comparison_stale_text(@stale)}
+          </.message>
+          <.message
+            :if={@state == :ready and @report.clean?}
+            id="timetable-comparison-clean"
+            kind="success"
+            title="Every compared trip-date pair matches the feed."
+          >
+            {comparison_clean_text(@report)}
+          </.message>
+          <.message
+            :if={@state == :ready and not @report.clean?}
+            id="timetable-comparison-differences"
+            kind="warning"
+            title={comparison_difference_title(@report)}
+          >
+            {comparison_difference_text(@report)}
+          </.message>
+          <.message
+            :if={@accepted? and @state == :idle}
+            id="timetable-comparison-idle"
+            kind="info"
+            title="Not compared yet."
+          >
+            Comparing reads this route's current feed and writes nothing. The helper is not involved.
+          </.message>
+        </div>
+        <p
+          :if={not is_nil(@checked) and @state in [:ready, :stale]}
+          id="timetable-comparison-checked"
+          class="text-[13px] text-muted"
+        >
+          {@checked}
+        </p>
+        <div :if={@report != nil and @state in [:ready, :stale]} id="timetable-comparison-totals">
+          <table class="w-full border-collapse text-[13px]">
+            <caption class="sr-only">
+              Exact totals for this comparison, with the unit each category counts
+            </caption>
+            <thead>
+              <tr class="border-b border-subtle text-left text-[12px] text-muted">
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Category</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Total</th>
+                <th scope="col" class="py-1.5 font-semibold">Counts</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                :for={category <- [:matched | @differences]}
+                id={"timetable-comparison-total-#{category}"}
+                class={[
+                  "border-b border-subtle last:border-0",
+                  category == @category and "bg-canvas"
+                ]}
+              >
+                <th scope="row" class="py-1.5 pe-3 text-left font-medium text-strong">
+                  {@labels[category]}
+                </th>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {Map.get(@report.totals, category, 0)}
+                </td>
+                <td class="py-1.5 text-muted">{@report.units[category]}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p id="timetable-comparison-disclosure" class="mt-2 text-[13px] text-muted">
+            {comparison_disclosure(@report)}
+          </p>
+          <ul
+            :if={@report.unresolved != []}
+            id="timetable-comparison-unresolved"
+            class="mt-2 list-disc pl-5 text-[13px] text-warning-fg"
+          >
+            <li :for={reason <- Enum.take(@report.unresolved, 5)}>{inspect(reason)}</li>
+          </ul>
+        </div>
+        <div :if={@report != nil and @state in [:ready, :stale]} class="grid gap-3">
+          <form id="timetable-comparison-filters" phx-change="comparison_category">
+            <label for="timetable-comparison-category" class="label text-[13px]">
+              Differences to show
+            </label>
+            <select
+              id="timetable-comparison-category"
+              name="category"
+              class="select select-sm mt-1 w-full max-w-xs text-[13px]"
+            >
+              <option
+                :for={category <- [:matched | @differences]}
+                value={category}
+                selected={category == @category}
+              >
+                {@labels[category]}
+              </option>
+            </select>
+          </form>
+          <p id="timetable-comparison-sample" class="text-[13px] text-muted">
+            {comparison_sample_text(@category, @total, @retained, @shown, @page)}
+          </p>
+          <table class="w-full border-collapse text-[13px]">
+            <caption class="sr-only">Retained comparison witnesses for this page</caption>
+            <thead>
+              <tr class="border-b border-subtle text-left text-[12px] text-muted">
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Date</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Source row</th>
+                <th scope="col" class="hidden py-1.5 pe-3 font-semibold sm:table-cell">Trip</th>
+                <th scope="col" class="hidden py-1.5 pe-3 font-semibold sm:table-cell">Stop</th>
+                <th scope="col" class="py-1.5 pe-3 font-semibold">Event</th>
+                <th scope="col" class="py-1.5 pe-3 text-right font-semibold">Table</th>
+                <th scope="col" class="py-1.5 text-right font-semibold">Feed</th>
+              </tr>
+            </thead>
+            <tbody id="timetable-comparison-rows" phx-update="stream">
+              <tr
+                :for={{dom_id, row} <- @rows}
+                id={dom_id}
+                class="border-b border-subtle last:border-0 hover:bg-canvas"
+              >
+                <td class="py-1.5 pe-3 whitespace-nowrap text-strong">
+                  {Date.to_iso8601(row.witness.date)}
+                </td>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {row.witness.source_row_id}
+                </td>
+                <td class="hidden py-1.5 pe-3 whitespace-nowrap text-muted sm:table-cell">
+                  {row.witness.trip_id}
+                </td>
+                <td class="hidden py-1.5 pe-3 whitespace-nowrap text-muted sm:table-cell">
+                  {comparison_stop(row.witness)}
+                </td>
+                <td class="py-1.5 pe-3 text-muted">{comparison_event(row.witness)}</td>
+                <td class="py-1.5 pe-3 text-right tabular-nums text-strong">
+                  {comparison_clock(row.witness.source_clock)}
+                </td>
+                <td class="py-1.5 text-right tabular-nums text-strong">
+                  {comparison_clock(row.witness.feed_clock)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="flex flex-wrap items-center gap-2">
+            <.button
+              :if={is_integer(@page) and @page > 1}
+              id="timetable-comparison-previous"
+              type="button"
+              variant="quiet"
+              phx-click="comparison_page"
+              phx-value-page={@page - 1}
+              class="min-h-11"
+            >
+              Previous page
+            </.button>
+            <.button
+              :if={comparison_more_pages?(@page, @page_size, @retained)}
+              id="timetable-comparison-next"
+              type="button"
+              variant="quiet"
+              phx-click="comparison_page"
+              phx-value-page={(@page || 1) + 1}
+              class="min-h-11"
+            >
+              Next page
+            </.button>
+          </div>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  defp comparison_idle_text(:idle), do: comparison_not_accepted_text()
+
+  defp comparison_idle_text(_state),
+    do: comparison_not_accepted_text()
+
+  defp comparison_not_accepted_text do
+    "Accept the reviewed source above before comparing it with the feed."
+  end
+
+  defp comparison_busy_title(:checking), do: "Checking the feed…"
+  defp comparison_busy_title(_state), do: "Comparing the accepted source…"
+
+  defp comparison_busy_text(:checking),
+    do: "Reading this route's current feed to see whether these numbers still describe it."
+
+  defp comparison_busy_text(_state),
+    do: "Reading this route's feed for the interval this source covers. Nothing is written."
+
+  defp comparison_clean_text(report) do
+    "#{Map.get(report.totals, :matched, 0)} trip-date pairs match, with nothing unresolved " <>
+      "and nothing excluded, between #{comparison_interval(report)}."
+  end
+
+  defp comparison_difference_title(report) do
+    case comparison_incomplete?(report) do
+      true -> "This comparison could not be read as a match."
+      false -> "This comparison found differences."
+    end
+  end
+
+  defp comparison_difference_text(report) do
+    [
+      "#{Wording.count_noun(comparison_difference_count(report), "difference")}",
+      comparison_incomplete?(report) &&
+        "the reviewed scope was not computed in full, so nothing here reads as a match",
+      report.unresolved != [] && "#{length(report.unresolved)} item(s) remain unresolved",
+      report.exclusions != [] && "#{length(report.exclusions)} item(s) are excluded",
+      "between #{comparison_interval(report)}"
+    ]
+    |> Enum.reject(&(&1 in [nil, false, ""]))
+    |> Enum.join(" · ")
+  end
+
+  # A complete computation with no unresolved item, no exclusion, no difference
+  # in any category and at least one compared pair is the only clean reading, so
+  # every other report is disclosed as not matching (INV-3).
+  defp comparison_incomplete?(report) do
+    report.computation != :complete or report.unresolved != [] or report.exclusions != []
+  end
+
+  defp comparison_difference_count(report) do
+    Enum.sum(Enum.map(@comparison_differences, &Map.get(report.totals, &1, 0)))
+  end
+
+  defp comparison_interval(report) do
+    {first, last} = report.interval
+    "#{Date.to_iso8601(first)} and #{Date.to_iso8601(last)}"
+  end
+
+  defp comparison_disclosure(report) do
+    case comparison_difference_count(report) do
+      0 ->
+        "These categories overlap and are not added into one total: a date the feed runs and the " <>
+          "table omits is both a missing pair and a date difference."
+
+      count ->
+        "These categories overlap and are not added into one total: #{count} differences in " <>
+          "total, counted in #{comparison_difference_count(report)} category entries."
+    end
+  end
+
+  defp comparison_stale_text(:source_edit) do
+    "You accepted an edited source after this comparison ran, so the numbers below describe the " <>
+      "source as it was accepted. Compare again to see the current source."
+  end
+
+  defp comparison_stale_text(:native_write) do
+    "You saved a native change after this comparison ran, so the feed it read has moved on. " <>
+      "Compare again to see the current feed."
+  end
+
+  defp comparison_stale_text(_reason) do
+    "The feed changed after this comparison ran, so the numbers below describe a feed this page " <>
+      "has not re-read. Compare again to see the current feed."
+  end
+
+  defp comparison_sample_text(category, total, retained, shown, page) do
+    "#{@comparison_category_labels[category]}: #{total} in the whole comparison, #{retained} " <>
+      "retained as examples, #{shown} shown on page #{page || 1}. A retained example is a sample, " <>
+      "not every difference."
+  end
+
+  defp comparison_more_pages?(page, page_size, retained) do
+    is_integer(page) and page_size > 0 and page * page_size < retained
+  end
+
+  defp comparison_stop(%{stop_sequence: nil}), do: "—"
+  defp comparison_stop(%{stop_sequence: stop_sequence}), do: "##{stop_sequence}"
+
+  defp comparison_event(%{event: nil}), do: "dates"
+  defp comparison_event(%{event: :arrival}), do: "arrival"
+  defp comparison_event(%{event: :departure}), do: "departure"
+
+  # Service-day seconds, so a 24:10 table clock and a 00:10 feed clock stay
+  # different readings rather than both collapsing into an hour (AC-11).
+  defp comparison_clock(nil), do: "—"
+  defp comparison_clock(secs) when is_integer(secs), do: GtfsTime.display(secs)
+
+  defp comparison_clock(_other), do: "—"
 end

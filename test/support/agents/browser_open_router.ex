@@ -53,8 +53,20 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     * a `"user"` message asking whether the provider is reachable gets a 401, so
       the panel's failed entry, its Retry control and the failure text render
       from a real provider failure rather than from a scripted turn;
+    * a `"user"` message naming a timetable row (`Prepare inbound row 2 …`)
+      gets the Timetables pack's own sequence: `read_timetable_source`, then
+      `inspect_timetable_scope`, then a `prepare_timetable_input` for the rows
+      the message named against the seeded `BROWSER_PASTE` route's own calendar,
+      direction and pattern, and finally the prepared-batch sentence. A message
+      may name a second calendar (`… for calendar CAL_SCHOOL`), which the pack
+      refuses because the route does not run it. The selectors are the seeded
+      route's own, so the batch can only be prepared from what the Paste page
+      already accepted;
     * the `query_departures` and `list_boarding_occurrences` tool results get a
       Schedule sentence, one of which contradicts the server's count on purpose;
+    * the `read_timetable_source`, `inspect_timetable_scope` and
+      `prepare_timetable_input` tool results get the next Timetables call or
+      the prepared-batch sentence;
     * the `prepare_calendar_extension` tool result gets the prepared-extension
       sentence;
     * anything else gets the helper's generic sentence.
@@ -112,6 +124,19 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # twice, so the follow-up names the next action instead of answering anyway.
   @ambiguous_visit "I did not answer, because Central Station is visited more than once on that date. Ask which visit you mean."
   @prepared_extension "I prepared the extension. Review it before applying."
+  @prepared_timetable "I prepared the batch. Review it before applying."
+
+  # The seeded `BROWSER_PASTE` route (test/support/browser_seed.exs): the
+  # Weekday calendar plus its outbound and inbound main patterns. The stand-in
+  # names only what the Paste page already resolved, because the pack compares
+  # every selector with the route's own loaded scope and the reviewed source.
+  @timetable_service_id "BPS_WKDY"
+  @timetable_pattern_id "BPS-MAIN"
+  @timetable_direction_id 0
+  @timetable_inbound_pattern_id "BPS-INBOUND"
+  @timetable_inbound_direction_id 1
+  @timetable_row ~r/prepare (inbound |outbound )?row (\d+)(?: for calendar ([A-Z0-9_]+))?/i
+  @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -188,6 +213,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
       content =~ ~r/extend/i ->
         tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
+
+      # Before the calendar questions, so a timetable message is never read as
+      # a Calendars one.
+      content =~ @timetable_row ->
+        tool_calls_reply("read_timetable_source", %{})
 
       service_question?(content) ->
         service_question_reply(content)
@@ -279,18 +309,47 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     end
   end
 
+  # AI-04's timetable tools have their own fixed chain over the accepted
+  # source, so they are answered apart from the calendar tools and `tool_reply`
+  # only decides which of the two stands in for the pack.
   defp tool_reply(messages, %{"tool_call_id" => tool_call_id}) do
-    case answered_tool(messages, tool_call_id) do
-      "list_calendars" -> tool_calls_reply("prepare_date_change", prepare_arguments())
-      "prepare_date_change" -> text_reply(@prepared)
-      "get_calendar" -> get_calendar_reply(messages)
-      "query_departures" -> departure_reply(messages)
-      "summarize_calendar_coverage" -> coverage_reply(messages)
-      "list_boarding_occurrences" -> text_reply(@schedule_occurrences)
-      "prepare_calendar_extension" -> text_reply(@prepared_extension)
-      _other -> text_reply(@generic)
+    tool = answered_tool(messages, tool_call_id)
+
+    if tool in @timetable_tools do
+      timetable_tool_reply(tool, messages)
+    else
+      calendar_tool_reply(tool, messages)
     end
   end
+
+  defp timetable_tool_reply("read_timetable_source", _messages),
+    do: tool_calls_reply("inspect_timetable_scope", %{})
+
+  defp timetable_tool_reply("inspect_timetable_scope", messages),
+    do: tool_calls_reply("prepare_timetable_input", timetable_arguments(messages))
+
+  defp timetable_tool_reply("prepare_timetable_input", _messages),
+    do: text_reply(@prepared_timetable)
+
+  defp calendar_tool_reply("list_calendars", _messages),
+    do: tool_calls_reply("prepare_date_change", prepare_arguments())
+
+  defp calendar_tool_reply("prepare_date_change", _messages), do: text_reply(@prepared)
+
+  defp calendar_tool_reply("get_calendar", messages), do: get_calendar_reply(messages)
+
+  defp calendar_tool_reply("query_departures", messages), do: departure_reply(messages)
+
+  defp calendar_tool_reply("summarize_calendar_coverage", messages),
+    do: coverage_reply(messages)
+
+  defp calendar_tool_reply("list_boarding_occurrences", _messages),
+    do: text_reply(@schedule_occurrences)
+
+  defp calendar_tool_reply("prepare_calendar_extension", _messages),
+    do: text_reply(@prepared_extension)
+
+  defp calendar_tool_reply(_other, _messages), do: text_reply(@generic)
 
   # The seeded A02 answer has two listed departures, so the stand-in's sentence
   # for that call contradicts the card; the refusal branches keep the generic
@@ -556,6 +615,35 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       "route_ids" => ["H8", "H12"]
     }
   end
+
+  # The rows the editor's own message named, against the seeded route's own
+  # calendar and the direction the message named. The pack refuses any other
+  # combination, so the browser journey can only reach a real batch by
+  # preparing this route's own accepted source.
+  defp timetable_arguments(messages) do
+    # `Regex.run/2` omits a trailing group that did not participate, so the
+    # calendar is read from whatever the match carried rather than from a
+    # fixed-width match.
+    [_, direction, row | named] = Regex.run(@timetable_row, last_user_content(messages))
+    calendar = List.first(named)
+    inbound? = String.trim(direction) == "inbound"
+
+    %{
+      "row_ids" => [String.to_integer(row)],
+      # A message may name a second calendar. The pack compares it with the
+      # calendar the page's own scope resolved and refuses the call, so the
+      # journey shows a refused second calendar rather than a second batch of
+      # the first one.
+      "service_id" => named_service_id(calendar),
+      "pattern_id" =>
+        if(inbound?, do: @timetable_inbound_pattern_id, else: @timetable_pattern_id),
+      "direction_id" =>
+        if(inbound?, do: @timetable_inbound_direction_id, else: @timetable_direction_id)
+    }
+  end
+
+  defp named_service_id(calendar) when calendar in [nil, ""], do: @timetable_service_id
+  defp named_service_id(calendar), do: calendar
 
   defp prepare_arguments do
     monday = Date.add(Date.utc_today(), 8 - Date.day_of_week(Date.utc_today()))

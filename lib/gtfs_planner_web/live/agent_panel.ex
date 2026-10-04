@@ -20,7 +20,12 @@ defmodule GtfsPlannerWeb.AgentPanel do
   binds the whole-version identity of the page it was mounted on, a host that
   shows one resource of that version calls `set_context/2` when ordinary
   navigation changes it, and a host whose conversation is about an
-  organization-owned record passes `:organization_scoped` and binds none.
+  organization-owned record passes `:organization_scoped` and binds none. The
+  context may also carry an admitted source snapshot
+  (`Scope.with_source_snapshot/2`), which is part of what this panel holds and
+  part of what it releases: replacing the context drops the source with the
+  transcript, and a person whose source is gone re-pastes it rather than the
+  helper answering from a copy this page no longer owns.
   `set_context/2` affects this panel alone: it detaches the prior session,
   clears this panel's transcript, draft and origin, and returns a socket whose
   `agent_session` is nil, so a late event or down from the replaced
