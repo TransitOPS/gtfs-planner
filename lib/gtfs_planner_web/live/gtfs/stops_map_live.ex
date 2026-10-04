@@ -70,6 +70,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Packs.StopImpact
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs.AuditContext
@@ -1582,11 +1584,20 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   @impl true
-  # A prepared card's button. The handoff into the native move review is not wired
-  # yet, so the card says so instead of crashing the page.
-  def handle_event("agent_review_prepared", _params, socket) do
-    {:noreply, assign(socket, :agent_notice, "Review is not ready on this page yet.")}
+  # A prepared card's button. The helper only starts the native move review for the
+  # same stop and point; the review keeps its own street-routing request and band
+  # choices, and the editor's own Apply is the only write (CR-4). No receipt is
+  # recorded: a pin change replaces the conversation and the native apply rebinds
+  # the helper with no pin, so no card remains that could claim an unapplied move.
+  # An entry that is not an integer is not this panel's and does nothing.
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_move(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
   end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   def handle_event("stop_map_ready", _params, socket) do
     {:noreply, socket |> assign(:map_state, :ready) |> then(&push_scene/1)}
@@ -2298,6 +2309,53 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         socket
     end
   end
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_move(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: {:stop_move, command}}} ->
+        hand_off_move(socket, command)
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  # The card was made for one stop and one pin. Every refusal changes nothing but the
+  # notice; a request that still matches starts the native move review.
+  defp hand_off_move(socket, command) do
+    assigns = socket.assigns
+
+    cond do
+      not same_stop?(assigns.edit_stop, command) ->
+        refuse_move(socket, "This request was prepared for another stop. Ask again here.")
+
+      not same_pin?(draft_point(assigns), command) ->
+        refuse_move(socket, "The pin moved since this request was prepared. Ask again.")
+
+      assigns.move_loading? or assigns.move_saving? or assigns.move_review != nil ->
+        refuse_move(socket, "A move review is already open. Finish or close it first.")
+
+      true ->
+        socket |> assign(:agent_notice, nil) |> start_move_review()
+    end
+  end
+
+  defp same_stop?(%{uuid: uuid}, %{stop_uuid: uuid}), do: true
+  defp same_stop?(_edit_stop, _command), do: false
+
+  defp same_pin?({lon, lat}, %{lat: lat_text, lon: lon_text}),
+    do:
+      StopImpact.coordinate_text(lat) == lat_text and StopImpact.coordinate_text(lon) == lon_text
+
+  defp same_pin?(_no_point, _command), do: false
+
+  defp refuse_move(socket, notice), do: assign(socket, :agent_notice, notice)
 
   defp candidate(%{lat: lat, lon: lon}), do: %{"lat" => lat, "lon" => lon}
   defp candidate(_no_move), do: nil

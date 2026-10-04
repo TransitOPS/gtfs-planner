@@ -385,14 +385,24 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
         {:stop_move,
          %{
            stop_uuid: stop.id,
-           lat: :erlang.float_to_binary(lat, decimals: 6),
-           lon: :erlang.float_to_binary(lon, decimals: 6)
+           lat: coordinate_text(lat),
+           lon: coordinate_text(lon)
          }}
 
       {:prepared, move_summary(stop, command), move_prepared_result(stop, command),
        move_prepared_evidence(stop, command, scope)}
     end
   end
+
+  @doc """
+  A coordinate as the 6-decimal string a prepared move carries.
+
+  The Stops map formats its own draft point with this function to compare it with the
+  prepared command, so the pack and its host agree on one spelling.
+  """
+  @spec coordinate_text(float()) :: String.t()
+  def coordinate_text(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 6)
 
   # A pin on top of the saved position is not a move; a stop with no saved position
   # has nothing to compare and is movable.
