@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpactMoveTest do
   alias GtfsPlanner.Agents.Packs.StopImpact
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.Transfer
 
   @routing_owner GtfsPlanner.StreetRouting.Geoapify
@@ -174,6 +175,18 @@ defmodule GtfsPlanner.Agents.Packs.StopImpactMoveTest do
     assert length(result["transfers"]) == 10
     # 40 outgoing transfers (the fixture's plus 39) and the fixture's one incoming.
     assert result["transfers_omitted"] == 31
+
+    # The ten listed are the first ten by label, not the first ten the read returned.
+    %{blocking: blocking, descriptive: descriptive} =
+      StopReferences.usage(context.organization.id, context.version.id, busy)
+
+    all =
+      for %{key: key, details: details} <- blocking ++ descriptive,
+          key in [:transfers_from, :transfers_to],
+          detail <- details,
+          do: detail.label
+
+    assert Enum.map(result["transfers"], & &1["label"]) == all |> Enum.sort() |> Enum.take(10)
 
     counts = Map.new(result["references"], &{&1["key"], &1["count"]})
     assert {counts["route_pattern_stops"], counts["transfers_from"]} == {40, 40}

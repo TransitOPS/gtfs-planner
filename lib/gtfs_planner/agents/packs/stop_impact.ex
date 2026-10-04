@@ -191,7 +191,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
       "key" => Atom.to_string(item.key),
       "label" => item.label,
       "count" => item.count,
-      "details" => item.details |> Enum.take(@listed_labels) |> Enum.map(& &1.label),
+      "details" => item.details |> first_listed(& &1.label) |> Enum.map(& &1.label),
       "details_omitted" => max(length(item.details) - @listed_labels, 0)
     }
   end
@@ -284,9 +284,9 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
         |> Enum.take(@listed_labels)
         |> Enum.map(&%{"label" => &1.label, "weekday_trips" => &1.weekday_trips}),
       "patterns_omitted" => omitted(impact.patterns),
-      "transfers" => impact.transfers |> Enum.take(@listed_labels) |> Enum.map(&transfer_row/1),
+      "transfers" => impact.transfers |> first_listed(& &1.label) |> Enum.map(&transfer_row/1),
       "transfers_omitted" => omitted(impact.transfers),
-      "relief_points" => Enum.take(impact.relief_points, @listed_labels),
+      "relief_points" => first_listed(impact.relief_points, & &1),
       "relief_points_omitted" => omitted(impact.relief_points),
       "references" =>
         Enum.map(impact.references, fn reference ->
@@ -302,6 +302,10 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   end
 
   defp omitted(rows), do: max(length(rows) - @listed_labels, 0)
+
+  # The reads return rows in no stated order, so the cut is made over a sorted list:
+  # two reads of the same stop list the same labels and carry the same digest.
+  defp first_listed(rows, key), do: rows |> Enum.sort_by(key) |> Enum.take(@listed_labels)
 
   defp transfer_row(transfer) do
     %{

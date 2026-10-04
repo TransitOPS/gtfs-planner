@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpactDependenciesTest do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopArea
+  alias GtfsPlanner.Gtfs.StopReferences
 
   setup do
     Req.Test.set_req_test_to_shared()
@@ -176,6 +177,16 @@ defmodule GtfsPlanner.Agents.Packs.StopImpactDependenciesTest do
       assert pattern_class["count"] == 40
       assert length(pattern_class["details"]) == 10
       assert pattern_class["details_omitted"] == 30
+
+      # The cut is made over labels in order, not over whichever ten the read returned
+      # first, so every read of the stop lists the same ten.
+      %{blocking: blocking} =
+        StopReferences.usage(context.organization.id, context.version.id, busy)
+
+      all = Enum.find(blocking, &(&1.key == :route_pattern_stops)).details
+
+      assert pattern_class["details"] ==
+               all |> Enum.map(& &1.label) |> Enum.sort() |> Enum.take(10)
 
       assert evidence.total == 40
       assert evidence.completeness == :incomplete
