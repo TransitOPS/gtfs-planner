@@ -46,11 +46,6 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
   @question "Did we lose any service between these two files?"
   @answer "One route lost a trip on Thanksgiving."
 
-  # Large enough that the whole comparison - one row per route and date - is more
-  # than the shared helper context holds, small enough to stay inside the
-  # comparison's own bounds.
-  @many_routes 60
-
   setup {Req.Test, :verify_on_exit!}
 
   setup do
@@ -242,13 +237,15 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
   describe "a comparison too large for the helper" do
     test "keeps the native result, says why, and narrowing admits the helper", context do
       organization = context.organization
-      left = publish_run!(organization, context.left_version, many_routes_zip(@many_routes))
-      right = publish_run!(organization, context.right_version, many_routes_zip(@many_routes))
+      left = publish_run!(organization, context.left_version, many_routes_zip(oversized_routes()))
+
+      right =
+        publish_run!(organization, context.right_version, many_routes_zip(oversized_routes()))
 
       view = view(context) |> compare!(left, right)
 
-      # 60 routes on 2 dates is 120 rows, more than the shared context can hold.
-      # The helper is refused; the comparison is not.
+      # One row per route and date is more than the shared context can hold. The
+      # helper is refused; the comparison is not.
       assert has_element?(view, "#comparison-helper-notice", "more rows than the helper can hold")
       assert has_element?(view, "#comparison-helper-narrow", "Choose routes and dates")
       refute has_element?(view, "#comparison-helper-open")
@@ -276,6 +273,37 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert payload["selected_route_pairs"] == ["M001/M001"]
       assert payload["selected_dates"] == [@from]
       assert payload["selected_digest"] != payload["result_digest"]
+    end
+  end
+
+  describe "the states the browser journeys choose from" do
+    test "a trip that becomes a non-exact frequency window is never a measured total",
+         context do
+      earlier = publish_run!(context.organization, context.left_version, frequency_zip(false))
+      later = publish_run!(context.organization, context.right_version, frequency_zip(true))
+
+      view = view(context) |> compare!(earlier, later)
+
+      assert has_element?(view, "#comparison-totals-unknown", "was not measured")
+      assert has_element?(view, "#comparison-total-reasons", "frequency windows")
+      assert has_element?(view, "#comparison-completeness", "Incomplete")
+      refute has_element?(view, "#comparison-exact-delta")
+
+      # The helper is still offered: an incomplete comparison is explained, not hidden.
+      assert has_element?(view, "#agent-helper-open")
+    end
+
+    test "two identical files are a complete comparison with nothing to report", context do
+      first = publish_run!(context.organization, context.left_version, simple_zip())
+      second = publish_run!(context.organization, context.right_version, simple_zip())
+
+      view = view(context) |> compare!(first, second)
+
+      assert has_element?(view, "#comparison-totals", "no change")
+      assert has_element?(view, "#comparison-completeness", "Complete")
+      assert has_element?(view, "#comparison-differences-empty")
+      assert has_element?(view, "#comparison-structural-empty")
+      assert has_element?(view, "#comparison-unresolved-empty")
     end
   end
 

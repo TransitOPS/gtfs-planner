@@ -154,6 +154,27 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
+
+  The Release comparison script answers the Export page's helper from what the
+  tools returned, never from a fixed sentence about the seeded files, so a card
+  that drifted from the comparison fails the journey instead of agreeing with a
+  script:
+
+    * a `"user"` message asking whether service was lost gets a
+      `get_export_comparison` call, then `inspect_service_difference`, and the
+      sentence states each effective loss and each renamed route the result
+      returned, saying a rename is not a loss;
+    * a message asking for the total change in departures gets
+      `get_export_comparison` and either the measured delta or the reasons the
+      total was not measured;
+    * a message asking whether anything changed gets `get_export_comparison` and
+      a no-difference sentence only for a complete comparison with no changes;
+    * a message asking about unresolved or alike stops gets
+      `inspect_unresolved_entity_matches`;
+    * a message asking what was compared gets
+      `resolve_export_comparison_scope`;
+    * a message asking whether the provider is reachable gets a 401, so the
+      panel's failed entry and Retry control render from a real provider failure.
   """
 
   @behaviour Plug
@@ -266,6 +287,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # and not the stand-in declining to invent a value.
   @foreign_day_ref "day_ffffffffffffffffffffffffffffffff"
 
+  # The Release comparison skill's own heading, which the turn's system message
+  # carries, and the sentence for a request the script does not know.
+  @comparison_marker "Comparison helper"
+  @comparison_generic "I can explain the comparison shown on this page."
+
   @impl Plug
   def init(opts), do: opts
 
@@ -287,9 +313,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     cond do
       in_seat?(messages) -> in_seat_reply(messages)
       alerts?(messages) -> alerts_reply(messages)
+      comparison?(messages) -> comparison_reply(messages)
       true -> calendars_reply(messages)
     end
   end
+
+  defp comparison?(messages), do: Enum.any?(messages, &system_contains?(&1, @comparison_marker))
+
+  defp system_contains?(%{"role" => "system", "content" => content}, marker)
+       when is_binary(content),
+       do: String.contains?(content, marker)
+
+  defp system_contains?(_message, _marker), do: false
 
   # The turn's system message is the pack's own skill body, so the script is
   # chosen from what the turn says it can do rather than from the tools it
@@ -863,6 +898,195 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         false
     end)
   end
+
+  # -- Release comparison -----------------------------------------------------
+
+  defp comparison_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        comparison_user_reply(content)
+
+      %{"role" => "tool"} = tool_message ->
+        comparison_tool_reply(messages, tool_message)
+
+      _other ->
+        text_reply(@comparison_generic)
+    end
+  end
+
+  defp comparison_user_reply(content) do
+    cond do
+      content =~ ~r/provider reachable|provider down|provider key/i ->
+        provider_failure()
+
+      content =~ ~r/unresolved|could not be matched|look alike/i ->
+        tool_calls_reply("inspect_unresolved_entity_matches", %{})
+
+      content =~ ~r/what did you compare|which files/i ->
+        tool_calls_reply("resolve_export_comparison_scope", %{})
+
+      content =~ ~r/lose|lost|loss/i or content =~ ~r/total|anything change/i ->
+        tool_calls_reply("get_export_comparison", %{})
+
+      true ->
+        text_reply(@comparison_generic)
+    end
+  end
+
+  # A loss question reads the summary first and then the differences; every other
+  # question is answered from the one call it made.
+  defp comparison_tool_reply(messages, %{"tool_call_id" => tool_call_id} = tool_message) do
+    question = last_user_content(messages)
+    result = decoded_tool_result(tool_message)
+    loss? = question =~ ~r/lose|lost|loss/i
+
+    case {answered_tool(messages, tool_call_id), loss?} do
+      {"get_export_comparison", true} ->
+        tool_calls_reply("inspect_service_difference", %{})
+
+      {"get_export_comparison", false} ->
+        text_reply(comparison_summary_sentence(question, result))
+
+      {"inspect_service_difference", _loss?} ->
+        text_reply(loss_and_churn_sentence(result, comparison_status(messages)))
+
+      {"inspect_unresolved_entity_matches", _loss?} ->
+        text_reply(unresolved_sentence(result))
+
+      {"resolve_export_comparison_scope", _loss?} ->
+        text_reply(scope_sentence(result))
+
+      _other ->
+        text_reply(@comparison_generic)
+    end
+  end
+
+  defp decoded_tool_result(%{"content" => content}) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, result} when is_map(result) -> result
+      _other -> %{}
+    end
+  end
+
+  defp decoded_tool_result(_tool_message), do: %{}
+
+  # The completeness the summary tool reported earlier in this same turn.
+  defp comparison_status(messages) do
+    messages
+    |> Enum.filter(&(&1["role"] == "tool"))
+    |> Enum.map(&decoded_tool_result/1)
+    |> Enum.find_value("unknown", fn
+      %{"completeness" => %{"status" => status}, "counts" => _counts} -> status
+      _result -> nil
+    end)
+  end
+
+  defp loss_and_churn_sentence(%{"records" => records}, status) do
+    losses =
+      for %{"type" => "effective", "kind" => "count_changed"} = record <- records,
+          fewer = trips_lost(record),
+          fewer > 0,
+          do:
+            "#{record["route_ids"]["left"]} lost #{trips(fewer)} on #{weekday(record["date"])}, " <>
+              "from #{record["counts"]["left"]["scheduled_count"]} to " <>
+              "#{record["counts"]["right"]["scheduled_count"]}."
+
+    renames =
+      for %{"type" => "structural", "entity" => "route", "change" => "identifier"} = record <-
+            records,
+          do:
+            "#{record["left"]} was only renamed #{record["right"]}: same service under a new " <>
+              "identifier, so that is not a loss."
+
+    (losses ++ renames ++ incomplete_sentence(status))
+    |> case do
+      [] -> ["No service loss was found."]
+      sentences -> sentences
+    end
+    |> Enum.join(" ")
+  end
+
+  defp loss_and_churn_sentence(_result, _status),
+    do: "I could not read the differences."
+
+  defp trips_lost(%{"counts" => %{"left" => left, "right" => right}}),
+    do: left["scheduled_count"] - right["scheduled_count"]
+
+  defp trips_lost(_record), do: 0
+
+  defp trips(1), do: "1 trip"
+  defp trips(count), do: "#{count} trips"
+
+  defp incomplete_sentence("incomplete"),
+    do: ["The comparison is incomplete, so this is not a clean answer."]
+
+  defp incomplete_sentence(_status), do: []
+
+  defp comparison_summary_sentence(question, %{"totals" => totals} = result) do
+    cond do
+      question =~ ~r/anything change/i ->
+        no_difference_sentence(result)
+
+      is_nil(totals["exact_count_delta"]) ->
+        "I can't give a total change in departures: it was not measured. " <>
+          reasons_sentence(totals["reasons"])
+
+      true ->
+        "Exact departures changed by #{signed(totals["exact_count_delta"])} across the compared routes."
+    end
+  end
+
+  defp comparison_summary_sentence(_question, _result), do: "I could not read the summary."
+
+  defp no_difference_sentence(%{"counts" => counts, "completeness" => %{"status" => status}}) do
+    changes = counts["effective_changes"]["total"] + counts["structural_changes"]["total"]
+
+    cond do
+      status == "complete" and changes == 0 ->
+        "Nothing changed in service, and the comparison is complete."
+
+      status == "complete" ->
+        "#{changes} differences were found, so something changed."
+
+      true ->
+        "The comparison is incomplete, so I can't say nothing changed."
+    end
+  end
+
+  defp reasons_sentence(reasons) when is_list(reasons) do
+    reasons
+    |> Enum.map(&reason_words/1)
+    |> Enum.join(" ")
+  end
+
+  defp reasons_sentence(_reasons), do: ""
+
+  defp reason_words("incomplete_counts"),
+    do: "A route states frequency windows rather than exact departures."
+
+  defp reason_words("unmapped_route"),
+    do: "A route in one file has no proven match in the other."
+
+  defp reason_words(reason), do: "Reason: #{String.replace(reason, "_", " ")}."
+
+  defp unresolved_sentence(%{"records" => records, "true_total" => total}) do
+    "#{total} stop matches are unresolved across #{length(records)} listed. " <>
+      "The comparison claims no change for them, and none of them is a loss."
+  end
+
+  defp unresolved_sentence(_result), do: "I could not read the unresolved matches."
+
+  defp scope_sentence(%{"window" => %{"from" => from, "to" => to}, "route_pairs" => pairs}) do
+    "Two retained exports were compared from #{weekday(from)} to #{weekday(to)} " <>
+      "across #{length(pairs)} route pairs."
+  end
+
+  defp scope_sentence(_result), do: "I could not read the comparison scope."
+
+  defp signed(delta) when delta > 0, do: "+#{delta}"
+  defp signed(delta), do: Integer.to_string(delta)
+
+  defp weekday(iso), do: iso |> Date.from_iso8601!() |> Calendar.strftime("%a %b %-d, %Y")
 
   defp alerts_reply(messages) do
     case List.last(messages) do
