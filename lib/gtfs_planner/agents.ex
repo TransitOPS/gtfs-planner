@@ -59,6 +59,7 @@ defmodule GtfsPlanner.Agents do
     "connections" => GtfsPlanner.Agents.Packs.Connections,
     "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
     "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
+    "flex_policy" => GtfsPlanner.Agents.Packs.FlexPolicy,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
     "runs" => GtfsPlanner.Agents.Packs.Runs,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,

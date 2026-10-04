@@ -1420,6 +1420,585 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   @doc """
+  Renders the approved policy source intake beside the hours and booking
+  sections (AC-2, AC-13).
+
+  The editor pastes the policy text their agency authorized, names it and
+  optionally records a revision, then accepts it explicitly. Acceptance is the
+  editor saying "this is the authorized text I am working from"; it is not an
+  agency or legal certification, and the copy says so. The text is frozen by
+  `GtfsPlanner.Agents.Scope.with_source_snapshot/2` on the server, never in
+  this template.
+
+  The whole form stays on screen in every state. A refused acceptance, an
+  over-limit context and a helper that cannot answer all leave the editor's
+  text and the native hours and booking fields exactly where they were, because
+  the helper is optional here and only native Save persists anything (AC-12).
+
+  `state` is one of `:empty`, `:accepted`, `:refused` or `:unavailable`, and is
+  what the status region announces. `refusal` is the server's own sentence for
+  the refusal; `field_errors` names the control to fix first.
+  """
+  attr :form, :any, required: true
+  attr :state, :atom, required: true, values: [:empty, :accepted, :refused, :unavailable]
+  attr :refusal, :string, default: nil
+  attr :field_errors, :map, default: %{}
+  attr :source, :map, default: nil
+  attr :helper_open?, :boolean, default: false
+  attr :service_name, :string, required: true
+
+  def flex_policy_source_section(assigns) do
+    ~H"""
+    <section
+      id="sec-flex-policy-source"
+      aria-labelledby="flex-policy-source-title"
+      class="min-w-0 border-t border-subtle pt-5"
+    >
+      <h2 id="flex-policy-source-title" class="text-base font-bold text-strong">
+        Approved policy source
+      </h2>
+      <p class="mt-1 text-sm text-muted">
+        Paste the hours and booking policy your agency authorized for this service. Accepting it
+        lets the helper read this service and prepare a change from it. Accepting is your
+        statement that this is the authorized text, not an agency or legal certification, and
+        nothing is saved until you review the result and press Save changes.
+      </p>
+
+      <p
+        id="flex-policy-source-state"
+        role="status"
+        aria-live="polite"
+        class="mt-2 text-[13px] text-muted"
+      >
+        {source_state_text(assigns)}
+      </p>
+
+      <.message
+        :if={@state == :accepted and @source}
+        id="flex-policy-source-accepted"
+        kind="success"
+        title={"Accepted #{@source["label"]}."}
+      >
+        <span :if={@source["revision"]} class="block">Revision {@source["revision"]}.</span>
+        <span class="block">
+          {byte_size(@source["text"])} bytes accepted. Changing it starts a new helper conversation.
+        </span>
+      </.message>
+
+      <.message
+        :if={@refusal}
+        id="flex-policy-source-refusal"
+        kind="error"
+        title={@refusal}
+        tabindex="-1"
+      >
+        Your text and the hours and booking fields above are unchanged. Edit the source here or
+        make the change yourself.
+      </.message>
+
+      <.form
+        for={@form}
+        id="flex-policy-source-form"
+        phx-hook="FormErrorFocus"
+        phx-change="flex_policy_source_change"
+        phx-submit="flex_policy_source"
+        class="mt-3 grid gap-3 sm:max-w-[560px]"
+      >
+        <.input
+          id="flex-policy-source-label"
+          field={@form[:label]}
+          type="text"
+          label="What this policy document is"
+          maxlength="200"
+          errors={List.wrap(@field_errors["label"])}
+        />
+        <.input
+          id="flex-policy-source-revision"
+          field={@form[:revision]}
+          type="text"
+          label="Revision (optional)"
+          maxlength="200"
+          errors={List.wrap(@field_errors["revision"])}
+        />
+        <.input
+          id="flex-policy-source-text"
+          field={@form[:text]}
+          type="textarea"
+          label="Authorized hours and booking policy"
+          class="textarea min-h-32 w-full"
+          errors={List.wrap(@field_errors["text"])}
+        />
+        <div class="flex flex-wrap items-center gap-3">
+          <.button
+            id="flex-policy-accept"
+            type="submit"
+            variant="primary"
+            class="min-h-11"
+          >
+            Accept policy source
+          </.button>
+          <p :if={@state == :accepted} class="text-[13px] text-muted">
+            Edit the text and accept it again to replace the source the helper reads.
+          </p>
+          <p class="text-[13px] text-muted">
+            Accepting changes what the helper may read for {service_short_name(@service_name)}.
+            It writes nothing.
+          </p>
+        </div>
+      </.form>
+
+      <div class="mt-3 flex flex-wrap items-center gap-3">
+        <.button
+          id="agent-helper-open"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="agent_open"
+          aria-expanded={to_string(@helper_open?)}
+          aria-controls="agent-panel"
+        >
+          Open helper
+        </.button>
+        <p class="text-[13px] text-muted">
+          The helper reads this service only from the source you accept above. Without one it can
+          still answer, but it will say it has no policy source to work from. The hours and booking
+          fields are always yours to edit and save.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the reviewed assistant change beside the hours and booking sections
+  (AC-8, AC-9, AC-13).
+
+  Two states share the section, because they are the same surface at two points
+  in the editor's decision. With a `review`, it is the comparison: what is saved
+  beside what the helper proposes, row by row, the fields nothing touched, the
+  authoritative generated wording the candidate produces, and — for every array
+  the draft already changed — the two explicit answers. With a `stage` and no
+  review, it is the state of the staged draft: what was merged into the page,
+  that nothing is saved until the page's own Save, and the one way to take the
+  staged rows back out. A `lapsed` stage is the third state: the rows are
+  still staged, but their review no longer holds, either because the policy
+  source it belonged to was replaced (`:source`) or because the saved service or
+  its calendars moved under the guard (`:baseline`). Save refuses until a fresh
+  review stages them again or they are discarded.
+
+  Nothing here writes. Both "Use these changes" and the overlap answers are
+  server events on the page, and the one `Save changes` button in the save bar
+  stays the only writer.
+  """
+  attr :review, :any, required: true
+  attr :stage, :any, required: true
+  attr :lapsed, :atom, required: true, values: [nil, :source, :baseline]
+  attr :stale?, :boolean, required: true
+  attr :notice, :string, default: nil
+  attr :calendars, :map, required: true
+
+  def flex_policy_review_section(assigns) do
+    ~H"""
+    <section
+      :if={@review != nil or @stage != nil}
+      id="flex-policy-review"
+      aria-labelledby="flex-policy-review-title"
+      class="min-w-0 border-t border-subtle pt-5"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h2 id="flex-policy-review-title" class="text-base font-bold text-strong">
+            Prepared change
+          </h2>
+          <p class="mt-1 text-sm text-muted">
+            Compare it with what is saved, choose what to keep where you have already edited, then
+            stage it into the page above. Nothing is saved until you press Save changes.
+          </p>
+        </div>
+        <.button
+          :if={@review != nil}
+          id="flex-policy-review-close"
+          type="button"
+          variant="quiet"
+          class="min-h-11"
+          phx-click="flex_policy_review_close"
+        >
+          Close review
+        </.button>
+      </div>
+
+      <p
+        id="flex-policy-review-state"
+        role="status"
+        aria-live="polite"
+        class="mt-2 text-[13px] text-muted"
+      >
+        {review_state_text(assigns)}
+      </p>
+
+      <.message
+        :if={@notice}
+        id="flex-policy-review-notice"
+        kind="warning"
+        title={@notice}
+        tabindex="-1"
+      >
+        Your hours, booking rules, contacts, areas and the accepted policy source are unchanged.
+      </.message>
+
+      <.message
+        :if={@stale?}
+        id="flex-policy-stage-stale"
+        kind="warning"
+        title="You changed this page after the change was staged."
+      >
+        The reviewed comparison no longer describes what Save would write. Review the prepared change
+        again to stage a fresh comparison, or discard the staged rows and keep editing.
+      </.message>
+
+      <div :if={@stage != nil} class="mt-3">
+        <.message
+          :if={@lapsed == :source}
+          id="flex-policy-stage-lapsed"
+          kind="warning"
+          title="The policy source changed after these rows were staged."
+        >
+          The review that covered these rows belonged to the source you replaced, so Save changes will
+          not write them. Review a prepared change again to stage a fresh comparison, or take the
+          staged rows back out.
+        </.message>
+
+        <.message
+          :if={@lapsed == :baseline}
+          id="flex-policy-stage-lapsed"
+          kind="warning"
+          title="The saved service or its calendars changed after these rows were staged."
+        >
+          The review that covered these rows described the earlier saved state, so Save changes will
+          not write them. Review a prepared change again to stage a fresh comparison, or take the
+          staged rows back out.
+        </.message>
+
+        <.message
+          :if={!@lapsed}
+          id="flex-policy-staged"
+          kind="success"
+          title="Staged into this page. Nothing is saved yet."
+        >
+          The reviewed rows are in the hours and booking sections above with the rest of your draft
+          exactly as you left it. Press Save changes to write them, or take them back out.
+        </.message>
+
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <.button
+            id="flex-policy-discard-staged"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="flex_policy_discard_staged"
+          >
+            Discard the staged rows
+          </.button>
+          <p class="text-[13px] text-muted">
+            Only the staged hours and booking rows go back to what is saved. Everything else you
+            typed stays.
+          </p>
+        </div>
+      </div>
+
+      <div :if={@review != nil} class="mt-4 grid gap-4">
+        <.review_array
+          :for={array <- [:hours, :booking_rules]}
+          array={array}
+          prepared={@review.prepared}
+          label={review_array_label(array)}
+        />
+
+        <div id="flex-policy-review-unchanged" class="rounded-card border border-subtle p-3.5">
+          <h3 class="text-sm font-[650] text-strong">Fields this change does not touch</h3>
+          <p :if={@review.prepared.unchanged_fields == []} class="mt-1 text-[13px] text-muted">
+            None: this change covers every field this page owns.
+          </p>
+          <ul
+            :if={@review.prepared.unchanged_fields != []}
+            class="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-default"
+          >
+            <li :for={field <- @review.prepared.unchanged_fields}>
+              {field_label(field)}
+            </li>
+          </ul>
+        </div>
+
+        <div
+          id="flex-policy-review-wording"
+          class="rounded-card border border-subtle bg-canvas p-3.5"
+        >
+          <h3 class="text-sm font-[650] text-strong">What riders will read if you stage this</h3>
+          <p class="mt-0.5 text-[13px] text-muted">
+            The same wording the page's own preview and the export produce.
+          </p>
+          <div class="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+            <div class="min-w-0">
+              <p class="text-[13px] font-[650] text-muted">Saved</p>
+              <p :if={@review.prepared.rider_text.saved.message == ""} class="text-muted">
+                No booking message yet.
+              </p>
+              <p :if={@review.prepared.rider_text.saved.message != ""}>
+                {@review.prepared.rider_text.saved.message}
+              </p>
+            </div>
+            <div class="min-w-0">
+              <p class="text-[13px] font-[650] text-muted">With this change</p>
+              <p :if={@review.prepared.rider_text.candidate.message == ""} class="text-muted">
+                No booking message yet.
+              </p>
+              <p :if={@review.prepared.rider_text.candidate.message != ""}>
+                {@review.prepared.rider_text.candidate.message}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <.message
+          :if={@review.prepared.warnings != []}
+          id="flex-policy-review-warnings"
+          kind="warning"
+          title="Worth reading before you stage this"
+        >
+          <ul class="list-disc pl-5">
+            <li :for={warning <- @review.prepared.warnings}>{warning}</li>
+          </ul>
+        </.message>
+
+        <.message
+          :if={@review.prepared.exclusions != []}
+          id="flex-policy-review-exclusions"
+          kind="info"
+          title="Left out of this change"
+        >
+          <ul class="list-disc pl-5">
+            <li :for={exclusion <- @review.prepared.exclusions}>{exclusion}</li>
+          </ul>
+        </.message>
+
+        <div
+          :if={@review.overlaps != []}
+          id="flex-policy-overlap"
+          class="rounded-card border border-warning/40 bg-warning-bg/40 p-3.5"
+        >
+          <h3 class="text-sm font-[650] text-strong">You already changed these</h3>
+          <p class="mt-0.5 text-[13px] text-default">
+            Each one needs your answer. Nothing is chosen for you, and staging is refused until every
+            one has one.
+          </p>
+          <fieldset
+            :for={overlap <- @review.overlaps}
+            id={"flex-policy-overlap-#{overlap.array}"}
+            class="mt-3"
+          >
+            <legend class="text-sm font-[650] text-strong">
+              {review_array_label(overlap.array)}
+            </legend>
+            <p class="text-[13px] text-default">
+              Your unsaved {String.downcase(review_array_label(overlap.array))} differ from what is
+              saved.
+            </p>
+            <div class="mt-1.5 flex flex-wrap gap-3">
+              <label
+                for={"flex-policy-overlap-#{overlap.array}-draft"}
+                class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-sm"
+              >
+                <input
+                  type="radio"
+                  id={"flex-policy-overlap-#{overlap.array}-draft"}
+                  name={"flex-policy-overlap-#{overlap.array}"}
+                  value="draft"
+                  checked={overlap.choice == :draft}
+                  phx-click="flex_policy_overlap"
+                  phx-value-array={to_string(overlap.array)}
+                  phx-value-choice="draft"
+                /> Keep what I have
+              </label>
+              <label
+                for={"flex-policy-overlap-#{overlap.array}-proposal"}
+                class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-sm"
+              >
+                <input
+                  type="radio"
+                  id={"flex-policy-overlap-#{overlap.array}-proposal"}
+                  name={"flex-policy-overlap-#{overlap.array}"}
+                  value="proposal"
+                  checked={overlap.choice == :proposal}
+                  phx-click="flex_policy_overlap"
+                  phx-value-array={to_string(overlap.array)}
+                  phx-value-choice="proposal"
+                /> Use the prepared change
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <.button
+            id="flex-policy-stage"
+            type="button"
+            class="min-h-11"
+            phx-click="flex_policy_stage"
+          >
+            Use these changes
+          </.button>
+          <p class="text-[13px] text-muted">
+            Stages the reviewed rows into the page above. Save changes is what writes them.
+          </p>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  # One embedded array's saved-versus-candidate comparison, in the page's own
+  # row shape. A row the proposal does not change is reported as unchanged
+  # rather than hidden, so a complete replacement array is visibly complete
+  # (AC-4, AC-8).
+  defp review_array(assigns) do
+    comparison = Map.fetch!(assigns.prepared, assigns.array)
+
+    assigns =
+      assigns
+      |> assign(:comparison, comparison)
+      |> assign(:rows, review_rows(comparison))
+      |> assign(:unchanged, length(comparison.unchanged))
+
+    ~H"""
+    <div id={"flex-policy-review-#{@array}"} class="rounded-card border border-subtle p-3.5">
+      <h3 class="text-sm font-[650] text-strong">{@label}</h3>
+      <p :if={@rows == []} class="mt-1 text-[13px] text-muted">
+        Every row here is the same as what is saved.
+      </p>
+      <ul :if={@rows != []} class="mt-2 grid gap-2">
+        <li
+          :for={row <- @rows}
+          id={"flex-policy-review-#{@array}-#{row.ordinal}"}
+          class="rounded-control bg-canvas px-3 py-2 text-[13px]"
+        >
+          <span class="block font-[650] text-strong">
+            Row {row.ordinal + 1} · {row.title}
+          </span>
+          <span :for={line <- row.lines} class="block text-default">{line}</span>
+        </li>
+      </ul>
+      <p :if={@unchanged > 0} class="mt-2 text-[13px] text-muted">
+        {@unchanged} row{if @unchanged == 1, do: "", else: "s"} unchanged.
+      </p>
+    </div>
+    """
+  end
+
+  # The three comparison shapes the assistant returns, read as one list of rows:
+  # a changed row with both sides, a row only the candidate has, a row only the
+  # saved side has.
+  defp review_rows(comparison) do
+    changed =
+      Enum.map(comparison.changed, fn change ->
+        %{
+          ordinal: change.ordinal,
+          title: "changed: #{Enum.join(change.fields, ", ")}",
+          lines: changed_lines(change.before, change.after)
+        }
+      end)
+
+    added =
+      Enum.map(comparison.added, fn addition ->
+        %{
+          ordinal: addition.ordinal,
+          title: "new row",
+          lines: row_lines(addition.row)
+        }
+      end)
+
+    removed =
+      Enum.map(comparison.removed, fn removal ->
+        %{
+          ordinal: removal.ordinal,
+          title: "removed",
+          lines: row_lines(removal.row)
+        }
+      end)
+
+    Enum.sort_by(changed ++ added ++ removed, & &1.ordinal)
+  end
+
+  defp changed_lines(before, after_) do
+    before
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {field, value} ->
+      if Map.get(after_, field) == value do
+        "#{field}: #{review_value(value)}"
+      else
+        "#{field}: #{review_value(value)} → #{review_value(Map.get(after_, field))}"
+      end
+    end)
+  end
+
+  defp row_lines(row) do
+    row
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {field, value} -> "#{field}: #{review_value(value)}" end)
+  end
+
+  defp review_value(nil), do: "not set"
+  defp review_value(value) when is_binary(value), do: value
+  defp review_value(value), do: to_string(value)
+
+  defp review_array_label(:hours), do: "Hours"
+  defp review_array_label(:booking_rules), do: "Booking rules"
+
+  defp field_label(field), do: field |> to_string() |> String.replace("_", " ")
+
+  defp review_state_text(%{review: nil, stage: nil}), do: "No prepared change under review."
+
+  defp review_state_text(%{stage: %{lapsed: :source}}) do
+    "Staged into this page, but the policy source changed. Save changes will not write them."
+  end
+
+  defp review_state_text(%{stage: %{lapsed: :baseline}}) do
+    "Staged into this page, but the saved service or its calendars changed. Save changes will not write them."
+  end
+
+  defp review_state_text(%{stage: stage}) when is_map(stage),
+    do: "Staged into this page. Save changes is what writes it."
+
+  defp review_state_text(%{review: review}) do
+    case review.overlaps do
+      [] ->
+        "Reviewing a prepared change. Nothing has been staged."
+
+      overlaps ->
+        "Reviewing a prepared change. #{length(overlaps)} overlapping " <>
+          if(length(overlaps) == 1, do: "field needs", else: "fields need") <> " your answer."
+    end
+  end
+
+  defp source_state_text(%{state: :empty}), do: "No policy source accepted yet."
+
+  defp source_state_text(%{state: :accepted, source: source}) do
+    "Accepted #{source["label"]} for the helper."
+  end
+
+  defp source_state_text(%{state: :accepted}), do: "A policy source is accepted for the helper."
+
+  defp source_state_text(%{state: :refused}),
+    do: "The helper cannot use the policy source as it stands."
+
+  defp source_state_text(%{state: :unavailable}),
+    do: "The helper cannot read this service right now."
+
+  defp service_short_name(name) when is_binary(name),
+    do: name |> String.split(" ") |> Enum.take(3) |> Enum.join(" ")
+
+  defp service_short_name(_name), do: "this service"
+
+  @doc """
   Renders the rider preview: the card a rider sees in a trip planner, built
   only from the draft and the same `RiderText` the export writes.
   """

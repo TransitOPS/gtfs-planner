@@ -50,6 +50,20 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       editor's approval instead of one the model supplied; a message about the
       service-answer feed asks for that version's `WEEKDAY` calendar and every
       other message keeps the seeded `SCHOOL_WD` calendar;
+    * a `"user"` message about this Flex service's hours, booking rules or
+      policy source gets the `flex_policy` pack's `get_flex_policy_context`
+      call, and that result gets the `prepare_flex_policy` call the journey
+      approves: the complete weekday/Saturday hours array of the seeded
+      `Browser Flex Version` `Newport Dial-a-Ride` service
+      (`test/support/browser_seed.exs`) with the weekday window moved to
+      08:00-17:00; an ask for same-day service when the dispatcher agrees
+      sends the complete hours array with that statement in `unsupported`
+      under `all_supported`, and an ask for a business-day rule sends an
+      `office_service_id` the version does not hold, so the real
+      `GtfsPlanner.Gtfs.Flex.Assistant` refuses both. A prepared result gets a
+      review sentence; a refused one gets the assistant's own refusal reason
+      verbatim, so what the browser shows is the server's reason and not this
+      stand-in's wording;
     * a `"user"` message asking whether the provider is reachable gets a 401, so
       the panel's failed entry, its Retry control and the failure text render
       from a real provider failure rather than from a scripted turn;
@@ -170,6 +184,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # dates, and H12 keeps Sunday service through its own calendar.
   @coverage_answer "H8 has no service on either date. H12 keeps Sunday service through SCHOOL."
   @too_many_dates "Ask about fewer dates at a time."
+  # Kept identical to the Flex policy skill's out-of-scope answer
+  # (priv/agents/packs/flex_policy/SKILL.md, "Anything outside this service's
+  # hours and booking rules gets this answer, unchanged").
+  @flex_prepared "I moved the weekday hours. Review the comparison on the service page; nothing is saved until you press Save changes there."
   @unknown_calendar "No calendar with service_id RETIRED in this service version."
   # The domain refused the call because the seeded loop visits Central Station
   # twice, so the follow-up names the next action instead of answering anyway.
@@ -344,6 +362,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ ~r/provider reachable|provider down|provider key/i ->
         provider_failure()
 
+      # The Flex branches come first: the Calendars questions below are keyed on
+      # words a Flex question also uses ("weekday"), and this pack only ever
+      # answers on the Flex service page.
+      flex_policy_request?(content) ->
+        tool_calls_reply("get_flex_policy_context", %{})
+
       content =~ ~r/extend/i ->
         tool_calls_reply("prepare_calendar_extension", extension_arguments(content))
 
@@ -427,6 +451,15 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         ~r/prepare|rebuild|fix|assign/i,
         ~r/relief|pull-out|sign-off|spread|break/i
       ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  # A Flex question names the service's own policy, and no Calendars, Schedule
+  # or service-answer journey below uses these words.
+  defp flex_policy_request?(content) do
+    Enum.any?(
+      [~r/flex/i, ~r/hours/i, ~r/booking/i, ~r/book a|office calendar|business day/i],
       &Regex.match?(&1, content)
     )
   end
@@ -642,6 +675,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp calendar_tool_reply("summarize_calendar_coverage", messages),
     do: coverage_reply(messages)
 
+  defp calendar_tool_reply("get_flex_policy_context", messages),
+    do: tool_calls_reply("prepare_flex_policy", flex_prepare_arguments(messages))
+
+  defp calendar_tool_reply("prepare_flex_policy", messages),
+    do: flex_prepared_reply(messages)
+
   defp calendar_tool_reply("list_boarding_occurrences", _messages),
     do: text_reply(@schedule_occurrences)
 
@@ -715,6 +754,77 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       true ->
         text_reply(@schedule_departures)
     end
+  end
+
+  # A refused preparation is the assistant's own reason, so the stand-in repeats
+  # what the tool returned rather than paraphrasing it: the refusal the browser
+  # journey reads is the server's refusal, not this file's wording.
+  defp flex_prepared_reply(messages) do
+    case last_tool_payload(messages) do
+      %{"error" => reason} when is_binary(reason) ->
+        text_reply("I did not prepare that. " <> reason)
+
+      _prepared ->
+        text_reply(@flex_prepared)
+    end
+  end
+
+  # The turn loop answers a tool call with a `"tool"` message whose content is the
+  # result payload it encoded, so the newest tool message is this turn's last
+  # tool result.
+  defp last_tool_payload(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(%{}, fn
+      %{"role" => "tool", "content" => content} when is_binary(content) ->
+        case Jason.decode(content) do
+          {:ok, payload} when is_map(payload) -> payload
+          _unreadable -> nil
+        end
+
+      _message ->
+        nil
+    end)
+  end
+
+  # The complete replacement hours array of the seeded `Newport Dial-a-Ride`
+  # service: both saved rows, with the weekday window moved to 08:00-17:00 and
+  # the Saturday window exactly as saved. A replacement array is the final state
+  # of the array, unchanged rows included.
+  defp flex_prepare_arguments(messages) do
+    content = last_user_content(messages)
+
+    cond do
+      content =~ ~r/same-day|same day|dispatcher/i ->
+        %{
+          "scope" => "all_supported",
+          "hours" => flex_hours(),
+          "unsupported" => ["Same-day bookings when the dispatcher agrees."]
+        }
+
+      content =~ ~r/business day|office/i ->
+        %{
+          "scope" => "all_supported",
+          "booking_rules" => [
+            %{
+              "when" => "earlier_day",
+              "minutes" => 1440,
+              "business_days" => true,
+              "office_service_id" => "office"
+            }
+          ]
+        }
+
+      true ->
+        %{"scope" => "all_supported", "hours" => flex_hours()}
+    end
+  end
+
+  defp flex_hours do
+    [
+      %{"area_key" => "a1", "service_id" => "weekday", "start" => "08:00", "end" => "17:00"},
+      %{"area_key" => "a1", "service_id" => "saturday", "start" => "09:00", "end" => "16:00"}
+    ]
   end
 
   defp coverage_reply(messages) do

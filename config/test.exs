@@ -203,6 +203,10 @@ config :gtfs_planner,
        GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
 
 config :gtfs_planner,
+       :gtfs_flex_assistant_snapshot,
+       GtfsPlanner.Gtfs.Flex.Assistant.Snapshot.Sandbox
+
+config :gtfs_planner,
        :reviewed_apply_transaction,
        GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox
 

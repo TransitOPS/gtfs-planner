@@ -35,19 +35,41 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   The organization's realtime answer is not part of the service draft: choosing
   it writes `ExportDefaults.update/3` at once, exactly as the Settings page
   step 26 will, and the service's own fields stay unsaved until Save.
+
+  The approved policy source intake sits beside the hours and booking sections
+  and is deliberately its own form (AC-2, AC-7, AC-12). The editor pastes the
+  policy text their agency authorized, names it, records a revision if the
+  document has one, and accepts it explicitly: acceptance is their statement
+  that this is the authorized text, not an agency or legal certification. The
+  server freezes it through `GtfsPlanner.Agents.Scope.with_source_snapshot/2`
+  together with the service this page already loaded, and hands the returned
+  context to `GtfsPlannerWeb.AgentPanel.set_context/2`, which is the only way
+  the helper's pack is ever mounted here. The `flex_policy` pack mounts only
+  after the scoped load succeeds, and every load rebinds the panel to the plain
+  version context, so a replaced service, a discarded draft and a version
+  switch all drop the accepted source and the conversation it belonged to.
+
+  No part of the intake writes. A validation failure, an over-limit context and
+  a helper that cannot read the service all leave the editor's text, the whole
+  native draft and the one Save exactly where they were.
   """
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FlexComponents
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Boundaries
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.Flex
+  alias GtfsPlanner.Gtfs.Flex.Assistant
+  alias GtfsPlanner.Gtfs.Flex.Assistant.Guard
   alias GtfsPlanner.Gtfs.Flex.Checks
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Geometry
@@ -57,6 +79,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   alias GtfsPlanner.Gtfs.FlexHours
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
@@ -100,6 +123,45 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # AC-29: ADA-only detours replace paratransit, which must reach ¾ mile, so
   # choosing ADA-only with no distance chosen yet preselects that distance.
   @ada_distance_m 1_200
+
+  # The approved policy source this page freezes for the helper. The kind and
+  # the payload keys are the `flex_policy` contract `Flex.Assistant.workspace/1`
+  # and the pack's `authorize_context/1` both read, and the whole serialized
+  # context is admitted against `Scope`'s own 65,536-byte bound.
+  @flex_policy_snapshot_kind "flex_policy"
+  @flex_policy_section "hours_booking"
+
+  @flex_policy_too_large "The policy source does not fit in one helper answer of 65,536 bytes for the whole page. Shorten the policy above, or make the change yourself."
+
+  @flex_policy_forbidden "Your access to flex services changed, so the helper stopped."
+
+  @flex_policy_unavailable "This flex service is not available, so the helper cannot read it."
+
+  @flex_policy_invalid "The policy source was not accepted. Fix the fields it names."
+
+  @flex_policy_review_stale "That prepared change is no longer current. Nothing was applied."
+
+  @flex_policy_review_draft_changed "Your hours, booking rules or areas changed since this review. " <>
+                                      "Review the change again before you stage it."
+
+  @flex_policy_overlap_pending "Choose what to keep for each overlapping field before you stage this change."
+
+  @flex_policy_review_incomplete "This prepared change cannot be reviewed against your current page. " <>
+                                   "Nothing was applied."
+
+  @flex_policy_stale_baseline "The saved service or its calendars changed after this review, so nothing " <>
+                                "was saved. Your draft and the accepted policy source are exactly as you left " <>
+                                "them. Review the prepared change again to save the staged rows, or discard " <>
+                                "them and save your own work."
+
+  @flex_policy_stale_stage "This page moved after the prepared change was staged, so nothing was saved. " <>
+                             "Your draft and the accepted policy source are unchanged. Review the prepared " <>
+                             "change again to refresh it, or discard the staged rows and save your own work."
+
+  @flex_policy_lapsed_review "The policy source changed after these rows were staged, so the review that " <>
+                               "covered them is gone and nothing was saved. Your draft and the accepted " <>
+                               "policy source are exactly as you left them. Review a prepared change again " <>
+                               "to save the staged rows, or discard them and save your own work."
 
   # The three distances the area editor's routes panel offers, the first three
   # of the reference's `DISTANCES`; the reference's distance for an area service
@@ -226,7 +288,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:area_crossing, nil)
      |> assign(:area_vertices, nil)
      |> assign(:area_simplify_note, nil)
-     |> assign(:area_editable, false)}
+     |> assign(:area_editable, false)
+     |> assign(:flex_policy_form, flex_policy_form(%{}))
+     |> assign(:flex_policy_state, :empty)
+     |> assign(:flex_policy_source, nil)
+     |> assign(:flex_policy_refusal, nil)
+     |> assign(:flex_policy_field_errors, %{})
+     |> assign(:flex_policy_review, nil)
+     |> assign(:flex_policy_stage, nil)
+     |> assign(:flex_policy_stage_stale, false)
+     |> assign(:flex_policy_notice, nil)}
   end
 
   @impl true
@@ -419,11 +490,22 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   def handle_event("save", _params, socket), do: {:noreply, socket}
 
   # The stale banner's two answers. "Use their changes" reloads the stored
-  # service into both the baseline and the draft; "Save both changes" keeps this
-  # draft and saves it on top of their row, whose lock_version it re-reads.
+  # service into both the baseline and the draft, which is also a new baseline:
+  # `reset_flex_policy/1` drops any staged assistant guard with it, so an
+  # assisted change can only return through a fresh preparation and review.
+  # "Save both changes" keeps this draft and saves it on top of their row, whose
+  # lock_version it re-reads.
   @impl true
   def handle_event("use_their_changes", _params, socket), do: {:noreply, load_service(socket)}
 
+  # Saving both is the same guarded writer as an ordinary Save. A staged
+  # assistant guard is bound to the baseline the review read, and the other
+  # session's commit has already moved it, so the guarded transaction refuses
+  # this save rather than persisting the staged change on top of a row nobody
+  # reviewed (AC-11). The refusal lapses the stage, so every later Save and
+  # this action refuse it again before the transaction. The editor's way
+  # forward is the explicit conflict resolution: discard the staged change, or
+  # prepare and review it again.
   @impl true
   def handle_event("save_both_changes", _params, socket) do
     case Flex.get_service(
@@ -960,6 +1042,118 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     end
   end
 
+  # The source is the editor's own authorized text, so typing it never touches
+  # the service draft and never dirties the page: this is not a service change.
+  @impl true
+  def handle_event("flex_policy_source_change", params, socket) do
+    {:noreply, assign(socket, :flex_policy_form, flex_policy_form(flex_policy_params(params)))}
+  end
+
+  @impl true
+  def handle_event("flex_policy_source", params, socket) do
+    values = flex_policy_values(flex_policy_params(params))
+
+    case flex_policy_errors(values) do
+      {:ok, values} ->
+        {:noreply, accept_flex_policy_source(socket, values)}
+
+      {:error, errors} ->
+        {:noreply, refuse_flex_policy_source(socket, values, errors, @flex_policy_invalid)}
+    end
+  end
+
+  # The prepared card's own action, and the only way a review can be opened
+  # (AC-7). The host verifies the intent the session hands back against the
+  # source this page currently holds: the entry id is parsed, the command is
+  # looked up through `Agents.prepared/3` on the session this panel holds, and
+  # the command's source and context digests must equal the accepted snapshot's
+  # own server-computed digests. A forged id, a stale entry, a replaced source
+  # and a command for another service are therefore the same refusal, and none
+  # of them reaches a surface (AC-1, AC-2).
+  #
+  # A command that passes the fence is then re-prepared against the current
+  # scope by `Flex.Assistant.prepare/2` itself, so the review the editor reads
+  # is the native comparison of a freshly authorized candidate rather than
+  # whatever the model proposed earlier. Nothing here writes (AC-8, INV-1).
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    with {entry_id, ""} <- Integer.parse(id),
+         {:ok, %{command: {:flex_policy, command}}} <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         true <- current_flex_policy_command?(socket, command),
+         {:ok, prepared} <- reprepare_flex_policy(socket, command) do
+      {:noreply, open_flex_policy_review(socket, entry_id, command, prepared)}
+    else
+      {:error, _reason} ->
+        {:noreply, assign(socket, :agent_notice, @flex_policy_review_incomplete)}
+
+      _stale_or_unknown ->
+        {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket) do
+    {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+  end
+
+  # One explicit answer for one targeted array (AC-9). The choice is the
+  # editor's, it is recorded against the open review, and nothing is applied
+  # until the whole review is staged; an array whose draft already equals the
+  # saved rows carries no choice at all, because there is no overlap to
+  # resolve.
+  @impl true
+  def handle_event("flex_policy_overlap", %{"array" => array, "choice" => choice}, socket) do
+    case socket.assigns.flex_policy_review do
+      nil ->
+        {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+
+      review ->
+        {:noreply,
+         socket
+         |> put_flex_policy_overlap(review, array, choice)
+         |> assign(:flex_policy_notice, nil)}
+    end
+  end
+
+  def handle_event("flex_policy_overlap", _params, socket) do
+    {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+  end
+
+  # Staging merges the reviewed arrays into the whole current native draft and
+  # builds the guard the native Save will be fenced with. It writes nothing
+  # (AC-8, CR-1), and it refuses rather than guesses: a replaced source, a
+  # draft that moved since the review, an unanswered overlap and a page the
+  # native changesets refuse are four separate refusals (AC-9, AC-12).
+  @impl true
+  def handle_event("flex_policy_stage", _params, socket) do
+    case socket.assigns.flex_policy_review do
+      nil -> {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+      review -> {:noreply, stage_flex_policy(socket, review)}
+    end
+  end
+
+  # The explicit way out of a staged change: the targeted arrays go back to
+  # their saved rows and every other field the editor typed stays exactly where
+  # it is. This is the only path that turns an assistant-origin page back into
+  # an ordinary native draft, and it is a click, never a silent consequence of
+  # a replaced source or a moved baseline.
+  @impl true
+  def handle_event("flex_policy_discard_staged", _params, socket) do
+    case socket.assigns.flex_policy_stage do
+      nil -> {:noreply, assign(socket, :agent_notice, @flex_policy_review_stale)}
+      stage -> {:noreply, discard_flex_policy_stage(socket, stage)}
+    end
+  end
+
+  @impl true
+  def handle_event("flex_policy_review_close", _params, socket) do
+    {:noreply, assign(socket, :flex_policy_review, nil)}
+  end
+
   # --- rendering --------------------------------------------------------------
 
   @impl true
@@ -1245,6 +1439,33 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
                 <.status_section service={@draft} status_action={@status_action} />
               </.form>
+
+              <%!-- The source intake sits beside the hours and booking sections but is its
+              own form: accepting a source is an editor decision about what the helper may
+              read, never a field of the service draft, so it never dirties the page and
+              only native Save persists anything (INV-1). --%>
+              <.flex_policy_source_section
+                form={@flex_policy_form}
+                state={@flex_policy_state}
+                refusal={@flex_policy_refusal}
+                field_errors={@flex_policy_field_errors}
+                source={@flex_policy_source}
+                helper_open?={@agent_open?}
+                service_name={@draft.name || @draft.key || "this service"}
+              />
+
+              <%!-- The review and the staged state sit directly under the intake, in the
+              same column as the hours and booking sections they describe. Both are read-only
+              surfaces over the page's own draft: the reviewed rows are staged into the form
+              above and the save bar stays the only writer (AC-8, AC-9, INV-1). --%>
+              <.flex_policy_review_section
+                review={@flex_policy_review}
+                stage={@flex_policy_stage}
+                lapsed={flex_policy_lapse(@flex_policy_stage)}
+                stale?={@flex_policy_stage_stale}
+                notice={@flex_policy_notice}
+                calendars={@calendars}
+              />
             </div>
 
             <aside
@@ -1271,6 +1492,35 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
               <.service_map_card service={@draft} />
             </aside>
           </div>
+
+          <%!-- The panel's focus listener belongs to this persistent wrapper, not to the
+          panel: the closing panel cannot own a handler that runs after its own removal,
+          so the wrapper outlives both states of the panel. --%>
+          <div id="flex-policy-helper-focus" phx-hook=".FlexPolicyHelperFocus" class="mt-6">
+            <div :if={@agent_open?} class="flex min-w-0 xl:sticky xl:top-4">
+              <.agent_panel
+                id="agent-panel"
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={"Flex policy · " <> @current_gtfs_version.name}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+                review_label="Review prepared change"
+              />
+            </div>
+          </div>
+
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".FlexPolicyHelperFocus">
+            export default {
+              mounted() {
+                this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+              }
+            }
+          </script>
         </div>
 
         <.save_bar
@@ -1370,7 +1620,44 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:area_distance_choices, @area_distance_choices)
     |> assign_hub_choices()
     |> assign_checks()
+    |> reset_flex_policy()
+    |> mount_flex_policy_panel(version_id)
     |> enter_or_leave_area()
+  end
+
+  # The helper panel is mounted only once the scoped service has loaded, so a
+  # conversation can never be bound to a service this page has not read. A
+  # reload of the same service (their changes, a discarded draft) re-binds the
+  # panel to the plain version context, which drops any accepted source and the
+  # conversation it belonged to.
+  defp mount_flex_policy_panel(socket, version_id) do
+    socket =
+      if socket.assigns[:agent_pack_id] do
+        socket
+      else
+        AgentPanel.mount(socket, "flex_policy")
+      end
+
+    AgentPanel.set_context(socket, Scope.context({:version, version_id}))
+  end
+
+  # A load is the boundary of the accepted source: the editor accepted text for
+  # the service as it was, so a reload starts from no accepted source. The text
+  # they typed is their own draft and is kept.
+  defp reset_flex_policy(socket) do
+    socket
+    |> assign(:flex_policy_state, :empty)
+    |> assign(:flex_policy_source, nil)
+    |> assign(:flex_policy_refusal, nil)
+    |> assign(:flex_policy_field_errors, %{})
+    |> assign(:flex_policy_review, nil)
+    |> assign(:flex_policy_stage, nil)
+    |> assign(:flex_policy_stage_stale, false)
+    |> assign(:flex_policy_notice, nil)
+    |> assign(
+      :flex_policy_form,
+      flex_policy_form(Map.take(socket.assigns.flex_policy_form.params, ~w(label revision text)))
+    )
   end
 
   defp calendar_rows(organization_id, version_id) do
@@ -1610,6 +1897,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     )
     |> refresh_map_for(draft, socket.assigns.draft)
     |> assign_checks()
+    |> invalidate_flex_policy_stage()
   end
 
   # The page always renders the service-wide rule first (its fields are the
@@ -1758,13 +2046,64 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   # --- saving ------------------------------------------------------------------
 
+  # A staged assistant guard survives into this call: the guarded overload is
+  # the only writer that takes the exclusive version fence and re-verifies the
+  # reviewed baseline and candidate before the first mutation. There is no
+  # fallback to the ordinary save for a staged draft, so an assisted change can
+  # never be persisted unguarded by accident (AC-10, AC-11, INV-2).
   defp write_page(socket, loaded) do
-    case Flex.save_service(
-           AuditContext.from_assigns(socket.assigns),
-           loaded,
-           page_attrs(socket.assigns.draft),
-           area_inputs(socket)
-         ) do
+    # A draft that moved after staging is refused here rather than reaching the
+    # transaction's own candidate check, because the message is a different
+    # one: the reviewed baseline is intact and it is the page that changed. A
+    # staged change whose review belonged to a source this page has since
+    # replaced is refused for the same reason: its guard is kept, so the rows
+    # can still be discarded, but it describes a review that no longer exists.
+    # The whole draft and the accepted source are kept either way (AC-11, AC-12).
+    cond do
+      socket.assigns[:flex_policy_stage_stale] ->
+        save_error(socket, @flex_policy_stale_stage)
+
+      flex_policy_lapse(socket.assigns[:flex_policy_stage]) == :source ->
+        save_error(socket, @flex_policy_lapsed_review)
+
+      flex_policy_lapse(socket.assigns[:flex_policy_stage]) == :baseline ->
+        save_error(socket, @flex_policy_stale_baseline)
+
+      true ->
+        write_page_now(socket, loaded)
+    end
+  end
+
+  # Why a staged assistant change can no longer be saved, or nil while it can.
+  # The stage is kept rather than dropped, so the page keeps routing this draft
+  # through the guarded writer and offers the explicit discard, but its guard
+  # cannot be trusted any more: `:source` means the policy source the review
+  # belonged to was replaced, `:baseline` means the guarded transaction found
+  # the saved service or its calendars moved. A save under either would persist
+  # rows nobody reviewed against what the page now holds (AC-2, AC-10, AC-11,
+  # INV-2).
+  defp flex_policy_lapse(%{lapsed: reason}), do: reason
+  defp flex_policy_lapse(_no_stage), do: nil
+
+  defp write_page_now(socket, loaded) do
+    attrs = page_attrs(socket.assigns.draft)
+    inputs = area_inputs(socket)
+    audit = AuditContext.from_assigns(socket.assigns)
+
+    case socket.assigns[:flex_policy_stage] do
+      %{guard: guard} ->
+        save_result(
+          socket,
+          Flex.save_service(audit, loaded, attrs, inputs, %{assistant_guard: guard})
+        )
+
+      _no_stage ->
+        save_result(socket, Flex.save_service(audit, loaded, attrs, inputs))
+    end
+  end
+
+  defp save_result(socket, result) do
+    case result do
       {:ok, saved} ->
         saved(socket, saved)
 
@@ -1773,6 +2112,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
       {:error, :stale} ->
         mark_stale(socket)
+
+      # The reviewed baseline moved under the guard: a calendar-only, area-only
+      # or service-only commit landed after the review. The whole draft and the
+      # accepted source stay exactly where they are. The stage lapses instead of
+      # going away, so the rows stay behind a guard that refuses every later
+      # Save, including "Save both changes", until the editor reviews again or
+      # discards them (AC-10, AC-11, AC-12).
+      {:error, :assistant_stale} ->
+        socket
+        |> assign(
+          :flex_policy_stage,
+          lapse_flex_policy_stage(socket.assigns.flex_policy_stage, :baseline)
+        )
+        |> save_error(@flex_policy_stale_baseline)
 
       {:error, :version_unavailable} ->
         save_error(
@@ -1806,6 +2159,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       |> assign(:save_errors, [])
       |> assign(:field_errors, %{})
       |> assign(:save_error, nil)
+      |> assign(:flex_policy_stage, nil)
+      |> assign(:flex_policy_stage_stale, false)
 
     socket =
       if areas_changed? do
@@ -1885,7 +2240,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> Enum.reject(&placeholder_rule?/1)
         |> Enum.map(&stringify(Map.take(&1, @rule_fields))),
       "phone" => service.phone,
-      "phone_hours" => service.phone_hours,
+      "phone_hours" => phone_hours_attrs(service.phone_hours),
       "booking_url" => service.booking_url,
       "info_url" => service.info_url,
       "note" => service.note,
@@ -1900,6 +2255,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # and a detour service's distance, wording, measure, stretch, drop-off policy
   # and calendars. A field the page does not render keeps its stored value
   # because it is not in its kind's attrs at all.
+  # The phone line's own hours are submitted with the same `_unused_*`
+  # placeholders every conditional block of this form carries, so only the
+  # three fields a rider reads are the page's content. A hidden placeholder is
+  # not an edit, and leaving it in made an unchanged save read as a changed page.
+  defp phone_hours_attrs(%{} = hours),
+    do: Map.take(hours, Map.keys(@default_phone_hours))
+
+  defp phone_hours_attrs(_hours), do: ""
+
   defp kind_attrs(%FlexService{kind: :area} = service) do
     %{"hub_stop_ids" => service.hub_stop_ids}
   end
@@ -1998,6 +2362,443 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   defp row_error_items(id, changeset) do
     Enum.map(changeset.errors, fn {field, {message, _opts}} -> {"#{id}_#{field}", message} end)
   end
+
+  # --- the approved policy source -------------------------------------------------
+
+  # The acceptance is explicit and the freeze is the server's: the text, its
+  # label and its revision go into `Scope.with_source_snapshot/2` together with
+  # the service this page already loaded, and the context that returns replaces
+  # the panel's own. Nothing is written to the service, the version or an audit
+  # row, and the draft is untouched (AC-2, AC-4).
+  defp accept_flex_policy_source(socket, values) do
+    socket = assign(socket, :flex_policy_form, flex_policy_form(values))
+
+    case freeze_flex_policy_source(socket, values) do
+      # Accepting a new source replaces the conversation's context, so a prepared
+      # review is dropped and a staged assistant guard that belonged to the old
+      # source is marked lapsed rather than dropped. The native draft is not
+      # touched: the editor keeps every unsaved field, and an assistant-origin
+      # change can only be saved again through a fresh preparation and review,
+      # or by discarding the staged rows (AC-2, AC-11, INV-2).
+      {:ok, context} ->
+        socket
+        |> assign(:flex_policy_state, :accepted)
+        |> assign(:flex_policy_source, values)
+        |> assign(:flex_policy_refusal, nil)
+        |> assign(:flex_policy_field_errors, %{})
+        |> assign(:flex_policy_review, nil)
+        |> assign(
+          :flex_policy_stage,
+          lapse_flex_policy_stage(socket.assigns.flex_policy_stage, :source)
+        )
+        |> assign(:flex_policy_stage_stale, false)
+        |> assign(:flex_policy_notice, nil)
+        |> AgentPanel.set_context(context)
+
+      {:error, :too_large} ->
+        refuse_flex_policy_source(socket, values, %{}, @flex_policy_too_large)
+
+      {:error, reason} ->
+        refuse_flex_policy_source(socket, values, %{}, flex_policy_refusal(reason))
+    end
+  end
+
+  # Every refusal keeps the whole source text in the form and leaves the native
+  # hours and booking fields exactly as they were: the helper is optional here
+  # and only native Save persists anything (AC-12).
+  defp refuse_flex_policy_source(socket, values, errors, refusal) do
+    state = if refusal == @flex_policy_forbidden, do: :unavailable, else: :refused
+
+    socket
+    |> assign(:flex_policy_state, state)
+    |> assign(:flex_policy_form, flex_policy_form(values))
+    |> assign(:flex_policy_field_errors, errors)
+    |> assign(:flex_policy_refusal, refusal)
+    |> push_event("focus_form_error", %{
+      form_id: "flex-policy-source-form",
+      fallback_id: "flex-policy-source-refusal"
+    })
+  end
+
+  # The saved fingerprint is frozen with the acceptance, so it is read through
+  # the same scoped workspace the pack will read: a service that cannot be
+  # scoped, or whose saved policy is incomplete, never becomes an accepted
+  # source the helper then cannot answer for.
+  defp freeze_flex_policy_source(socket, values) do
+    service = socket.assigns.saved
+    base = Scope.context({:version, socket.assigns.current_gtfs_version.id})
+
+    with {:ok, workspace, _evidence} <-
+           Assistant.workspace(flex_policy_scope(socket, base), service.id) do
+      Scope.with_source_snapshot(base, %{
+        kind: @flex_policy_snapshot_kind,
+        payload: %{
+          "service_id" => service.id,
+          "section" => @flex_policy_section,
+          "source" => %{
+            "text" => values["text"],
+            "label" => values["label"],
+            "revision" => values["revision"],
+            "accepted" => true
+          },
+          "saved_fingerprint" => workspace.fingerprint
+        }
+      })
+    end
+  end
+
+  # The command is current only while the source that produced it is still the
+  # one this page accepted, and only for the service this page loaded. Both
+  # digests are the server's own: the snapshot's from
+  # `Scope.with_source_snapshot/2`, the context's from `Scope.context_digest/1`
+  # over the same context the panel now holds.
+  defp current_flex_policy_command?(
+         socket,
+         %{source_digest: source_digest, context_digest: context_digest}
+       ) do
+    scope = flex_policy_scope(socket, socket.assigns.agent_context)
+
+    case Scope.source_snapshot(scope) do
+      %{kind: @flex_policy_snapshot_kind, payload: %{"service_id" => service_id}, digest: digest} ->
+        service_id == socket.assigns.saved.id and digest == source_digest and
+          Scope.context_digest(scope) == context_digest
+
+      _no_source ->
+        false
+    end
+  end
+
+  # --- the review and the staged draft ---------------------------------------
+
+  # The same preparation, run again here against the scope this page currently
+  # holds, so the review is the native comparison of an authorized candidate
+  # rather than the model's earlier words. The command's own patch and prepare
+  # scope are the input; nothing the client supplies reaches it.
+  defp reprepare_flex_policy(socket, %{patch: patch, scope: scope}) do
+    input = Map.put(patch, "scope", Atom.to_string(scope))
+
+    Assistant.prepare(flex_policy_scope(socket, socket.assigns.agent_context), input)
+  end
+
+  defp open_flex_policy_review(socket, entry_id, command, prepared) do
+    case flex_policy_signature(socket) do
+      {:ok, signature} ->
+        socket
+        |> assign(:agent_notice, nil)
+        |> assign(:flex_policy_notice, nil)
+        |> assign(:flex_policy_review, %{
+          entry_id: entry_id,
+          command: command,
+          prepared: prepared,
+          overlaps: flex_policy_overlaps(socket, prepared),
+          signature: signature
+        })
+
+      :invalid ->
+        assign(socket, :agent_notice, @flex_policy_review_incomplete)
+    end
+  end
+
+  # The signature of the whole page the review was opened against: the saved
+  # struct, the draft as `page_attrs/1` reads it and the areas as the save
+  # would submit them. It is the same content the guard's candidate digest
+  # covers, so a draft that moved between the review and the stage is caught by
+  # one comparison rather than two shapes (AC-9).
+  defp flex_policy_signature(socket) do
+    Guard.candidate_digest(
+      socket.assigns.saved,
+      page_attrs(socket.assigns.draft),
+      area_inputs(socket)
+    )
+  end
+
+  # Only the arrays this preparation actually replaced can overlap, and only a
+  # draft that differs from the saved rows in one of them is a choice the editor
+  # has to make. An array the patch did not target is not an overlap at all and
+  # is never asked about.
+  defp flex_policy_overlaps(socket, %{replaced: replaced}) do
+    draft = socket.assigns.draft
+    saved = socket.assigns.saved
+
+    replaced
+    |> Enum.filter(&(flex_policy_rows(draft, &1) != flex_policy_rows(saved, &1)))
+    |> Enum.map(&%{array: &1, choice: nil})
+  end
+
+  # One array as `page_attrs/1` and the save both read it, so "the draft
+  # differs from what is saved" means the difference that would be written.
+  defp flex_policy_rows(%FlexService{} = service, :hours) do
+    Enum.map(service.hours, &stringify(Map.take(&1, [:area_key, :service_id, :start, :end])))
+  end
+
+  defp flex_policy_rows(%FlexService{} = service, :booking_rules) do
+    service.booking_rules
+    |> Enum.reject(&placeholder_rule?/1)
+    |> Enum.map(&stringify(Map.take(&1, @rule_fields)))
+  end
+
+  # The overlap answer is a string from a control, so it is matched against the
+  # two answers this page offers and the array is matched against the open
+  # review's own list. A forged array or a third value is the same refusal as a
+  # review that is not open.
+  defp put_flex_policy_overlap(socket, review, array, choice)
+       when is_binary(array) and is_binary(choice) do
+    # A control sends the array as a string, so it is compared as the string the
+    # open review already holds rather than as a new atom from the client.
+    if array in Enum.map(review.overlaps, &to_string(&1.array)) and
+         choice in ["draft", "proposal"] do
+      assign(
+        socket,
+        :flex_policy_review,
+        put_in(review, [:overlaps], Enum.map(review.overlaps, &overlap_choice(&1, array, choice)))
+      )
+    else
+      assign(socket, :agent_notice, @flex_policy_review_stale)
+    end
+  end
+
+  defp put_flex_policy_overlap(socket, _review, _array, _choice),
+    do: assign(socket, :agent_notice, @flex_policy_review_stale)
+
+  # The overlap list holds atoms, so each open overlap answers only for its own
+  # array name and a name or answer the page never offered leaves the choice
+  # untouched.
+  defp overlap_choice(overlap, name, choice) when is_binary(name) and is_binary(choice) do
+    if to_string(overlap.array) == name do
+      case choice do
+        "draft" -> %{overlap | choice: :draft}
+        "proposal" -> %{overlap | choice: :proposal}
+        _other -> overlap
+      end
+    else
+      overlap
+    end
+  end
+
+  defp overlap_choice(overlap, _name, _choice), do: overlap
+
+  defp stage_flex_policy(socket, review) do
+    cond do
+      not current_flex_policy_command?(socket, review.command) ->
+        assign(socket, :agent_notice, @flex_policy_review_stale)
+
+      flex_policy_signature(socket) != {:ok, review.signature} ->
+        assign(socket, :flex_policy_notice, @flex_policy_review_draft_changed)
+
+      Enum.any?(review.overlaps, &is_nil(&1.choice)) ->
+        assign(socket, :flex_policy_notice, @flex_policy_overlap_pending)
+
+      true ->
+        stage_merged_flex_policy(socket, review)
+    end
+  end
+
+  # The merge itself: the current draft with the reviewed arrays replaced,
+  # every other array and every unrelated field exactly as the editor left it
+  # (AC-9, CR-2, INV-3). The guard is built from the arguments the save will
+  # actually submit, so a field that moved after this never reaches a write.
+  defp stage_merged_flex_policy(socket, review) do
+    %{prepared: prepared} = review
+    merged = merge_flex_policy_arrays(socket.assigns.draft, prepared, review.overlaps)
+
+    case flex_policy_guard(socket, prepared, merged) do
+      {:ok, guard} ->
+        socket
+        |> put_draft_struct(merged)
+        |> assign(:flex_policy_stage, %{
+          guard: guard,
+          entry_id: review.entry_id,
+          lapsed: nil,
+          saved_rows: staged_saved_rows(socket, prepared, review.overlaps)
+        })
+        |> assign(:flex_policy_stage_stale, false)
+        |> assign(:flex_policy_review, nil)
+        |> assign(:flex_policy_notice, nil)
+
+      :invalid ->
+        assign(socket, :flex_policy_notice, @flex_policy_review_incomplete)
+    end
+  end
+
+  # Every array the preparation replaced takes the candidate's rows, except the
+  # ones the editor explicitly kept, which keep the draft's own. The draft is
+  # otherwise untouched, so an unsaved phone number, an eligibility sentence, an
+  # area name and its geometry all survive the merge (AC-9, CR-2, INV-3).
+  defp merge_flex_policy_arrays(draft, prepared, overlaps) do
+    kept = Map.new(overlaps, &{&1.array, &1.choice})
+
+    Enum.reduce(prepared.replaced, draft, fn array, acc ->
+      if Map.get(kept, array) == :draft do
+        acc
+      else
+        Map.put(acc, array, Map.fetch!(prepared.candidate, array))
+      end
+    end)
+  end
+
+  # The digest is taken over the merged page exactly as `put_draft_struct/2`
+  # will normalize and hand it to the save, so the guard and the arguments the
+  # write submits are the same three values.
+  defp flex_policy_guard(socket, prepared, merged) do
+    saved = socket.assigns.saved
+    attrs = page_attrs(normalize_rules(merged))
+
+    with {:ok, candidate_digest} <- Guard.candidate_digest(saved, attrs, area_inputs(socket)),
+         {:ok, calendars_digest} <- Guard.calendars_digest(saved, attrs) do
+      Guard.new(%{
+        source_digest: prepared.source_digest,
+        context_digest: prepared.context_digest,
+        saved_fingerprint: prepared.saved_fingerprint,
+        patch_digest: Guard.patch_digest(prepared.patch),
+        candidate_digest: candidate_digest,
+        calendars_digest: calendars_digest
+      })
+    end
+  end
+
+  # Only the arrays the proposal actually won are recorded for the discard: an
+  # array the editor kept is already their own rows, and restoring saved rows
+  # over it would throw away exactly the work the overlap answer protected.
+  defp staged_saved_rows(socket, %{replaced: replaced}, overlaps) do
+    kept = Map.new(overlaps, &{&1.array, &1.choice})
+
+    replaced
+    |> Enum.reject(&(Map.get(kept, &1) == :draft))
+    |> Map.new(&{&1, flex_policy_rows(socket.assigns.saved, &1)})
+  end
+
+  # The staged rows survive a guard that can no longer be trusted: the stage
+  # keeps the guard, the entry and the saved rows the explicit discard restores,
+  # and `lapsed` is what keeps the page's Save from writing them (AC-2, AC-11,
+  # INV-2).
+  defp lapse_flex_policy_stage(nil, _reason), do: nil
+
+  defp lapse_flex_policy_stage(stage, reason), do: Map.put(stage, :lapsed, reason)
+
+  # The staged arrays go back to their saved rows and nothing else moves, so a
+  # discarded assistant change leaves the editor's own unsaved work intact and
+  # the page an ordinary native draft again.
+  defp discard_flex_policy_stage(socket, %{saved_rows: saved_rows}) do
+    restored =
+      Enum.reduce(saved_rows, socket.assigns.draft, fn {array, rows}, acc ->
+        acc
+        |> FlexService.changeset(%{Atom.to_string(array) => rows})
+        |> Ecto.Changeset.apply_changes()
+      end)
+
+    socket
+    |> put_draft_struct(restored)
+    |> assign(:flex_policy_stage, nil)
+    |> assign(:flex_policy_stage_stale, false)
+    |> assign(:flex_policy_review, nil)
+    |> assign(:flex_policy_notice, nil)
+  end
+
+  # A draft change after staging moves the page away from the reviewed
+  # candidate, so the guard no longer describes what a save would submit. The
+  # stage is kept rather than dropped — silently forgetting it would turn
+  # assistant-origin rows into an ordinary Save — and the editor answers it
+  # with a fresh review or the explicit discard (AC-11).
+  #
+  # The comparison is against the guard's own candidate digest, so a Save that
+  # resubmits the staged page unchanged is not a change at all: only content
+  # the editor actually moved marks the stage as needing a refreshed merged
+  # preview (AC-11).
+  defp invalidate_flex_policy_stage(socket) do
+    case socket.assigns[:flex_policy_stage] do
+      nil ->
+        assign(socket, :flex_policy_stage_stale, false)
+
+      stage ->
+        assign(
+          socket,
+          :flex_policy_stage_stale,
+          flex_policy_signature(socket) != {:ok, stage.guard.candidate_digest}
+        )
+    end
+  end
+
+  # The scope every read on this page is authorized against: the host's own
+  # organization, version, user and pack, with the version identity this page
+  # already holds. `resource_context` is the plain version context for the
+  # workspace read before acceptance, and the panel's current context for the
+  # digest a command claims to belong to.
+  defp flex_policy_scope(socket, resource_context) do
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: socket.assigns.current_user.id,
+      user_email: socket.assigns.current_user.email,
+      pack_id: "flex_policy",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: resource_context
+    }
+  end
+
+  defp flex_policy_errors(values) do
+    errors =
+      %{}
+      |> put_error("label", blank?(values["label"]), "Name the policy document.")
+      |> put_error("text", blank?(values["text"]), "Paste the authorized policy text.")
+      |> put_error("label", too_long?(values["label"]), "Keep the name under 200 characters.")
+      |> put_error(
+        "revision",
+        too_long?(values["revision"]),
+        "Keep the revision under 200 characters."
+      )
+
+    if errors == %{}, do: {:ok, values}, else: {:error, errors}
+  end
+
+  defp put_error(errors, _field, false, _message), do: errors
+  defp put_error(errors, field, true, message), do: Map.put(errors, field, message)
+
+  defp blank?(value), do: is_binary(value) and String.trim(value) == ""
+
+  defp too_long?(value), do: is_binary(value) and String.length(value) > 200
+
+  # A form event arrives nested under the form name; a bare input event arrives
+  # flat, exactly as the Calendars approval form handles it.
+  defp flex_policy_params(params) do
+    case params["flex_policy"] do
+      nested when is_map(nested) -> Map.merge(params, nested)
+      _other -> params
+    end
+  end
+
+  defp flex_policy_values(params) do
+    %{
+      "label" => String.trim(to_string(params["label"] || "")),
+      "revision" => String.trim(to_string(params["revision"] || "")),
+      "text" => to_string(params["text"] || "")
+    }
+  end
+
+  defp flex_policy_form(values) do
+    defaults = %{"label" => "", "revision" => "", "text" => ""}
+    to_form(Map.merge(defaults, Map.take(values, ~w(label revision text))), as: :flex_policy)
+  end
+
+  # The pack's own refusal sentences reach this page unchanged, so the editor
+  # reads the same words the assistant would say (AC-1, AC-6).
+  defp flex_policy_refusal(:forbidden), do: @flex_policy_forbidden
+  defp flex_policy_refusal(:unavailable), do: @flex_policy_unavailable
+
+  defp flex_policy_refusal({:incomplete, :workspace_too_large}),
+    do:
+      "This service's saved policy does not fit in one helper answer. Shorten the policy on this " <>
+        "page, or make the change yourself."
+
+  defp flex_policy_refusal({:incomplete, {:missing_calendar, service_id}}),
+    do:
+      "The calendar #{service_id} this service's saved policy depends on is not in this version. " <>
+        "Fix the hours or booking rule above first."
+
+  defp flex_policy_refusal({:incomplete, _reason}),
+    do: "This service's saved policy is incomplete, so the helper cannot read it yet."
+
+  defp flex_policy_refusal(_reason),
+    do: "The helper cannot read this service right now. Your text is unchanged."
 
   # --- the form's answers ------------------------------------------------------
 
@@ -2926,6 +3727,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:dirty?, draft_changed?(draft, socket.assigns.saved, geojson))
     |> assign_hub_choices()
     |> assign_checks()
+    |> invalidate_flex_policy_stage()
     |> maybe_push_card_payload(payload)
   end
 
