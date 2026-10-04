@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
 
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.ReleaseComparisonFixtures, only: [frequency_zip: 1]
   import GtfsPlanner.VersionsFixtures
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
@@ -201,6 +202,32 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
     end
   end
 
+  describe "freeze/3 over structural values that are not strings" do
+    test "admits a frequency window the matcher compared as a tuple", context do
+      %{scope: scope} = context
+
+      # The candidate's one trip becomes a non-exact window. The matcher states
+      # that as a structural change whose compared value is a tuple, which JSON
+      # has no spelling for, so it must reach the seam as its elements in order.
+      result = result_of(context, frequency_zip(false), frequency_zip(true))
+
+      assert {:ok, admitted} = AssistantContext.freeze(scope.resource_context, result, :all)
+      payload = admitted.source_snapshot.payload
+
+      assert [change] =
+               Enum.filter(payload["changes"]["structural"], &(&1["change"] == "frequencies"))
+
+      assert {change["entity"], change["id"]} == {"trip", "T1"}
+      assert change["left"] == []
+      assert change["right"] == [[28_800, 32_400, 1_200, 0]]
+
+      assert [effective] = payload["changes"]["effective"]
+      assert effective["kind"] == "frequency_changed"
+
+      assert_no_handles(payload)
+    end
+  end
+
   describe "freeze/3 over an explicit narrowing" do
     test "recomputes scoped totals, discloses what it left out, and is stable across repeats",
          context do
@@ -264,17 +291,19 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
   # runs two trips on the one service date; the candidate runs one, so the
   # comparison proves exactly one lost trip on that date.
   defp result(context, opts) do
+    result_of(
+      context,
+      week_zip(Keyword.fetch!(opts, :trips)),
+      week_zip(Keyword.fetch!(opts, :other_trips))
+    )
+  end
+
+  defp result_of(context, left_bytes, right_bytes) do
     organization = context.organization
     scope = context.scope
 
-    left = publish!(organization, context.version, week_zip(Keyword.fetch!(opts, :trips)))
-
-    right =
-      publish!(
-        organization,
-        gtfs_version_fixture(organization.id),
-        week_zip(Keyword.fetch!(opts, :other_trips))
-      )
+    left = publish!(organization, context.version, left_bytes)
+    right = publish!(organization, gtfs_version_fixture(organization.id), right_bytes)
 
     left_projection = projection!(organization, left, scope)
     right_projection = projection!(organization, right, scope)

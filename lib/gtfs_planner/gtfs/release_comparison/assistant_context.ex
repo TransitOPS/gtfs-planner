@@ -409,13 +409,27 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext do
       "entity" => to_string(entity),
       "id" => id,
       "change" => to_string(change),
-      "left" => left,
-      "right" => right,
+      "left" => json(left),
+      "right" => json(right),
       "left_ref" => optional_row_ref(left_ref),
       "right_ref" => optional_row_ref(right_ref),
       "meaning_changed" => meaning_changed
     }
   end
+
+  # A structural side is whatever the matcher compared: an identifier, a list of
+  # dates, or a tuple - a stop pattern entry, a time pair, a frequency window, a
+  # coordinate pair or a parent. JSON has neither tuples nor atoms, so a tuple is
+  # its elements in order and an atom is its name; the shared seam refuses the
+  # whole payload for any other shape.
+  defp json(nil), do: nil
+  defp json(value) when is_boolean(value) or is_number(value) or is_binary(value), do: value
+  defp json(value) when is_atom(value), do: Atom.to_string(value)
+  defp json(value) when is_tuple(value), do: value |> Tuple.to_list() |> Enum.map(&json/1)
+  defp json(value) when is_list(value), do: Enum.map(value, &json/1)
+  defp json(%Date{} = date), do: Date.to_iso8601(date)
+  defp json(%Decimal{} = decimal), do: Decimal.to_string(decimal)
+  defp json(other), do: inspect(other)
 
   defp unresolved(%{
          entity: entity,
