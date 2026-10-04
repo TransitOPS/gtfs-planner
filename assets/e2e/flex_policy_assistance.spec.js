@@ -372,7 +372,44 @@ async function supportedJourney(page, viewport) {
   );
 }
 
+// The browser suite shares one seeded database, and `flex.spec.js` reads
+// Newport Dial-a-Ride as seeded after this file (its service journey moves the
+// 18:00 weekday close to 17:00). The first two assisted journeys save the page,
+// so this puts back the weekday window, phone line and booking link they
+// changed, through the page's own form and Save.
+async function restoreSeededService(browser, baseURL) {
+  const context = await browser.newContext({ baseURL });
+  const page = await context.newPage();
+
+  try {
+    await openServicePage(page);
+
+    // Nothing was saved when the weekday close is still the seeded 18:00.
+    if ((await page.locator("#service_hours_0_end").inputValue()) === "18:00")
+      return;
+
+    await page.fill("#service_hours_0_start", "07:00");
+    await page.fill("#service_hours_0_end", "18:00");
+    await page.fill("#service_phone", "(541) 555-0142");
+    await page.fill(
+      "#service_info_url",
+      "https://northcoast.example/dial-a-ride",
+    );
+    await page.locator("#service_info_url").blur();
+    await page.locator("#save-btn").click();
+    await expect(page.locator("#flash-group")).toContainText(
+      "Saved Newport Dial-a-Ride.",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 test.describe("the assisted journey", () => {
+  test.afterAll(async ({ browser }, workerInfo) => {
+    await restoreSeededService(browser, workerInfo.project.use.baseURL);
+  });
+
   test("supported policy reviews, stages and saves through the page's own Save", async ({
     page,
   }) => {
