@@ -34,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       closures_omitted: 1,
       comparison: 1,
       comparison_difference_row: 1,
+      comparison_helper: 1,
       comparison_results: 1,
       comparison_structural_row: 1,
       comparison_unknown_row: 1,
@@ -54,6 +55,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # these query values are accepted, and `export_type_from_param/1` maps them
   # onto the atoms `ExportRuns` accepts.
   @export_type_params ~w(full pathways operations)
+
+  # The one helper panel this page mounts offers both packs. The comparison
+  # helper is only ever bound while a finished comparison has an admitted copy;
+  # the feed quality helper is the default and the fallback.
+  @helper_packs ["feed_quality", "release_comparison"]
 
   # One page of retained full feed files the editor can choose from. The chosen
   # identities are kept server-side, so a selection made on one page survives
@@ -150,13 +156,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:comparison_inspected, nil)
      |> assign(:comparison_page, comparison_page_defaults())
      |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
+     |> AgentPanel.mount("feed_quality", allowed_packs: @helper_packs)
      |> reset_comparison_context()
      |> configure_comparison_streams()
      |> stream(:comparison_differences, [])
      |> stream(:comparison_structural, [])
      |> stream(:comparison_unresolved, [])
-     |> stream(:comparison_unknowns, [])
-     |> AgentPanel.mount("feed_quality")}
+     |> stream(:comparison_unknowns, [])}
   end
 
   @impl Phoenix.LiveView
@@ -238,6 +244,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # The page's own control picks the helper; the panel's allowlist is what the
+  # page mounted, and a pack with nothing to read is refused in `select_helper_pack/2`.
+  @impl Phoenix.LiveView
+  def handle_event("export_helper_mode", %{"pack" => pack}, socket) when is_binary(pack),
+    do: {:noreply, select_helper_pack(socket, pack)}
+
+  def handle_event("export_helper_mode", _params, socket), do: {:noreply, socket}
+
+  # Opening from the finished comparison binds the comparison helper first, so the
+  # panel never opens on the other helper's conversation.
+  @impl Phoenix.LiveView
+  def handle_event("comparison_helper_open", _params, socket) do
+    case socket.assigns.comparison_context do
+      nil ->
+        {:noreply, socket}
+
+      _context ->
+        {:noreply, socket |> select_helper_pack("release_comparison") |> AgentPanel.open()}
+    end
+  end
 
   # Re-reads the provider-independent readiness without touching any job or form
   # draft, and rebinds the panel's snapshot to the section it just read. Defaults
@@ -666,7 +693,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> reset_comparison_view()
         |> assign(:comparison_request_ref, request_ref)
         |> assign(:comparison_coordinator, pid)
-        |> assign(:comparison_monitor, Process.monitor(pid))
+        |> assign(:comparison_monitor, monitor_coordinator(pid))
 
       {:error, :unavailable} ->
         refuse_comparison(socket, draft, :unavailable)
@@ -831,11 +858,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket
         |> assign(:comparison_context, context)
         |> assign(:comparison_context_notice, nil)
+        |> bind_comparison_helper()
 
       {:error, reason} ->
         socket
         |> assign(:comparison_context, nil)
         |> assign(:comparison_context_notice, reason)
+        |> bind_comparison_helper()
     end
   end
 
@@ -846,7 +875,44 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     socket
     |> assign(:comparison_context, nil)
     |> assign(:comparison_context_notice, nil)
+    |> bind_comparison_helper()
   end
+
+  # Only the panel's own binding moves. While the panel holds the comparison
+  # helper, a replaced copy is bound the way `set_context/2` replaces any
+  # context (this panel detaches from its session and clears its transcript;
+  # the session, other tabs, the native comparison and every export or check job
+  # carry on), and no copy at all returns the panel to the feed quality helper,
+  # closed, because the comparison it was about is gone. A panel on the feed
+  # quality helper is never touched: a finished comparison offers the other
+  # helper, it does not take the panel over.
+  defp bind_comparison_helper(%{assigns: %{agent_pack_id: "release_comparison"}} = socket) do
+    case socket.assigns.comparison_context do
+      nil ->
+        socket
+        |> assign(:agent_open?, false)
+        |> select_helper_pack("feed_quality")
+
+      context ->
+        AgentPanel.set_context(socket, context)
+    end
+  end
+
+  defp bind_comparison_helper(socket), do: socket
+
+  # Each helper binds the context it owns. A pack this page did not mount, or the
+  # comparison helper with no admitted copy, changes nothing, so a forged event
+  # cannot bind one helper to the other's context.
+  defp select_helper_pack(socket, "feed_quality"),
+    do: AgentPanel.select_pack(socket, "feed_quality", feed_quality_context(socket))
+
+  defp select_helper_pack(
+         %{assigns: %{comparison_context: %{} = context}} = socket,
+         "release_comparison"
+       ),
+       do: AgentPanel.select_pack(socket, "release_comparison", context)
+
+  defp select_helper_pack(socket, _pack), do: socket
 
   defp comparison_scope(socket) do
     %Scope{
@@ -1101,6 +1167,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     )
   end
 
+  # The helper panel halts every raw `:DOWN` it does not own, so this page's own
+  # monitor carries its own tag and reaches `handle_info/2` as that tagged message.
+  defp monitor_coordinator(pid),
+    do: :erlang.monitor(:process, pid, tag: :comparison_coordinator_down)
+
   defp demonitor(socket, key) do
     case socket.assigns[key] do
       nil ->
@@ -1128,7 +1199,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # still reported. It becomes a worker exit only while it is still the current
   # request; a replaced coordinator's exit changes nothing.
   @impl Phoenix.LiveView
-  def handle_info({:DOWN, ref, :process, pid, _reason}, socket) do
+  def handle_info({:comparison_coordinator_down, ref, :process, pid, _reason}, socket) do
     if socket.assigns.comparison_monitor == ref and
          socket.assigns.comparison_coordinator == pid do
       {:noreply,
@@ -1264,6 +1335,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           Export feed
           <:subtitle>{lede(@current_gtfs_version, @operations?)}</:subtitle>
           <:actions>
+            <div
+              :if={@comparison_context}
+              id="export-helper-mode"
+              role="group"
+              aria-label="Which helper answers on this page"
+              class="flex flex-wrap items-center gap-1"
+            >
+              <.button
+                :for={
+                  {pack, label} <- [
+                    {"feed_quality", "Feed quality"},
+                    {"release_comparison", "Comparison"}
+                  ]
+                }
+                id={"export-helper-mode-#{pack}"}
+                type="button"
+                phx-click="export_helper_mode"
+                phx-value-pack={pack}
+                aria-pressed={to_string(@agent_pack_id == pack)}
+                variant={if @agent_pack_id == pack, do: "secondary", else: "quiet"}
+              >
+                {label}
+              </.button>
+            </div>
             <.button
               id="agent-helper-open"
               type="button"
@@ -1336,6 +1431,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   status={@comparison_status}
                   notice={@comparison_notice}
                   result={@comparison_result}
+                />
+
+                <.comparison_helper
+                  :if={@comparison_result}
+                  context={@comparison_context}
+                  notice={@comparison_context_notice}
+                  open?={@agent_open? and @agent_pack_id == "release_comparison"}
                 />
 
                 <.comparison_results
@@ -1446,7 +1548,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               title={@agent_title}
               intro={@agent_intro}
               examples={@agent_examples}
-              scope_line={"Export · " <> @current_gtfs_version.name}
+              scope_line={helper_scope_line(@agent_pack_id, @current_gtfs_version, @comparison_scope)}
+              composer_hint={helper_composer_hint(@agent_pack_id)}
               status={@agent_status}
               entries={@streams.agent_entries}
               form={@agent_form}
@@ -1468,6 +1571,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     </Layouts.app>
     """
   end
+
+  defp helper_scope_line("release_comparison", version, nil),
+    do: "Export · #{version.name} · whole comparison"
+
+  defp helper_scope_line("release_comparison", version, _narrowed),
+    do: "Export · #{version.name} · narrowed comparison"
+
+  defp helper_scope_line(_pack, version, _scope), do: "Export · " <> version.name
+
+  defp helper_composer_hint("release_comparison"),
+    do: "Answers come from the comparison on this page."
+
+  # The feed quality helper prepares an export-options change for review, which is
+  # the component's own default rule.
+  defp helper_composer_hint(_pack), do: "Review changes before applying."
 
   defp lede(version, operations?) do
     "Create a file of #{version.name} for trip planners such as Google Maps and Transit app" <>
@@ -1706,9 +1824,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # type or the saved defaults goes through here; `set_context` is a no-op while
   # the snapshot is unchanged and starts a fresh conversation when it moved.
   defp refresh_feed_quality(socket) do
-    socket
-    |> assign(:feed_quality, feed_quality_summary(socket))
-    |> AgentPanel.set_context(feed_quality_context(socket))
+    socket = assign(socket, :feed_quality, feed_quality_summary(socket))
+
+    # The comparison helper owns the panel's context while it is selected, and a
+    # return to this helper reads a fresh snapshot in `select_helper_pack/2`.
+    if socket.assigns.agent_pack_id == "feed_quality",
+      do: AgentPanel.set_context(socket, feed_quality_context(socket)),
+      else: socket
   end
 
   # The host builds the snapshot the helper reads: only a server fingerprint of
@@ -1793,7 +1915,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> Base.encode16(case: :lower)
   end
 
-  defp review_feed_quality_options(socket, id) when is_binary(id) do
+  defp review_feed_quality_options(%{assigns: %{agent_pack_id: "feed_quality"}} = socket, id)
+       when is_binary(id) do
     case Integer.parse(id) do
       {entry_id, ""} -> review_feed_quality_entry(socket, entry_id)
       _other -> socket

@@ -1285,6 +1285,85 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     """
   end
 
+  @doc """
+  The way into the comparison helper, shown once a comparison has finished.
+
+  `context` is the immutable copy `ExportLive` admitted for the helper, or `nil`
+  when none was. With one, the helper is offered; without one, the card says why
+  and what to do, and the finished comparison above it is untouched. `notice` is
+  `:source_too_large` when the whole comparison is more than the helper can hold,
+  and `:invalid_scope` for any other refusal. Both point at the explicit scope
+  form, because narrowing is the only way to a smaller copy.
+
+  The refusal is a polite live region: it appears with the finished comparison,
+  and a keyboard reader should hear it without looking for it.
+  """
+  attr :context, :map, default: nil
+  attr :notice, :atom, default: nil
+  attr :open?, :boolean, default: false
+
+  def comparison_helper(assigns) do
+    ~H"""
+    <section
+      id="comparison-helper-entry"
+      aria-labelledby="comparison-helper-title"
+      class="rounded-card border border-subtle bg-white px-5 py-4"
+    >
+      <%= if @context do %>
+        <h3 id="comparison-helper-title" class="text-base font-bold text-strong">
+          Ask about this comparison
+        </h3>
+        <p class="mt-1 text-[13px] leading-relaxed text-muted">
+          The helper explains what changed and what could not be compared, using only the rows on
+          this page. It can’t change your feed or start another comparison.
+        </p>
+        <.button
+          id="comparison-helper-open"
+          type="button"
+          phx-click="comparison_helper_open"
+          aria-expanded={to_string(@open?)}
+          aria-controls="agent-panel"
+          variant="quiet"
+          class="mt-2 min-h-11"
+        >
+          Open comparison helper
+        </.button>
+      <% else %>
+        <h3 id="comparison-helper-title" class="text-base font-bold text-strong">
+          {helper_refusal_title(@notice)}
+        </h3>
+        <p
+          id="comparison-helper-notice"
+          role="status"
+          class="mt-1 text-[13px] leading-relaxed text-default"
+        >
+          {helper_refusal_detail(@notice)}
+        </p>
+        <.button
+          id="comparison-helper-narrow"
+          type="button"
+          variant="quiet"
+          class="mt-2 min-h-11"
+          phx-click={JS.focus(to: "#comparison-scope-routes")}
+        >
+          Choose routes and dates
+        </.button>
+      <% end %>
+    </section>
+    """
+  end
+
+  defp helper_refusal_title(:source_too_large), do: "The helper can’t read all of this comparison"
+  defp helper_refusal_title(_other), do: "The helper can’t read this comparison"
+
+  defp helper_refusal_detail(:source_too_large),
+    do:
+      "It has more rows than the helper can hold. Choose fewer routes and dates under “Narrow this comparison”, then ask again. The comparison below is unchanged."
+
+  defp helper_refusal_detail(_other),
+    do:
+      "The comparison below is unchanged. Narrow it to the routes and dates you care about to try the helper again."
+
   # Two files of the same version exported on the same day are different
   # comparisons, so the label names the version and the exact export time. A run
   # that never recorded a version name is labelled as an export rather than
