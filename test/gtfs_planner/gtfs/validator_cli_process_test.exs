@@ -321,6 +321,17 @@ defmodule GtfsPlanner.Gtfs.ValidatorCliProcessTest do
       assert {:error, {:invalid_report, :malformed_total}} = Validator.parse_report(dir, now_ms())
     end
 
+    # The pinned validator's NoticeReport always writes sampleNotices beside
+    # totalNotices, so a group without them is a broken report, not a sampled one.
+    test "rejects a grouped notice that carries no sampleNotices", %{dir: dir} do
+      write_report!(dir, %{
+        "notices" => [%{"code" => "a_code", "severity" => "ERROR", "totalNotices" => 1}]
+      })
+
+      assert {:error, {:invalid_report, :malformed_samples}} =
+               Validator.parse_report(dir, now_ms())
+    end
+
     test "rejects a report that mixes grouped and flat notices", %{dir: dir} do
       write_report!(dir, %{
         "notices" => [

@@ -610,7 +610,4 @@ defmodule GtfsPlanner.Gtfs.Validator do
       {:error, _reason} = error -> error
     end
   end
-
-  # A report the validator wrote always has a `notices` list of objects; any
-  # other shape is a broken report, not a clean one.
 end

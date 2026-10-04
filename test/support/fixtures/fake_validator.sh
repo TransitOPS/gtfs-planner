@@ -52,8 +52,9 @@ case "$mode" in
   report)
     printf '{"summary":{"validatorVersion":"fake"},"notices":[]}' > "$out/report.json"
     ;;
-error_report)
-    printf '{"summary":{"validatorVersion":"fake"},"notices":[{"code":"fake_error_1","severity":"ERROR","totalNotices":1},{"code":"fake_error_2","severity":"ERROR","totalNotices":1},{"code":"fake_warning_1","severity":"WARNING","totalNotices":1},{"code":"fake_warning_2","severity":"WARNING","totalNotices":1},{"code":"fake_warning_3","severity":"WARNING","totalNotices":1}]}' > "$out/report.json"
+  error_report)
+    # The validator writes every group with both totalNotices and sampleNotices.
+    printf '{"summary":{"validatorVersion":"fake"},"notices":[{"code":"fake_error_1","severity":"ERROR","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_error_2","severity":"ERROR","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_1","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_2","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_3","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]}]}' > "$out/report.json"
     ;;
   report_after_release)
     : > "$copy.waiting"
