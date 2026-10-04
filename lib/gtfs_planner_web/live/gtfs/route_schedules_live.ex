@@ -6055,7 +6055,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 id="schedule-helper-mode"
                 role="group"
                 aria-label="Which helper answers on this page"
-                class="flex items-center gap-1"
+                class="flex flex-wrap items-center gap-1"
               >
                 <.button
                   :for={{mode, label} <- @schedule_helper_modes}
