@@ -351,32 +351,44 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
     |> Base.encode16(case: :lower)
   end
 
-  # A decimal is hashed as its normalized value, so a stored `1.30` and a `1.3`
-  # are the number they are rather than two of them. `Decimal.to_string/2` alone
-  # keeps the stored scale, which is how the two earlier copies of this canonical
-  # form in `Gtfs.Calendars` and `Gtfs.RoutePatterns` read it; normalizing is one
-  # call more and removes a class of spurious staleness. No field of a context
-  # built by `Blocking` holds a decimal — coordinates and circuity arrive as
-  # floats — so this clause is reached only by a hand-assembled struct.
-  defp canonical(%Decimal{} = value) do
+  @doc """
+  Returns the canonical term `digest/1` hashes.
+
+  A digest is only comparable when every term it covers canonicalizes the same
+  way, so the one form lives here and any owner that fingerprints a source of its
+  own — `TodsGenerator.fingerprint/3` for the facts a context does not carry —
+  hashes through it rather than keeping a copy that can drift from this one.
+
+  Map entries are sorted and each key is canonicalized in its own right, because
+  a context is keyed by tuples - `{service_id, block_id}` and `{ref, ref}` - that
+  no stringified-key encoding can represent. A `MapSet` is hashed as its sorted
+  members rather than as its internal map, a `Decimal` as its normalized string,
+  and a float is kept as the float it is. Normalizing a decimal means a stored
+  `1.30` and a `1.3` hash as the number they are rather than as two of them;
+  `Decimal.to_string/2` alone keeps the stored scale, which is how the older
+  copies of this canonical form in `Gtfs.Calendars` and `Gtfs.RoutePatterns` read
+  it.
+  """
+  @spec canonical(term()) :: term()
+  def canonical(%Decimal{} = value) do
     {:decimal, value |> Decimal.normalize() |> Decimal.to_string(:normal)}
   end
 
-  defp canonical(%MapSet{} = value), do: {:mapset, value |> MapSet.to_list() |> canonical()}
+  def canonical(%MapSet{} = value), do: {:mapset, value |> MapSet.to_list() |> canonical()}
 
-  defp canonical(%_{} = value), do: value |> Map.from_struct() |> canonical()
+  def canonical(%_{} = value), do: value |> Map.from_struct() |> canonical()
 
-  defp canonical(value) when is_map(value) do
+  def canonical(value) when is_map(value) do
     value
     |> Enum.map(fn {key, entry} -> {canonical(key), canonical(entry)} end)
     |> Enum.sort()
   end
 
-  defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
+  def canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
 
-  defp canonical(value) when is_tuple(value) do
+  def canonical(value) when is_tuple(value) do
     value |> Tuple.to_list() |> Enum.map(&canonical/1) |> List.to_tuple()
   end
 
-  defp canonical(value), do: value
+  def canonical(value), do: value
 end

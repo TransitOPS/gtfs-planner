@@ -486,7 +486,10 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
       context: Context.digest(Map.fetch!(source, :context)),
       rules: rules_projection(Map.fetch!(source, :rules))
     }
-    |> canonical()
+    # Both halves go through `Context.canonical/1`, the form `Context.digest/1`
+    # hashes: the digest above covers the source facts a context owns, and this
+    # map adds the ones it does not, so one owner canonicalizes all of them.
+    |> Context.canonical()
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
@@ -977,29 +980,4 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     |> Input.changeset(params, [])
     |> Input.normalize()
   end
-
-  # The same canonicalization `Blocking.Context.digest/1` uses, for the parts of
-  # the source that context does not own: tuple keys no stringified-key encoding
-  # can carry, `MapSet` members as their members, and a decimal as its normalized
-  # value rather than its stored scale.
-  defp canonical(%Decimal{} = value),
-    do: {:decimal, value |> Decimal.normalize() |> Decimal.to_string(:normal)}
-
-  defp canonical(%MapSet{} = value), do: {:mapset, value |> MapSet.to_list() |> canonical()}
-
-  defp canonical(%_{} = value), do: value |> Map.from_struct() |> canonical()
-
-  defp canonical(value) when is_map(value) do
-    value
-    |> Enum.map(fn {key, entry} -> {canonical(key), canonical(entry)} end)
-    |> Enum.sort()
-  end
-
-  defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
-
-  defp canonical(value) when is_tuple(value) do
-    value |> Tuple.to_list() |> Enum.map(&canonical/1) |> List.to_tuple()
-  end
-
-  defp canonical(value), do: value
 end
