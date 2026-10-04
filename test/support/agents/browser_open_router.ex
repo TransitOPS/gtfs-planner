@@ -179,6 +179,21 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       gets a sentence that says nothing was prepared;
     * any other message gets the generic stop text sentence.
 
+  The Stop impact script is the skill's own flow on the open stop:
+
+    * a `"user"` message asking to keep the stop's ID and prepare the move gets a
+      `prepare_stop_move` call;
+    * any other `"user"` message about the stop gets a `get_stop_dependencies`
+      call, which is the skill's "read first" rule;
+    * the `get_stop_dependencies` result gets a `preview_stop_move` call, which
+      reads the pin without routing;
+    * the `preview_stop_move` result gets a sentence that points to the cards and
+      says the answer checks no street path;
+    * the `prepare_stop_move` result gets the prepared sentence, which says
+      "prepared" and never "saved", unless the result is a tool error, which gets
+      a sentence that says nothing was prepared;
+    * any other message gets the generic stop impact sentence.
+
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
 
@@ -292,6 +307,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @headsigns_prepared "I prepared the rename to Central Station. Review it on this page before anything changes."
   @headsigns_refused "I could not prepare that rename. Tell me the exact headsign and the new wording."
   @headsigns_generic "I can help with the headsigns on this pattern."
+  @stop_impact_marker "Stop impact helper"
+  @stop_impact_preview_refused "I could not read the move. Place the pin on the map and ask again."
+  @stop_impact_prepared "I prepared the move. Review and apply it on the map."
+  @stop_impact_refused "I could not prepare that move. Place the pin away from the saved position and ask again."
+  @stop_impact_generic "I can tell you what refers to the stop you have open."
   @stop_text_marker "Stop text helper"
   @stop_text_prepared "I prepared the stop changes. Review and save them on this page."
   @stop_text_refused "I could not prepare those changes. Tell me the stop and the new value."
@@ -352,6 +372,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
       system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
       system_marked?(messages, @stop_text_marker) -> stop_text_reply(messages)
+      system_marked?(messages, @stop_impact_marker) -> stop_impact_reply(messages)
       true -> calendars_reply(messages)
     end
   end
@@ -1146,6 +1167,72 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp headsigns_tool_reply(_other, _content), do: text_reply(@headsigns_generic)
+
+  # The Stop impact helper's script: a question reads the dependencies, then previews the
+  # pin; an explicit request to keep the ID and prepare the move prepares the pointer to
+  # the native review.
+  defp stop_impact_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        cond do
+          content =~ ~r/prepare the move/i -> tool_calls_reply("prepare_stop_move", %{})
+          content =~ ~r/stop|move|affect|use/i -> tool_calls_reply("get_stop_dependencies", %{})
+          true -> text_reply(@stop_impact_generic)
+        end
+
+      %{"role" => "tool", "tool_call_id" => id, "content" => content} ->
+        stop_impact_tool_reply(answered_tool(messages, id), content)
+
+      _other ->
+        text_reply(@stop_impact_generic)
+    end
+  end
+
+  defp stop_impact_tool_reply("get_stop_dependencies", _content),
+    do: tool_calls_reply("preview_stop_move", %{})
+
+  defp stop_impact_tool_reply("preview_stop_move", content) do
+    case Jason.decode(content) do
+      {:ok, %{"error" => _message}} -> text_reply(@stop_impact_preview_refused)
+      {:ok, %{} = result} -> text_reply(stop_impact_preview_sentence(result))
+      _unreadable -> text_reply(@stop_impact_generic)
+    end
+  end
+
+  defp stop_impact_tool_reply("prepare_stop_move", content) do
+    case Jason.decode(content) do
+      {:ok, %{"error" => _message}} -> text_reply(@stop_impact_refused)
+      _prepared -> text_reply(@stop_impact_prepared)
+    end
+  end
+
+  defp stop_impact_tool_reply(_other, _content), do: text_reply(@stop_impact_generic)
+
+  # What a model following the skill says about a preview: only values the tool returned,
+  # in the order the skill lists them, with the unchecked sentences stated unchanged.
+  defp stop_impact_preview_sentence(result) do
+    [
+      "Moving this stop #{result["distance_m"]} m is a #{result["band"]} move.",
+      stop_impact_list("Patterns", result["patterns"], fn pattern ->
+        "#{pattern["label"]} (#{pattern["weekday_trips"]} weekday trips)"
+      end),
+      stop_impact_list("Transfers", result["transfers"], fn transfer ->
+        "#{transfer["label"]} #{transfer["before_m"]} m before and #{transfer["after_m"]} m after"
+      end),
+      stop_impact_list("Relief points", result["relief_points"], &stop_impact_point/1),
+      Enum.join(result["unchecked"] || [], " ")
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" ")
+  end
+
+  defp stop_impact_list(_title, rows, _describe) when rows in [nil, []], do: nil
+
+  defp stop_impact_list(title, rows, describe),
+    do: "#{title}: #{rows |> Enum.map(describe) |> Enum.join("; ")}."
+
+  defp stop_impact_point(%{"label" => label}), do: label
+  defp stop_impact_point(point), do: to_string(point)
 
   # The Stop text helper's script: a "Prepare stop changes" message reads the approved
   # list, the list prepares exactly the changes the message named, and the prepared

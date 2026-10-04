@@ -7,6 +7,11 @@ defmodule GtfsPlanner.BrowserStreetRouting do
   `Req.Test` stub exists. Ordinary ExUnit runs keep the production
   `GtfsPlanner.StreetRouting.Geoapify` adapter with a `Req.Test` plug.
 
+  Every request is appended to a one-line-per-request log, so a journey can show
+  that a helper answered without routing and that the native review routed once.
+  `request_log_path/0` names it from the port the run's server listens on, which
+  the Playwright process knows too; only a run with `BROWSER_E2E` set writes it.
+
   The adapter answers the same contract as the production adapter: one
   GeoJSON-ordered `[longitude, latitude]` leg per consecutive waypoint pair.
   Each leg holds the start point, the midpoint offset +0.0005° longitude, and
@@ -20,10 +25,20 @@ defmodule GtfsPlanner.BrowserStreetRouting do
   @unroutable_latitude 40.7500
   @midpoint_lon_offset 0.0005
 
+  @doc "The file each routing request is appended to, one line per request."
+  def request_log_path do
+    Path.join(
+      System.tmp_dir!(),
+      "gtfs-planner-street-routing-#{System.get_env("PORT", "none")}.log"
+    )
+  end
+
   @impl GtfsPlanner.StreetRouting.Behaviour
   def route(waypoints, opts \\ [])
 
   def route(waypoints, _opts) when is_list(waypoints) do
+    log_request(waypoints)
+
     if valid_waypoints?(waypoints) do
       route_valid_waypoints(waypoints)
     else
@@ -32,6 +47,11 @@ defmodule GtfsPlanner.BrowserStreetRouting do
   end
 
   def route(_waypoints, _opts), do: {:error, :invalid_response}
+
+  defp log_request(waypoints) do
+    if System.get_env("BROWSER_E2E") == "true",
+      do: File.write(request_log_path(), "#{length(waypoints)} waypoints\n", [:append])
+  end
 
   defp route_valid_waypoints(waypoints) do
     if Enum.any?(waypoints, fn {lat, _lon} -> lat == @unroutable_latitude end) do

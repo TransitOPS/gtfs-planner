@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
+  alias GtfsPlanner.Agents.Packs.StopImpact
   alias GtfsPlanner.Agents.Packs.StopText
 
   @user_school "No school service next Monday and Tuesday"
@@ -388,6 +389,80 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
 
       assert StopText.skill() =~ "Stop text helper"
       refute Calendars.skill() =~ "Stop text helper"
+    end
+  end
+
+  describe "scripted stop impact replies" do
+    test "a question reads the dependencies, then previews the pin" do
+      question = [system(StopImpact.skill()), user("What would moving this stop affect?")]
+
+      assert {"{}", "get_stop_dependencies"} = tool_call(post(question))
+
+      read = [
+        assistant_tool_call("call_dependencies", "get_stop_dependencies", %{}),
+        tool_result("call_dependencies", %{"count" => 1})
+      ]
+
+      assert {"{}", "preview_stop_move"} = tool_call(post(question ++ read))
+
+      previewed = [
+        assistant_tool_call("call_preview", "preview_stop_move", %{}),
+        tool_result("call_preview", %{
+          "distance_m" => 13.7,
+          "band" => "review",
+          "patterns" => [%{"label" => "Route 1 toward Lincoln City", "weekday_trips" => 12}],
+          "transfers" => [%{"label" => "Bay B", "before_m" => 40.0, "after_m" => 52.5}],
+          "relief_points" => ["Relief point R1"],
+          "unchecked" => ["The street path is decided by the native move review, not here."]
+        })
+      ]
+
+      sentence = final_text(post(question ++ read ++ previewed))
+
+      assert sentence ==
+               "Moving this stop 13.7 m is a review move. " <>
+                 "Patterns: Route 1 toward Lincoln City (12 weekday trips). " <>
+                 "Transfers: Bay B 40.0 m before and 52.5 m after. " <>
+                 "Relief points: Relief point R1. " <>
+                 "The street path is decided by the native move review, not here."
+
+      refused =
+        final_text(
+          post(
+            question ++
+              read ++
+              [
+                assistant_tool_call("call_preview", "preview_stop_move", %{}),
+                tool_result("call_preview", %{"error" => "No pin is placed."})
+              ]
+          )
+        )
+
+      assert refused =~ "I could not read the move"
+    end
+
+    test "only an explicit request prepares the move; the result says prepared, never saved" do
+      request = [system(StopImpact.skill()), user("Keep the stop's ID and prepare the move.")]
+
+      assert {"{}", "prepare_stop_move"} = tool_call(post(request))
+
+      call = assistant_tool_call("call_prepare", "prepare_stop_move", %{})
+
+      prepared =
+        final_text(post(request ++ [call, tool_result("call_prepare", %{"pointer" => true})]))
+
+      assert prepared =~ "I prepared the move"
+      refute prepared =~ ~r/saved|changed|done/i
+
+      refused =
+        final_text(post(request ++ [call, tool_result("call_prepare", %{"error" => "no pin"})]))
+
+      assert refused =~ "I could not prepare that move"
+    end
+
+    test "the marker is the skill's own heading" do
+      assert StopImpact.skill() =~ "Stop impact helper"
+      refute Calendars.skill() =~ "Stop impact helper"
     end
   end
 

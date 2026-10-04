@@ -399,16 +399,21 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     }
   end
 
+  # Sorted, because the reference read has no order of its own and an answer that lists
+  # the same patterns in a different order on each read cannot be compared or cited.
   defp impact_patterns(usage) do
-    for %{label: label, detail: detail} = row <- pattern_details(usage) do
-      %{
-        label: label,
-        route_id: detail.route_id,
-        route_pattern_id: detail.route_pattern_id,
-        headsign: detail.headsign,
-        weekday_trips: Map.get(row, :weekday_trips, 0)
-      }
-    end
+    rows =
+      for %{label: label, detail: detail} = row <- pattern_details(usage) do
+        %{
+          label: label,
+          route_id: detail.route_id,
+          route_pattern_id: detail.route_pattern_id,
+          headsign: detail.headsign,
+          weekday_trips: Map.get(row, :weekday_trips, 0)
+        }
+      end
+
+    Enum.sort_by(rows, &{&1.label, &1.route_pattern_id})
   end
 
   defp impact_references(%{blocking: blocking, descriptive: descriptive}) do

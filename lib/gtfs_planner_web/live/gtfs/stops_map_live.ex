@@ -275,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     # put back, so the panel never describes a move that is not on the map.
     |> assign(:edit_move, nil)
     |> assign(:move_review, nil)
+    |> assign(:move_return_focus, nil)
     |> assign(:move_loading?, false)
     |> assign(:move_lines, :redraw)
     |> assign(:move_answer, nil)
@@ -1470,6 +1471,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # The review is read in the LiveView process rather than in the command's
   # transaction, because `move_review/3` asks Geoapify for street geometry and
   # an external call does not belong inside a transaction that is holding locks.
+  # A review the helper's card started returns focus to that card, as the card's own
+  # drawer does on the other pages; a review the editor started has no card to return to.
+  defp return_focus_to_prepared_card(%{assigns: %{move_return_focus: id}} = socket)
+       when is_binary(id) do
+    socket |> assign(:move_return_focus, nil) |> push_event("agent:focus", %{id: id})
+  end
+
+  defp return_focus_to_prepared_card(socket), do: socket
+
   defp start_move_review(socket) do
     case {socket.assigns.edit_stop, draft_point(socket.assigns)} do
       {%{uuid: uuid}, point} when not is_nil(point) ->
@@ -1482,6 +1492,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:move_outcome, :none)
           |> assign(:move_errors, [])
           |> assign(:move_review, nil)
+          |> assign(:move_return_focus, nil)
           |> assign(:move_answer, nil)
 
         start_async(socket, {:move_review, socket.assigns.edit_token}, fn ->
@@ -1702,7 +1713,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign_replace_state()
      |> assign_station_state()
      |> leave_station_panel()
-     |> push_map_mode()}
+     |> push_map_mode()
+     |> return_focus_to_prepared_card()}
   end
 
   # Asking what deleting would remove goes through the same guard as every other
@@ -2319,7 +2331,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
            entry_id
          ) do
       {:ok, %{command: {:stop_move, command}}} ->
-        hand_off_move(socket, command)
+        hand_off_move(socket, entry_id, command)
 
       _other ->
         assign(socket, :agent_notice, @prepared_stale_notice)
@@ -2328,7 +2340,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
   # The card was made for one stop and one pin. Every refusal changes nothing but the
   # notice; a request that still matches starts the native move review.
-  defp hand_off_move(socket, command) do
+  defp hand_off_move(socket, entry_id, command) do
     assigns = socket.assigns
 
     cond do
@@ -2342,7 +2354,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         refuse_move(socket, "A move review is already open. Finish or close it first.")
 
       true ->
-        socket |> assign(:agent_notice, nil) |> start_move_review()
+        socket
+        |> assign(:agent_notice, nil)
+        |> start_move_review()
+        |> assign(:move_return_focus, "agent-prepared-#{entry_id}")
     end
   end
 
@@ -3574,7 +3589,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
             :if={@edit_stop}
             id="stops-map-helper"
             phx-hook=".StopsMapHelperFocus"
-            class="flex flex-col gap-2 border-t border-subtle bg-white p-3 lg:absolute lg:left-4 lg:top-4 lg:z-10 lg:max-h-[calc(100%-2rem)] lg:w-[24rem] lg:border-0 lg:bg-transparent lg:p-0"
+            class={
+              [
+                "flex flex-col gap-2 border-t border-subtle bg-white p-3 lg:absolute lg:left-4 lg:z-10 lg:w-[24rem] lg:border-0 lg:bg-transparent lg:p-0",
+                # The map's own caption ("The stop has moved") sits at the same corner, so
+                # the helper starts below it while one is showing.
+                if(map_caption(assigns),
+                  do: "lg:top-32 lg:max-h-[calc(100%-9rem)]",
+                  else: "lg:top-4 lg:max-h-[calc(100%-2rem)]"
+                )
+              ]
+            }
           >
             <div class="flex justify-end lg:justify-start">
               <.button
@@ -3590,7 +3615,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
               </.button>
             </div>
 
-            <div :if={@agent_open?} class="min-h-0 min-w-0 overflow-hidden rounded-box shadow-card">
+            <%!-- A column, so the panel shrinks to the overlay's height and its transcript
+                   scrolls instead of the composer being clipped. --%>
+            <div
+              :if={@agent_open?}
+              class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-box shadow-card [&>aside]:min-h-0"
+            >
               <.agent_panel
                 id="agent-panel"
                 title={@agent_title}

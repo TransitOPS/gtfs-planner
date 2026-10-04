@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { logInAs } from "./browser_helpers";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 /**
@@ -731,5 +732,110 @@ test("stop review save", async ({ page }) => {
     expect(await fitsViewport(page)).toBe(true);
     await page.evaluate(() => window.scrollTo(0, 0));
     await captureViewport(page, "stop-review-save", `saved-${label}`);
+  }
+});
+
+// -- stops journey: impact ---------------------------------------------------------
+
+// The street-routing stand-in appends one line per request to a log named by the run's
+// port (`GtfsPlanner.BrowserStreetRouting.request_log_path/0`), so a journey can show
+// that the helper's answer routed nothing and the native review routed.
+function routingRequests() {
+  const port = process.env.PLAYWRIGHT_PORT || "4002";
+  try {
+    const log = readFileSync(resolve(tmpdir(), `gtfs-planner-street-routing-${port}.log`), "utf8");
+    return log.split("\n").filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
+// Reads stop 1434, previews a move to a pin typed 13.7 m north, prepares the pointer on
+// an explicit request and opens the native move review from the card, saving nothing.
+test("stops journey: impact", async ({ page }) => {
+  test.setTimeout(240_000);
+  await signInStopsEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await openStopsMap(page, "?stop=1434");
+    await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+    const savedLat = await page.locator("#stops-map-edit-lat").inputValue();
+    const savedLon = await page.locator("#stops-map-edit-lon").inputValue();
+    const routedBefore = routingRequests();
+
+    // The pin is typed, not dragged: 13.7 m north of the saved point.
+    await page.locator("#stops-map-edit-lat").fill("44.635733");
+    await expect(page.locator("#stops-map-edit-moved")).toContainText(/Moved \d+ ft/);
+
+    // Keyboard path: the helper button, then the composer.
+    await activate(page.locator("#agent-helper-open"));
+    await expect(page.locator("#agent-panel")).toBeVisible();
+    await page.locator("#agent-new-conversation").click();
+    await expect(page.locator("#agent-composer-input")).toBeVisible();
+    await ask(page, "What would moving this stop affect?");
+
+    // The answer: the server's cards, and the reply built from what the tools returned.
+    const entries = page.locator("#agent-entries");
+    await expect(entries).toContainText("Moving this stop 13.7 m is a review move.", {
+      timeout: 20000,
+    });
+    await expect(entries).toContainText(
+      "Patterns: 1 · Lincoln City (0 weekday trips); 3 · Nye Beach (0 weekday trips).",
+    );
+    await expect(entries).toContainText(
+      "Transfers: Newport Transit Center, Bay B 111.9 m before and 125.5 m after.",
+    );
+    await expect(entries).toContainText("Relief points: Relief at 1434.");
+    await expect(entries).toContainText("The street path is decided by the native move review");
+    await expect(page.locator('[id^="agent-evidence-"]')).toHaveCount(2);
+    await expect(entries).toContainText("Distance");
+    await expect(entries).toContainText("13.7 m");
+    await expect(entries.locator(`a[href="/gtfs/${stopsVersionId}/stops/1434"]`).first()).toBeVisible();
+
+    // Reading and previewing routed nothing.
+    expect(routingRequests()).toBe(routedBefore);
+    expect(await fitsViewport(page)).toBe(true);
+    await page.locator("#agent-panel").scrollIntoViewIfNeeded();
+    await entries.getByText(/Relief points: Relief at 1434\./).scrollIntoViewIfNeeded();
+    await captureViewport(page, "stops-impact-journey", `answer-${label}`);
+
+    // Only the explicit request prepares the pointer.
+    await ask(page, "Keep the stop's ID and prepare the move.");
+    const card = await preparedCard(page);
+    const cardId = await card.getAttribute("id");
+    const review = card.locator('button[id^="agent-review-prepared-"]');
+    await expect(review).toHaveText("Review move");
+    expect(routingRequests()).toBe(routedBefore);
+
+    // Review move opens the native panel, whose own routing request is the only one.
+    await activate(review);
+    await expect(page.locator("#stops-map-move-panel")).toBeAttached();
+    await expect(page.locator("#stops-map-move-heading")).toHaveText("Review move");
+    await expect(page.locator("#stops-map-move-patterns li")).not.toHaveCount(0);
+    await expect.poll(routingRequests).toBe(routedBefore + 1);
+    expect(await fitsViewport(page)).toBe(true);
+    await page.locator("#stops-map-move-panel").scrollIntoViewIfNeeded();
+    await captureViewport(page, "stops-impact-journey", `native-review-${label}`);
+
+    // Back to editing returns focus to the card; nothing was saved.
+    await activate(page.locator("#stops-map-move-back"));
+    await expect(page.locator("#stops-map-move-panel")).toHaveCount(0);
+    await expect.poll(() => focusedId(page)).toBe(cardId);
+
+    // Moving the pin starts a new conversation and leaves no stale card.
+    await page.locator("#stops-map-edit-lat").fill("44.635800");
+    await expect(page.locator("#agent-notice")).toContainText(
+      "The pin moved, so the helper started a new conversation.",
+    );
+    await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+
+    // The stop is where it was: a fresh load shows the saved point.
+    await openStopsMap(page, "?stop=1434");
+    await expect(page.locator("#stops-map-edit-lat")).toHaveValue(savedLat);
+    await expect(page.locator("#stops-map-edit-lon")).toHaveValue(savedLon);
   }
 });

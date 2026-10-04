@@ -80,6 +80,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
     assert assigns(view).agent_notice == nil
   end
 
+  test "closing the native review returns focus to the card that started it", context do
+    stub_routing()
+    {view, entry} = prepared_view(context)
+
+    view |> element("#agent-review-prepared-#{entry}") |> render_click()
+    settle(view)
+    view |> element("#stops-map-move-back") |> render_click()
+
+    card_id = "agent-prepared-#{entry}"
+    assert_push_event(view, "agent:focus", %{id: ^card_id})
+    assert has_element?(view, "##{card_id}")
+
+    # The target is spent: a second Back, or a review the editor starts, has no card to
+    # return to.
+    assert assigns(view).move_return_focus == nil
+  end
+
   test "each refusal changes nothing and says why", context do
     stub_routing()
 
