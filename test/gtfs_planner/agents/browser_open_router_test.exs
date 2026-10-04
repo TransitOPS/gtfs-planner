@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Model
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.ReleaseComparison
 
   @user_school "No school service next Monday and Tuesday"
   @prepared_sentence "I prepared the change. Review it before applying."
@@ -13,6 +14,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   @user_route_12 "Route 12 is detouring between Elm and 3rd"
   @route_12_id "11111111-2222-3333-4444-555555555555"
   @today "2026-10-01"
+  @loss_question "Did we lose any service between these two files?"
+  @total_question "What is the total change in departures?"
 
   describe "scripted replies" do
     test "a school request asks for the school calendars" do
@@ -181,6 +184,103 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted release comparison replies" do
+    test "the comparison marker is the pack's own heading" do
+      assert ReleaseComparison.skill() =~ "Comparison helper"
+      refute Calendars.skill() =~ "Comparison helper"
+      refute Alerts.skill() =~ "Comparison helper"
+    end
+
+    test "a loss question reads the summary, then the differences" do
+      messages = comparison(@loss_question)
+
+      assert {"{}", "get_export_comparison"} = tool_call(post(messages))
+
+      messages = messages ++ summary_call("incomplete")
+      assert {"{}", "inspect_service_difference"} = tool_call(post(messages))
+    end
+
+    test "the differences are stated as one loss and one rename that is not a loss" do
+      messages =
+        comparison(@loss_question) ++
+          summary_call("incomplete") ++
+          [
+            assistant_tool_call(
+              "call_inspect_service_difference",
+              "inspect_service_difference",
+              %{}
+            ),
+            tool_result("call_inspect_service_difference", %{
+              "records" => [
+                %{
+                  "type" => "effective",
+                  "kind" => "count_changed",
+                  "date" => "2026-11-26",
+                  "route_ids" => %{"left" => "R1", "right" => "R1"},
+                  "counts" => %{
+                    "left" => %{"scheduled_count" => 2},
+                    "right" => %{"scheduled_count" => 1}
+                  }
+                },
+                %{
+                  "type" => "structural",
+                  "entity" => "route",
+                  "change" => "identifier",
+                  "left" => "R2",
+                  "right" => "R2X"
+                }
+              ]
+            })
+          ]
+
+      assert final_text(post(messages)) ==
+               "R1 lost 1 trip on Thu Nov 26, 2026, from 2 to 1. " <>
+                 "R2 was only renamed R2X: same service under a new identifier, so that is not a loss. " <>
+                 "The comparison is incomplete, so this is not a clean answer."
+    end
+
+    test "a total that was not measured is never given as a number" do
+      messages =
+        comparison(@total_question) ++
+          summary_call("incomplete", %{
+            "exact_count_delta" => nil,
+            "reasons" => ["incomplete_counts"]
+          })
+
+      assert final_text(post(messages)) ==
+               "I can't give a total change in departures: it was not measured. " <>
+                 "A route states frequency windows rather than exact departures."
+    end
+
+    test "a no-difference sentence needs a complete comparison with no changes" do
+      question = "Did anything change between these files?"
+
+      complete = comparison(question) ++ summary_call("complete", %{}, 0, 0)
+      incomplete = comparison(question) ++ summary_call("incomplete", %{}, 0, 0)
+
+      assert final_text(post(complete)) ==
+               "Nothing changed in service, and the comparison is complete."
+
+      assert final_text(post(incomplete)) ==
+               "The comparison is incomplete, so I can't say nothing changed."
+    end
+
+    test "an unresolved question reads the unresolved matches" do
+      assert {"{}", "inspect_unresolved_entity_matches"} =
+               tool_call(post(comparison("Which stops could not be matched?")))
+    end
+
+    test "a provider question is a real 401" do
+      body = Jason.encode!(%{"messages" => comparison("Is the provider reachable?")})
+
+      conn =
+        Plug.Test.conn(:post, "/api/v1/chat/completions", body)
+        |> BrowserOpenRouter.call([])
+
+      assert conn.status == 401
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -300,6 +400,33 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
         "run" => []
       }),
       tool_result("call_prepare_date_change", %{"prepared" => true})
+    ]
+  end
+
+  defp comparison(question) do
+    [
+      %{
+        "role" => "system",
+        "content" => ReleaseComparison.skill() <> "\n\nSection: #{ReleaseComparison.title()}."
+      },
+      user(question)
+    ]
+  end
+
+  # The summary tool's call and result, as the turn loop sends them back.
+  defp summary_call(status, totals \\ %{}, effective \\ 1, structural \\ 2) do
+    result = %{
+      "totals" => Map.merge(%{"exact_count_delta" => -1, "reasons" => []}, totals),
+      "completeness" => %{"status" => status, "reasons" => []},
+      "counts" => %{
+        "effective_changes" => %{"total" => effective},
+        "structural_changes" => %{"total" => structural}
+      }
+    }
+
+    [
+      assistant_tool_call("call_get_export_comparison", "get_export_comparison", %{}),
+      tool_result("call_get_export_comparison", result)
     ]
   end
 

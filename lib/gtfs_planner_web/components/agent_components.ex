@@ -537,7 +537,9 @@ defmodule GtfsPlannerWeb.AgentComponents do
 
   # The kind is a code-owned label, so it is shown as a word rather than a raw
   # schema token, without this module naming any pack's resource kinds.
-  defp resource_kind(%{kind: kind}) when is_binary(kind), do: String.capitalize(kind)
+  defp resource_kind(%{kind: kind}) when is_binary(kind),
+    do: kind |> String.replace("_", " ") |> String.capitalize()
+
   defp resource_kind(_resource), do: "resource"
 
   defp short_digest(digest) when is_binary(digest) and byte_size(digest) >= 12,

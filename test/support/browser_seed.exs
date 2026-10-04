@@ -13629,6 +13629,20 @@ case Accounts.register_first_admin(%{
         "(run #{BrowserFeedQuality.run_id()}, 170 stored findings / 3 retained WARNING samples)"
     )
 
+    # ── Release comparison (retained exports the comparison journeys choose from) ──
+    #
+    # Native-shaped ZIPs published through the real ExportRuns/ArtifactStorage
+    # path, each on a backdated version named for what the journey compares. The
+    # comparison itself is never seeded: the journey starts it from the Export
+    # page and the coordinator reads these bytes.
+    comparison_host =
+      GtfsPlanner.ReleaseComparisonFixtures.seed_browser!(org, export_actor)
+
+    IO.puts(
+      "Browser seed: release comparison host #{comparison_host.name} " <>
+        "(id=#{comparison_host.id}) with its retained exports"
+    )
+
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row
     # per table and nests its joins, so the Stops page's routes-serving-stations

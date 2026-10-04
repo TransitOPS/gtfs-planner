@@ -168,11 +168,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
       assert Repo.aggregate(ChangeLog, :count) == 0
     end
 
-    test "this installation ships no comparison pack, so no multipack selector", context do
+    test "the helper selector is offered only once a comparison has finished", context do
       view = export_view(context)
 
       refute has_element?(view, "#export-helper-mode")
-      refute Agents.packs()["release_comparison"]
+      refute has_element?(view, "#comparison-helper-open")
       assert Agents.packs()["feed_quality"] == FeedQuality
     end
 

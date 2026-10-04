@@ -99,7 +99,11 @@ defmodule GtfsPlannerWeb.AgentPanel do
   A route reference resolves to that route's own Schedules page, which is the
   page the Schedule helper is bound to; it is the same page the panel already
   shows, so following it never leaves the scope this panel holds. A stop
-  reference resolves to that stop's own Detail page in the same way.
+  reference resolves to that stop's own Detail page in the same way. A comparison
+  reference resolves to this version's Export page, and only when its id is the
+  digest of the admitted snapshot the panel holds now and a fresh authorization of
+  the person, the compared versions and the snapshot passes; any other digest, and
+  every historical route or stop identifier, stays plain text.
 
   A host that applies the assistant's own changes opts in with `auto_apply: true`
   and names the record in `subject_id`. Each settled, unapplied prepared entry is
@@ -736,6 +740,8 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp evidence_link("station_reachability_run", id, socket),
     do: station_reachability_result_path(socket, id)
 
+  defp evidence_link("export_comparison", id, socket), do: export_comparison_path(socket, id)
+
   defp evidence_link(_kind, _id, _socket), do: nil
 
   # A calendar identity is taken by a weekly row, a metadata anchor or an
@@ -848,6 +854,24 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
       version_id ->
         ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules"
+    end
+  end
+
+  # A comparison reference is the digest of the immutable copy this panel holds
+  # now, so it links only while that copy is still this panel's and the person,
+  # both compared versions and the copy's expiry still pass the pack's own checks.
+  # The target is this page: no id from the evidence ever reaches the path.
+  defp export_comparison_path(socket, digest) do
+    scope = scope(socket)
+
+    with %{kind: "release_comparison", payload: %{"selected_digest" => ^digest}} <-
+           Scope.source_snapshot(scope),
+         :ok <- Scope.authorized_context(scope),
+         :ok <- Pack.authorize_context(Map.fetch!(Agents.packs(), scope.pack_id), scope),
+         version_id when is_binary(version_id) <- panel_version_id(socket) do
+      ~p"/gtfs/#{version_id}/export"
+    else
+      _other -> nil
     end
   end
 

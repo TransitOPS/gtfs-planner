@@ -61,6 +61,7 @@ defmodule GtfsPlanner.Agents do
     "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
     "flex_policy" => GtfsPlanner.Agents.Packs.FlexPolicy,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
+    "release_comparison" => GtfsPlanner.Agents.Packs.ReleaseComparison,
     "runs" => GtfsPlanner.Agents.Packs.Runs,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
     "station_imports" => GtfsPlanner.Agents.Packs.StationImports,
