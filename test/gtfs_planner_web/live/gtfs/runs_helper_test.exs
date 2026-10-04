@@ -388,6 +388,23 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
       refute has_element?(view, "#runs-helper-scope-details")
     end
 
+    test "choosing another scope in the drawer clears the summary of the prepared one",
+         context do
+      cover_one_segment(context.world)
+      {view, _pid} = prepared_view(context, "uncovered_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#runs-helper-scope-details", "Uncovered work only")
+
+      # Choosing the scope the summary already describes leaves it accurate.
+      view |> element("#runs-scope-uncovered") |> render_click()
+      assert has_element?(view, "#runs-helper-scope-details", "Uncovered work only")
+
+      # Any other scope makes it describe something Preview will not run.
+      view |> element("#runs-scope-rebuild") |> render_click()
+      assert assigns(view).suggest_scope == :replace_all
+      refute has_element?(view, "#runs-helper-scope-details")
+    end
+
     test "applying a suggestion that changes nothing republishes the copy without it",
          context do
       # A fully cut day has no uncovered work, so an uncovered-only suggestion

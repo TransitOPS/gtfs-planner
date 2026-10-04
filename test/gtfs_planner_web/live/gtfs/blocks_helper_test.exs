@@ -652,6 +652,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
       refute has_element?(view, "#blocks-helper-scope-details")
     end
 
+    test "choosing another scope in the drawer clears the summary of the prepared one",
+         context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert has_element?(view, "#blocks-helper-scope-details", "Unassigned trips only")
+
+      # Choosing the scope the summary already describes leaves it accurate.
+      view |> form("#suggest-scope-form", %{"scope" => "unassigned_only"}) |> render_change()
+      assert has_element?(view, "#blocks-helper-scope-details", "Unassigned trips only")
+
+      # Any other scope makes it describe something Preview will not build.
+      view |> form("#suggest-scope-form", %{"scope" => "replace_all"}) |> render_change()
+      assert assigns(view).suggest.scope == :replace_all
+      refute has_element?(view, "#blocks-helper-scope-details")
+    end
+
     test "a selection change republishes the copy and clears the summary", context do
       garage!(context)
       block_day!(context)

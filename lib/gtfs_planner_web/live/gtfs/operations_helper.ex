@@ -70,6 +70,18 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsHelper do
   end
 
   @doc """
+  Clears the configuration summary when the drawer's scope moves off the scope
+  the summary describes, so the summary and the scope Preview will run cannot
+  disagree. Choosing the described scope again keeps it.
+  """
+  @spec keep_review_for(Phoenix.LiveView.Socket.t(), atom()) :: Phoenix.LiveView.Socket.t()
+  def keep_review_for(%{assigns: %{helper_review: %{mode: mode}}} = socket, scope)
+      when mode != scope,
+      do: assign(socket, :helper_review, nil)
+
+  def keep_review_for(socket, _scope), do: socket
+
+  @doc """
   Reads the prepared configuration the card's `entry` names.
 
   `entry_id` is client input: `phx-value-entry` sends the entry number as a

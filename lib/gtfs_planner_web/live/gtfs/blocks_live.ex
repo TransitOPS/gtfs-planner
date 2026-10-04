@@ -1201,12 +1201,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # block selection, when there is one, or unassigned trips.
   def handle_event("suggest_scope_change", %{"scope" => scope}, socket) do
     if suggest_scope?(scope) do
+      scope = suggest_scope_name(scope)
+
       {:noreply,
-       put_suggest(socket, %{
-         socket.assigns.suggest
-         | scope: suggest_scope_name(scope),
-           too_large: nil
-       })}
+       socket
+       |> put_suggest(%{socket.assigns.suggest | scope: scope, too_large: nil})
+       |> OperationsHelper.keep_review_for(scope)}
     else
       {:noreply, socket}
     end

@@ -436,8 +436,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   def handle_event("select_scope", %{"value" => value}, socket) do
     case parse_scope(value) do
-      {:ok, scope} -> {:noreply, assign(socket, :suggest_scope, scope)}
-      :error -> {:noreply, socket}
+      {:ok, scope} ->
+        {:noreply,
+         socket |> assign(:suggest_scope, scope) |> OperationsHelper.keep_review_for(scope)}
+
+      :error ->
+        {:noreply, socket}
     end
   end
 
