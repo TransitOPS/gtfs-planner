@@ -515,6 +515,19 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
       assert message =~ "no completed block proposal"
     end
 
+    test "reads a proposal built for the selected blocks", context do
+      # A selected-scope plan is the one native mode that is not a plain atom, so
+      # it is the shape most likely to reach the comparison in a form it cannot
+      # describe.
+      context = with_plan!(context, {:selected, ["101"]})
+
+      assert {:ok, result, evidence} = compare(context, %{"plan_ref" => plan_ref(context)})
+
+      assert result["proposal"]["mode"] == "selected"
+      assert result["proposal"]["selected_block_ids"] == ["101"]
+      assert %{value: "selected blocks"} = Enum.find(evidence.facts, &(&1.label == "Mode"))
+    end
+
     test "refuses no plan at all and a plan the page does not hold", context do
       # No native job has run, so the attached copy carries no proposal.
       assert {:tool_error, message} =
@@ -660,13 +673,13 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
 
   # A host that publishes a completed proposal attaches its copy to the frozen
   # day and republishes the resource context, which is what the page will do.
-  defp with_plan!(context) do
+  defp with_plan!(context, mode \\ :replace_all) do
     assert {:ok, plan} =
              Blocking.suggest_blocks(
                context.organization.id,
                context.version.id,
                context.day_key,
-               :replace_all
+               mode
              )
 
     assert {:ok, payload} = OperationsAssistance.with_plan(context.payload, :blocks, plan)

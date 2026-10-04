@@ -1222,7 +1222,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   defp block_plan_body(native_plan, day_key) do
     if Enum.all?(@block_plan_keys, &Map.has_key?(native_plan, &1)) and
          is_binary(native_plan.fingerprint) do
-      with {:ok, mode} <- block_mode(native_plan.mode),
+      with {:ok, mode, selected_block_ids} <- block_mode(native_plan.mode),
            {:ok, before_figures} <- block_figures(Map.fetch!(native_plan, :before)),
            {:ok, after_figures} <- block_figures(Map.fetch!(native_plan, :after)),
            {:ok, leftovers} <- block_leftovers(native_plan.leftovers, day_key),
@@ -1230,6 +1230,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
         {:ok,
          %{
            "mode" => mode,
+           "selected_block_ids" => selected_block_ids,
            "before" => before_figures,
            "after" => after_figures,
            "move_count" => length(native_plan.moves),
@@ -1245,18 +1246,16 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     end
   end
 
-  # `Generator.mode()` is an atom or `{:selected, ids}`. The selected ids are
-  # technical block IDs the payload already names, so they are copied; any other
+  # `Generator.mode()` is an atom or `{:selected, ids}`. The copy's `"mode"` is
+  # always the mode's name, so a reader never has to tell a string from a map; the
+  # selected ids are technical block IDs the payload already names, so they are
+  # copied beside it, and are empty for the two modes with no targets. Any other
   # shape is refused rather than stringified.
-  defp block_mode(:unassigned_only), do: {:ok, "unassigned_only"}
-  defp block_mode(:replace_all), do: {:ok, "replace_all"}
+  defp block_mode(:unassigned_only), do: {:ok, "unassigned_only", []}
+  defp block_mode(:replace_all), do: {:ok, "replace_all", []}
 
   defp block_mode({:selected, ids}) when is_list(ids) do
-    if Enum.all?(ids, &is_binary/1) do
-      {:ok, %{"mode" => "selected", "selected_block_ids" => ids}}
-    else
-      :error
-    end
+    if Enum.all?(ids, &is_binary/1), do: {:ok, "selected", ids}, else: :error
   end
 
   defp block_mode(_mode), do: :error
