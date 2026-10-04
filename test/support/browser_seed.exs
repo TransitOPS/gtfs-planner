@@ -28,6 +28,12 @@
 #   two routes with three patterns on saved lines, a possible-duplicate pair 1.5 m
 #   apart, a relief point, a transfer to a transit-centre bay, a station with a
 #   level, an unserved stop with a translation, and garage "1533".
+# User 9 (TODS generator): tods-generator@gtfs-planner.test — used by
+#   tods_generator.spec.js, in "Browser TODS Org" (product: :planner) with
+#   "Browser TODS Version", one calendar and garage "TODS_DEPOT"; and
+#   tods-generator-empty@gtfs-planner.test in "Browser TODS Empty Org", whose
+#   "Browser TODS No Garage Version" has a calendar and no garage, so the
+#   generator's missing-prerequisite state is a real page.
 #
 # Both users belong to the same org. The editor user can access GTFS routes
 # because it has the pathways_studio_editor role and a session-scoped
@@ -13641,6 +13647,91 @@ case Accounts.register_first_admin(%{
     IO.puts(
       "Browser seed: release comparison host #{comparison_host.name} " <>
         "(id=#{comparison_host.id}) with its retained exports"
+    )
+
+    # ── TODS generator worlds (spec 37, step 8) ──
+    #
+    # The generator's entry and prerequisite journey needs two organizations,
+    # because garages belong to the organization rather than to a version: one an
+    # editor can start a generation from, and one that has entered no garage at
+    # all. Both are planner products, so the account menu offers the entry.
+    #
+    # The service window is fixed rather than relative to the run date, because
+    # the journey asserts the form's defaulted first active calendar week: Monday
+    # 5 – Sunday 11 October 2026 is the week holding 7 October, the first date
+    # with service. Rows go through the ordinary fixtures the seed already uses.
+    {:ok, tods_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser TODS Org",
+        alias: "browser-tods-org",
+        product: :planner
+      })
+
+    {:ok, tods_version} =
+      Versions.create_gtfs_version(tods_org.id, %{name: "Browser TODS Version"})
+
+    _tods_depot =
+      GtfsPlanner.OperationsFixtures.garage_fixture(tods_org.id, %{
+        "garage_id" => "TODS_DEPOT",
+        "name" => "TODS Depot"
+      })
+
+    {:ok, tods_editor} =
+      Accounts.register_user(%{
+        email: "tods-generator@gtfs-planner.test",
+        password: "TodsGenerator123!"
+      })
+
+    Repo.update!(User.confirm_changeset(tods_editor))
+
+    {:ok, _tods_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: tods_editor.id,
+        organization_id: tods_org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    {:ok, tods_empty_org} =
+      Organizations.create_organization_unchecked(%{
+        name: "Browser TODS Empty Org",
+        alias: "browser-tods-empty-org",
+        product: :planner
+      })
+
+    {:ok, tods_empty_version} =
+      Versions.create_gtfs_version(tods_empty_org.id, %{name: "Browser TODS No Garage Version"})
+
+    {:ok, tods_empty_editor} =
+      Accounts.register_user(%{
+        email: "tods-generator-empty@gtfs-planner.test",
+        password: "TodsGenerator123!"
+      })
+
+    Repo.update!(User.confirm_changeset(tods_empty_editor))
+
+    {:ok, _tods_empty_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: tods_empty_editor.id,
+        organization_id: tods_empty_org.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    for {tods_world_org, tods_world_version} <- [
+          {tods_org, tods_version},
+          {tods_empty_org, tods_empty_version}
+        ] do
+      GtfsPlanner.GtfsFixtures.calendar_fixture(tods_world_org.id, tods_world_version.id, %{
+        service_id: "WKDY",
+        start_date: ~D[2026-10-07],
+        end_date: ~D[2026-10-20]
+      })
+    end
+
+    IO.puts(
+      "Browser seed: TODS generator editor #{tods_editor.email} in #{tods_org.name} " <>
+        "(id=#{tods_org.id}), version #{tods_version.name} (id=#{tods_version.id}) with garage TODS_DEPOT; " <>
+        "no-garage editor #{tods_empty_editor.email} in #{tods_empty_org.name} " <>
+        "(id=#{tods_empty_org.id}), version #{tods_empty_version.name} (id=#{tods_empty_version.id})"
     )
 
     # The seed bulk-loads its rows, and a new database has no planner statistics

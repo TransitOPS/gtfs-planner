@@ -223,6 +223,10 @@ defmodule GtfsPlannerWeb.Router do
       # a real page.
       live "/blocks", Gtfs.BlocksLive, :index
       live "/runs", Gtfs.RunsLive, :index
+      # The TODS generator is reached from the account menu rather than from a task
+      # area of its own, and it belongs to the selected version: it builds fictional
+      # Blocks, Runs and Rosters into that version from that version's schedule.
+      live "/tods-generator", Gtfs.TodsGeneratorLive, :index
       # The organization-wide Garages and Fleet pages live in Settings, where the
       # version in the URL is navigation context and selects the stop IDs the
       # garage conflict notice compares.

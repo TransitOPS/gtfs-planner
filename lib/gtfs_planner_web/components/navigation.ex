@@ -159,14 +159,17 @@ defmodule GtfsPlannerWeb.Navigation do
 
   @doc """
   Renders the account menu: a trigger showing the user's initials that opens a
-  dropdown with the scoped Settings entry and the signed-in account's own
-  actions.
+  dropdown with the scoped Settings entry, the TODS generator an editor with a
+  selected version can open, and the signed-in account's own actions.
 
   Settings lives here rather than in the task bar because it is not a task area.
   The target follows the viewer's context: an editor with a version gets that
   version's Settings, an organization administrator without a qualifying editor
   context gets the organization's Users page, and anyone else gets no Settings
-  entry and no organization label.
+  entry and no organization label. The generator sits under Settings because it
+  needs the same context — an editor, a selected version and an organization
+  whose product shows operations exports — and the route is guard enough that
+  hiding it only decides whether the entry is offered.
 
   ## Attributes
 
@@ -195,8 +198,18 @@ defmodule GtfsPlannerWeb.Navigation do
             assigns.user_roles,
             assigns.current_gtfs_version
           ),
+        generator:
+          generator_target(
+            assigns.current_organization,
+            assigns.user_roles,
+            assigns.current_gtfs_version
+          ),
         settings_current?: settings_family_active?(assigns.current_path),
-        menu_current?: menu_current_family?(assigns.current_path)
+        generator_current?:
+          generator_family_active?(assigns.current_path, assigns.current_gtfs_version),
+        menu_current?:
+          menu_current_family?(assigns.current_path) ||
+            generator_family_active?(assigns.current_path, assigns.current_gtfs_version)
       )
 
     ~H"""
@@ -251,6 +264,25 @@ defmodule GtfsPlannerWeb.Navigation do
           >
             <span class="text-sm font-semibold">Settings</span>
             <span class="text-[13px] leading-snug text-muted">{@settings.hint}</span>
+          </.link>
+          <%!-- The generator belongs to the same context as version Settings — an editor
+          with a selected version — so it sits under it and above the divider. --%>
+          <.link
+            :if={@generator}
+            id="tods-generator-link"
+            navigate={@generator.href}
+            role="menuitem"
+            aria-current={@generator_current? && "page"}
+            class={[
+              "flex min-h-11 flex-col justify-center rounded-control px-3 py-2 no-underline",
+              if(@generator_current?,
+                do: "bg-selection text-action",
+                else: "text-strong hover:bg-canvas focus:bg-canvas"
+              )
+            ]}
+          >
+            <span class="text-sm font-semibold">TODS generator</span>
+            <span class="text-[13px] leading-snug text-muted">{@generator.hint}</span>
           </.link>
           <div class="my-1 border-t border-subtle"></div>
         <% end %>
@@ -310,6 +342,39 @@ defmodule GtfsPlannerWeb.Navigation do
 
       true ->
         nil
+    end
+  end
+
+  # The generated-work entry: an editor with a selected version, in an organization
+  # whose product shows operations exports. Hiding is not the access check — the
+  # route itself requires the editor role and a version of the reader's own
+  # organization — so this only decides whether the entry is offered.
+  defp generator_target(nil, _user_roles, _current_gtfs_version), do: nil
+
+  defp generator_target(organization, user_roles, current_gtfs_version) do
+    if has_role?(user_roles, :pathways_studio_editor) && current_gtfs_version &&
+         GtfsPlannerWeb.ProductSurfaces.visible?(organization, :operations_export) do
+      %{
+        href: "/gtfs/#{current_gtfs_version.id}/tods-generator",
+        hint: "Fictional blocks, runs and rosters"
+      }
+    else
+      nil
+    end
+  end
+
+  # The generator page's own family, matched on the literal segment and the
+  # version it names, so a lookalike segment or another version's page cannot
+  # select it.
+  defp generator_family_active?(_current_path, nil), do: false
+
+  defp generator_family_active?(current_path, current_gtfs_version) do
+    case path_segments(current_path) do
+      ["gtfs", version, "tods-generator" | _rest] ->
+        version == to_string(current_gtfs_version.id)
+
+      _ ->
+        false
     end
   end
 
