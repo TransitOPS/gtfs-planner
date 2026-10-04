@@ -261,6 +261,21 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
       assert_no_handles(payload)
     end
 
+    test "lists the narrowed dates chronologically across a month boundary", context do
+      %{scope: scope} = context
+
+      # Monday November 30 through Wednesday December 2 are service days.
+      window = %{from: ~D[2026-11-29], to: ~D[2026-12-02]}
+      result = result_of(context, week_zip(2), week_zip(1), window)
+      selection = %{route_pair_keys: ["R1/R1"], dates: [~D[2026-12-01], ~D[2026-11-30]]}
+
+      assert {:ok, admitted} = AssistantContext.freeze(scope.resource_context, result, selection)
+      payload = admitted.source_snapshot.payload
+
+      assert payload["selected_dates"] == ["2026-11-30", "2026-12-01"]
+      assert payload["scope"]["dates"] == ["2026-11-30", "2026-12-01"]
+    end
+
     test "refuses a selection that names no unit of this comparison", context do
       %{scope: scope} = context
       result = result(context, trips: 2, other_trips: 1)
@@ -298,7 +313,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
     )
   end
 
-  defp result_of(context, left_bytes, right_bytes) do
+  defp result_of(context, left_bytes, right_bytes, window \\ @window) do
     organization = context.organization
     scope = context.scope
 
@@ -307,11 +322,11 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContextTest do
 
     left_projection = projection!(organization, left, scope)
     right_projection = projection!(organization, right, scope)
-    {:ok, comparison} = Compare.run(left_projection, right_projection, @window)
+    {:ok, comparison} = Compare.run(left_projection, right_projection, window)
 
     %{
       fingerprint: fingerprint(left, right),
-      window: @window,
+      window: window,
       left: identity(left),
       right: identity(right),
       comparison: comparison

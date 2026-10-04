@@ -847,9 +847,16 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       assert result.totals.exact_count_delta == nil
       assert :unmapped_route in result.totals.reasons
       assert Enum.all?(result.groups, &(&1.reason == :unmapped_route))
-      assert Enum.all?(result.groups, &(&1.left.exact_count == 1))
       assert Enum.all?(result.groups, &(&1.delta.exact_count == nil))
       assert Enum.any?(result.unknowns, &(&1.reason == :unknown_agency))
+
+      # R1 and R7 are two unproven routes, not one route renamed: each keeps its
+      # own five rows with its own count, and neither is paired with the other.
+      assert length(result.groups) == 10
+      assert Enum.all?(result.groups, &((&1.left || &1.right).exact_count == 1))
+
+      assert MapSet.new(result.groups, & &1.route_ids) ==
+               MapSet.new([%{left: "R1", right: nil}, %{left: nil, right: "R7"}])
     end
 
     test "identical fully validated bytes are a complete no-difference verdict that still declares its exclusions" do
@@ -931,6 +938,95 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       # never share a digest by accident.
       assert [left_identity, left_identity] = first.artifacts
       assert left_identity == left.identity
+    end
+  end
+
+  describe "unmapped routes" do
+    test "unrelated routes on different sides stay separate rows and are never paired" do
+      # R7 and R9 exist only in the earlier file and R8 only in the candidate, each
+      # with its own names, so no signature pairs any of them. R1 pairs by
+      # identifier.
+      left =
+        project(
+          routes: [
+            {"R1", "AGENCY", "1", "Main", "3"},
+            {"R7", "AGENCY", "7", "Seven", "3"},
+            {"R9", "AGENCY", "9", "Nine", "3"}
+          ],
+          trips: [{"R1", "WEEK", "T1", "0"}, {"R7", "WEEK", "T7", "0"}, {"R9", "WEEK", "T9", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T7", "09:00:00", "09:00:00", "S1", "1"},
+            {"T9", "10:00:00", "10:00:00", "S1", "1"}
+          ]
+        )
+
+      right =
+        project(
+          routes: [{"R1", "AGENCY", "1", "Main", "3"}, {"R8", "AGENCY", "8", "Eight", "3"}],
+          trips: [{"R1", "WEEK", "T1", "0"}, {"R8", "WEEK", "T8", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T8", "11:00:00", "11:00:00", "S1", "1"}
+          ]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      # Four routes on five dates, one direction: 20 rows. Merging every unmapped
+      # route into one nil-keyed unit would leave 10.
+      assert length(result.groups) == 20
+      assert result.totals.total_units == 20
+      assert result.totals.measured_units == 5
+
+      unmapped = Enum.reject(result.groups, &(&1.route_ids == %{left: "R1", right: "R1"}))
+      assert Enum.all?(unmapped, &(&1.reason == :unmapped_route))
+
+      assert MapSet.new(unmapped, & &1.route_ids) ==
+               MapSet.new([
+                 %{left: "R7", right: nil},
+                 %{left: "R9", right: nil},
+                 %{left: nil, right: "R8"}
+               ])
+
+      # Sorted by key, an unpaired candidate route ("?/R8") precedes "R1/R1".
+      assert Enum.map(Compare.route_pairs(result), & &1.label) == [
+               "R8 (candidate file only)",
+               "R1 → R1",
+               "R7 (earlier file only)",
+               "R9 (earlier file only)"
+             ]
+    end
+  end
+
+  describe "ordering across a month boundary" do
+    test "groups, trip change dates and scope dates are chronological" do
+      window = %{from: ~D[2026-11-29], to: ~D[2026-12-02]}
+
+      left =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      right =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:10:00", "08:10:00", "S1", "1"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, window)
+
+      # Ordering the date structs themselves puts December 1 before November 29,
+      # because a struct compares its day of month first.
+      dates = [~D[2026-11-29], ~D[2026-11-30], ~D[2026-12-01], ~D[2026-12-02]]
+      assert Enum.map(result.groups, & &1.date) == dates
+      assert [%{dates: ^dates}] = result.effective_changes
+
+      selection = %{route_pair_keys: ["R1/R1"], dates: [~D[2026-12-01], ~D[2026-11-30]]}
+      assert {:ok, narrowed} = Compare.narrow(result, selection)
+      assert narrowed.scope.dates == [~D[2026-11-30], ~D[2026-12-01]]
+      assert Enum.map(narrowed.groups, & &1.date) == [~D[2026-11-30], ~D[2026-12-01]]
     end
   end
 

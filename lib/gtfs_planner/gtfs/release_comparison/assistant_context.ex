@@ -196,7 +196,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext do
 
   defp selected_dates(view) do
     case Map.get(view, :scope) do
-      %{dates: dates} -> dates |> Enum.sort() |> Enum.map(&Date.to_iso8601/1)
+      %{dates: dates} -> dates |> Enum.sort(Date) |> Enum.map(&Date.to_iso8601/1)
       _complete -> Date.range(view.window.from, view.window.to) |> Enum.map(&Date.to_iso8601/1)
     end
   end
@@ -212,7 +212,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext do
     %{
       "narrowed" => true,
       "route_pair_keys" => Enum.sort(keys),
-      "dates" => dates |> Enum.sort() |> Enum.map(&Date.to_iso8601/1)
+      "dates" => dates |> Enum.sort(Date) |> Enum.map(&Date.to_iso8601/1)
     }
   end
 

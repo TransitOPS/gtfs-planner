@@ -416,17 +416,22 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     |> Map.keys()
     |> Kernel.++(Map.keys(right_units))
     |> Enum.uniq()
-    |> Enum.sort()
+    |> Enum.sort_by(fn {route_key, direction_id, date} ->
+      {route_key, direction_id, Date.to_iso8601(date)}
+    end)
     |> Enum.map(&diff_unit(&1, Map.get(left_units, &1), Map.get(right_units, &1), stops))
   end
 
+  # An unmapped route is keyed by its own identifier, so two unrelated routes
+  # can neither merge into one unit nor overwrite each other. Only the same
+  # identifier on both sides shares a unit, and it is still not comparable.
   defp unitize(groups, routes, stops) do
     groups
     |> Enum.group_by(&{canonical(&1.route_id, routes), &1.route_id, &1.direction_id, &1.date})
     |> Enum.map(fn {{canonical_id, route_id, direction_id, date}, rows} ->
       side = side(rows, route_id, stops)
 
-      {{canonical_id, direction_id, date},
+      {{canonical_id || {:unmapped, route_id}, direction_id, date},
        %{
          side: side,
          route_mapped?: not is_nil(canonical_id),
@@ -479,7 +484,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
 
   defp patterns_of(rows, _stops), do: rows |> Enum.map(& &1.pattern) |> Enum.uniq()
 
-  defp diff_unit({canonical_id, direction_id, date}, left, right, _stops) do
+  defp diff_unit({route_key, direction_id, date}, left, right, _stops) do
+    canonical_id = if is_binary(route_key), do: route_key
     {comparable?, reason} = unit_reason(canonical_id, left, right)
 
     %{
@@ -774,7 +780,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
 
   defp common_dates(left_trip, right_trip) do
     right = MapSet.new(right_trip.service_dates)
-    left_trip.service_dates |> Enum.filter(&MapSet.member?(right, &1)) |> Enum.sort()
+    left_trip.service_dates |> Enum.filter(&MapSet.member?(right, &1)) |> Enum.sort(Date)
   end
 
   defp windows_of(trip) do
