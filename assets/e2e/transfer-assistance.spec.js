@@ -13,11 +13,13 @@
 // "Apply reviewed change" writes. Nothing here asserts the helper's prose; the
 // review, the counts and the stored rule are the answer.
 //
-// The fixtures come from `test/support/browser_seed.exs`. The "Browser Transfers
-// Version" carries the transfer network the journey writes one more rule into, so
-// the seeded counts stay readable. `test/support/agents/browser_open_router.ex`
-// scripts the provider: it prepares the page's own `selection-1` from the pack's
-// real source snapshot, so a change in the page's draft is what the tool reads.
+// The fixtures come from `test/support/browser_seed.exs`. The "Browser Transfer
+// Assistance Version" carries a copy of the transfer network the Transfers
+// journeys use, and the journey writes its own rules into the copy, so the
+// "Browser Transfers Version" counts that spec asserts stay as seeded.
+// `test/support/agents/browser_open_router.ex` scripts the provider: it prepares
+// the page's own `selection-1` from the pack's real source snapshot, so a change
+// in the page's draft is what the tool reads.
 //
 // The last describe composes the whole journey (EV-13): every helper reached
 // through the keyboard, the changed stale, error and partial states captured at
@@ -34,7 +36,7 @@ const EDITOR_USER = {
   password: "DiagramTest123!",
 };
 
-const TRANSFERS_VERSION = "Browser Transfers Version";
+const TRANSFERS_VERSION = "Browser Transfer Assistance Version";
 
 const E2E_VERSION = "Browser E2E Version";
 
