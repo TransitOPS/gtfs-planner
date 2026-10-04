@@ -8,7 +8,11 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   `list_zones` lists the version's inventory zones with their exact stop and rule
   counts. `find_routes` and `find_stops` return at most 20 candidates by name or
   ID, with the exact total and an incomplete marker, so an ambiguous name produces
-  candidates for the person to choose from and never a guess. Each answer returns the server evidence the panel trusts beside the
+  candidates for the person to choose from and never a guess. `query_zone_targets`
+  resolves a route selection through `FareZones.route_selection/3`, the one owner of
+  what such a selection means, into exact counts, a bounded sample with the other
+  routes serving each stop, the shared routes and the selection fingerprint as
+  evidence. Each answer returns the server evidence the panel trusts beside the
   model's result. No tool writes anything and none accepts an organization, a
   version, a stop UUID or an "all" flag.
   """
@@ -23,6 +27,8 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   @source_ref "gtfs_fare_zones"
   @zone_limit 50
   @candidate_limit 20
+  @sample_limit 20
+  @shared_route_limit 20
   @unavailable "This version is no longer available."
 
   @skill_path Path.expand("../../../../priv/agents/packs/fare_zones/SKILL.md", __DIR__)
@@ -83,8 +89,41 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
         "find_stops",
         "Find boardable stops of this version by stop ID or name. Returns at most #{@candidate_limit} candidates with their exact stop IDs, zone IDs and the exact total; when there is more than one candidate, show them and ask which stop is meant.",
         "Found stops"
-      )
+      ),
+      %{
+        name: "query_zone_targets",
+        description:
+          "Count and sample the boardable stops that serve the named routes, before anything is prepared. route_ids are exact route IDs from find_routes; only_unzoned keeps stops with no zone; exclude_stop_ids are exact stop IDs from find_stops to leave out. Returns exact counts, a sample of at most #{@sample_limit} stops with their other routes, and the routes the selected stops share.",
+        activity: "Counted stops to assign",
+        parameters: %{
+          "type" => "object",
+          "properties" => selection_properties(),
+          "required" => ["route_ids", "only_unzoned", "exclude_stop_ids"],
+          "additionalProperties" => false
+        }
+      }
     ]
+  end
+
+  # The predicate arguments shared by every tool that resolves a route selection.
+  # Identity arguments are not declared, so the dispatch fence refuses them.
+  defp selection_properties do
+    limits = FareZones.selection_limits()
+
+    %{
+      "route_ids" => %{
+        "type" => "array",
+        "items" => %{"type" => "string", "minLength" => 1, "maxLength" => 200},
+        "minItems" => 1,
+        "maxItems" => limits.routes
+      },
+      "only_unzoned" => %{"type" => "boolean"},
+      "exclude_stop_ids" => %{
+        "type" => "array",
+        "items" => %{"type" => "string", "minLength" => 1, "maxLength" => 200},
+        "maxItems" => limits.exclusions
+      }
+    }
   end
 
   defp candidate_tool(name, description, activity) do
@@ -112,6 +151,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   defp run("list_zones", _args, scope), do: list_zones(scope)
   defp run("find_routes", args, scope), do: find_routes(args, scope)
   defp run("find_stops", args, scope), do: find_stops(args, scope)
+  defp run("query_zone_targets", args, scope), do: query_zone_targets(args, scope)
 
   # -- tools ------------------------------------------------------------------
 
@@ -205,6 +245,145 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
         page.total_count
       )
     end
+  end
+
+  defp query_zone_targets(args, %Scope{} = scope) do
+    with {:ok, predicate} <- parse_predicate(args),
+         {:ok, selection} <- resolve_selection(scope, predicate) do
+      sample =
+        selection.stops
+        |> Enum.take(@sample_limit)
+        |> Enum.map(&sample_row(&1, selection, predicate))
+
+      shared = shared_routes(selection, predicate)
+      reason = sample_reason(sample, selection)
+
+      result =
+        %{
+          "routes" => Enum.map(selection.routes, &route_row/1),
+          "selected_count" => length(selection.stops),
+          "served_count" => selection.served_count,
+          "already_zoned_count" => selection.already_zoned_count,
+          "excluded" =>
+            Enum.map(selection.excluded, &%{"stop_id" => &1.stop_id, "stop_name" => &1.stop_name}),
+          "unmatched_exclusions" => selection.unmatched_exclusions,
+          "sample" => sample,
+          "shared_routes" => shared
+        }
+        |> Map.merge(completeness_fields(reason))
+
+      evidence =
+        FareEvidence.build(scope, %{
+          kind: "zone_targets",
+          title: "Stops to assign",
+          total: length(selection.stops),
+          total_label: "stops selected",
+          completeness: if(reason, do: :incomplete, else: :complete),
+          completeness_reason: reason,
+          facts: [
+            %{
+              label: "Stops these routes serve",
+              value: Integer.to_string(selection.served_count)
+            },
+            %{
+              label: "Already in a zone",
+              value: Integer.to_string(selection.already_zoned_count)
+            },
+            %{label: "Excluded", value: Integer.to_string(length(selection.excluded))},
+            %{
+              label: "Also served by other routes",
+              value:
+                Integer.to_string(
+                  Enum.count(selection.stops, &(other_route_ids(&1, predicate) != []))
+                )
+            }
+          ],
+          source_ref: @source_ref,
+          digest: selection.fingerprint,
+          resources:
+            Enum.map(
+              selection.routes,
+              &%{kind: "route", id: &1.route_id, label: &1.route_short_name || &1.route_id}
+            )
+        })
+
+      {:ok, result, evidence}
+    end
+  end
+
+  # The one place a tool turns arguments into a selection predicate. The routes,
+  # stops and flag are the model's words; what they mean is decided by
+  # `FareZones.route_selection/3`, never here.
+  defp parse_predicate(%{
+         "route_ids" => route_ids,
+         "only_unzoned" => only_unzoned,
+         "exclude_stop_ids" => exclude_stop_ids
+       })
+       when is_list(route_ids) and is_boolean(only_unzoned) and is_list(exclude_stop_ids) do
+    if Enum.all?(route_ids ++ exclude_stop_ids, &(is_binary(&1) and &1 != "")) do
+      {:ok,
+       %{route_ids: route_ids, only_unzoned?: only_unzoned, exclude_stop_ids: exclude_stop_ids}}
+    else
+      {:error, "Route IDs and stop IDs must be non-empty strings."}
+    end
+  end
+
+  defp parse_predicate(_args),
+    do: {:error, "Give route_ids, only_unzoned and exclude_stop_ids."}
+
+  defp resolve_selection(%Scope{} = scope, predicate) do
+    case FareZones.route_selection(scope.organization_id, scope.gtfs_version_id, predicate) do
+      {:ok, selection} -> {:ok, selection}
+      {:error, reason} -> {:error, selection_error(reason)}
+    end
+  end
+
+  defp selection_error(:no_routes), do: "Name at least one route."
+  defp selection_error(:too_many_routes), do: "Name at most 5 routes."
+  defp selection_error(:too_many_exclusions), do: "Exclude at most 100 stops."
+
+  defp selection_error({:unknown_route, id}),
+    do: "Route #{id} is not in this version. Use find_routes."
+
+  defp selection_error({:unknown_stop, id}),
+    do: "Stop #{id} is not a boardable stop of this version. Use find_stops."
+
+  defp selection_error({:too_many_stops, _count}),
+    do: "These routes serve more than 1,000 stops. Name fewer routes."
+
+  defp route_row(route),
+    do: %{"route_id" => route.route_id, "short_name" => route.route_short_name}
+
+  # The serving routes of a stop other than the ones the person named, by name.
+  defp other_route_ids(stop, predicate), do: stop.route_ids -- predicate.route_ids
+
+  defp sample_row(stop, selection, predicate) do
+    %{
+      "stop_id" => stop.stop_id,
+      "stop_name" => stop.stop_name,
+      "zone_id" => stop.zone_id,
+      "other_routes" => stop |> other_route_ids(predicate) |> Enum.map(&selection.route_names[&1])
+    }
+  end
+
+  defp shared_routes(selection, predicate) do
+    selection.stops
+    |> Enum.flat_map(&other_route_ids(&1, predicate))
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {route_id, count} -> {-count, route_id} end)
+    |> Enum.take(@shared_route_limit)
+    |> Enum.map(fn {route_id, count} ->
+      %{
+        "route_id" => route_id,
+        "route_short_name" => selection.route_names[route_id],
+        "stop_count" => count
+      }
+    end)
+  end
+
+  defp sample_reason(sample, selection) do
+    if length(sample) < length(selection.stops),
+      do: "Showing #{length(sample)} of #{length(selection.stops)} selected stops."
   end
 
   # One answer shape for both candidate tools. The title never repeats the model's

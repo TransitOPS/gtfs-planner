@@ -64,7 +64,14 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesReadTest do
       assert Agents.packs()["fare_zones"] == FareZones
       assert FareZones.id() == "fare_zones"
       assert FareZones.title() == "Fare zone helper"
-      assert Enum.map(FareZones.tools(), & &1.name) == ["list_zones", "find_routes", "find_stops"]
+
+      assert Enum.map(FareZones.tools(), & &1.name) == [
+               "list_zones",
+               "find_routes",
+               "find_stops",
+               "query_zone_targets"
+             ]
+
       assert Enum.all?(FareZones.tools(), &(&1.parameters["additionalProperties"] == false))
       assert FareZones.skill() =~ "list_zones"
 
