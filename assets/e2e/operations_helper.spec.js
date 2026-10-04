@@ -541,3 +541,38 @@ test.describe("operations helper: layout and keyboard at 390x844", () => {
     copyShot(shot, "runs-issues-390");
   });
 });
+
+test.describe("operations helper: one panel, two helpers", () => {
+  test("the mode switch moves the Blocks page's one panel between its helpers", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openBlocks(page);
+    await openHelper(page);
+
+    const blocksMode = page.locator("#blocks-helper-mode-blocks");
+    const inSeatMode = page.locator("#blocks-helper-mode-in_seat");
+    const panel = page.locator("#agent-panel");
+
+    await expect(blocksMode).toHaveAttribute("aria-pressed", "true");
+    await expect(panel).toContainText("Blocks helper");
+
+    // The in-seat helper reads connections chosen in the Connections view, so
+    // with none chosen the page says where to choose them.
+    await inSeatMode.click();
+    await expect(inSeatMode).toHaveAttribute("aria-pressed", "true");
+    await expect(panel).toHaveCount(1);
+    await expect(panel).toContainText("In-seat helper");
+    await expect(page.locator("#blocks-helper-in-seat-note")).toBeVisible();
+
+    // The page's own controls are untouched by the switch.
+    await expect(page.locator("#blocks-suggest")).toBeVisible();
+
+    await blocksMode.click();
+    await expect(blocksMode).toHaveAttribute("aria-pressed", "true");
+    await expect(panel).toHaveCount(1);
+    await expect(panel).toContainText("Blocks helper");
+    await expect(page.locator("#blocks-helper-in-seat-note")).toHaveCount(0);
+    await expect(await bodyFitsViewport(page)).toBe(true);
+  });
+});
