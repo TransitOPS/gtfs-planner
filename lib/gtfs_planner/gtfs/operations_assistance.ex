@@ -1390,6 +1390,7 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
     with code when is_atom(code) <- Map.get(finding, :code),
          severity when is_map_key(@severity_rank, severity) <- Map.get(finding, :severity),
          detail when is_map(detail) <- Map.get(finding, :detail),
+         {:ok, detail} <- warning_detail(code, detail),
          block_id when is_nil(block_id) or is_binary(block_id) <- Map.get(finding, :block_id),
          run_ids when is_list(run_ids) <- Map.get(finding, :run_ids),
          true <- Enum.all?(run_ids, &is_binary/1) do
@@ -1400,12 +1401,20 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
          "severity_rank" => @severity_rank[severity],
          "run_ids" => run_ids,
          "block_id" => block_id,
-         "detail" => json_safe(Map.take(detail, Map.get(@run_detail_keys, code, [])))
+         "detail" => detail
        }}
     else
       _unavailable -> :error
     end
   end
+
+  # A warning's detail is the day's own per-code detail, except that an unmeasured
+  # leg's ends are tuples and are encoded exactly as the day's issue encodes them.
+  defp warning_detail(:travel_unknown, detail),
+    do: run_detail(%{code: :travel_unknown, detail: detail}, nil)
+
+  defp warning_detail(code, detail),
+    do: {:ok, json_safe(Map.take(detail, Map.get(@run_detail_keys, code, [])))}
 
   # --- plan attachment ----------------------------------------------------
 

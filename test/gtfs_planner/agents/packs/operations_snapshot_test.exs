@@ -672,6 +672,38 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
     end
   end
 
+  describe "freezing a runs plan that carries an unmeasured leg" do
+    setup :runs_world
+
+    test "the leg's ends are encoded so the day with the plan is still admitted", context do
+      # Block 202 hands over at `NOCOORD`, which has no coordinates, so the cut's
+      # preview carries a `travel_unknown` notice whose ends are planning tuples.
+      runs_trip(context, "hand_out", "202", "08:00:00", "08:30:00", "BAY_A", "NOCOORD", "5001")
+      runs_trip(context, "hand_in", "202", "09:00:00", "09:30:00", "NOCOORD", "NOCOORD", "5002")
+
+      # An uncovered-only cut keeps the day's existing runs, so the legs they
+      # touch stay unmeasured in the preview.
+      native = suggest_runs!(context, :uncovered_only)
+
+      assert {:ok, copied} = OperationsAssistance.plan(:runs, native)
+
+      assert [unknown | _] = Enum.filter(copied["warnings"], &(&1["code"] == "travel_unknown"))
+      assert unknown["severity"] == "notice"
+      assert is_binary(unknown["detail"]["from"])
+      assert is_binary(unknown["detail"]["to"])
+      assert "stop:NOCOORD" in [unknown["detail"]["from"], unknown["detail"]["to"]]
+
+      # The copy must survive the admission the host runs on every publish: an
+      # unencoded tuple is refused there, and the helper would read the day as
+      # unavailable for as long as the preview is on screen.
+      assert {:ok, payload} = OperationsAssistance.run_day(load_runs!(context))
+      assert {:ok, attached} = OperationsAssistance.with_plan(payload, :runs, native)
+
+      assert {:ok, _admitted} =
+               OperationsAssistance.context({:version, context.version.id}, attached)
+    end
+  end
+
   # --- worlds -------------------------------------------------------------
 
   # One weekday service, one block whose vehicle type the route does not allow -
@@ -929,13 +961,13 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
     plan
   end
 
-  defp suggest_runs!(context) do
+  defp suggest_runs!(context, scope \\ :replace_all) do
     assert {:ok, plan} =
              Runs.suggest_runs(
                context.organization.id,
                context.version.id,
                context.day_key,
-               :replace_all
+               scope
              )
 
     plan
