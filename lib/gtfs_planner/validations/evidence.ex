@@ -36,9 +36,13 @@ defmodule GtfsPlanner.Validations.Evidence do
   pointed outside the report is refused as `:invalid_arguments`; one whose digest
   no longer matches the stored report is `:stale`.
 
-  Instance references are `digest/group/index` positions, never CSV row
-  identities: the index is the position in the group's own sample order, so the
-  same instance keeps the same reference on every page.
+  Without a `code` a page lists group headers - code, severity, stored total,
+  retained count and completeness - and no samples, so a page of up to 50 groups
+  stays inside the result bound however many samples each group retains. With a
+  `code` it lists that code's retained samples. Instance references are
+  `digest/group/index` positions, never CSV row identities: the index is the
+  position in the group's own sample order, so the same instance keeps the same
+  reference on every page.
 
   Retained context is sanitized to the file's basename, its row numbers, its
   field name and the natural ids `stopId`, `routeId`, `tripId`, `serviceId` and
@@ -991,30 +995,31 @@ defmodule GtfsPlanner.Validations.Evidence do
   # mode the offset says how far into that group's own samples to start. An
   # offset past the retained samples is refused.
   defp cursor_position(selected, %{group: key, offset: offset}, request) do
-    {preceding, found} = walk_groups(selected, key, 0)
-
-    case found do
+    case walk_groups(selected, key, 0, 0) do
       nil ->
         {:error, :invalid_arguments}
 
-      group ->
-        position = if request.code, do: preceding + offset, else: preceding
-
+      {groups_before, retained_before, group} ->
         cond do
           request.code && offset > group.retained -> {:error, :invalid_arguments}
           is_nil(request.code) && offset != 0 -> {:error, :invalid_arguments}
-          true -> {:ok, position}
+          # Group mode's entries are the groups themselves, so the position is
+          # the number of groups before the named one; instance mode's entries
+          # are every retained sample, so it is the samples before that group
+          # plus the offset.
+          is_nil(request.code) -> {:ok, groups_before}
+          true -> {:ok, retained_before + offset}
         end
     end
   end
 
-  defp walk_groups([], _key, preceding), do: {preceding, nil}
+  defp walk_groups([], _key, _groups, _retained), do: nil
 
-  defp walk_groups([group | rest], key, preceding) do
+  defp walk_groups([group | rest], key, groups, retained) do
     if group.key == key do
-      {preceding, group}
+      {groups, retained, group}
     else
-      walk_groups(rest, key, preceding + group.retained)
+      walk_groups(rest, key, groups + 1, retained + group.retained)
     end
   end
 
@@ -1093,8 +1098,8 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   # -- the page ---------------------------------------------------------------
 
-  # In group mode each entry is a whole group; in instance mode it is one
-  # retained sample, which is why a page carries at most one group per entry.
+  # In group mode each entry is a whole group, presented without its samples; in
+  # instance mode it is one retained sample under its group.
   defp present_page([], _digest), do: {:ok, []}
 
   defp present_page(entries, digest) do
@@ -1112,20 +1117,21 @@ defmodule GtfsPlanner.Validations.Evidence do
   defp entry_key(group) when is_map(group), do: {group.code, group.severity}
   defp entry_key({group, _instance}), do: {group.code, group.severity}
 
-  defp present_group([group], digest) when is_map(group) do
-    with {:ok, instances} <- present_instances(group.instances, digest) do
-      {:ok,
-       %{
-         key: group.key,
-         code: group.code,
-         severity: group.severity,
-         total_instances: group.total,
-         retained_instances: group.retained,
-         instance_offset: 0,
-         completeness: group.completeness,
-         instances: instances
-       }}
-    end
+  # A group page is the group's header only: its retained samples are what the
+  # code-filtered page walks, so one page of many large groups can never outgrow
+  # the result bound or fail on a sample that was not asked for.
+  defp present_group([group], _digest) when is_map(group) do
+    {:ok,
+     %{
+       key: group.key,
+       code: group.code,
+       severity: group.severity,
+       total_instances: group.total,
+       retained_instances: group.retained,
+       instance_offset: 0,
+       completeness: group.completeness,
+       instances: []
+     }}
   end
 
   defp present_group(entries, digest) do
@@ -1429,9 +1435,10 @@ defmodule GtfsPlanner.Validations.Evidence do
   # -- inspection targets -----------------------------------------------------
 
   # A reference is the stable `digest/group/index` position `findings/2`
-  # presented, and it is parsed from the end because the group key itself may
-  # contain `/` or `|`. A reference issued for another report is stale here
-  # rather than resolved against this one.
+  # presented. The group key is `code|severity`, so a code or an unknown
+  # severity that itself contains `/` cannot be addressed and is refused. A
+  # reference issued for another report is stale here rather than resolved
+  # against this one.
   defp parse_instance_ref(digest, instance_ref) do
     case String.split(instance_ref, "/") do
       [ref_digest, group_key, index] -> instance_position(digest, ref_digest, group_key, index)
@@ -1465,13 +1472,15 @@ defmodule GtfsPlanner.Validations.Evidence do
   end
 
   defp location(%Scope{} = scope, source, %{group_key: group_key, index: index}, kept, excluded) do
+    resolutions = resolve_keys(scope, kept)
+
     %{
       ref: "#{source.digest}/#{group_key}/#{index}",
       digest: source.digest,
       context: kept,
       excluded_keys: excluded,
-      targets: targets(scope, kept),
-      unresolved: unresolved(scope, kept)
+      targets: for({_key, _value, {:resolved, target}} <- resolutions, do: target),
+      unresolved: unresolved(resolutions, kept)
     }
   end
 
@@ -1479,29 +1488,21 @@ defmodule GtfsPlanner.Validations.Evidence do
   # naming both a route and a stop offers both, and one key that resolves to
   # nothing never hides another that does. One resolution answers both lists, so
   # a target and the reason beside it can never disagree.
-  defp targets(%Scope{} = scope, kept) do
+  defp resolve_keys(%Scope{} = scope, kept) do
     Enum.flat_map(@locatable_keys, fn key ->
-      with value when is_binary(value) <- Map.get(kept, key),
-           {:resolved, target} <- natural(scope, key, value) do
-        [target]
-      else
-        _other -> []
+      case Map.get(kept, key) do
+        value when is_binary(value) -> [{key, value, natural(scope, key, value)}]
+        _absent -> []
       end
     end)
   end
 
   # A natural key that names no single current record is stated rather than
   # dropped, so the caller can say why the sample resolved to nothing.
-  defp unresolved(%Scope{} = scope, kept) do
+  defp unresolved(resolutions, kept) do
     stated =
-      Enum.flat_map(@locatable_keys, fn key ->
-        with value when is_binary(value) <- Map.get(kept, key),
-             {:unresolved, reason} <- natural(scope, key, value) do
-          [%{reason: reason, field: key, value: value}]
-        else
-          _other -> []
-        end
-      end)
+      for {key, value, {:unresolved, reason}} <- resolutions,
+          do: %{reason: reason, field: key, value: value}
 
     case stated ++ pathway_reasons(kept) do
       [] -> row_only_reasons(kept)

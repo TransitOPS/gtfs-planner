@@ -19,7 +19,14 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityResultTest do
     * an explanation request approves nothing by itself; only the page's native
       Inspect target action pins the approved instance, and no write happens;
     * a provider failure and a close/reopen leave the native report and the
-      current helper state intact.
+      current helper state intact;
+    * an unknown total reads "Total unknown" rather than 0 findings, an exclusion
+      is described by what it is, and the unmapped line is derived from the
+      samples' own resolution (two of the three samples name no current record);
+    * the helper panel sits inside the design-system page, and a page of groups
+      that retain 100 samples each still shows its section;
+    * a forged Inspect target for a sample that names no record, and a forged
+      prepared-change event, approve and change nothing.
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
@@ -200,7 +207,122 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityResultTest do
     end
   end
 
+  describe "what the section states" do
+    test "an unknown total is never a clean zero and the unmapped line reads the samples",
+         context do
+      countless = %{
+        "notices" => [
+          %{
+            "code" => "duplicate_key",
+            "severity" => "WARNING",
+            "totalNotices" => 1,
+            "notices" => [%{"sampleNotices" => samples(3)}]
+          }
+        ]
+      }
+
+      run = completed_run(context.organization, context.version, "mobility_data", countless)
+      view = result_view(context, run)
+
+      samples = render(element(view, "#feed-quality-samples"))
+      assert samples =~ "Total unknown"
+      refute samples =~ "0 finding"
+      assert samples =~ "3 retained samples"
+      assert render(element(view, "#feed-quality-limits")) =~ "Groups with no stored total: 1."
+
+      # The first sample names the seeded stop; the other two carry only a row.
+      unmapped = render(element(view, "#feed-quality-unmapped"))
+      assert unmapped =~ "2 of 3 sampled findings name no current record"
+      assert unmapped =~ "only a file row"
+      refute unmapped =~ "groups_not_on_this_page"
+
+      assert has_element?(view, "#feed-quality-inspect-0")
+      refute has_element?(view, "#feed-quality-inspect-1")
+    end
+
+    test "more groups than the section reads never show a page disclosure as unmapped",
+         context do
+      notices =
+        Enum.map(1..5, fn index ->
+          %{
+            "code" => "code_#{index}",
+            "severity" => "WARNING",
+            "total_notices" => 1,
+            "notices" => [sample(index)],
+            "retained_notices" => 1,
+            "sample_completeness" => "complete"
+          }
+        end)
+
+      run =
+        completed_run(context.organization, context.version, "mobility_data", %{
+          "notices" => notices
+        })
+
+      view = result_view(context, run)
+
+      assert render(element(view, "#feed-quality-samples")) =~ "5 findings"
+      refute has_element?(view, "#feed-quality-limits")
+      refute render(element(view, "#feed-quality-unmapped")) =~ "not_on_this_page"
+    end
+
+    test "groups that retain 100 samples each still show the section and the panel", context do
+      wide = fn code ->
+        %{
+          "code" => code,
+          "severity" => "WARNING",
+          "total_notices" => 100,
+          "notices" =>
+            Enum.map(1..100, fn index ->
+              %{
+                "filename" => "stops.txt",
+                "csvRowNumber" => index,
+                "stopId" => String.duplicate("s", 128)
+              }
+            end),
+          "retained_notices" => 100,
+          "sample_completeness" => "complete"
+        }
+      end
+
+      run =
+        completed_run(context.organization, context.version, "mobility_data", %{
+          "notices" => [wide.("duplicate_key"), wide.("stop_name")]
+        })
+
+      view = result_view(context, run)
+
+      assert has_element?(view, "#agent-helper-open")
+      assert render(element(view, "#feed-quality-samples")) =~ "200 findings"
+
+      # The panel stays inside the design-system page, so it takes the page's
+      # colours and focus rings.
+      view |> element("#agent-helper-open") |> render_click()
+      assert has_element?(view, "#validation-result-page.ds-page #agent-panel")
+    end
+
+    test "a forged Inspect target for an unmapped sample and a prepared-change event change nothing",
+         context do
+      view = result_view(context, context.run)
+
+      unmapped = Enum.find(feed_quality_samples(view), &(not &1.resolved?))
+      assert is_binary(unmapped.ref)
+
+      render_click(view, "feed_quality_inspect", %{"instance_ref" => unmapped.ref})
+
+      payload = :sys.get_state(view.pid).socket.assigns.agent_context.source_snapshot.payload
+      refute Map.has_key?(payload, "requested_instance_ref")
+
+      render_click(view, "agent_review_prepared", %{"entry" => "1"})
+      assert has_element?(view, "#feed-quality-evidence")
+    end
+  end
+
   ## Fixtures and helpers
+
+  defp feed_quality_samples(view) do
+    :sys.get_state(view.pid).socket.assigns.feed_quality_samples
+  end
 
   defp completed_run(organization, version, run_type, result) do
     {:ok, run} = Validations.create_validation_run(organization.id, version.id, run_type)

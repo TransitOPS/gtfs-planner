@@ -161,12 +161,17 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       assert group.total_instances == 170
       assert group.retained_instances == 3
       assert group.completeness == "sampled"
-      assert length(group.instances) == 3
       assert report.total_instances == 170
       assert report.retained_instances == 3
       assert report.completeness == "incomplete"
       assert report.totals_by_severity == %{"ERROR" => 170}
       assert %{reason: "sampled_instance_groups", count: 1} in report.exclusions
+
+      # A group page is its header only; the three samples are on the
+      # code-filtered page.
+      assert group.instances == []
+      assert {_filtered, instances} = retained(scope, run.id)
+      assert length(instances) == 3
 
       # The stored JSON is exactly as written: the read never rewrites a row.
       assert %ValidationRun{result_json: stored} = Repo.reload!(run)
@@ -335,6 +340,63 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       assert Enum.map(first.groups, & &1.code) == Enum.take(sorted_codes, 50)
       assert Enum.map(second.groups, & &1.code) == Enum.drop(sorted_codes, 50)
       assert first.total_instances == 51
+    end
+
+    test "groups that retain several samples page by group, not by sample", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          retaining_group("a_code", 3),
+          retaining_group("b_code", 3),
+          retaining_group("c_code", 3)
+        ])
+
+      # Three groups of three samples each, two groups to a page: the second
+      # page starts at the third group, however many samples came before it.
+      assert {:ok, first} = Evidence.findings(scope, %{run_id: run.id, limit: 2})
+      assert Enum.map(first.groups, & &1.code) == ["a_code", "b_code"]
+      assert first.exclusions == [%{reason: "groups_not_on_this_page", count: 1}]
+
+      assert {:ok, second} =
+               Evidence.findings(scope, %{
+                 run_id: run.id,
+                 limit: 2,
+                 digest: first.digest,
+                 cursor: first.next_cursor
+               })
+
+      assert Enum.map(second.groups, & &1.code) == ["c_code"]
+      assert second.next_cursor == nil
+      assert second.exclusions == []
+    end
+
+    test "a group page lists headers however many samples the groups retain", %{
+      scope: scope,
+      organization: organization,
+      version: version
+    } do
+      # Two groups of 100 retained 128-byte samples are far past the 32 KiB
+      # result bound if their samples were embedded; their headers are not.
+      run =
+        completed_run(organization, version, [
+          wide_group("missing_required_field", 100),
+          wide_group("duplicate_key", 100)
+        ])
+
+      assert {:ok, page} = Evidence.findings(scope, %{run_id: run.id})
+
+      assert Enum.map(page.groups, &{&1.code, &1.total_instances, &1.retained_instances}) == [
+               {"duplicate_key", 100, 100},
+               {"missing_required_field", 100, 100}
+             ]
+
+      assert Enum.all?(page.groups, &(&1.instances == []))
+      assert page.total_instances == 200
+      assert page.retained_instances == 200
+      assert page.next_cursor == nil
     end
 
     test "an instance offset of 100 keeps stable refs and a filtered cursor mismatch is refused",
@@ -535,8 +597,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
           }
         ])
 
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {report, [instance]} = retained(scope, run.id)
 
       assert instance.context == %{
                "filename" => "stops.txt",
@@ -571,7 +632,12 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
           }
         ])
 
-      assert {:error, :too_large} = Evidence.findings(scope, %{run_id: oversized.id})
+      assert {:error, :too_large} =
+               Evidence.findings(scope, %{run_id: oversized.id, code: "missing_required_field"})
+
+      # The group page never reads that sample, so it still lists the group.
+      assert {:ok, headers} = Evidence.findings(scope, %{run_id: oversized.id})
+      assert [%{total_instances: 1, retained_instances: 1, instances: []}] = headers.groups
 
       # 100 allowed 128-byte instances page by the code-filtered default of 50
       # under one digest with an explicit cursor: bounded, never silently
@@ -766,8 +832,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
           group_with([%{"stopId" => "STOP_1", "routeId" => "R1", "serviceId" => "WK"}])
         ])
 
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {report, [instance]} = retained(scope, run.id)
       assert {:ok, location} = Evidence.locate(scope, run.id, instance.ref)
 
       assert location.context == %{
@@ -789,8 +854,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       %{scope: scope, organization: organization, version: version, route: route} = context
 
       run = completed_run(organization, version, [group_with([%{"tripId" => "T1"}])])
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {_report, [instance]} = retained(scope, run.id)
 
       assert {:ok, location} = Evidence.locate(scope, run.id, instance.ref)
       assert [%{kind: "route", id: "R1"}] = location.targets
@@ -807,8 +871,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
       orphan_run = completed_run(organization, version, [group_with([%{"tripId" => "T_ORPHAN"}])])
 
-      assert {:ok, orphan_report} = Evidence.findings(scope, %{run_id: orphan_run.id})
-      assert [%{instances: [orphan_instance]}] = orphan_report.groups
+      assert {_orphan_report, [orphan_instance]} = retained(scope, orphan_run.id)
 
       assert {:ok, orphan_location} = Evidence.locate(scope, orphan_run.id, orphan_instance.ref)
       assert orphan_location.targets == []
@@ -822,8 +885,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       %{scope: scope, organization: organization, version: version} = context
 
       missing = completed_run(organization, version, [group_with([%{"stopId" => "STOP_NONE"}])])
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: missing.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {_report, [instance]} = retained(scope, missing.id)
 
       assert {:ok, location} = Evidence.locate(scope, missing.id, instance.ref)
       assert location.targets == []
@@ -839,8 +901,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       elsewhere =
         completed_run(organization, version, [group_with([%{"stopId" => "STOP_ELSEWHERE"}])])
 
-      assert {:ok, elsewhere_report} = Evidence.findings(scope, %{run_id: elsewhere.id})
-      assert [%{instances: [elsewhere_instance]}] = elsewhere_report.groups
+      assert {_elsewhere_report, [elsewhere_instance]} = retained(scope, elsewhere.id)
 
       assert {:ok, elsewhere_location} =
                Evidence.locate(scope, elsewhere.id, elsewhere_instance.ref)
@@ -863,8 +924,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
           ])
         ])
 
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [row_only, pathway]}] = report.groups
+      assert {_report, [row_only, pathway]} = retained(scope, run.id)
 
       assert {:ok, row_location} = Evidence.locate(scope, run.id, row_only.ref)
       assert row_location.targets == []
@@ -889,9 +949,8 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       first = completed_run(organization, version, [group_with([%{"stopId" => "STOP_1"}])])
       second = completed_run(organization, version, [group_with([%{"stopId" => "STOP_1"}])])
 
-      assert {:ok, first_report} = Evidence.findings(scope, %{run_id: first.id})
-      assert {:ok, second_report} = Evidence.findings(scope, %{run_id: second.id})
-      assert [%{instances: [instance]}] = first_report.groups
+      assert {first_report, [instance]} = retained(scope, first.id)
+      assert {second_report, [_other]} = retained(scope, second.id)
 
       # The two runs have different provenance, so their digests differ and a
       # reference is only ever resolved inside the report that issued it.
@@ -938,8 +997,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       %{scope: scope, organization: organization, version: version, stop: stop} = context
 
       run = completed_run(organization, version, [group_with([%{"stopId" => stop.stop_id}])])
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {_report, [instance]} = retained(scope, run.id)
 
       before = counts(organization.id, version.id)
 
@@ -960,8 +1018,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       %{scope: scope, organization: organization, version: version, stop: stop} = context
 
       run = completed_run(organization, version, [group_with([%{"stopId" => stop.stop_id}])])
-      assert {:ok, report} = Evidence.findings(scope, %{run_id: run.id})
-      assert [%{instances: [instance]}] = report.groups
+      assert {_report, [instance]} = retained(scope, run.id)
 
       # The helper's own interest is not a request: nothing is prepared.
       assert {:error, :not_requested} = Remedies.prepare(scope, run.id, instance.ref, false)
@@ -972,8 +1029,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       unresolved_run =
         completed_run(organization, version, [group_with([%{"stopId" => "STOP_NONE"}])])
 
-      assert {:ok, unresolved_report} = Evidence.findings(scope, %{run_id: unresolved_run.id})
-      assert [%{instances: [unresolved_instance]}] = unresolved_report.groups
+      assert {_unresolved_report, [unresolved_instance]} = retained(scope, unresolved_run.id)
 
       assert {:ok, navigation} =
                Remedies.inspect(scope, unresolved_run.id, unresolved_instance.ref)
@@ -992,6 +1048,13 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
   end
 
   # -- fixtures ---------------------------------------------------------------
+
+  # A group page lists headers only, so a sample's reference is read from the
+  # code-filtered page of its group.
+  defp retained(scope, run_id, code \\ "missing_required_field") do
+    assert {:ok, report} = Evidence.findings(scope, %{run_id: run_id, code: code})
+    {report, Enum.flat_map(report.groups, & &1.instances)}
+  end
 
   defp scope(organization, version, user) do
     %Scope{
@@ -1145,6 +1208,38 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
         "sample_completeness" => "complete"
       }
     ]
+  end
+
+  # A complete canonical group of `count` retained samples.
+  defp retaining_group(code, count) do
+    %{
+      "code" => code,
+      "severity" => "ERROR",
+      "total_notices" => count,
+      "notices" => Enum.map(1..count, &sample/1),
+      "retained_notices" => count,
+      "sample_completeness" => "complete"
+    }
+  end
+
+  # A complete canonical group whose every sample carries a 128-byte stop id, the
+  # largest retained value a page accepts.
+  defp wide_group(code, count) do
+    %{
+      "code" => code,
+      "severity" => "ERROR",
+      "total_notices" => count,
+      "notices" =>
+        Enum.map(1..count, fn index ->
+          %{
+            "filename" => "stops.txt",
+            "csvRowNumber" => index,
+            "stopId" => String.duplicate("s", 128)
+          }
+        end),
+      "retained_notices" => count,
+      "sample_completeness" => "complete"
+    }
   end
 
   defp numbered_groups(count) do

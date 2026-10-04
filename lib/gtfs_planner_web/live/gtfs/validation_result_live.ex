@@ -120,7 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:feed_quality_available?, false)
      |> assign(:feed_quality, nil)
      |> assign(:feed_quality_digest, nil)
-     |> assign(:feed_quality_instances, [])
+     |> assign(:feed_quality_samples, [])
      |> assign(:requested_instance_ref, nil)
      |> AgentPanel.mount("feed_quality")}
   end
@@ -177,7 +177,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   def handle_event("feed_quality_inspect", %{"instance_ref" => instance_ref}, socket)
       when is_binary(instance_ref) do
     case Evidence.locate(feed_quality_scope(socket), socket.assigns.run.id, instance_ref) do
-      {:ok, _location} ->
+      {:ok, %{targets: [_ | _]}} ->
         socket = assign(socket, :requested_instance_ref, instance_ref)
 
         socket =
@@ -190,13 +190,19 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
            "This finding is approved for navigation. Ask the helper for its handoff."
          )}
 
-      {:error, _reason} ->
+      # A sample that names no single current record has nothing to navigate to,
+      # so it is never approved.
+      _unresolved ->
         {:noreply,
          assign(socket, :agent_notice, "That finding does not resolve to a current record.")}
     end
   end
 
   def handle_event("feed_quality_inspect", _params, socket), do: {:noreply, socket}
+
+  # Review options is the Export page's control; the helper cannot prepare it
+  # here, so a prepared-change event on this page changes nothing.
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
@@ -270,47 +276,49 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div
-        id="validation-helper-focus"
-        phx-hook=".ValidationHelperFocus"
-        class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
-      >
-        <div class={@agent_open? && "hidden lg:block"}>
-          <div id="validation-result-page" class="ds-page pb-16">
-            <.back_link id="back-to-export" navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}>
-              Back to export
-            </.back_link>
+      <div id="validation-result-page" class="ds-page pb-16">
+        <.back_link id="back-to-export" navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}>
+          Back to export
+        </.back_link>
 
-            <.header>
-              Validation results
-              <:subtitle>
-                {validation_lede(@run, @current_gtfs_version)}
-                <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
-              </:subtitle>
-              <:actions>
-                <.button
-                  :if={@feed_quality_available?}
-                  id="agent-helper-open"
-                  type="button"
-                  phx-click="agent_open"
-                  aria-expanded={to_string(@agent_open?)}
-                  aria-controls="agent-panel"
-                  variant="quiet"
-                  class="min-h-11"
-                >
-                  Open helper
-                </.button>
-                <.button
-                  id="open-history"
-                  variant="secondary"
-                  class="min-h-11"
-                  phx-click="open_history"
-                >
-                  <.icon name="hero-list-bullet" class="size-4" /> View history
-                </.button>
-              </:actions>
-            </.header>
+        <.header>
+          Validation results
+          <:subtitle>
+            {validation_lede(@run, @current_gtfs_version)}
+            <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
+          </:subtitle>
+          <:actions>
+            <.button
+              :if={@feed_quality_available?}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
+            <.button id="open-history" variant="secondary" class="min-h-11" phx-click="open_history">
+              <.icon name="hero-list-bullet" class="size-4" /> View history
+            </.button>
+          </:actions>
+        </.header>
 
+        <%!--
+        The panel's focus listener belongs to this persistent wrapper, not to the panel: the
+        closing panel cannot own a handler that runs after its own removal. The grid gives the
+        report the full width while the panel is closed and a fixed 24rem column while it is
+        open, and the report column is hidden at phone width so the panel replaces it. The
+        panel stays inside the design-system page, so it takes the page's colours and focus
+        rings. --%>
+        <div
+          id="validation-helper-focus"
+          phx-hook=".ValidationHelperFocus"
+          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+        >
+          <div class={["min-w-0", @agent_open? && "hidden lg:block"]}>
             <section
               :if={@feed_quality_available?}
               id="feed-quality-evidence"
@@ -318,7 +326,14 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             >
               <h2 class="text-sm font-bold text-strong">Feed quality</h2>
               <p id="feed-quality-samples" class="mt-1 text-[13px] text-default tabular-nums">
-                {@feed_quality.total_instances} findings · {@feed_quality.retained_instances} retained samples · {@feed_quality.completeness}
+                {findings_label(@feed_quality)} · {@feed_quality.retained_instances} retained samples · {@feed_quality.completeness}
+              </p>
+              <p
+                :if={@feed_quality.limits != []}
+                id="feed-quality-limits"
+                class="mt-1 text-[13px] text-muted"
+              >
+                {Enum.join(@feed_quality.limits, " ")}
               </p>
               <p id="feed-quality-provenance" class="mt-1 text-[13px] text-muted">
                 Validator {validator_label(@feed_quality.validator_version)} · report digest {short_digest(
@@ -326,22 +341,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 )}
               </p>
               <p id="feed-quality-unmapped" class="mt-1 text-[13px] text-muted">
-                {unmapped_label(@feed_quality.exclusions)}
+                {unmapped_label(@feed_quality_samples)}
               </p>
               <div id="feed-quality-inspect-target" class="mt-2 flex flex-wrap items-center gap-2">
-                <button
-                  :for={{instance, index} <- Enum.with_index(@feed_quality_instances)}
-                  id={"feed-quality-inspect-#{index}"}
-                  type="button"
-                  phx-click="feed_quality_inspect"
-                  phx-value-instance_ref={instance.ref}
-                  class="rounded-control border border-control px-2 py-1 text-[13px] font-semibold text-action"
-                >
-                  Inspect target {index + 1}
-                </button>
-                <span :if={@feed_quality_instances == []} class="text-[13px] text-muted">
-                  No retained sample names a current record.
-                </span>
+                <%= for {sample, index} <- Enum.with_index(@feed_quality_samples), sample.resolved? do %>
+                  <button
+                    id={"feed-quality-inspect-#{index}"}
+                    type="button"
+                    phx-click="feed_quality_inspect"
+                    phx-value-instance_ref={sample.ref}
+                    class="rounded-control border border-control px-2 py-1 text-[13px] font-semibold text-action"
+                  >
+                    Inspect target {index + 1}
+                  </button>
+                <% end %>
                 <button
                   id="feed-quality-refresh"
                   type="button"
@@ -381,22 +394,24 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
                 <.no_result_card version={@current_gtfs_version} />
             <% end %>
           </div>
-        </div>
 
-        <div :if={@agent_open?} class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]">
-          <.agent_panel
-            id="agent-panel"
-            title={@agent_title}
-            intro={@agent_intro}
-            examples={@agent_examples}
-            scope_line={"Validation · " <> @current_gtfs_version.name}
-            status={@agent_status}
-            entries={@streams.agent_entries}
-            form={@agent_form}
-            notice={@agent_notice}
-            entries_empty?={@agent_entries_empty?}
-            review_label={&agent_review_label/1}
-          />
+          <div
+            :if={@agent_open?}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Validation · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+            />
+          </div>
         </div>
       </div>
 
@@ -1332,13 +1347,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
     if run.status == "completed" and run.run_type in ["mobility_data", "mobility_data_flex"] and
          not is_nil(run.result_json) do
-      case Evidence.findings(feed_quality_scope(socket), %{run_id: run.id, limit: 3}) do
+      scope = feed_quality_scope(socket)
+
+      case Evidence.findings(scope, %{run_id: run.id, limit: 3}) do
         {:ok, report} ->
           socket =
             socket
             |> assign(:feed_quality_available?, true)
             |> assign(:feed_quality_digest, report.digest)
-            |> assign(:feed_quality_instances, retained_instances(report))
+            |> assign(:feed_quality_samples, inspect_samples(scope, run, report))
             |> assign(:feed_quality, feed_quality_summary(report, run))
 
           AgentPanel.set_context(socket, feed_quality_context(socket))
@@ -1356,27 +1373,72 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     |> assign(:feed_quality_available?, false)
     |> assign(:feed_quality, nil)
     |> assign(:feed_quality_digest, nil)
-    |> assign(:feed_quality_instances, [])
+    |> assign(:feed_quality_samples, [])
     |> AgentPanel.set_context(Scope.context({:version, socket.assigns.current_gtfs_version.id}))
   end
 
+  # A group page carries totals only; `limits` says in words what those totals
+  # leave out, and drops the page's own "more groups" disclosure, which is about
+  # the three groups this host asked for and not about the report.
   defp feed_quality_summary(report, run) do
     %{
       total_instances: report.total_instances,
       retained_instances: report.retained_instances,
-      totals_by_severity: report.totals_by_severity,
       completeness: report.completeness,
-      exclusions: report.exclusions,
+      unknown_total?: Enum.any?(report.exclusions, &(&1.reason == "groups_without_stored_total")),
+      limits: Enum.flat_map(report.exclusions, &limit_sentence/1),
       validator_version: run.validator_version
     }
   end
 
-  # At most three retained samples are offered as native Inspect targets; the
-  # full report stays in the page's own disclosures.
-  defp retained_instances(report) do
-    report.groups
-    |> Enum.flat_map(& &1.instances)
-    |> Enum.take(3)
+  defp limit_sentence(%{reason: "sampled_instance_groups", count: count}),
+    do: ["Groups with only a sample of their findings: #{count}."]
+
+  defp limit_sentence(%{reason: "groups_without_stored_total", count: count}),
+    do: ["Groups with no stored total: #{count}."]
+
+  defp limit_sentence(%{reason: "unknown_severity_groups", count: count}),
+    do: ["Groups with a severity other than error, warning or info: #{count}."]
+
+  defp limit_sentence(_page_exclusion), do: []
+
+  defp count_label(1, noun), do: "1 #{noun}"
+  defp count_label(count, noun), do: "#{count} #{noun}s"
+
+  # At most three retained samples of the first group that kept any are offered
+  # as native Inspect targets, each checked against the current records now: the
+  # report's own disclosures stay in the page below, and a sample that names no
+  # single current record is reported rather than offered.
+  defp inspect_samples(scope, run, report) do
+    with %{code: code, severity: severity} <-
+           Enum.find(report.groups, &(&1.retained_instances > 0)),
+         {:ok, page} <-
+           Evidence.findings(scope, %{
+             run_id: run.id,
+             code: code,
+             severity: severity,
+             limit: 3
+           }) do
+      page.groups
+      |> Enum.flat_map(& &1.instances)
+      |> Enum.take(3)
+      |> Enum.map(&inspect_sample(scope, run, &1))
+    else
+      _none -> []
+    end
+  end
+
+  defp inspect_sample(scope, run, instance) do
+    case Evidence.locate(scope, run.id, instance.ref) do
+      {:ok, %{targets: [_ | _]}} ->
+        %{ref: instance.ref, resolved?: true, reasons: []}
+
+      {:ok, %{unresolved: unresolved}} ->
+        %{ref: instance.ref, resolved?: false, reasons: Enum.map(unresolved, & &1.reason)}
+
+      {:error, _reason} ->
+        %{ref: instance.ref, resolved?: false, reasons: ["not_readable"]}
+    end
   end
 
   # The host's own fingerprint of the section: run, report digest and the one
@@ -1428,16 +1490,39 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp short_digest(digest) when byte_size(digest) >= 12, do: binary_part(digest, 0, 12) <> "…"
   defp short_digest(digest), do: digest
 
-  defp unmapped_label([]), do: "No unmapped references."
+  # An unknown total is never a clean zero: with every total unknown the page
+  # says so, and with some unknown the counted ones are a lower bound.
+  defp findings_label(%{unknown_total?: false, total_instances: total}),
+    do: count_label(total, "finding")
 
-  defp unmapped_label(exclusions) do
-    "Unmapped: " <> Enum.map_join(exclusions, ", ", &"#{&1.reason} · #{&1.count}")
+  defp findings_label(%{total_instances: 0}), do: "Total unknown"
+  defp findings_label(%{total_instances: total}), do: "At least #{count_label(total, "finding")}"
+
+  defp unmapped_label([]), do: "No retained sample to match to a current record."
+
+  defp unmapped_label(samples) do
+    unmapped = Enum.reject(samples, & &1.resolved?)
+
+    case unmapped do
+      [] ->
+        "Every sampled finding names a current record."
+
+      _some ->
+        "#{length(unmapped)} of #{length(samples)} sampled findings name no current record: " <>
+          (unmapped
+           |> Enum.flat_map(& &1.reasons)
+           |> Enum.uniq()
+           |> Enum.map_join(", ", &reason_label/1)) <>
+          "."
+    end
   end
 
-  defp agent_review_label(%{command: {:feed_quality_export_options, _command}}),
-    do: "Review options"
-
-  defp agent_review_label(_prepared), do: "Review prepared change"
+  defp reason_label("no_current_record"), do: "no such record in this version"
+  defp reason_label("duplicate_current_records"), do: "several records share the key"
+  defp reason_label("row_number_is_not_a_record"), do: "only a file row"
+  defp reason_label("no_typed_destination_for_pathway"), do: "a pathway has no page here"
+  defp reason_label("trip_route_not_current"), do: "the trip's route is not current"
+  defp reason_label(_other), do: "not readable"
 
   defp validation_lede(%{run_type: "pathways_tests"}, version) do
     "Older results: whether riders could walk from each test address to a stop in #{version.name}."
