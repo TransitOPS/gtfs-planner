@@ -1064,8 +1064,26 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
     {:noreply, assign(socket, :price_review, nil)}
   end
 
+  # The write is exactly the rows the review showed, through the writer the grid
+  # uses, each row's previewed amount as the reviewed fence: a price another editor
+  # changed since the review refuses the whole save. A repeat after success finds no
+  # review and does nothing.
   @impl true
-  def handle_event("save_price_review", _params, socket), do: {:noreply, socket}
+  def handle_event("save_price_review", _params, socket) do
+    case socket.assigns.price_review do
+      nil ->
+        {:noreply, socket}
+
+      %{stale?: true} ->
+        {:noreply, socket}
+
+      %{rows: []} = review ->
+        {:noreply, price_review_error(socket, review, "There is nothing to save.")}
+
+      review ->
+        {:noreply, save_price_review(socket, review)}
+    end
+  end
 
   # The write is exactly the preview the operator reviewed: the rows
   # `Fares.preview_price_change/3` returned, each carrying the amount it was
@@ -1989,6 +2007,62 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorLive do
           | error: "Prices couldn't be changed (#{write_reason(reason)})."
         })
     end
+  end
+
+  defp save_price_review(socket, review) do
+    cells =
+      Enum.map(review.rows, fn row ->
+        %{
+          fare_product_id: row.fare_product_id,
+          rider_category_id: row.rider_category_id,
+          fare_media_id: row.fare_media_id,
+          reviewed: row.now,
+          amount: row.new
+        }
+      end)
+
+    case Fares.save_prices(fare_scope(socket), cells) do
+      {:ok, %{operation_id: operation_id, inverse: inverse}} ->
+        socket
+        |> load_workspace()
+        |> assign(:price_review, nil)
+        |> assign(:price_note, %{
+          text:
+            "#{price_count_text(length(cells))} saved to #{socket.assigns.current_gtfs_version.name} service.",
+          undo: [{operation_id, inverse}]
+        })
+        |> record_prices_applied(review.origin)
+
+      {:error, {:stale, stale}} ->
+        error =
+          "#{price_count_text(length(stale))} changed since this review. Nothing was saved. Ask the helper again."
+
+        assign(socket, :price_review, %{review | error: error, stale?: true})
+
+      {:error, :unmanaged} ->
+        price_review_error(socket, review, @helper_unmanaged_notice)
+
+      {:error, _forbidden_not_found_or_invalid} ->
+        price_review_error(socket, review, "Prices couldn't be saved. Nothing changed.")
+    end
+  end
+
+  defp price_review_error(socket, review, error),
+    do: assign(socket, :price_review, %{review | error: error})
+
+  # One receipt per saved review: the command saved is the prepared command, because
+  # the review has no way to edit an amount. The write already succeeded, so a reset
+  # or ended conversation changes nothing.
+  defp record_prices_applied(socket, origin) do
+    _ =
+      Agents.record_applied(
+        origin.session_pid,
+        origin.conversation_id,
+        origin.entry_id,
+        origin.command
+      )
+
+    socket
   end
 
   defp convert_fares(socket, plan) do

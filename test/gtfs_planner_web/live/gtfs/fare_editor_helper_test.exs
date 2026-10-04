@@ -24,7 +24,9 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorHelperTest do
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareProduct
+  alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.FareEditorComponents
@@ -58,6 +60,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorHelperTest do
   @unsaved_notice "Save or discard your unsaved prices before reviewing the helper's prices."
   @changed_notice "Prices changed after the helper prepared this. Ask the helper again."
   @unmanaged_notice "This version's fares are not edited here yet."
+  @stale_error "1 price changed since this review. Nothing was saved. Ask the helper again."
+  @save_failed "Prices couldn't be saved. Nothing changed."
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -310,6 +314,128 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorHelperTest do
     end
   end
 
+  describe "confirming the price review" do
+    test "writes the two prepared prices, one change-log entry, the grid note and the receipt",
+         context do
+      before = prices(context)
+      {view, pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      view |> element("#price-review-dialog-confirm") |> render_click()
+
+      refute has_element?(view, "#price-review-dialog")
+
+      after_save = prices(context)
+
+      changed =
+        for {key, amount} <- price_amounts(after_save),
+            Decimal.compare(amount, Map.fetch!(price_amounts(before), key)) != :eq,
+            do: {key, Decimal.to_string(amount)}
+
+      assert Enum.sort(changed) == [
+               {{"local_ride_adult_cash", "adult", "cash"}, "1.75"},
+               {{"local_ride_reduced_cash", "reduced", "cash"}, "0.85"}
+             ]
+
+      assert length(after_save) == length(before)
+
+      assert [log] = fare_logs(context)
+      assert log.changed_fields["summary"] == "Changed 2 prices"
+      assert log.actor_id == context.user.id
+      assert log.actor_email == context.user.email
+
+      assert text_of(view, "#fare-note") =~ "2 prices saved to Helper Prices Version service."
+      assert has_element?(view, "#undo-prices")
+
+      refute has_element?(view, "#agent-review-prepared-2")
+      assert {:ok, ^pid, %{conversation_id: conversation_id}} = Agents.open(scope(context))
+      assert Agents.prepared(pid, conversation_id, 2) == :error
+
+      # A forged repeat after success finds no review and changes nothing.
+      render_click(view, "save_price_review", %{})
+      assert prices(context) == after_save
+      assert length(fare_logs(context)) == 1
+
+      # Undo is the grid's own.
+      view |> element("#undo-prices") |> render_click()
+
+      assert price_amounts(prices(context)) == price_amounts(before)
+      assert text_of(view, "#fare-note") =~ "Change undone."
+    end
+
+    test "a price another editor changed between review and confirm writes nothing", context do
+      {view, pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert {:ok, _written} =
+               Fares.save_prices(context.scope, [
+                 %{
+                   fare_product_id: "local_ride_adult_cash",
+                   rider_category_id: "adult",
+                   fare_media_id: "cash",
+                   reviewed: Decimal.new("1.50"),
+                   amount: Decimal.new("1.60")
+                 }
+               ])
+
+      before = prices(context)
+      logs = length(fare_logs(context))
+
+      view |> element("#price-review-dialog-confirm") |> render_click()
+
+      assert prices(context) == before
+      assert length(fare_logs(context)) == logs
+      assert has_element?(view, "#price-review-dialog")
+      assert has_element?(view, "#price-review-error", @stale_error)
+      assert has_element?(view, "#price-review-stale")
+      assert confirm_disabled?(render(view))
+
+      amounts = price_amounts(prices(context))
+
+      assert Decimal.equal?(
+               amounts[{"local_ride_adult_cash", "adult", "cash"}],
+               Decimal.new("1.60")
+             )
+
+      assert {:ok, ^pid, %{conversation_id: conversation_id}} = Agents.open(scope(context))
+      assert {:ok, %{command: {:price_cells, _}}} = Agents.prepared(pid, conversation_id, 2)
+    end
+
+    test "a revoked editor writes nothing and sees the save failure", context do
+      {view, _pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+      before = prices(context)
+      logs = length(fare_logs(context))
+
+      deactivate_membership_fixture(context.membership)
+      view |> element("#price-review-dialog-confirm") |> render_click()
+
+      assert prices(context) == before
+      assert length(fare_logs(context)) == logs
+      assert has_element?(view, "#price-review-error", @save_failed)
+      assert has_element?(view, "#price-review-dialog")
+    end
+
+    test "a version that is no longer managed writes nothing and says so", context do
+      {view, _pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+      before = prices(context)
+
+      Repo.delete_all(
+        from(s in FareVersionSetting,
+          where:
+            s.organization_id == ^context.organization.id and
+              s.gtfs_version_id == ^context.version.id
+        )
+      )
+
+      view |> element("#price-review-dialog-confirm") |> render_click()
+
+      assert prices(context) == before
+      assert has_element?(view, "#price-review-error", @unmanaged_notice)
+    end
+  end
+
   describe "the review's states" do
     test "a stale review, an empty review and a save error disable or explain the confirm",
          context do
@@ -375,6 +501,22 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorHelperTest do
     |> LazyHTML.query("#price-review-dialog-confirm")
     |> LazyHTML.attribute("disabled")
     |> Enum.any?()
+  end
+
+  defp price_amounts(rows),
+    do:
+      Map.new(rows, fn {product, rider, medium, amount, _updated} ->
+        {{product, rider, medium}, amount}
+      end)
+
+  defp fare_logs(context) do
+    Repo.all(
+      from(l in ChangeLog,
+        where:
+          l.gtfs_version_id == ^context.version.id and l.entity_type == "fare_version" and
+            fragment("?->>'summary' = ?", l.changed_fields, "Changed 2 prices")
+      )
+    )
   end
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
