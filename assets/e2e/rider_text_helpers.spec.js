@@ -567,3 +567,89 @@ test("stop text panel", async ({ page }) => {
     await expect(page.locator("#agent-helper-open")).toHaveCount(0);
   }
 });
+
+// -- stop review table -----------------------------------------------------------
+
+/** Approves `stopIds` on the Browser E2E version's stops catalog, by keyboard. */
+async function approveStops(page, stopIds) {
+  await page.goto(`/gtfs/${versionId}/stops`);
+  await waitForLiveView(page);
+  await activate(page.locator("#stop-set-toggle"));
+  await page.locator("#stop-set-refs").fill(stopIds.join("\n"));
+  await activate(page.locator("#stop-set-find"));
+  await activate(page.locator("#stop-set-approve"));
+  await expect(page.locator("#stop-set-summary")).toContainText(
+    `${stopIds.length} stops approved`,
+  );
+}
+
+/** Opens the helper, sends `message` and returns the prepared card's review button. */
+async function prepareStopChanges(page, message) {
+  await activate(page.locator("#agent-helper-open"));
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  // The same approved set under the same editor is the same conversation across page
+  // loads, so each case starts a fresh one rather than reading an earlier card.
+  await page.locator("#agent-new-conversation").click();
+  await expect(page.locator("#agent-composer-input")).toBeVisible();
+  await ask(page, message);
+  const card = await preparedCard(page);
+  return card.locator('button[id^="agent-review-prepared-"]');
+}
+
+// Reviews a prepared batch of BROWSER_TXT_B1..B3 and saves nothing: a name change, a
+// code change and a rename that duplicates BROWSER_TXT_A4's name.
+test("stop review table", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signInHeadsignEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await approveStops(page, ["BROWSER_TXT_B1", "BROWSER_TXT_B2", "BROWSER_TXT_B3"]);
+
+    const review = await prepareStopChanges(
+      page,
+      "Prepare stop changes: BROWSER_TXT_B1 stop_name=Txt Rail Depot North; " +
+        "BROWSER_TXT_B2 stop_code=TXT-B2N; BROWSER_TXT_B3 stop_name=Txt Oak Court",
+    );
+    await expect(review).toHaveText("Review stop changes");
+
+    // Keyboard open: the drawer shows one row per changed field with both values.
+    const card = page.locator('section[id^="agent-prepared-"]');
+    const cardId = await card.getAttribute("id");
+    await activate(review);
+    const drawer = page.locator("#stop-review");
+    await expect(drawer).toBeVisible();
+    await waitDrawerSettled(page, "stop-review");
+
+    const table = page.locator("#stop-review-table");
+    await expect(table).toBeVisible();
+    await expect(table.locator("tbody tr").filter({ has: page.locator('td[data-label="Field"]') })).toHaveCount(3);
+    await expect(table).toContainText("Txt Rail Depot");
+    await expect(table).toContainText("Txt Rail Depot North");
+    await expect(table).toContainText("TXT-B2N");
+
+    // The duplicate name is a warning that names the other stop, not an error.
+    await expect(page.locator("#stop-review-warnings")).toContainText("BROWSER_TXT_B3");
+    await expect(page.locator("#stop-review-warnings")).toContainText("BROWSER_TXT_A4");
+    await expect(page.locator("#stop-review-invalid")).toHaveCount(0);
+    expect(await fitsViewport(page)).toBe(true);
+
+    if (label === "390") {
+      // Stacked at phone width: the column headers are hidden and every cell is labelled.
+      await expect(table.locator("thead")).toHaveCSS("position", "absolute");
+      await expect(table.locator('td[data-label="Current"]').first()).toBeVisible();
+    } else {
+      await expect(table.locator("thead")).toBeVisible();
+    }
+
+    await captureViewport(page, "stop-review-table", `review-${label}`);
+
+    // Escape closes the drawer and returns focus to the prepared card.
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+    await expect.poll(() => focusedId(page)).toBe(cardId);
+  }
+});

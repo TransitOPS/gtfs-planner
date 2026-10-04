@@ -10,9 +10,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   import GtfsPlannerWeb.PlannerComponents,
     only: [constraint_chip: 1, first_use: 1, message: 1, sort_header: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopEditing
   alias GtfsPlanner.Gtfs.StopSelection
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Values
@@ -63,6 +66,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:stop_set_notice, nil)
      |> assign(:stop_set_resolution, nil)
      |> assign(:stop_set, nil)
+     |> assign(:stop_review, nil)
      |> stream(:stops, [])
      |> stream(:stops_mobile, [])
      |> AgentPanel.mount("stop_text")}
@@ -290,12 +294,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> bind_agent_context()}
   end
 
-  # A prepared card's button. The handoff into the native review is not wired yet,
-  # so the card says so instead of crashing the page.
+  # A prepared card's button: the batch is read again from the database and shown in
+  # the review drawer. Nothing is written here.
   @impl true
-  def handle_event("agent_review_prepared", _params, socket) do
-    {:noreply, assign(socket, :agent_notice, "Review is not ready on this page yet.")}
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_batch(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
   end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_review_close", _params, socket),
+    do: {:noreply, assign(socket, :stop_review, nil)}
 
   @impl true
   def handle_event("filter", params, socket) do
@@ -572,6 +585,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     socket = if context == bare, do: assign(socket, :agent_open?, false), else: socket
     socket = AgentPanel.set_context(socket, context)
 
+    # A review belongs to the conversation that prepared it.
+    socket = if context == previous, do: socket, else: assign(socket, :stop_review, nil)
+
     # `set_context/2` clears the notice, so this one is set after it, and only when
     # an open panel moved from one approved set to another without a refusal of its own.
     if context != previous and previous != bare and context != bare and socket.assigns.agent_open? and
@@ -583,6 +599,48 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
            "The stop list changed, so the helper started a new conversation."
          ),
        else: socket
+  end
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_batch(socket, entry_id) do
+    session = socket.assigns.agent_session
+    conversation_id = socket.assigns.agent_conversation_id
+
+    case Agents.prepared(session, conversation_id, entry_id) do
+      {:ok, %{command: {:stop_metadata, %{rows: rows}} = command}} ->
+        review_batch(socket, rows, %{
+          session_pid: session,
+          conversation_id: conversation_id,
+          entry_id: entry_id,
+          command: command
+        })
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  defp review_batch(socket, rows, origin) do
+    case StopEditing.review_metadata_batch(rows, AuditContext.from_assigns(socket.assigns)) do
+      {:ok, review} ->
+        socket
+        |> assign(:agent_notice, nil)
+        |> assign(:stop_review, %{origin: origin, review: review})
+
+      {:error, :not_found} ->
+        assign(
+          socket,
+          :agent_notice,
+          "One of these stops is no longer in this service version. Approve the stops again."
+        )
+
+      {:error, :forbidden} ->
+        assign(socket, :agent_notice, "Your access changed.")
+
+      {:error, _other} ->
+        assign(socket, :agent_notice, "That batch could not be reviewed. Ask again.")
+    end
   end
 
   defp refuse_stop_set(socket, message) do
@@ -1132,6 +1190,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
             }
           }
         </script>
+
+        <StopTextHelperComponents.review_drawer
+          :if={@stop_review}
+          review={@stop_review.review}
+          return_focus_id={"agent-prepared-#{@stop_review.origin.entry_id}"}
+        />
       </div>
     </Layouts.app>
     """

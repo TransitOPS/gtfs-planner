@@ -164,6 +164,21 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       a sentence that says nothing was prepared;
     * any other message gets the generic headsign sentence.
 
+  The Stop text script reads the change out of the person's own message, so one
+  script serves every stop text journey whatever stops it names. The message is
+  `Prepare stop changes: <stop_id> <field>=<value>; <stop_id> <field>=<value>`
+  with the four stop fields `stop_name`, `stop_code`, `stop_desc` and `stop_url`:
+
+    * a `"user"` message starting `Prepare stop changes` gets a `read_stop_set`
+      call, which is the skill's "read before you propose" rule;
+    * the `read_stop_set` result gets a `prepare_stop_metadata_changes` call whose
+      rows are the message's own, one per stop in the order named, with the
+      message's text as `basis`;
+    * the `prepare_stop_metadata_changes` result gets the prepared sentence, which
+      says "prepared" and never "saved", unless the result is a tool error, which
+      gets a sentence that says nothing was prepared;
+    * any other message gets the generic stop text sentence.
+
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
 
@@ -277,6 +292,11 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @headsigns_prepared "I prepared the rename to Central Station. Review it on this page before anything changes."
   @headsigns_refused "I could not prepare that rename. Tell me the exact headsign and the new wording."
   @headsigns_generic "I can help with the headsigns on this pattern."
+  @stop_text_marker "Stop text helper"
+  @stop_text_prepared "I prepared the stop changes. Review and save them on this page."
+  @stop_text_refused "I could not prepare those changes. Tell me the stop and the new value."
+  @stop_text_generic "I can help with the stops you approved on this page."
+  @stop_text_segment ~r/^\s*(\S+)\s+(stop_name|stop_code|stop_desc|stop_url)=(.+?)\s*$/
   @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
   @alerts_prepared "I prepared a detour on Route 12. The answers are filled in on the form. Check the preview."
   @alerts_not_prepared "I could not prepare that change. Tell me which route and dates you mean."
@@ -331,6 +351,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       system_marked?(messages, @alerts_marker) -> alerts_reply(messages)
       system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
       system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
+      system_marked?(messages, @stop_text_marker) -> stop_text_reply(messages)
       true -> calendars_reply(messages)
     end
   end
@@ -1125,6 +1146,59 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp headsigns_tool_reply(_other, _content), do: text_reply(@headsigns_generic)
+
+  # The Stop text helper's script: a "Prepare stop changes" message reads the approved
+  # list, the list prepares exactly the changes the message named, and the prepared
+  # result gets a sentence that says prepared and never saved.
+  defp stop_text_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => "Prepare stop changes" <> _rest} ->
+        tool_calls_reply("read_stop_set", %{})
+
+      %{"role" => "tool", "tool_call_id" => id, "content" => content} ->
+        stop_text_tool_reply(answered_tool(messages, id), content, messages)
+
+      _other ->
+        text_reply(@stop_text_generic)
+    end
+  end
+
+  defp stop_text_tool_reply("read_stop_set", _content, messages) do
+    request = last_user_content(messages)
+
+    tool_calls_reply("prepare_stop_metadata_changes", %{
+      "rows" => stop_text_rows(request),
+      "basis" => String.trim(request)
+    })
+  end
+
+  defp stop_text_tool_reply("prepare_stop_metadata_changes", content, _messages) do
+    case Jason.decode(content) do
+      {:ok, %{"error" => _message}} -> text_reply(@stop_text_refused)
+      _prepared -> text_reply(@stop_text_prepared)
+    end
+  end
+
+  defp stop_text_tool_reply(_other, _content, _messages), do: text_reply(@stop_text_generic)
+
+  # One row per stop in the order the message names them, each with the fields it set.
+  defp stop_text_rows(request) do
+    [_heading, changes] = String.split(request, ":", parts: 2)
+
+    changes
+    |> String.split(";")
+    |> Enum.flat_map(fn segment ->
+      case Regex.run(@stop_text_segment, segment) do
+        [_whole, stop_id, field, value] -> [{stop_id, field, value}]
+        nil -> []
+      end
+    end)
+    |> Enum.chunk_by(&elem(&1, 0))
+    |> Enum.map(fn [{stop_id, _field, _value} | _rest] = fields ->
+      Map.new(fields, fn {_stop_id, field, value} -> {field, value} end)
+      |> Map.put("stop_id", stop_id)
+    end)
+  end
 
   defp alerts_reply(messages) do
     case List.last(messages) do

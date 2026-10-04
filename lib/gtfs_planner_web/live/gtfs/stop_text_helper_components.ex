@@ -2,7 +2,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
   @moduledoc """
   Surfaces the stops catalog adds for the stop text helper: the form that turns
   pasted stop IDs, codes and names into an editor-approved set of at most 100
-  stops.
+  stops, and the drawer that shows a prepared batch of text changes before it is
+  saved.
 
   The components present what `StopsLive` holds and decide nothing. The resolution
   comes from `GtfsPlanner.Gtfs.StopSelection`; the page keeps it server-side and
@@ -12,11 +13,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [drawer_scroll: 1, message: 1]
 
   alias GtfsPlanner.Wording
 
   @basis_labels %{stop_id: "by stop ID", stop_code: "by code", stop_name: "by name"}
+  @field_labels %{
+    "stop_name" => "Name",
+    "stop_code" => "Code",
+    "stop_desc" => "Description",
+    "stop_url" => "URL"
+  }
 
   @doc """
   The `Helper stops` section: a heading row that always shows the approved count, the helper button and Clear stops,
@@ -280,6 +287,152 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
     </section>
     """
   end
+
+  @doc """
+  The review of a prepared batch: one table row per changed field per stop with the
+  stop's current value beside the new one, the duplicate-name warnings, each invalid
+  stop's errors and the count of stops that already match.
+
+  `review` is `StopEditing.review_metadata_batch/2`'s answer, recomputed from the
+  stored values when the editor pressed Review, so the Current column is what the
+  database holds and not what the model read earlier.
+  """
+  attr :review, :map, required: true
+  attr :return_focus_id, :string, required: true
+
+  def review_drawer(assigns) do
+    review = assigns.review
+
+    assigns =
+      assigns
+      |> assign(:listed, Enum.filter(review.rows, &(&1.status in [:changed, :invalid])))
+      |> assign(:invalid, Enum.count(review.rows, &(&1.status == :invalid)))
+      |> assign(:stop_ids, Map.new(review.rows, &{&1.stop_uuid, &1.stop_id}))
+
+    ~H"""
+    <.drawer
+      id="stop-review"
+      chrome="planner"
+      open={true}
+      on_close="stop_review_close"
+      return_focus_id={@return_focus_id}
+      title="Review stop changes"
+      class="max-w-[min(100vw,760px)]"
+    >
+      <:lede>
+        <span>{Wording.count_noun(@review.changed, "stop")} to change</span>
+        <span class="inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] leading-normal text-warning-fg">
+          <.icon name="hero-exclamation-triangle" class="size-3.5" /> Preview · not saved
+        </span>
+      </:lede>
+      <.drawer_scroll>
+        <.message
+          :if={@invalid > 0}
+          id="stop-review-invalid"
+          kind="error"
+          title={Wording.count_noun(@invalid, "stop") <> " cannot be saved"}
+        >
+          Fix the errors below, or ask the helper again. Nothing is saved.
+        </.message>
+
+        <.message
+          :if={@review.warnings != []}
+          id="stop-review-warnings"
+          kind="warning"
+          title="A new name matches another stop"
+        >
+          <ul class="list-disc pl-5">
+            <li :for={warning <- @review.warnings}>
+              {Map.fetch!(@stop_ids, warning.stop_uuid)} would be named “{warning.name}”, which {Enum.join(
+                warning.others,
+                ", "
+              )} already {if length(warning.others) == 1,
+                do: "uses",
+                else: "use"}.
+            </li>
+          </ul>
+        </.message>
+
+        <p :if={@listed == []} id="stop-review-empty" class="text-sm text-muted">
+          These stops already have these values. Nothing would change.
+        </p>
+
+        <table
+          :if={@listed != []}
+          id="stop-review-table"
+          class="ds-stack-table w-full text-left text-sm"
+        >
+          <caption class="sr-only">
+            Changes to {Wording.count_noun(@review.changed, "stop")}
+          </caption>
+          <thead>
+            <tr class="border-b border-subtle text-[13px] text-default">
+              <th scope="col" class="py-2 pr-3 font-[650]">Stop</th>
+              <th scope="col" class="py-2 pr-3 font-[650]">Field</th>
+              <th scope="col" class="py-2 pr-3 font-[650]">Current</th>
+              <th scope="col" class="py-2 font-[650]">New</th>
+            </tr>
+          </thead>
+          <tbody
+            :for={row <- @listed}
+            id={"stop-review-stop-#{row.stop_uuid}"}
+            class="border-b border-subtle"
+          >
+            <tr :for={{field, index} <- Enum.with_index(row.changed_fields)}>
+              <td data-label="Stop" class="py-2 pr-3 align-top">
+                <span class="font-mono text-[13px] tabular-nums text-default">{row.stop_id}</span>
+                <span :if={index == 0} class="ml-2 text-strong">{row.old["stop_name"]}</span>
+              </td>
+              <td data-label="Field" class="py-2 pr-3 align-top text-default">
+                {field_label(field)}
+              </td>
+              <td data-label="Current" class="break-words py-2 pr-3 align-top text-default">
+                <.review_value value={row.old[field]} />
+              </td>
+              <td data-label="New" class="break-words py-2 align-top font-[650] text-strong">
+                <.review_value value={row.new[field]} />
+              </td>
+            </tr>
+            <tr :if={row.errors != %{}}>
+              <td colspan="4" class="pb-2 text-[13px] text-error-fg">
+                <p class="flex items-start gap-1.5 font-[650]">
+                  <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
+                  <span>{row.stop_id} cannot be saved</span>
+                </p>
+                <ul class="mt-0.5 pl-5.5">
+                  <li :for={{field, messages} <- Enum.sort(row.errors)}>
+                    {field}: {Enum.join(messages, ", ")}
+                  </li>
+                </ul>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p :if={@review.unchanged > 0} id="stop-review-unchanged" class="text-[13px] text-muted">
+          {unchanged_text(@review.unchanged)}
+        </p>
+      </.drawer_scroll>
+    </.drawer>
+    """
+  end
+
+  attr :value, :string, default: nil
+
+  defp review_value(assigns) do
+    ~H"""
+    <%= if @value in [nil, ""] do %>
+      <span class="font-normal text-muted">Empty</span>
+    <% else %>
+      {@value}
+    <% end %>
+    """
+  end
+
+  defp field_label(field), do: Map.fetch!(@field_labels, field)
+
+  defp unchanged_text(1), do: "1 stop already has these values and is not listed."
+  defp unchanged_text(count), do: "#{count} stops already have these values and are not listed."
 
   defp summary_text(nil), do: "No stops approved"
   defp summary_text(stops), do: Wording.count_noun(length(stops), "stop") <> " approved"

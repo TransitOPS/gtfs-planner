@@ -2684,6 +2684,27 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: stop text approval stops (BROWSER_TXT_A1..A4)")
 
+    # Three stops for the stop review table (`stop review table`, read-only): B1 and B2
+    # take a name and a code change, and B3 is renamed to "Txt Oak Court", the name
+    # BROWSER_TXT_A4 already has, so the review's duplicate-name warning renders.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_B1", "Txt Rail Depot", "TXT-B1"},
+          {"BROWSER_TXT_B2", "Txt Garden Gate", "TXT-B2"},
+          {"BROWSER_TXT_B3", "Txt Mill Lane", "TXT-B3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop review stops (BROWSER_TXT_B1..B3)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

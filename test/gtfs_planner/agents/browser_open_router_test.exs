@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
+  alias GtfsPlanner.Agents.Packs.StopText
 
   @user_school "No school service next Monday and Tuesday"
   @prepared_sentence "I prepared the change. Review it before applying."
@@ -335,6 +336,61 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted stop text replies" do
+    @stop_request "Prepare stop changes: S410 stop_name=Txt Elm @ 3rd; S410 stop_code=E-2; S411 stop_name=Txt Pine"
+
+    test "a stop change request reads the approved list first" do
+      body = post([system(StopText.skill()), user(@stop_request)])
+
+      assert {"{}", "read_stop_set"} = tool_call(body)
+    end
+
+    test "the list prepares the rows the message named, one per stop in order" do
+      body = post(stop_text_conversation())
+
+      assert {arguments, "prepare_stop_metadata_changes"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "rows" => [
+                 %{"stop_id" => "S410", "stop_name" => "Txt Elm @ 3rd", "stop_code" => "E-2"},
+                 %{"stop_id" => "S411", "stop_name" => "Txt Pine"}
+               ],
+               "basis" => @stop_request
+             }
+    end
+
+    test "the prepared result says prepared and never saved; a refusal says nothing was prepared" do
+      call = assistant_tool_call("call_prepare", "prepare_stop_metadata_changes", %{})
+
+      prepared =
+        final_text(
+          post(
+            stop_text_conversation() ++ [call, tool_result("call_prepare", %{"prepared" => true})]
+          )
+        )
+
+      assert prepared =~ "I prepared the stop changes"
+      refute prepared =~ ~r/saved|changed|done/i
+
+      refused =
+        final_text(
+          post(
+            stop_text_conversation() ++ [call, tool_result("call_prepare", %{"error" => "no"})]
+          )
+        )
+
+      assert refused =~ "I could not prepare those changes"
+    end
+
+    test "any other message gets the generic sentence and the marker is the skill's heading" do
+      assert final_text(post([system(StopText.skill()), user("Hello")])) =~
+               "I can help with the stops you approved"
+
+      assert StopText.skill() =~ "Stop text helper"
+      refute Calendars.skill() =~ "Stop text helper"
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -512,6 +568,15 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     [
       assistant_tool_call("call_summarize_headsigns", "summarize_headsigns", %{}),
       tool_result("call_summarize_headsigns", %{"default" => "Lincoln City"})
+    ]
+  end
+
+  defp stop_text_conversation do
+    [
+      system(StopText.skill()),
+      user(@stop_request),
+      assistant_tool_call("call_read_stop_set", "read_stop_set", %{}),
+      tool_result("call_read_stop_set", %{"total" => 2})
     ]
   end
 
