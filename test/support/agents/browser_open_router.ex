@@ -326,6 +326,15 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
         {name, arguments} = BrowserFeedQuality.user_reply(content)
         tool_calls_reply(name, arguments)
 
+      true ->
+        schedule_question_reply(content)
+    end
+  end
+
+  # The Schedules and Calendars questions, after the scenarios that name their
+  # own pack. Split from `user_reply/1` so each stays small enough to read.
+  defp schedule_question_reply(content) do
+    cond do
       # The Schedules page asks whether a connection can be made, which is the
       # connections pack's own read. It takes no arguments: the approved pairs,
       # the supplied clocks and the supplied minimum are all in the page's
