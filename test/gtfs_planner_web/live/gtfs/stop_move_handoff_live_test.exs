@@ -121,6 +121,22 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
     refused(view, entry, "already open", context, review?: true)
   end
 
+  test "a card pressed behind the delete or replace panel is refused and starts no review",
+       context do
+    counter = counting_routing_stub()
+
+    for action <- ["delete", "replace"] do
+      {view, entry} = prepared_view(context, "&action=#{action}")
+      assert has_element?(view, "#stops-map-#{action}-panel")
+
+      refused(view, entry, "Another panel is open", context)
+      assert has_element?(view, "#stops-map-#{action}-panel")
+      assert assigns(view).move_loading? == false
+    end
+
+    assert :counters.get(counter, 1) == 0
+  end
+
   test "a card whose point no longer equals the draft is refused", context do
     stub_routing()
     {view, entry} = prepared_view(context)
@@ -228,8 +244,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
 
   # Selects stop 1434, places the pin 13.7 m north, opens the helper and prepares the
   # move through the scripted provider; returns the view and the prepared entry's id.
-  defp prepared_view(context) do
-    {:ok, view, _html} = live(context.conn, "/gtfs/#{context.version.id}/stops/map?stop=1434")
+  defp prepared_view(context, query \\ "") do
+    {:ok, view, _html} =
+      live(context.conn, "/gtfs/#{context.version.id}/stops/map?stop=1434#{query}")
+
     settle(view)
     Mox.stub(GeocodingMock, :autocomplete, fn _text, _opts -> {:ok, []} end)
     Mox.allow(GeocodingMock, self(), view.pid)

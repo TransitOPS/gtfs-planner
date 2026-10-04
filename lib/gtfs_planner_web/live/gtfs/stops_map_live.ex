@@ -2353,6 +2353,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       not same_pin?(draft_point(assigns), command) ->
         refuse_move(socket, "The pin moved since this request was prepared. Ask again.")
 
+      other_panel_open?(assigns) ->
+        refuse_move(socket, "Another panel is open. Close it first.")
+
       assigns.move_loading? or assigns.move_saving? or assigns.move_review != nil ->
         refuse_move(socket, "A move review is already open. Finish or close it first.")
 
@@ -2362,6 +2365,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
         |> start_move_review()
         |> assign(:move_return_focus, "agent-prepared-#{entry_id}")
     end
+  end
+
+  # The replace, delete and station panels take the place of the move review, so a
+  # review started behind one would spend a routing request and show nothing.
+  defp other_panel_open?(assigns) do
+    assigns.panel != :edit or assigns.replace_candidates != [] or assigns.delete_review != nil or
+      assigns.delete_loading? or assigns.delete_outcome == :failed
   end
 
   defp same_stop?(%{uuid: uuid}, %{stop_uuid: uuid}), do: true
