@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Repo
@@ -525,7 +526,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
   # The admitted copy the panel currently holds, read through the shared owner's
   # own accessor rather than from any page assign.
   defp helper_snapshot(world, assigns),
-    do: GtfsPlanner.Agents.Scope.source_snapshot(panel_scope(world, assigns))
+    do: Scope.source_snapshot(panel_scope(world, assigns))
 
   defp helper_view(context) do
     {:ok, view, _html} = live(context.conn, runs_path(context.world))
@@ -545,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
   # The scope the panel itself holds, rebuilt from the page's own assigns so a
   # case never asserts against a hand-built identity.
   defp panel_scope(world, assigns) do
-    %GtfsPlanner.Agents.Scope{
+    %Scope{
       organization_id: world.organization.id,
       gtfs_version_id: world.version.id,
       user_id: world.user.id,

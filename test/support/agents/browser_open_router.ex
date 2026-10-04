@@ -173,7 +173,6 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @timetable_inbound_direction_id 1
   @timetable_row ~r/prepare (inbound |outbound )?row (\d+)(?: for calendar ([A-Z0-9_]+))?/i
   @timetable_tools ~w(read_timetable_source inspect_timetable_scope prepare_timetable_input)
-  @operations_tools ~w(get_blocking_issues get_run_issues get_crew_rules prepare_block_suggestion prepare_run_suggestion)
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
   @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
@@ -204,6 +203,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @run_findings "This day has run issues and uncovered work. Read the card for the per-run detail."
   @crew_rules "This day carries the stored crew rules, the pull-out, relief and sign-off reports and the break and spread limits."
   @operations_prepared "I prepared a change from what the card showed. Review it before applying."
+  @operations_answers %{
+    "get_blocking_issues" => @block_findings,
+    "get_run_issues" => @run_findings,
+    "get_crew_rules" => @crew_rules,
+    "prepare_block_suggestion" => @operations_prepared,
+    "prepare_run_suggestion" => @operations_prepared
+  }
+  @operations_tools Map.keys(@operations_answers)
 
   # A ref shaped like the server's own, so the pack's fence is what refuses it
   # and not the stand-in declining to invent a value.
@@ -584,17 +591,8 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # call had just been refused for. These branches read the error back out of
   # the last tool message and stand down, which is what the journeys assert: the
   # refusal is the last word, and no evidence card follows it.
-  defp operations_tool_reply("get_blocking_issues", messages),
-    do: operations_result_reply(messages, @block_findings)
-
-  defp operations_tool_reply("get_run_issues", messages),
-    do: operations_result_reply(messages, @run_findings)
-
-  defp operations_tool_reply("get_crew_rules", messages),
-    do: operations_result_reply(messages, @crew_rules)
-
-  defp operations_tool_reply(_prepare, messages),
-    do: operations_result_reply(messages, @operations_prepared)
+  defp operations_tool_reply(tool, messages),
+    do: operations_result_reply(messages, Map.fetch!(@operations_answers, tool))
 
   # A tool result that carries an `error` is a refusal. The stand-in does not
   # retry past one: it names what the domain said and stops, which is what a

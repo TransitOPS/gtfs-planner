@@ -277,17 +277,19 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
          :ok <- check_day_ref(args["day_ref"], payload),
          {:ok, run_refs} <- read_run_refs(args["run_refs"], payload),
          {:ok, filters} <- read_filters(args["filters"]) do
-      narrowing = build_narrowing(filters, run_refs)
+      read_issue_page(args, scope, payload, build_narrowing(filters, run_refs))
+    end
+  end
 
-      with {:ok, cursor} <- read_cursor(args["cursor"], payload, narrowing) do
-        case OperationsAssistance.page(payload, @collection, pager_filters(narrowing), cursor) do
-          {:ok, page} ->
-            {:ok, issues_result(payload, page, narrowing),
-             issues_evidence(scope, payload, page, narrowing)}
+  defp read_issue_page(args, scope, payload, narrowing) do
+    with {:ok, cursor} <- read_cursor(args["cursor"], payload, narrowing) do
+      case OperationsAssistance.page(payload, @collection, pager_filters(narrowing), cursor) do
+        {:ok, page} ->
+          {:ok, issues_result(payload, page, narrowing),
+           issues_evidence(scope, payload, page, narrowing)}
 
-          {:error, :unavailable} ->
-            {:error, "That page of this day's issues is not available. Start the list again."}
-        end
+        {:error, :unavailable} ->
+          {:error, "That page of this day's issues is not available. Start the list again."}
       end
     end
   end
@@ -795,16 +797,7 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
   defp attached_payload(%Scope{} = scope) do
     case Scope.source_snapshot(scope) do
       %{kind: @snapshot_kind, payload: payload} when is_map(payload) ->
-        if Map.get(payload, "section") == @section and
-             is_binary(Map.get(payload, "day_key")) and
-             is_binary(Map.get(payload, "day_ref")) and
-             is_binary(Map.get(payload, "source_digest")) and
-             is_list(Map.get(payload, "issues")) and
-             is_map(Map.get(payload, "scope")) and
-             is_map(Map.get(payload, "selection")) and
-             is_map(Map.get(payload, "constraints")) and
-             is_map(Map.get(payload, "figures")) and
-             is_map(Map.get(payload, "entities")) do
+        if well_formed?(payload) do
           {:ok, payload}
         else
           {:error, unavailable_message()}
@@ -813,6 +806,16 @@ defmodule GtfsPlanner.Agents.Packs.Runs do
       _none ->
         {:error, unavailable_message()}
     end
+  end
+
+  @binary_keys ["day_key", "day_ref", "source_digest"]
+  @map_keys ["scope", "selection", "constraints", "figures", "entities"]
+
+  defp well_formed?(payload) do
+    Map.get(payload, "section") == @section and
+      Enum.all?(@binary_keys, &is_binary(Map.get(payload, &1))) and
+      is_list(Map.get(payload, "issues")) and
+      Enum.all?(@map_keys, &is_map(Map.get(payload, &1)))
   end
 
   defp unavailable_message,

@@ -32,6 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Repo
@@ -161,7 +162,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
       assert in_seat.agent_pack_id == "in_seat"
 
       assert in_seat.agent_context ==
-               GtfsPlanner.Agents.Scope.context({:version, context.version.id})
+               Scope.context({:version, context.version.id})
 
       assert has_element?(view, "#blocks-helper-mode-in_seat[aria-pressed='true']")
       assert has_element?(view, "#blocks-helper-mode-blocks[aria-pressed='false']")
@@ -721,7 +722,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
   # The admitted copy the panel currently holds, read through the shared owner's
   # own accessor rather than from any page assign.
   defp helper_snapshot(context, assigns),
-    do: GtfsPlanner.Agents.Scope.source_snapshot(panel_scope(context, assigns))
+    do: Scope.source_snapshot(panel_scope(context, assigns))
 
   defp helper_view(context) do
     {:ok, view, _html} = live(context.conn, blocks_path(context.version.id))
@@ -741,7 +742,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
   # The scope the panel itself holds, rebuilt from the page's own assigns so a
   # case never asserts against a hand-built identity.
   defp panel_scope(context, assigns) do
-    %GtfsPlanner.Agents.Scope{
+    %Scope{
       organization_id: context.organization.id,
       gtfs_version_id: context.version.id,
       user_id: context.user.id,
