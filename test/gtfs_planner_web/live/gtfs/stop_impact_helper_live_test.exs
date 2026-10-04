@@ -48,6 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopImpactHelperLiveTest do
     %{
       conn: conn,
       organization: organization,
+      user: user,
       membership: membership,
       version: version,
       stops: stops
@@ -143,6 +144,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopImpactHelperLiveTest do
       assert third.agent_conversation_id != second.agent_conversation_id
 
       assert third.agent_context.source_snapshot.payload["candidate"]["lat"] == lat2
+    end
+
+    test "each pin keeps a session only when something was said in it", context do
+      view = open_map(context, "?stop=1434")
+      view |> element("#agent-helper-open") |> render_click()
+      first = say(view, "What uses this stop?", "It is used by one pattern.")
+
+      for metres <- [10.0, 20.0, 30.0, 40.0] do
+        {lon, lat} = north(staged_lat(), metres)
+        render_hook(view, "pin_moved", %{"lat" => lat, "lon" => lon})
+      end
+
+      # The answered conversation stays for the stop without a pin and the pin now
+      # showing is open; the three positions in between were never talked to.
+      eventually(fn -> sessions_of(context.user) == 2 end)
+
+      render_hook(view, "put_back", %{})
+      eventually(fn -> sessions_of(context.user) == 1 end)
+      assert assigns(view).agent_conversation_id == first.agent_conversation_id
+      assert has_element?(view, "#agent-entries article", "It is used by one pattern.")
     end
 
     test "a saved correction ends the pin's conversation and the page's pending move",
@@ -280,6 +301,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopImpactHelperLiveTest do
   end
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
+
+  # Conversations the signed-in user currently holds, read from the session registry.
+  defp sessions_of(user) do
+    GtfsPlanner.Agents.Registry
+    |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> Enum.count(&(is_tuple(&1) and elem(&1, 0) == user.id))
+  end
 
   defp edit_state(view),
     do: Map.take(assigns(view), [:edit_draft, :edit_dirty?, :edit_move, :move_review])

@@ -254,6 +254,7 @@ defmodule GtfsPlanner.AgentsTest do
       assert Agents.record_applied(pid, conversation_id, 1, :command) == {:error, :ended}
       assert Agents.stop(pid) == :ok
       assert Agents.detach(pid) == :ok
+      assert Agents.discard_unused(pid) == :ok
 
       for session <- [nil, :none, "pid"] do
         assert Agents.send_message(session, "Still there?") == {:error, :ended}
@@ -263,6 +264,7 @@ defmodule GtfsPlanner.AgentsTest do
         assert Agents.record_applied(session, conversation_id, 1, :command) == {:error, :ended}
         assert Agents.stop(session) == :ok
         assert Agents.detach(session) == :ok
+        assert Agents.discard_unused(session) == :ok
       end
     end
   end

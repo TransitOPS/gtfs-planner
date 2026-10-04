@@ -2305,7 +2305,13 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       end
 
     socket = if focus(context), do: socket, else: assign(socket, :agent_open?, false)
+    left_session = socket.assigns.agent_session
     socket = AgentPanel.set_context(socket, context)
+
+    # Every pin is its own context, so a nudged pin would otherwise leave one idle
+    # session behind per position until its half-hour expiry, against the 200-session cap.
+    # A session nobody talked to has nothing to keep; the panel has already let go of it.
+    if socket.assigns.agent_session != left_session, do: Agents.discard_unused(left_session)
 
     # `set_context/2` clears the notice, so the pin notice is set after it, and only
     # for the same stop under an open panel: another stop is simply another stop.

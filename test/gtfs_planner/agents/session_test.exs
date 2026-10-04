@@ -222,6 +222,42 @@ defmodule GtfsPlanner.Agents.SessionTest do
       assert :sys.get_state(session).listeners == %{}
     end
 
+    test "discard_unused ends only a session nobody holds and nothing was said in", context do
+      stub_echo()
+
+      # The caller is listening: nothing is discarded.
+      held = start_session(context, EchoPack)
+      attach(held)
+      assert :ok = Session.discard_unused(held)
+      assert Process.alive?(held)
+
+      # Another listener keeps it, even after the caller lets go.
+      shared = start_session(context, EchoPack)
+      attach(shared)
+      other = start_remote_listener(shared)
+      Session.detach(shared)
+      assert :ok = Session.discard_unused(shared)
+      assert Process.alive?(shared)
+      Process.exit(other, :kill)
+
+      # A conversation is kept for whoever opens the same context next.
+      talked = start_session(context, EchoPack)
+      attach(talked)
+      run_turn(talked, "A question")
+      Session.detach(talked)
+      assert :ok = Session.discard_unused(talked)
+      assert Process.alive?(talked)
+
+      # Nobody listening and nothing said: the session ends and its slot is free.
+      unused = start_session(context, EchoPack)
+      attach(unused)
+      Session.detach(unused)
+      monitor = Process.monitor(unused)
+
+      assert :ok = Session.discard_unused(unused)
+      assert_receive {:DOWN, ^monitor, :process, ^unused, :normal}, 2_000
+    end
+
     test "a listener that stops is removed and the conversation keeps running", context do
       session = start_session(context, EchoPack)
       attach(session)

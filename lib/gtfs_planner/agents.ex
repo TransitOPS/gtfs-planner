@@ -160,6 +160,15 @@ defmodule GtfsPlanner.Agents do
   def detach(session) when is_pid(session), do: call(session, :detach, :ok)
   def detach(_session), do: :ok
 
+  @doc """
+  Ends a session that has no listener, no conversation and no running turn.
+
+  A no-op for any other session and for an ended one.
+  """
+  @spec discard_unused(pid() | nil) :: :ok
+  def discard_unused(session) when is_pid(session), do: call(session, :discard_unused, :ok)
+  def discard_unused(_session), do: :ok
+
   ## Sessions
 
   defp fetch_pack(pack_id) do

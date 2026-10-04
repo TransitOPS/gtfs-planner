@@ -125,6 +125,16 @@ defmodule GtfsPlanner.Agents.Session do
   def detach(session), do: GenServer.call(session, :detach)
 
   @doc """
+  Ends the session when nothing holds it: no listener, no entries and no running turn.
+
+  A host that rebinds its context releases the session it leaves with this, so a
+  conversation nobody used does not wait out the idle timeout while it counts toward
+  the session cap. A session with another listener or any conversation is left running.
+  """
+  @spec discard_unused(GenServer.server()) :: :ok
+  def discard_unused(session), do: GenServer.call(session, :discard_unused)
+
+  @doc """
   Admits one turn for `text`.
 
   Returns `:ok` once the turn starts, or `{:error, reason}` for a forbidden
@@ -212,6 +222,12 @@ defmodule GtfsPlanner.Agents.Session do
 
   def handle_call(:detach, {pid, _tag}, state) do
     {:reply, :ok, remove_listener(state, pid)}
+  end
+
+  def handle_call(:discard_unused, _from, state) do
+    if map_size(state.listeners) == 0 and state.entries == [] and is_nil(state.turn),
+      do: {:stop, :normal, :ok, state},
+      else: {:reply, :ok, state}
   end
 
   def handle_call({:send_message, text}, _from, state) do
