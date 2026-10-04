@@ -1096,9 +1096,12 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
           ref <- sides(correspondence),
           do: ref.id
 
+    # An ambiguous correspondence is reported once from each side, so the entity
+    # that owns it is the left reference for a left-side twin and the right one for
+    # a right-side twin. Reading only the left would raise on the second kind.
     ambiguous =
-      for %{category: :ambiguous, left_ref: left, candidates: candidates} <- correspondences,
-          ref <- [left | candidates],
+      for %{category: :ambiguous, candidates: candidates} = correspondence <- correspondences,
+          ref <- sides(correspondence) ++ candidates,
           do: ref.id
 
     %{

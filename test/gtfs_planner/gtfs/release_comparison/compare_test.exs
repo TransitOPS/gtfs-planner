@@ -465,6 +465,41 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       assert result.completeness == %{status: :incomplete, reasons: [:stop_meaning_changed]}
     end
 
+    test "twin stops in the candidate file are unresolved and keep their patterns unpaired" do
+      # One stop in the earlier file; two identical stops in the candidate. Either
+      # twin could be the earlier stop, so no pair is proven and no pattern through
+      # them is compared, but the route's own counts still are.
+      left =
+        project(
+          stops: [{"S1", "Twin", "40.1", "-74.1"}],
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      right =
+        project(
+          stops: [{"S1A", "Twin", "40.1", "-74.1"}, {"S1B", "Twin", "40.1", "-74.1"}],
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1A", "1"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      assert Enum.all?(result.groups, &(&1.pattern_reason == :stop_ambiguous))
+      assert Enum.all?(result.groups, &(&1.pattern_pairs == []))
+      assert Enum.all?(result.groups, &(&1.delta.exact_count == 0))
+      assert result.totals.exact_count_delta == 0
+
+      assert result.completeness.status == :incomplete
+      assert :unresolved_entity_matches in result.completeness.reasons
+
+      # Every side of the ambiguity is disclosed: the earlier stop with its two
+      # candidates, and each candidate with the stop it could be.
+      stops = Enum.filter(result.unresolved, &(&1.entity == :stop))
+      assert length(stops) == 3
+      assert Enum.all?(stops, &(&1.reason == :ambiguous_signature))
+    end
+
     test "a changed frequency template is a representation change, not a timing one" do
       left =
         project(
