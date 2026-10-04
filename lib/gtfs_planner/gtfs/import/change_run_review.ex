@@ -718,9 +718,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     rows = for {decision, true} <- attributed, do: decision_row(decision, world)
 
     excluded =
-      Enum.frequencies_by(attributed, fn {decision, attributed?} ->
-        exclusion_reason(attributed?, decision)
-      end)
+      for {decision, false} <- attributed, reduce: %{} do
+        histogram -> Map.update(histogram, exclusion_reason(decision), 1, &(&1 + 1))
+      end
 
     {rows, excluded}
   end
@@ -749,16 +749,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     }
   end
 
-  defp exclusion_reason(true, _decision), do: :none
-  defp exclusion_reason(false, %{entity_type: :stop}), do: :unresolvable_or_other_stop
-  defp exclusion_reason(false, %{entity_type: :pathway}), do: :unresolvable_or_other_endpoint
-  defp exclusion_reason(false, %{entity_type: :level}), do: :shared_or_unknown_level
+  defp exclusion_reason(%{entity_type: :stop}), do: :unresolvable_or_other_stop
+  defp exclusion_reason(%{entity_type: :pathway}), do: :unresolvable_or_other_endpoint
+  defp exclusion_reason(%{entity_type: :level}), do: :shared_or_unknown_level
 
   defp import_counts(snapshot, station_rows, excluded, returned, offset) do
     %{
       "version_total" => snapshot.version_total,
       "station_total" => length(station_rows),
-      "excluded_total" => excluded |> Map.delete(:none) |> Map.values() |> Enum.sum(),
+      "excluded_total" => excluded |> Map.values() |> Enum.sum(),
       "existing_approved" => Enum.count(station_rows, &approved_status?/1),
       "version_approved" => snapshot.version_approved,
       "returned_decisions" => returned,
@@ -984,11 +983,20 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   defp import_completeness_reason(%{"narrowing" => guidance}, _counts, _total), do: guidance
 
   defp import_completeness_reason(_result, counts, total) do
-    if counts["returned_decisions"] == total,
-      do: nil,
-      else:
-        "#{counts["returned_decisions"]} of #{total} station decisions are in this answer; the rest are in later pages."
+    returned = counts["returned_decisions"]
+    offset = counts["offset"]
+    later = total - offset - returned
+
+    cond do
+      returned == total -> nil
+      later > 0 -> page_note(returned, total, offset, "#{later} more are in later pages.")
+      true -> page_note(returned, total, offset, "the rest are in earlier pages.")
+    end
   end
+
+  defp page_note(returned, total, offset, rest),
+    do:
+      "#{returned} of #{total} station decisions are in this answer, from offset #{offset}; #{rest}"
 
   defp import_exclusion_labels(counts, result) do
     labels =

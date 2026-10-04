@@ -324,6 +324,7 @@ defmodule GtfsPlanner.Gtfs.StationAssistantResultsTest do
       assert first["completeness"] == "incomplete"
       assert first["next_offset"] == 100
       assert first_evidence.completeness == :incomplete
+      assert first_evidence.exclusions == ["1 matching recorded pairs are in later pages"]
       assert first_evidence.total == 101
       assert Jason.encode!(%{result: first, evidence: first_evidence}) |> byte_size() <= 32 * 1024
 
@@ -333,6 +334,8 @@ defmodule GtfsPlanner.Gtfs.StationAssistantResultsTest do
       assert last["next_offset"] == nil
       assert last["completeness"] == "complete"
       assert last_evidence.completeness == :complete
+      # The 100 pairs before this page are earlier pages, not later ones.
+      assert last_evidence.exclusions == []
     end
 
     test "one oversized pair returns zero rows with narrowing guidance", ctx do

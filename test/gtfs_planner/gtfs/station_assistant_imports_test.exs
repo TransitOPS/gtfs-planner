@@ -112,14 +112,15 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       assert result["completeness"] == "complete"
       assert result["next_offset"] == nil
 
+      # Only excluded decisions are counted; the four this station includes are not.
       assert result["excluded"] == %{
-               "none" => 4,
                "shared_or_unknown_level" => 1,
                "unresolvable_or_other_endpoint" => 3,
                "unresolvable_or_other_stop" => 1
              }
 
       assert evidence.kind == "station_import_diff"
+      refute Enum.any?(evidence.exclusions, &(&1 =~ "as none"))
       assert evidence.total == 4
       assert evidence.total_label == "decisions attributable to this station"
       assert evidence.completeness == :complete
@@ -301,6 +302,24 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       change_uploaded_value(run, "stop:PLAT_A", "stop_desc", "a different description")
       assert {:ok, edited, _evidence} = StationAssistant.import_review(scope, %{})
       assert edited["import_digest"] != result["import_digest"]
+    end
+
+    test "a page note counts from the page's offset", ctx do
+      run = persisted_run(ctx, hand_enumerated_review(ctx))
+      scope = run_scope(ctx, ctx.station, run)
+
+      assert {:ok, whole, whole_evidence} = StationAssistant.import_review(scope, %{})
+      assert whole["next_offset"] == nil
+      assert whole_evidence.completeness_reason == nil
+
+      # Two of the four station decisions precede this page, so none are "later".
+      assert {:ok, last, last_evidence} = StationAssistant.import_review(scope, %{offset: 2})
+      assert length(last["decisions"]) == 2
+      assert last["next_offset"] == nil
+
+      assert last_evidence.completeness_reason ==
+               "2 of 4 station decisions are in this answer, from offset 2; " <>
+                 "the rest are in earlier pages."
     end
 
     test "a later edit to a decided record reads as drift, not as a rewrite", ctx do

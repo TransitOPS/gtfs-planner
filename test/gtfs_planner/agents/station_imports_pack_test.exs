@@ -200,10 +200,7 @@ defmodule GtfsPlanner.Agents.StationImportsPackTest do
       assert result["counts"]["version_total"] == 4
       assert result["counts"]["excluded_total"] == 1
 
-      assert result["excluded"] == %{
-               "none" => 3,
-               "unresolvable_or_other_endpoint" => 1
-             }
+      assert result["excluded"] == %{"unresolvable_or_other_endpoint" => 1}
 
       refute Jason.encode!(result) =~ "PW_CROSS"
 

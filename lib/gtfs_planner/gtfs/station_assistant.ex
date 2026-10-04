@@ -747,13 +747,13 @@ defmodule GtfsPlanner.Gtfs.StationAssistant do
     not is_nil(mode) or not is_nil(outcome) or not is_nil(pair_index)
   end
 
+  # Only the pairs after this page are "later"; the ones before it are on earlier
+  # pages, so the count starts from the page's own offset.
   defp exclusion_labels(result) do
     case result["counts"] do
-      %{"matched_pairs" => matched, "returned_pairs" => returned} when matched < returned ->
-        ["#{matched - returned} matching pairs were left out by this answer's size bound"]
-
-      %{"returned_pairs" => returned, "matched_pairs" => matched} when returned < matched ->
-        ["#{matched - returned} matching recorded pairs are in later pages"]
+      %{"matched_pairs" => matched, "returned_pairs" => returned, "offset" => offset}
+      when matched > offset + returned ->
+        ["#{matched - offset - returned} matching recorded pairs are in later pages"]
 
       _other ->
         []
