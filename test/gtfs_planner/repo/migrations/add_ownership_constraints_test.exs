@@ -67,8 +67,12 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   test "every live owner and UUID containment relationship has a scoped NO ACTION FK" do
     constraints = constraints()
 
+    # The receipt and run tables keep their version by a cascading composite key
+    # instead: deleting a version takes its runs and receipts with it, so they
+    # carry no NO ACTION constraint to assert here.
     owner_tables =
-      OwnershipAudit.version_owner_tables() -- ["gtfs_change_runs", "gtfs_export_runs"]
+      OwnershipAudit.version_owner_tables() --
+        ["gtfs_change_runs", "gtfs_export_runs", "tods_generations"]
 
     for table <- owner_tables do
       name = "#{table}_version_owner_fkey"
