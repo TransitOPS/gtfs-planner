@@ -493,6 +493,28 @@ defmodule GtfsPlanner.Agents.Packs.BlocksTest do
       assert Enum.all?(result["proposal"]["leftovers"], &is_map/1)
     end
 
+    test "an omitted plan_ref reads the proposal the supplied one names", context do
+      # Like the day ref, the plan ref is an opaque digest no tool result or
+      # prompt gives the model, so leaving it out has to reach the attached
+      # proposal rather than fail for a value the model cannot know.
+      context = with_plan!(context)
+
+      assert {:ok, omitted, omitted_evidence} = compare(context, %{})
+
+      assert {:ok, supplied, supplied_evidence} =
+               compare(context, %{"plan_ref" => plan_ref(context)})
+
+      assert omitted == supplied
+      assert omitted_evidence == supplied_evidence
+      assert omitted["plan_ref"] == plan_ref(context)
+    end
+
+    test "an omitted plan_ref with no proposal on the page reads as no proposal", context do
+      assert {:tool_error, message} = compare(context, %{})
+
+      assert message =~ "no completed block proposal"
+    end
+
     test "refuses no plan at all and a plan the page does not hold", context do
       # No native job has run, so the attached copy carries no proposal.
       assert {:tool_error, message} =

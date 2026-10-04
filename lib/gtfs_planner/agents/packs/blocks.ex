@@ -174,18 +174,18 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
       %{
         name: "compare_block_proposal",
         description:
-          "Compare the completed block proposal this page already holds, by the plan_ref a " <>
-            "previous answer returned: its before and after figures, how many trips it moves, the " <>
-            "trips it could not place and the problems it would add. It never re-runs anything, " <>
-            "and a proposal the page no longer holds, one that has been replaced and one still " <>
-            "running are all refused.",
+          "Compare the completed block proposal this page already holds: its before and after " <>
+            "figures, how many trips it moves, the trips it could not place and the problems it " <>
+            "would add. Leave plan_ref out; the proposal is the one attached to this " <>
+            "conversation. It never re-runs anything, and a proposal the page no longer holds, " <>
+            "one that has been replaced and one still running are all refused.",
         activity: "Compared a block proposal",
         parameters: %{
           "type" => "object",
           "properties" => %{
             "plan_ref" => %{"type" => "string", "minLength" => 1, "maxLength" => 255}
           },
-          "required" => ["plan_ref"],
+          "required" => [],
           "additionalProperties" => false
         }
       }
@@ -638,11 +638,12 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
   # recomputation and no host callback: a snapshot with no plan, one whose
   # `plan_ref` names a different plan and one whose plan was replaced are all the
   # same refusal, because a proposal this page no longer holds cannot be
-  # compared honestly.
+  # compared honestly. An omitted `plan_ref` names the attached plan, as an
+  # omitted `day_ref` names the attached day (`Operations.check_plan_ref/2`).
   defp compare_block_proposal(args, %Scope{} = scope) do
     with {:ok, payload} <- attached_payload(scope),
          {:ok, plan} <- attached_plan(payload),
-         :ok <- check_plan_ref(args["plan_ref"], plan) do
+         :ok <- Operations.check_plan_ref(args["plan_ref"], plan) do
       result = %{
         "day_ref" => payload["day_ref"],
         "day_key" => payload["day_key"],
@@ -663,16 +664,6 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
 
       _none ->
         {:error, "This page holds no completed block proposal to compare."}
-    end
-  end
-
-  defp check_plan_ref(plan_ref, plan) do
-    if plan_ref == plan["plan_ref"] do
-      :ok
-    else
-      {:error,
-       "That proposal is not the one this page holds. It may have been replaced; ask the editor " <>
-         "to start the suggestion again."}
     end
   end
 

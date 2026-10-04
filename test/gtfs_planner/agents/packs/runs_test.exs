@@ -494,6 +494,27 @@ defmodule GtfsPlanner.Agents.Packs.RunsTest do
       assert Enum.any?(evidence.exclusions, &(&1 =~ "trips no run covers"))
     end
 
+    test "an omitted plan_ref reads the proposal the supplied one names", context do
+      # The plan ref is an opaque digest no tool result or prompt gives the
+      # model, so leaving it out has to reach the attached proposal.
+      context = with_plan!(context)
+
+      assert {:ok, omitted, omitted_evidence} = inspect_plan(context, %{})
+
+      assert {:ok, supplied, supplied_evidence} =
+               inspect_plan(context, %{"plan_ref" => plan_ref(context)})
+
+      assert omitted == supplied
+      assert omitted_evidence == supplied_evidence
+      assert omitted["plan_ref"] == plan_ref(context)
+    end
+
+    test "an omitted plan_ref with no proposal on the page reads as no proposal", context do
+      assert {:tool_error, message} = inspect_plan(context, %{})
+
+      assert message =~ "no completed run proposal"
+    end
+
     test "caps the proposal's warnings and reports their full count", context do
       context = with_plan!(context)
       warnings = List.duplicate(%{"code" => "piece_too_long", "severity" => "warning"}, 60)

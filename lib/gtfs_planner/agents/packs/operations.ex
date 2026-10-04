@@ -81,6 +81,29 @@ defmodule GtfsPlanner.Agents.Packs.Operations do
   def check_day_ref(_day_ref, _payload),
     do: {:error, "day_ref must be the day reference this page attached."}
 
+  @doc """
+  Checks a tool's `plan_ref` against the attached proposal.
+
+  An absent `plan_ref` names the proposal the attached snapshot carries, for the
+  reason `check_day_ref/2` gives: the ref is an opaque server digest that no tool
+  result or prompt hands the model before it reads the proposal, so requiring it
+  made both proposal tools unreachable outside a test that scripts it in. A ref
+  that IS supplied is still checked, so a replaced or foreign proposal is refused
+  the same way.
+  """
+  @spec check_plan_ref(term(), map()) :: :ok | {:error, String.t()}
+  def check_plan_ref(nil, _plan), do: :ok
+
+  def check_plan_ref(plan_ref, plan) do
+    if plan_ref == plan["plan_ref"] do
+      :ok
+    else
+      {:error,
+       "That proposal is not the one this page holds. It may have been replaced; ask the editor " <>
+         "to start the suggestion again."}
+    end
+  end
+
   # -- authorization -------------------------------------------------------
 
   @doc """
