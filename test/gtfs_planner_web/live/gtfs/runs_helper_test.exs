@@ -260,6 +260,36 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
       assert assigns(view).plan == nil
     end
 
+    test "a refusal reloads the day, so asking the helper again opens the drawer", context do
+      {view, _pid} = prepared_view(context, "uncovered_only")
+      late_trip!(context.world)
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert view |> element("#runs-helper-notice") |> render() =~ @stale_notice
+
+      # The notice's advice has to work. The page adopted the day the other tab
+      # left, and the helper's copy was republished from it, which retires the
+      # conversation the stale card lived in.
+      {:ok, fresh} =
+        Gtfs.load_runs(
+          context.world.organization.id,
+          context.world.version.id,
+          context.world.day_type_key
+        )
+
+      {:ok, expected} = OperationsAssistance.run_day(fresh)
+      snapshot = helper_snapshot(context.world, assigns(view))
+      assert snapshot.payload["source_digest"] == expected["source_digest"]
+      refute has_element?(view, "#agent-review-prepared-2")
+
+      {view, _pid} = prepare_stop({view, assigns(view).agent_session}, context, "uncovered_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#runs-helper-notice")
+      assert has_element?(view, "#runs-suggest-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#runs-scope-uncovered[checked]")
+    end
+
     test "crew rules changed in another tab refuse the configuration", context do
       {view, _pid} = prepared_view(context, "uncovered_only")
 

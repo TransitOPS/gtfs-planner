@@ -440,13 +440,15 @@ test.describe("operations helper: a stale configuration is refused", () => {
       await openPreparedReview(page);
 
       // The refusal names its own next action rather than failing silently or
-      // opening a wrong drawer.
+      // opening a wrong drawer, and that action works: the page adopted the
+      // changed day, which retired the conversation holding the stale card.
       await expect(page.locator("#runs-helper-notice")).toBeVisible({
         timeout: 30000,
       });
       await expect(page.locator("#runs-helper-notice")).toContainText(
-        "Open the Suggest runs drawer and ask again",
+        "ask the helper again",
       );
+      await expect(page.locator('#agent-entries [id^="agent-prepared-"]')).toHaveCount(0);
       await expect(page.locator("#runs-suggest-drawer-overlay")).toHaveAttribute(
         "data-open",
         "false",

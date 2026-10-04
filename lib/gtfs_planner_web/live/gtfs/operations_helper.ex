@@ -82,6 +82,19 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsHelper do
   def keep_review_for(socket, _scope), do: socket
 
   @doc """
+  Shows `notice` after a reload that republished the copy.
+
+  A reload that had to drop the copy sets its own, more specific notice, and that
+  one stays.
+  """
+  @spec notice_after_reload(Phoenix.LiveView.Socket.t(), String.t()) ::
+          Phoenix.LiveView.Socket.t()
+  def notice_after_reload(%{assigns: %{helper_notice: nil}} = socket, notice),
+    do: assign(socket, :helper_notice, notice)
+
+  def notice_after_reload(socket, _notice), do: socket
+
+  @doc """
   Reads the prepared configuration the card's `entry` names.
 
   `entry_id` is client input: `phx-value-entry` sends the entry number as a

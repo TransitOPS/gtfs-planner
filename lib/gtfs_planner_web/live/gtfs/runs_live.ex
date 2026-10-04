@@ -58,7 +58,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   native day through `Gtfs.load_runs/3` — the socket's own assigns cannot see
   another tab's edit — re-projects it, and refuses unless the day key, the source
   digest and the selection digest all still match. A refusal keeps the drawer,
-  the scope it had chosen and the plan on screen, and says why.
+  the scope it had chosen and the plan on screen, and says why. When the day
+  itself moved, the page also adopts the fresh day, which republishes the frozen
+  copy, so asking the helper again works.
 
   Opening a configuration starts nothing. The drawer opens on the scope the
   command carries rather than on this page's own default, and only the existing
@@ -97,7 +99,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # One refusal message per way the handoff can decline. Each names what changed
   # and what still stands, because the person asking has a day's runs on screen
   # and a configuration they cannot use.
-  @helper_stale_notice "This configuration was prepared from a different day. Open the Suggest runs drawer and ask again."
+  @helper_stale_notice "This configuration was prepared from a different day. The page reloaded the day; ask the helper again."
+  @helper_reread_notice "The page could not re-read this day to check that configuration. Try again in a moment."
   @helper_section_notice "This configuration belongs to a different page. Open its own drawer and ask again."
   @helper_missing_notice "That configuration is no longer available. Open the Suggest runs drawer and ask again."
   @helper_preview_notice "Discard the current suggestion first. It was cut from this day, and only one suggestion can be on the page."
@@ -1086,7 +1089,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:helper_notice, nil)
       |> assign(:helper_review, helper_review(command, payload))
     else
-      {:error, notice} -> assign(socket, :helper_notice, notice)
+      # The fresh read is the day as it is now, and it is not the day the command
+      # was prepared from. The page adopts it, which republishes the frozen copy
+      # and retires the conversation holding the stale card, so asking again
+      # prepares a configuration for the day the page now shows.
+      :changed ->
+        socket |> load_day() |> OperationsHelper.notice_after_reload(@helper_stale_notice)
+
+      {:error, notice} ->
+        assign(socket, :helper_notice, notice)
     end
   end
 
@@ -1098,7 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
     case Gtfs.load_runs(organization.id, version.id, socket.assigns.day) do
       {:ok, runs_day} -> {:ok, runs_day}
-      {:error, _reason} -> {:error, @helper_stale_notice}
+      {:error, _reason} -> {:error, @helper_reread_notice}
     end
   end
 
@@ -1113,7 +1124,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          true <- OperationsAssistance.selection_digest(payload) == command.selection_digest do
       {:ok, payload}
     else
-      _different_day_or_copy -> {:error, @helper_stale_notice}
+      _different_day_or_copy -> :changed
     end
   end
 

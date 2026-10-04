@@ -481,6 +481,45 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksHelperHandoffTest do
       assert assigns(view).plan_preview == nil
     end
 
+    test "a refusal reloads the day, so asking the helper again opens the drawer", context do
+      garage!(context)
+      block_day!(context)
+
+      {view, _pid} = prepared_view(context, "unassigned_only")
+
+      trip!(context, %{
+        trip_id: "late_arrival",
+        first_stop: "AB_MKT",
+        last_stop: "AB_RS_B",
+        first: "19:00:00",
+        last: "19:30:00"
+      })
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+      assert view |> element("#blocks-helper-notice") |> render() =~ @stale_notice
+
+      # The notice's advice has to work. The page adopted the day the other tab
+      # left, and the helper's copy was republished from it, which retires the
+      # conversation the stale card lived in.
+      {:ok, fresh} = Gtfs.load_blocking_day(context.organization.id, context.version.id, nil)
+
+      {:ok, expected} =
+        OperationsAssistance.block_day(fresh, %{selected_block_ids: [], selected_trip_ids: []})
+
+      snapshot = helper_snapshot(context, assigns(view))
+      assert snapshot.payload["source_digest"] == expected["source_digest"]
+      refute has_element?(view, "#agent-review-prepared-2")
+
+      {view, _pid} =
+        prepare_stop({view, assigns(view).agent_session}, context, "unassigned_only")
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#blocks-helper-notice")
+      assert has_element?(view, "#suggest-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#suggest-scope-unassigned_only[checked]")
+    end
+
     test "a conversation reset in another tab refuses the old card", context do
       garage!(context)
       block_day!(context)

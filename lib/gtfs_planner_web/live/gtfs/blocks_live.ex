@@ -80,7 +80,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   assigns cannot see another tab's edit - re-projects it with the selection
   currently displayed, and refuses unless the day key, the source digest and
   the selection digest all still match. A refusal keeps every native draft and
-  says why.
+  says why. When the day itself moved, the page also adopts the fresh day, which
+  republishes the frozen copy, so asking the helper again works.
 
   Opening the configuration starts nothing. The drawer opens on the scope the
   command carries, set after the drawer's own default, so a `unassigned_only`
@@ -441,7 +442,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # One refusal message per way the Blocks handoff can decline. Each names what
   # changed and what still stands, because the person asking has a day's work on
   # screen and a configuration they cannot use.
-  @helper_stale_notice "This configuration was prepared from a different day or selection. Open the Suggest blocks drawer and ask again."
+  @helper_stale_notice "This configuration was prepared from a different day or selection. The page reloaded the day; ask the helper again."
+  @helper_reread_notice "The page could not re-read this day to check that configuration. Try again in a moment."
   @helper_section_notice "This configuration belongs to a different page. Open its own drawer and ask again."
   @helper_missing_notice "That configuration is no longer available. Open the Suggest blocks drawer and ask again."
   @helper_busy_notice "A suggestion is already being built. Wait for it to finish, then review the configuration."
@@ -4641,7 +4643,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          {:ok, payload} <- recheck_helper_command(socket, fresh, command) do
       {:open, open_suggest_drawer(socket, command, payload)}
     else
-      {:error, notice} -> {:refused, assign(socket, :helper_notice, notice)}
+      # The fresh read is the day as it is now, and it is not the day the command
+      # was prepared from. The page adopts it, which republishes the frozen copy
+      # and retires the conversation holding the stale card, so asking again
+      # prepares a configuration for the day the page now shows.
+      :changed ->
+        {:refused,
+         socket
+         |> load_day()
+         |> resolve_drawers()
+         |> assign_page_rows_if_loaded()
+         |> OperationsHelper.notice_after_reload(@helper_stale_notice)}
+
+      {:error, notice} ->
+        {:refused, assign(socket, :helper_notice, notice)}
     end
   end
 
@@ -4671,7 +4686,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     case Gtfs.load_blocking_day(organization.id, version.id, socket.assigns.state.day) do
       {:ok, day} -> {:ok, day}
-      {:error, _reason} -> {:error, @helper_stale_notice}
+      {:error, _reason} -> {:error, @helper_reread_notice}
     end
   end
 
@@ -4687,7 +4702,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
          true <- OperationsAssistance.selection_digest(payload) == command.selection_digest do
       {:ok, Map.put(payload, "day_key", day_key)}
     else
-      _different_day_or_selection -> {:error, @helper_stale_notice}
+      _different_day_or_selection -> :changed
     end
   end
 
