@@ -44,7 +44,9 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   `route_selection/3` resolves named routes into the boardable stops they serve
   (stop_times joined to trips), with exclusions, an only-unzoned filter and each
-  stop's serving routes. It is a read of ordinary queries, not one snapshot.
+  stop's serving routes. It is a read of ordinary queries, not one snapshot; its
+  `fingerprint` covers the predicate and every served stop's zone and serving
+  routes, so a later read can tell whether the selection still means the same.
 
   Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/2`
   and `undo_assignment/2`. A preview is a read that reports
@@ -238,7 +240,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           already_zoned_count: non_neg_integer(),
           excluded: [%{stop_id: String.t(), stop_name: String.t() | nil}],
           unmatched_exclusions: [String.t()],
-          route_names: %{String.t() => String.t()}
+          route_names: %{String.t() => String.t()},
+          fingerprint: String.t()
         }
 
   @type combined_fare :: %{
@@ -536,8 +539,11 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   `stops` is ordered by `stop_name` (missing last) then `stop_id`, as
   `list_stops/3` is, and each stop carries the sorted `route_ids` of every route
-  serving it. `served_count` counts the served stops before exclusions and the
-  unzoned filter; `already_zoned_count` counts the stops the unzoned filter
+  serving it. `fingerprint` is the lowercase hex SHA-256 of the de-duplicated,
+  sorted predicate and, for every served stop (before the exclusion and unzoned
+  filters) sorted by UUID, its stop ID, zone and serving route IDs; stop names and
+  timestamps are not in it. `served_count` counts the served stops before
+  exclusions and the unzoned filter; `already_zoned_count` counts the stops the unzoned filter
   dropped. `route_names` maps every route in `stops` to its short name, or its ID
   when it has none.
 
@@ -586,7 +592,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
          already_zoned_count: length(zoned),
          excluded: Enum.map(excluded, &Map.take(&1, [:stop_id, :stop_name])),
          unmatched_exclusions: Enum.reject(exclude_stop_ids, &MapSet.member?(served_ids, &1)),
-         route_names: Map.take(names, Enum.flat_map(selected, & &1.route_ids))
+         route_names: Map.take(names, Enum.flat_map(selected, & &1.route_ids)),
+         fingerprint: selection_fingerprint(route_ids, only_unzoned?, exclude_stop_ids, served)
        }}
     end
   end
@@ -1589,6 +1596,24 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           z.zone_id == ^zone_id
     )
     |> Repo.delete_all()
+  end
+
+  # Hashes the predicate and every served stop before the unzoned and exclusion
+  # filters. A stop that joins or leaves a named route, a serving-route change and
+  # the zone of a stop the selection would not touch all change it, because each
+  # can make "all unzoned stops of these routes" mean something else. Names and
+  # timestamps are not part of it.
+  defp selection_fingerprint(route_ids, only_unzoned?, exclude_stop_ids, served) do
+    rows =
+      served
+      |> Enum.sort_by(& &1.id)
+      |> Enum.map(&{&1.id, &1.stop_id, &1.zone_id, &1.route_ids})
+
+    term =
+      {:fare_zone_selection, 1, Enum.sort(route_ids), only_unzoned?, Enum.sort(exclude_stop_ids),
+       rows}
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(term)) |> Base.encode16(case: :lower)
   end
 
   defp check_selection_caps([], _exclusions), do: {:error, :no_routes}
