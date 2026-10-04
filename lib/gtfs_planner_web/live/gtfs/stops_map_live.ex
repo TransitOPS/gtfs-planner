@@ -2601,6 +2601,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     # The edit panel's tasks belong to the stop being left, so a save that lands
     # after this cannot take the editor back out of the add panel.
     |> assign(:edit_token, make_ref())
+    # The helper belongs to the stop and pin being left, so it is unbound and closed
+    # with them rather than left over the add panel.
+    |> assign(:edit_stop, nil)
+    |> assign(:edit_move, nil)
+    |> bind_agent_context()
     |> assign(:panel, :add)
     |> assign(:placement, nil)
     |> assign(:add_kind, kind)

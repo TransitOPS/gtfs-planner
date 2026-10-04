@@ -140,6 +140,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopMoveHandoffLiveTest do
     refused(view, entry, "no longer current", context)
   end
 
+  test "starting to add a stop closes the helper and the old card starts no review", context do
+    counter = counting_routing_stub()
+    {view, entry} = prepared_view(context)
+    assert has_element?(view, "#stops-map-helper")
+
+    view |> element("#stops-map-add-stop") |> render_click()
+
+    assert has_element?(view, "#stops-map-add-panel")
+    refute has_element?(view, "#stops-map-helper")
+    refute has_element?(view, "#agent-panel")
+    assert assigns(view).agent_open? == false
+    assert assigns(view).agent_context.source_snapshot == nil
+
+    # A press that arrives anyway (a stale click, a forged event) reaches no review.
+    render_hook(view, "agent_review_prepared", %{"entry" => Integer.to_string(entry)})
+    settle(view)
+
+    assert :counters.get(counter, 1) == 0
+    assert {assigns(view).move_loading?, assigns(view).move_review} == {false, nil}
+  end
+
   test "a forged, foreign or missing entry does nothing and does not raise", context do
     stub_routing()
     {:ok, view, _html} = live(context.conn, "/gtfs/#{context.version.id}/stops/map?stop=1434")
