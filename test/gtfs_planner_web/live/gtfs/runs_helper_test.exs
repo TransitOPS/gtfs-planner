@@ -387,6 +387,32 @@ defmodule GtfsPlannerWeb.Gtfs.RunsHelperHandoffTest do
       assert has_element?(view, "#runs-suggestion")
       refute has_element?(view, "#runs-helper-scope-details")
     end
+
+    test "applying a suggestion that changes nothing republishes the copy without it",
+         context do
+      # A fully cut day has no uncovered work, so an uncovered-only suggestion
+      # moves nothing and Apply reports success with no changes.
+      cut_whole_day(context.world)
+      {view, _pid} = helper_view(context)
+
+      render_click(view, "preview_suggestion", %{})
+      assert assigns(view).plan.moves == []
+      assert helper_snapshot(context.world, assigns(view)).payload["plan"] != nil
+
+      render_click(view, "apply_suggestion", %{})
+
+      assert has_element?(view, "#runs-toast", "There was nothing to apply.")
+      assert assigns(view).plan == nil
+      assert helper_snapshot(context.world, assigns(view)).payload["plan"] == nil
+
+      # The harm was a copy whose digest still included the dropped plan, so the
+      # next configuration was refused as "a different day".
+      {view, _pid} = prepare_stop({view, assigns(view).agent_session}, context, "uncovered_only")
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#runs-helper-notice")
+      assert has_element?(view, "#runs-suggest-drawer-overlay[data-open='true']")
+    end
   end
 
   describe "the native effects after the handoff" do

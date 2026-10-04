@@ -950,7 +950,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> put_toast("There was nothing to apply.", :refused)
          |> assign(:plan, nil)
          |> assign(:apply_state, :idle)
-         |> stream_run_rows()}
+         |> stream_run_rows()
+         # The dropped plan leaves the frozen copy with it. Without this the copy
+         # keeps a digest that includes the plan, and every later review is
+         # refused as a different day.
+         |> publish_helper_context()}
 
       {:error, :stale_plan} ->
         # The suggestion is now unapplicable, not merely unapplied. Apply is
