@@ -133,10 +133,13 @@ test.describe("the Validation Result helper", () => {
       await expect(page.locator("#feed-quality-evidence")).toBeVisible();
 
       // The stored total and the retained samples are the report's own numbers,
-      // and the unmapped samples stay visible as evidence.
-      await expect(page.locator("#feed-quality-samples")).toContainText("170");
-      await expect(page.locator("#feed-quality-samples")).toContainText("3");
-      await expect(page.locator("#feed-quality-unmapped")).toBeVisible();
+      // and the unmapped samples stay visible as evidence: the first sample
+      // names the seeded stop, the other two carry only a file row.
+      await expect(page.locator("#feed-quality-samples")).toContainText("170 findings");
+      await expect(page.locator("#feed-quality-samples")).toContainText("3 retained samples");
+      await expect(page.locator("#feed-quality-unmapped")).toContainText(
+        "2 of 3 sampled findings name no current record",
+      );
       await expect(page.locator("#feed-quality-provenance")).toBeVisible();
 
       // Keyboard opening is the journey's entry: focus the button and press Enter.
@@ -204,9 +207,14 @@ test.describe("the Export helper", () => {
 
       await page.locator("#agent-review-prepared-2").click();
 
-      // The page's own native patch owns the selected type.
+      // The page's own native patch owns the selected type. The panel closes,
+      // so the form shows the selection at phone width too, and focus lands on
+      // the radio that was chosen.
       await expect(page).toHaveURL(new RegExp(`type=pathways`));
+      await expect(page.locator("#agent-panel")).toHaveCount(0);
       await expect(page.locator("#export-type-pathways")).toBeChecked();
+      await expect(page.locator("#export-type-pathways")).toBeVisible();
+      await expect(page.locator("#export-type-pathways")).toBeFocused();
 
       const capturePath = await capture(page, `export-${viewport.label}`);
       await testInfo.attach(`export-${viewport.label}`, {
