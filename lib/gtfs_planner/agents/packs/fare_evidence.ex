@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Agents.Packs.FareEvidence do
 
   alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.Fares.Money
 
   @doc """
   Assembles one evidence map.
@@ -53,6 +54,20 @@ defmodule GtfsPlanner.Agents.Packs.FareEvidence do
       exclusions: Map.get(fields, :exclusions, []),
       resources: Map.get(fields, :resources, [])
     }
+  end
+
+  @doc """
+  A stored amount as the decimal string a person reads: the currency's minor units
+  when the amount fits them exactly (`1.50`), otherwise the exact digits, so a
+  rounded figure never stands in for an amount it is not.
+  """
+  @spec amount_string(Decimal.t() | nil, String.t()) :: String.t() | nil
+  def amount_string(nil, _currency), do: nil
+
+  def amount_string(%Decimal{} = amount, currency) do
+    rounded = Decimal.round(amount, Money.minor_units(currency))
+    exact = if Decimal.equal?(rounded, amount), do: rounded, else: amount
+    Decimal.to_string(exact, :normal)
   end
 
   @doc "The lowercase hex SHA-256 of the canonical encoding of `term`."

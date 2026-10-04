@@ -58,6 +58,7 @@ defmodule GtfsPlanner.Agents do
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
     "connections" => GtfsPlanner.Agents.Packs.Connections,
     "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
+    "fare_prices" => GtfsPlanner.Agents.Packs.FarePrices,
     "fare_zones" => GtfsPlanner.Agents.Packs.FareZones,
     "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
     "flex_policy" => GtfsPlanner.Agents.Packs.FlexPolicy,
