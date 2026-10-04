@@ -927,6 +927,7 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
   defp detail_query(%{key: :stop_areas} = ref, stop) do
     ref
     |> scope_query(stop)
+    |> select([row], row.area_id)
     |> Repo.all()
     |> Enum.map(fn area_id -> %{label: area_id, detail: %{area_id: area_id}} end)
   end

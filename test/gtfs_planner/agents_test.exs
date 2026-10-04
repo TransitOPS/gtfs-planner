@@ -40,6 +40,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Packs.StationImports
   alias GtfsPlanner.Agents.Packs.StationResults
+  alias GtfsPlanner.Agents.Packs.StopImpact
   alias GtfsPlanner.Agents.Packs.Timetables
   alias GtfsPlanner.Agents.Packs.Transfers
   alias GtfsPlanner.Agents.Scope
@@ -76,6 +77,7 @@ defmodule GtfsPlanner.AgentsTest do
                "service_queries" => ServiceQueries,
                "station_imports" => StationImports,
                "station_results" => StationResults,
+               "stop_impact" => StopImpact,
                "timetables" => Timetables,
                "transfers" => Transfers
              }
