@@ -4275,8 +4275,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       # `async_nolink/2` sends the result but reports no exit, so a read that
       # dies mid-flight would leave the page analysing forever. Monitoring the
       # task is what makes the exit case reportable rather than silent
-      # (AC-15, AC-16).
-      |> assign(:dated_change_task_monitor, Process.monitor(task.pid))
+      # (AC-15, AC-16). The panel halts every raw `:DOWN` it does not own, so
+      # this monitor carries its own tag and reaches `handle_info/2` as that
+      # tagged message.
+      |> assign(:dated_change_task_monitor, monitor_dated_change_task(task.pid))
 
     assign_dated_change_plan(socket, %{
       generation: generation,
@@ -4285,6 +4287,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       verified?: false
     })
   end
+
+  defp monitor_dated_change_task(pid),
+    do: :erlang.monitor(:process, pid, tag: :dated_change_task_down)
 
   defp run_dated_change(:analyze, scope, accepted, _prepared),
     do: DatedChangePlan.prepare(scope, accepted)
@@ -4315,7 +4320,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket) do
+  def handle_info({:dated_change_task_down, ref, :process, _pid, _reason}, socket) do
     if socket.assigns[:dated_change_task_monitor] == ref do
       {:noreply,
        socket
