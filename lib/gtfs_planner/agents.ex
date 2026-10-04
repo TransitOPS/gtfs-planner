@@ -51,6 +51,7 @@ defmodule GtfsPlanner.Agents do
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
     "connections" => GtfsPlanner.Agents.Packs.Connections,
+    "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
     "timetables" => GtfsPlanner.Agents.Packs.Timetables,

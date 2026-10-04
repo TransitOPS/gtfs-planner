@@ -75,12 +75,26 @@ defmodule GtfsPlannerWeb.AgentPanel do
   ## Evidence links
 
   Server evidence may name typed resources. This module, not the component and
-  never the model, decides what those names mean: an allowlisted kind resolves to
-  one application path built from this panel's own version, and anything else
-  resolves to no link at all, which the card states rather than hides (AC-4).
-  Evidence read under another organization, version or resource identity than
-  this panel now holds is dropped whole, so no foreign answer can reach the
-  screen even as an unlinked card (AC-2).
+  never the model, decides what those names mean: an allowlisted kind whose
+  identifier the current scope actually owns resolves to one application path
+  built from this panel's own version, and anything else resolves to no link at
+  all, which the card states rather than hides (AC-4, AC-17). Evidence read
+  under another organization, version or resource identity than this panel now
+  holds is dropped whole, so no foreign answer can reach the screen even as an
+  unlinked card (AC-2).
+
+  Ownership is verified before a path is built, not after: a calendar and a
+  route are looked up in this panel's own organization and version, so a deleted
+  identity, one belonging to another organization or version, and a kind this
+  panel does not name all render as plain text. A calendar identity is owned
+  when a weekly row, a metadata anchor or an exception date carries it, which is
+  the rule the calendar editor itself applies, so a dates-only service resolves
+  and a deleted one does not. No model text and no `url` on a resource is ever
+  read: a path is only ever built here, from a verified kind and identifier.
+
+  `resolve_resource_link/2` is that same resolution as a public seam, so a host
+  that renders its own report navigates by exactly the rule the panel applies
+  rather than by a second copy of it.
 
   A route reference resolves to that route's own Schedules page, which is the
   page the Schedule helper is bound to; it is the same page the panel already
@@ -114,6 +128,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs
 
   use GtfsPlannerWeb, :verified_routes
 
@@ -128,15 +143,6 @@ defmodule GtfsPlannerWeb.AgentPanel do
   @busy_notice "The helper is still working on your last request."
   @capacity_notice "The helper is busy. Try again shortly."
   @too_long_error "Keep messages under 2,000 characters."
-
-  # The only resource kinds this panel may turn into a link. A kind absent here
-  # renders as plain text, which keeps a new pack's reference from becoming a
-  # path this panel has not reviewed.
-  @evidence_links %{
-    "calendar" => :calendar_show,
-    "calendars_index" => :calendars_index,
-    "route" => :route_schedules
-  }
 
   @doc """
   Adds the panel's assigns, its entries stream and its two hooks to `socket`.
@@ -624,35 +630,71 @@ defmodule GtfsPlannerWeb.AgentPanel do
   defp identity_label(%{identity: {kind, id}}), do: "#{kind}:#{id}"
   defp identity_label(_context), do: nil
 
-  defp resolve_resource(%{kind: kind, id: id} = resource, socket) do
-    Map.put(resource, :link, evidence_link(kind, id, socket))
+  defp resolve_resource(resource, socket),
+    do: Map.put(resource, :link, resolve_resource_link(socket, resource))
+
+  @doc """
+  Resolves one typed resource to a native path in this panel's current scope.
+
+  This is the panel's whole link rule as a public function, so a host rendering
+  its own report navigates by exactly the same resolution the panel applies to
+  evidence, and the two cannot drift. It returns the path for an allowlisted
+  kind whose identifier the panel's own organization and version still own, and
+  `nil` for everything else: an unlisted kind, a non-binary identifier, an
+  unknown, deleted, foreign or cross-version resource, and any `url` a resource
+  happens to carry (no resource field but `kind` and `id` is ever read).
+
+  It writes nothing, and a path it returns is an ordinary editor URL: following
+  it opens the native editor and confers no authority this panel does not hold
+  (AC-17, INV-1).
+  """
+  @spec resolve_resource_link(Phoenix.LiveView.Socket.t(), map() | term()) :: String.t() | nil
+  def resolve_resource_link(socket, %{kind: kind, id: id}) when is_binary(id),
+    do: evidence_link(kind, id, socket)
+
+  def resolve_resource_link(_socket, _resource), do: nil
+
+  # The only resource kinds this panel may turn into a link. A kind absent from
+  # these clauses renders as plain text, which keeps a new pack's reference from
+  # becoming a path this panel has not reviewed. Each clause checks ownership
+  # before it builds anything.
+  defp evidence_link("calendar", id, socket) do
+    if owned_calendar?(id, socket), do: calendar_path(socket, id)
   end
 
-  defp resolve_resource(resource, _socket), do: Map.put(resource, :link, nil)
+  defp evidence_link("calendars_index", _id, socket), do: calendars_path(socket)
 
-  defp evidence_link(kind, id, socket) do
-    with route when not is_nil(route) <- Map.get(@evidence_links, kind),
-         resolved when is_binary(resolved) <- resolve_path(route, id, socket) do
-      resolved
-    else
-      _other -> nil
+  defp evidence_link("route", id, socket) do
+    if owned_route?(id, socket), do: route_schedules_path(socket, id)
+  end
+
+  defp evidence_link(_kind, _id, _socket), do: nil
+
+  # A calendar identity is taken by a weekly row, a metadata anchor or an
+  # exception date. That is the rule the calendar list, the editor and the
+  # reference lock already apply, so a dates-only service resolves here exactly
+  # as it does there, and a service of another organization, another version or
+  # no calendar at all does not resolve at all.
+  defp owned_calendar?(service_id, socket) do
+    case Gtfs.calendar_usage(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           service_id
+         ) do
+      {:ok, _usage} -> true
+      {:error, :not_found} -> false
     end
   end
 
-  # A calendar link is the verified route the calendar components use, so the
-  # version comes from this panel's own assigns and an imported service ID is
-  # percent-encoded rather than able to escape the query parameter. A panel that
-  # binds no version resolves no link at all, which the card states rather than
-  # guesses.
-  defp resolve_path(:calendar_show, id, socket) when is_binary(id),
-    do: calendar_path(socket, id)
-
-  defp resolve_path(:calendars_index, _id, socket), do: calendars_path(socket)
-
-  defp resolve_path(:route_schedules, id, socket) when is_binary(id),
-    do: route_schedules_path(socket, id)
-
-  defp resolve_path(_kind, _id, _socket), do: nil
+  defp owned_route?(route_id, socket) do
+    not is_nil(
+      Gtfs.get_route_by_route_id(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        route_id
+      )
+    )
+  end
 
   # The paths are built the way the calendar components build them: the version
   # comes from this panel's own assigns and the service ID is percent-encoded, so

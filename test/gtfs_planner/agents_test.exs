@@ -30,6 +30,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
   alias GtfsPlanner.Agents.Packs.Connections
+  alias GtfsPlanner.Agents.Packs.DatedChanges
   alias GtfsPlanner.Agents.Packs.InSeat
   alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Packs.Timetables
@@ -57,6 +58,7 @@ defmodule GtfsPlanner.AgentsTest do
                "alerts" => Alerts,
                "calendars" => Calendars,
                "connections" => Connections,
+               "dated_changes" => DatedChanges,
                "in_seat" => InSeat,
                "service_queries" => ServiceQueries,
                "timetables" => Timetables,
