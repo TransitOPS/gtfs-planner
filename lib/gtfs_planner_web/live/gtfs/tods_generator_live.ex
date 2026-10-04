@@ -667,6 +667,11 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
       " generate. Choose a range with service."
   end
 
+  defp no_work_body(%{coverage: %{open_dates: [_ | _]}}) do
+    "This request would add nothing, but some service remains unstaffed. Review the open dates" <>
+      " and exclusions below to see what needs attention."
+  end
+
   defp no_work_body(_preview) do
     "The schedule already holds the work this request would describe, so saving it would add" <>
       " nothing. Existing blocks, runs and roster lines are kept as they are; preview other" <>
@@ -900,6 +905,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
 
   defp run_day_exclusion_text(:no_base_weekday), do: "with no base weekday to repeat from"
   defp run_day_exclusion_text(:run_has_errors), do: "whose run has an error"
+  defp run_day_exclusion_text(:unassigned_slot), do: "held by a roster line without an operator"
   defp run_day_exclusion_text(:stale_slot), do: "held by a slot the exporter drops"
   defp run_day_exclusion_text(reason), do: "left out (#{reason})"
 
@@ -1352,8 +1358,8 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
             Kept as they are: {kept_text(@preview.result.counts)}.
           </p>
 
-          <div :if={not @preview.result.no_work?} class="mt-4 grid gap-2 text-sm text-default">
-            <p id="tods-preview-staffed">
+          <div :if={@preview.result.day_type_keys != []} class="mt-4 grid gap-2 text-sm text-default">
+            <p :if={not @preview.result.no_work?} id="tods-preview-staffed">
               A saved roster change repeats by weekday, so it reaches {Wording.count_noun(
                 length(@preview.result.coverage.affected_dates),
                 "date"

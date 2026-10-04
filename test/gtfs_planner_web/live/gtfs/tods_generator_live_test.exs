@@ -393,6 +393,46 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLiveTest do
     end
   end
 
+  test "a fully held roster without operators shows open coverage even with nothing to add",
+       context do
+    world =
+      TodsGeneratorFixtures.roster_world_fixture()
+      |> TodsGeneratorFixtures.stored_runs_fixture(%{
+        "a" => "1",
+        "b" => "2",
+        "c" => "2",
+        "d" => "2",
+        "e" => "3",
+        "f" => "4"
+      })
+
+    assert {:ok, first} = TodsGeneratorFixtures.roster_preview(world)
+
+    for proposal <- first.roster_lines do
+      assert {:ok, line} = GtfsPlanner.Gtfs.create_roster_line(world.audit)
+
+      assert {:ok, _slot} =
+               GtfsPlanner.Gtfs.set_roster_slot(
+                 world.audit,
+                 line.id,
+                 proposal.weekday,
+                 proposal.run_id
+               )
+    end
+
+    {editor, _membership} = editor_in(world)
+    {:ok, view, _html} = open_world_generator(context.conn, %{world: world, editor: editor})
+    html = preview_generation(view)
+
+    assert has_element?(view, "#tods-preview-no-work")
+    assert text_in(html, "#tods-preview-no-work") =~ "some service remains unstaffed"
+    assert has_element?(view, "#tods-preview-open")
+    refute has_element?(view, "#tods-preview-staffed")
+    refute text_in(html, "#tods-preview-open") =~ "No selected date stays open"
+    assert text_in(html, "#tods-preview-exclusion-unassigned_slot") =~ "without an operator"
+    assert has_element?(view, "#tods-save-button[disabled]")
+  end
+
   describe "preview of a stored schedule" do
     setup do
       world = generator_world()

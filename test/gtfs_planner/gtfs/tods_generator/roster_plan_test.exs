@@ -290,6 +290,15 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
       assert preview.hard_errors == []
       assert preview.save_available? == false
       assert preview.no_work? == true
+      assert roster_monday(world) in preview.coverage.open_dates
+      assert preview.coverage.affected_dates == []
+      assert preview.coverage.exported_dates == []
+      assert Enum.any?(preview.roster_exclusions, &(&1.reason == :unassigned_slot))
+
+      assert Enum.all?(
+               preview.roster_exclusions,
+               &(&1.reason in [:unassigned_slot, :no_base_weekday])
+             )
     end
 
     test "a plan whose only addition is a move into a stored block is still available to save" do

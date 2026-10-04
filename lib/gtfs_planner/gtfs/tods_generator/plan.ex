@@ -273,12 +273,13 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   named a trip would say nothing about the same run's other days. A run-day
   appears once, under the first reason that applies: its day type is not its
   weekday's base (`:no_base_weekday`, so no recurring line can reach it), the
-  export drops the run (`:run_has_errors`), or a stored slot holds it without
-  being exportable (`:stale_slot`).
+  export drops the run (`:run_has_errors`), a stale slot holds it without being
+  exportable (`:stale_slot`), or a valid slot holds it without an operator
+  (`:unassigned_slot`).
   """
   @type roster_exclusion :: %{
           subject: {1..7, String.t(), String.t()},
-          reason: :no_base_weekday | :run_has_errors | :stale_slot
+          reason: :no_base_weekday | :run_has_errors | :stale_slot | :unassigned_slot
         }
 
   @typedoc """
@@ -1260,6 +1261,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   # has nothing to leave open.
   defp roster_exclusions(base_week, runs, roster, day_types) do
     stale = stale_run_days(roster)
+    unassigned = unassigned_run_days(roster)
 
     for day_type <- day_types,
         day_runs = day_runs(runs, day_type.key),
@@ -1267,7 +1269,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         weekday <- weekdays_of(day_type),
         run <- day_runs,
         subject = {weekday, day_type.key, run.run_id},
-        reason = unstaffed_reason(base_week, weekday, day_type.key, run, stale, subject),
+        reason =
+          unstaffed_reason(base_week, weekday, day_type.key, run, stale, unassigned, subject),
         not is_nil(reason),
         do: %{subject: subject, reason: reason}
   end
@@ -1276,11 +1279,12 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   # base is another day type cannot be reached by a recurring line at all, a run the
   # export drops is not written wherever it is, and a stale slot's run-day is held
   # without being exported.
-  defp unstaffed_reason(base_week, weekday, key, run, stale, subject) do
+  defp unstaffed_reason(base_week, weekday, key, run, stale, unassigned, subject) do
     cond do
       not base?(base_week, weekday, key) -> :no_base_weekday
       error_run?(run) -> :run_has_errors
       MapSet.member?(stale, subject) -> :stale_slot
+      MapSet.member?(unassigned, subject) -> :unassigned_slot
       true -> nil
     end
   end
@@ -1298,6 +1302,16 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     for line <- roster.lines,
         {weekday, slot} <- line.slots,
         match?({:stale, _reason}, slot.state),
+        into: MapSet.new(),
+        do: {weekday, slot.day_type_key, slot.run_id}
+  end
+
+  # A manual line can hold a valid slot without an operator. It blocks additions,
+  # but the assignments export cannot staff its run-day.
+  defp unassigned_run_days(roster) do
+    for line <- roster.lines,
+        is_nil(line.operator),
+        {weekday, slot} <- line.slots,
         into: MapSet.new(),
         do: {weekday, slot.day_type_key, slot.run_id}
   end
