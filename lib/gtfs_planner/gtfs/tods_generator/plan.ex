@@ -465,13 +465,15 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   # leftover with no block is exactly the case a block-keyed map cannot hold.
   defp memberships(source, frozen) do
     Enum.reduce(source.rows_by_day_type, %{}, fn {day_type_key, rows}, acc ->
-      Enum.reduce(rows, acc, fn row, acc ->
-        case Map.get(frozen, row.id, row.block_id) do
-          nil -> acc
-          block_id -> add_membership(acc, day_type_key, block_id, row)
-        end
-      end)
+      Enum.reduce(rows, acc, &add_row_membership(&2, day_type_key, frozen, &1))
     end)
+  end
+
+  defp add_row_membership(acc, day_type_key, frozen, row) do
+    case Map.get(frozen, row.id, row.block_id) do
+      nil -> acc
+      block_id -> add_membership(acc, day_type_key, block_id, row)
+    end
   end
 
   defp add_membership(acc, _day_type_key, _block_id, nil), do: acc
