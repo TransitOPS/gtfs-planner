@@ -28,6 +28,7 @@ const EDITOR = {
 
 const ASSISTANCE_VERSION = "Browser Fare Assistance Version";
 const ZONES_VERSION = "Browser Fare Zones Version";
+const UNMANAGED_VERSION = "Browser Unmanaged V1 Fares Version";
 
 const VIEWPORTS = [
   { label: "1440", width: 1440, height: 1000 },
@@ -109,10 +110,10 @@ async function openZones(page, versionName = ASSISTANCE_VERSION) {
   return versionId;
 }
 
-async function openPrices(page) {
+async function openPrices(page, versionName = ASSISTANCE_VERSION) {
   await logIn(page);
 
-  const versionId = await versionIdByName(page, ASSISTANCE_VERSION);
+  const versionId = await versionIdByName(page, versionName);
   await page.goto(`/gtfs/${versionId}/settings/fares`);
   await waitForLiveView(page);
 
@@ -464,4 +465,94 @@ test.describe("prices review", () => {
       await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
     });
   }
+});
+
+test.describe("prices journey", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`asks, reviews, saves and undoes at ${viewport.label}`, async ({ page }, testInfo) => {
+      test.setTimeout(120_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openPrices(page);
+      const card = await preparePriceChanges(page);
+
+      await expect(card).toContainText("Local ride · Adult · Cash on board: $1.50 → $1.75");
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+      // Keyboard: Enter on the card's Review button opens the review, focus is
+      // inside it, and Escape closes it back onto the card.
+      await page.locator("#agent-review-prepared-2").focus();
+      await page.keyboard.press("Enter");
+
+      const dialog = page.locator("#price-review-dialog");
+      await expect(dialog).toBeVisible();
+      expect(await focusInside(page, "#price-review-dialog")).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(card).toBeFocused();
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+      // The review again, then the confirmed save through the native writer.
+      await page.locator("#agent-review-prepared-2").click();
+      await expect(dialog).toBeVisible();
+      await expect(page.locator("#price-review-badge")).toHaveText("Review · not saved");
+      await expect(page.locator("#price-review-row-local_ride_adult_cash-adult-cash")).toContainText(
+        "$1.75",
+      );
+      await expect(page.locator("#price-review-dialog-confirm")).toHaveText("Save 2 prices");
+      await page.locator("#price-review-dialog-confirm").click();
+      await expect(dialog).toHaveCount(0);
+
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.75");
+      await expect(page.locator("#price-local_ride-reduced")).toHaveValue("$0.85");
+      const note = page.locator("#fare-note");
+      await expect(note).toContainText("2 prices saved to Browser Fare Assistance Version service.");
+      await expect(page.locator("#undo-prices")).toBeVisible();
+
+      // Saved, the prepared card has nothing left to review.
+      await expect(page.locator("#agent-review-prepared-2")).toHaveCount(0);
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await capture(page, testInfo, `prices-saved-${viewport.label}`);
+
+      // Undo is the grid's own, and it restores the seed state.
+      await page.locator("#undo-prices").click();
+      await expect(note).toContainText("Change undone.");
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+      await expect(page.locator("#price-local_ride-reduced")).toHaveValue("$0.75");
+    });
+
+    test(`asks for exact amounts when given a percentage at ${viewport.label}`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(90_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openPrices(page);
+
+      await page.locator("#agent-helper-open").click();
+      await expect(page.locator("#agent-panel")).toBeVisible();
+      await page.locator("#agent-new-conversation").click();
+      await ask(page, "Raise the Local ride prices by 10%");
+
+      await expect(page.locator("#agent-entries")).toContainText(
+        "I can only change prices to exact amounts. Tell me the new amount for each price.",
+        { timeout: 15_000 },
+      );
+
+      // No percentage arithmetic: no prepared card, no review, nothing saved.
+      await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+      await expect(page.locator("#price-review-dialog")).toHaveCount(0);
+      await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
+
+      await capture(page, testInfo, `prices-exact-${viewport.label}`);
+    });
+  }
+
+  test("an unmanaged version has no helper", async ({ page }) => {
+    await openPrices(page, UNMANAGED_VERSION);
+
+    await expect(page.locator("#unmanaged-fares")).toBeVisible();
+    await expect(page.locator("#agent-helper-open")).toHaveCount(0);
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+  });
 });
