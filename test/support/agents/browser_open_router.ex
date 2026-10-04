@@ -415,8 +415,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     cond do
       system_marked?(messages, @in_seat_marker) -> in_seat_reply(messages)
       system_marked?(messages, @alerts_marker) -> alerts_reply(messages)
-      system_marked?(messages, @fare_zones_marker) -> fare_zones_reply(messages)
-      system_marked?(messages, @fare_prices_marker) -> fare_prices_reply(messages)
+      fare_helper?(messages) -> fare_reply(messages)
       system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
       system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
       system_marked?(messages, @stop_text_marker) -> stop_text_reply(messages)
@@ -437,6 +436,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       _other ->
         false
     end)
+  end
+
+  # The two fare helpers share one branch of `reply/1` to keep its dispatch simple.
+  defp fare_helper?(messages),
+    do:
+      system_marked?(messages, @fare_zones_marker) or
+        system_marked?(messages, @fare_prices_marker)
+
+  defp fare_reply(messages) do
+    if system_marked?(messages, @fare_zones_marker),
+      do: fare_zones_reply(messages),
+      else: fare_prices_reply(messages)
   end
 
   # The Blocks page's in-seat pack, whose skill body names the selection this
