@@ -100,9 +100,11 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     order = Keyword.get(opts, :order, :asc)
     limit = Keyword.get(opts, :limit, nil)
     target = Keyword.get(opts, :target, nil)
+    id = Keyword.get(opts, :id, nil)
 
     scope
     |> base_entries_query()
+    |> filter_by_id(id)
     |> filter_by_target(target)
     |> filter_by_status(status)
     |> sort_by_order(order)
@@ -633,6 +635,17 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
     )
   end
 
+  defp filter_by_id(query, nil), do: query
+
+  # One entry by id, still scoped to this station's organization, version and
+  # station: a caller resolving a source reference gets its own station's entry
+  # or nothing, never another station's.
+  defp filter_by_id(query, id) do
+    {:ok, uuid} = Ecto.UUID.cast(id)
+
+    from(entry in query, where: entry.id == ^uuid)
+  end
+
   defp filter_by_target(query, nil), do: query
 
   defp filter_by_target(query, {type, id}) do
@@ -670,7 +683,7 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
       raise ArgumentError, "options must be a keyword list"
     end
 
-    allowed_keys = [:status, :order, :limit, :target]
+    allowed_keys = [:status, :order, :limit, :target, :id]
 
     for {key, val} <- opts do
       if key not in allowed_keys do
@@ -713,6 +726,18 @@ defmodule GtfsPlanner.Gtfs.StationJournal do
 
   defp validate_opt!(:target, val) do
     raise ArgumentError, "invalid :target option: #{inspect(val)}"
+  end
+
+  defp validate_opt!(:id, nil), do: :ok
+
+  defp validate_opt!(:id, val) do
+    case Ecto.UUID.cast(val) do
+      {:ok, _uuid} ->
+        :ok
+
+      :error ->
+        raise ArgumentError, "invalid :id option: #{inspect(val)}"
+    end
   end
 
   defp topic(%Scope{} = scope) do

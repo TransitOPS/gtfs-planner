@@ -16,9 +16,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import GtfsPlannerWeb.Gtfs.ImportComponents
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Import
@@ -33,12 +36,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     SourceStorage
   }
 
+  alias GtfsPlanner.Gtfs.Import.ChangeRunReview
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.Import.Runner
   alias GtfsPlanner.Gtfs.ImportRuns
+  alias GtfsPlanner.Gtfs.StationAssistant
+  alias GtfsPlanner.Gtfs.StationJournal
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.ProductSurfaces
 
@@ -95,6 +103,37 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   }
 
   @max_failed_decisions 50
+
+  # The one measurement this slice accepts. Both values are the domain's own
+  # (`ChangeRunReview`), repeated here only as the options the native form
+  # offers; a forged unit or meaning is still refused by the normalizer rather
+  # than by this page.
+  @observation_field "min_width"
+  @observation_meaning "minimum_clear_width"
+  @observation_units [{"Metres (m)", "m"}, {"Centimetres (cm)", "cm"}, {"Millimetres (mm)", "mm"}]
+  @observation_meanings [{"Minimum clear width", @observation_meaning}]
+  @observation_date_limit 50
+
+  # What a reviewer is told when the proposal they clicked no longer describes
+  # this page's station, run and frozen source - or no longer exists at all. It
+  # is one sentence and discloses nothing about another station or run.
+  @prepared_missing_notice "That suggestion is no longer part of this review. Ask the helper to prepare it again."
+
+  # What each refusal the domain reports means for the person who typed the row.
+  # An unrecognized reason still renders, rather than being dropped.
+  @observation_rejections %{
+    "unsupported_unit" => "metres, centimetres and millimetres are the only units.",
+    "missing_meaning" => "say that the measurement is the minimum clear width.",
+    "unsupported_field" => "only a pathway's minimum width is captured here.",
+    "invalid_value" => "enter the measured number as it was written down.",
+    "nonpositive_value" => "a width must be greater than zero.",
+    "invalid_captured_date" => "enter the capture date as a real date.",
+    "invalid_source_ref" => "name the source this measurement came from.",
+    "invalid_target" => "choose the pathway this measurement is for.",
+    "conflicting_duplicate" => "another measurement of this pathway disagrees with it.",
+    "foreign_journal_reference" =>
+      "name a note of this station, or a source reference that is not a note."
+  }
 
   @diff_actions %{
     "add" => :add,
@@ -178,11 +217,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:decisions_by_id, %{})
      |> assign(:decision_dependents, %{})
      |> assign(:evolution_targets, %{})
+     |> assign_observation_scope(change_run)
+     |> assign_station_suggestion(nil)
+     |> stream_configure(:station_observation_rows, dom_id: &observation_row_dom_id/1)
+     |> stream(:station_observation_rows, [])
      |> stream(:diff_decisions, [])
      |> stream(:diff_preview_decisions, [])
      |> stream(:import_recovery_runs, recoverable_runs,
        dom_id: fn run -> "import-run-#{run.id}" end
      )
+     |> AgentPanel.mount("station_imports", open_button: "station-helper-open")
      |> refresh_change_review()}
   end
 
@@ -499,6 +543,62 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply, request_change_apply(socket)}
   end
 
+  # -- Accepted station measurements ------------------------------------------
+
+  @impl true
+  def handle_event("station-observation-scope", %{"station_observation_scope" => params}, socket) do
+    previous = socket.assigns[:observation_station]
+    station = observation_station(socket, Map.get(params, "station_stop_id"))
+
+    {:noreply,
+     socket
+     |> assign(:observation_error, observation_station_error(station))
+     |> assign(:observation_notice, observation_switch_notice(previous, station))
+     |> assign_observation_station(station)
+     |> stream_observation_rows()
+     |> bind_observation_helper()}
+  end
+
+  @impl true
+  def handle_event("station-observation-save", %{"station_observation" => params}, socket) do
+    {:noreply, save_station_observation(socket, params)}
+  end
+
+  # The panel renders a review button on a prepared entry from its first turn.
+  # Reviewing is a read: the stored proposal is retrieved from the conversation
+  # that produced it, checked against this page's own frozen snapshot, and shown
+  # for a person to decide. Nothing is approved, applied or written here
+  # (INV-2); only `station-suggestion-confirm` reaches the native writer.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, open_station_suggestion(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  # Closing the review writes nothing and hands focus back to the card it came
+  # from, so a person who decided against it is exactly where they started.
+  @impl true
+  def handle_event("station-suggestion-cancel", _params, socket) do
+    {:noreply,
+     socket
+     |> cancel_station_suggestion()
+     |> focus_suggestion_return()}
+  end
+
+  # The one deliberate act this flow offers. The page's own frozen source and
+  # the reviewed selection go to the native confirmation, which revalidates
+  # membership, run, station, source, status and every decision value inside its
+  # transaction. Only a success refreshes the review; a refusal keeps the review
+  # and every draft exactly as they were.
+  @impl true
+  def handle_event("station-suggestion-confirm", _params, socket) do
+    {:noreply, confirm_station_suggestion(socket)}
+  end
+
+  @impl true
+  def handle_event("station-observation-save", _params, socket), do: {:noreply, socket}
+
   @impl true
   def handle_event("cancel-diff-run", _params, socket), do: {:noreply, cancel_change_run(socket)}
 
@@ -533,6 +633,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> push_event("focus_diff_files", %{})}
   end
 
+  defp observation_station_error(%Stop{}), do: nil
+  defp observation_station_error(nil), do: "Choose one of the stations this review changes."
+
   # Return the station workflow to choosing files. The durable run is left as it
   # is; only what this page shows of it is cleared.
   defp reset_diff(socket) do
@@ -552,6 +655,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:apply_results, [])
     |> assign(:decisions_by_id, %{})
     |> assign(:evolution_targets, %{})
+    |> stream_observation_rows()
+    |> bind_observation_helper()
     |> stream(:diff_decisions, [], reset: true)
     |> stream(:diff_preview_decisions, [], reset: true)
   end
@@ -1019,11 +1124,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         |> assign(:decisions_by_id, Map.new(applicable, &{&1.decision_id, &1}))
         |> assign(:decision_dependents, decision_dependents(run, filtered))
         |> assign(:evolution_targets, evolution_targets)
+        |> assign_observation_scope(run)
+        |> stream_observation_rows()
+        |> bind_observation_helper()
         |> stream(:diff_decisions, filtered, reset: true)
         |> stream(:diff_preview_decisions, previews, reset: true)
 
       _ ->
         socket
+        |> assign_observation_scope(nil)
+        |> bind_observation_helper()
     end
   end
 
@@ -1048,6 +1158,769 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   end
 
   defp decision_dependents(_run, _decisions), do: %{}
+
+  # -- Accepted station measurements ------------------------------------------
+
+  # Everything this page shows about accepted measurements is derived from the
+  # run it is already reviewing: the stations a person may choose are the stations
+  # whose pathways this review changes, and the pathways a measurement may target
+  # are the pathways this review changes for that station. A client value names
+  # one of these offered rows or nothing at all.
+  # Rebuilt whenever the run changes. Adopting a different review clears the
+  # station, its messages and its captures because a draft and a refusal from the
+  # previous run no longer describe anything; refreshing the same review after a
+  # native action keeps the station this person chose, and only rebuilds the
+  # offered rows and the helper binding. Choosing a station clears messages in
+  # the scope handler instead, so its own notice survives.
+  defp assign_observation_scope(socket, %ChangeRun{} = run) do
+    socket = assign(socket, :observation_stations, observation_station_options(socket, run))
+
+    case socket.assigns[:observation_scope_run_id] do
+      run_id when run_id == run.id ->
+        socket
+        |> assign_observation_station(socket.assigns[:observation_station])
+        |> reset_observation_captures_for_run(run)
+
+      _other ->
+        socket
+        |> assign_observation_station(nil)
+        |> assign(:observation_error, nil)
+        |> assign(:observation_notice, nil)
+        |> assign(:observation_helper_notice, nil)
+        |> assign(:observation_scope_run_id, run.id)
+        |> reset_observation_captures_for_run(run)
+    end
+  end
+
+  defp assign_observation_scope(socket, _run), do: socket
+
+  # Every option the station choice offers, followed by the one the caller
+  # resolved. A station the page does not offer resolves to nil here, which is
+  # what makes a forged `phx-value-*` indistinguishable from a cleared select.
+  defp assign_observation_station(socket, station) do
+    run = socket.assigns.change_run
+
+    socket
+    |> assign(:observation_station, station)
+    |> assign(
+      :observation_scope_form,
+      to_form(%{"station_stop_id" => station && station.stop_id},
+        as: :station_observation_scope
+      )
+    )
+    |> assign(:observation_pathways, observation_pathway_options(socket, run, station))
+    |> assign(:observation_journal_entries, observation_journal_options(socket, station))
+  end
+
+  # Only the station this run's pathway decisions belong to can be measured, and
+  # only through the endpoint-ancestry rule the rest of this page already uses
+  # (`Gtfs.pathway_station_ids/3`).
+  defp observation_station_options(socket, %ChangeRun{} = run) do
+    if ChangeRunReview.computed_review_run?(run) do
+      review_station_ids(socket, run)
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.uniq()
+      |> Enum.map(
+        &Gtfs.get_stop_by_stop_id(socket.assigns.current_organization.id, run.gtfs_version_id, &1)
+      )
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort_by(& &1.stop_name)
+    else
+      []
+    end
+  end
+
+  defp observation_station(_socket, nil), do: nil
+
+  defp observation_station(socket, stop_id) when is_binary(stop_id) do
+    Enum.find(socket.assigns[:observation_stations] || [], &(&1.stop_id == stop_id))
+  end
+
+  defp observation_station(_socket, _stop_id), do: nil
+
+  # Which station owns each pathway this review changes, by the same scoped
+  # endpoint-ancestry rule the closure links on this page already use.
+  defp review_station_ids(socket, %ChangeRun{} = run) do
+    pathway_ids =
+      socket.assigns.decisions_by_id
+      |> Map.values()
+      |> Enum.filter(&(&1.entity_type == :pathway))
+      |> Enum.map(& &1.natural_key)
+      |> Enum.uniq()
+
+    Gtfs.pathway_station_ids(
+      socket.assigns.current_organization.id,
+      run.gtfs_version_id,
+      pathway_ids
+    )
+  end
+
+  defp observation_pathway_options(socket, %ChangeRun{} = run, %Stop{} = station) do
+    review_station_ids(socket, run)
+    |> Enum.filter(fn {_pathway_id, stop_ids} -> station.stop_id in stop_ids end)
+    |> Enum.map(fn {pathway_id, _stop_ids} -> pathway_option(socket, run, pathway_id) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(& &1.pathway_id)
+  end
+
+  defp observation_pathway_options(_socket, _run, _station), do: []
+
+  # The label names what this review proposes for that pathway, so a person can
+  # match a measurement to the change it supports without opening the row.
+  defp pathway_option(socket, _run, pathway_id) do
+    decision =
+      socket.assigns.decisions_by_id
+      |> Map.values()
+      |> Enum.find(&(&1.entity_type == :pathway and &1.natural_key == pathway_id))
+
+    case decision do
+      nil ->
+        nil
+
+      decision ->
+        %{
+          pathway_id: pathway_id,
+          label:
+            "#{pathway_id} · #{decision.action} · uploaded #{observation_width(decision.uploaded_values) || "no width"} m"
+        }
+    end
+  end
+
+  defp observation_width(values) when is_map(values), do: Map.get(values, "min_width")
+  defp observation_width(_values), do: nil
+
+  # Journal notes are listed by date and target only: their text and photos stay
+  # where the station's own notes show them, and a measurement names one by id.
+  defp observation_journal_options(socket, %Stop{} = station) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    with {:ok, scope} <-
+           StationJournal.resolve_scope(
+             organization_id,
+             version_id,
+             station.id,
+             socket.assigns.current_user.id
+           ),
+         entries when is_list(entries) <-
+           StationJournal.list_entries(scope, order: :desc, limit: @observation_date_limit) do
+      Enum.map(entries, fn entry ->
+        %{id: entry.id, label: "#{journal_label(entry.captured_at)} · #{entry.target_type}"}
+      end)
+    else
+      _other -> []
+    end
+  end
+
+  defp observation_journal_options(_socket, _station), do: []
+
+  defp journal_label(nil), do: "No date"
+
+  defp journal_label(%DateTime{} = captured_at),
+    do: Date.to_iso8601(DateTime.to_date(captured_at))
+
+  defp journal_label(captured_at), do: to_string(captured_at)
+
+  # Captured rows belong to the run they were captured against. A new review, a
+  # retry or a fresh compute clears them with a stated reason rather than
+  # silently carrying measurements that name another run's decisions.
+  defp reset_observation_captures_for_run(socket, %ChangeRun{id: run_id}) do
+    case socket.assigns[:observation_captures_run_id] do
+      ^run_id ->
+        socket
+
+      _other ->
+        socket
+        |> assign(:observation_captures, %{})
+        |> assign(:observation_captures_run_id, run_id)
+        |> assign(:observation_form, empty_observation_form())
+        |> assign(
+          :observation_notice,
+          "This is a different review, so measurements captured for the previous one are not carried over."
+        )
+    end
+  end
+
+  defp reset_observation_captures_for_run(socket, _run), do: socket
+
+  defp observation_capture(socket, %Stop{} = station) do
+    case Map.get(socket.assigns.observation_captures, station.stop_id) do
+      %{input_rows: input_rows, display_rows: display_rows} -> {input_rows, display_rows}
+      _other -> {[], []}
+    end
+  end
+
+  defp stream_observation_rows(socket) do
+    {_input_rows, display_rows} =
+      case socket.assigns[:observation_station] do
+        %Stop{} = station -> observation_capture(socket, station)
+        _other -> {[], []}
+      end
+
+    stream(socket, :station_observation_rows, Enum.with_index(display_rows), reset: true)
+  end
+
+  # The row's position, not its content, is the DOM identity: two accepted rows
+  # may legitimately name the same pathway and date.
+  defp observation_row_dom_id({_row, index}), do: "station-observation-row-#{index}"
+
+  defp save_station_observation(socket, params) do
+    draft = to_form(params, as: :station_observation)
+
+    case socket.assigns[:observation_station] do
+      %Stop{} = station ->
+        capture_observation(socket, station, params, draft)
+
+      nil ->
+        refuse_observation(socket, draft, "Choose a station before capturing a measurement.")
+    end
+  end
+
+  defp capture_observation(socket, %Stop{} = station, params, draft) do
+    case observation_pathway(socket, Map.get(params, "pathway_id")) do
+      nil ->
+        refuse_observation(socket, draft, "Choose a pathway this review changes.")
+
+      pathway ->
+        {input_rows, _display_rows} = observation_capture(socket, station)
+
+        capture_station_observation(
+          socket,
+          station,
+          input_rows ++ [observation_row(pathway.pathway_id, params)],
+          draft
+        )
+    end
+  end
+
+  # The measurement is checked against the very context this page installs, so a
+  # revoked editor, another station or another run refuses here rather than
+  # freezing evidence the helper could never read. One refused row refuses the
+  # whole save: a partly captured measurement is not a measurement.
+  defp capture_station_observation(socket, %Stop{} = station, rows, draft) do
+    case StationAssistant.normalize_observations(AgentPanel.scope(socket), rows) do
+      {:ok, normalized, _evidence} ->
+        settle_observation(
+          socket,
+          station,
+          rows,
+          Map.get(normalized, "rejected", []),
+          normalized,
+          draft
+        )
+
+      {:error, reason} ->
+        refuse_observation(socket, draft, observation_refusal_text(reason))
+    end
+  end
+
+  defp settle_observation(socket, station, rows, [], normalized, _draft) do
+    accept_observation(socket, station, rows, normalized)
+  end
+
+  defp settle_observation(socket, _station, _rows, rejections, _normalized, draft) do
+    refuse_observation(socket, draft, observation_rejection_text(rejections))
+  end
+
+  defp observation_refusal_text(:forbidden), do: @permission_error
+
+  defp observation_refusal_text(:no_selected_run),
+    do: "Review this station's computed changes before capturing a measurement."
+
+  defp observation_refusal_text(_reason),
+    do:
+      "This measurement could not be checked against the run. Nothing was changed and your entry is still here."
+
+  defp observation_pathway(socket, pathway_id) when is_binary(pathway_id) and pathway_id != "" do
+    Enum.find(socket.assigns[:observation_pathways] || [], &(&1.pathway_id == pathway_id))
+  end
+
+  defp observation_pathway(_socket, _pathway_id), do: nil
+
+  # Exactly the row the domain's normalizer accepts: nothing else is read, and a
+  # journal note is named by its own id rather than by its text.
+  defp observation_row(pathway_id, params) do
+    %{
+      "source_ref" => observation_source_ref(params),
+      "source_revision" => nil,
+      "target" => %{"pathway_id" => pathway_id},
+      "field" => Map.get(params, "field") || @observation_field,
+      "original_value" => Map.get(params, "original_value"),
+      "unit" => Map.get(params, "unit"),
+      "captured_date" => Map.get(params, "captured_date"),
+      "meaning" => Map.get(params, "meaning"),
+      "accepted" => Map.get(params, "accepted") == "true",
+      "conflict" => Map.get(params, "conflict") == "true"
+    }
+  end
+
+  # The frozen rows are what the helper and the confirmation read back, and each
+  # read re-normalizes them. A journal-backed row therefore keeps the revision its
+  # note had when it was captured, so a note edited afterwards is reported as a
+  # changed row instead of being read again at its new revision (CR-3). A row the
+  # normalizer collapsed into an identical one is never read as evidence and keeps
+  # the revision it was entered with.
+  defp freeze_source_revisions(input_rows, display_rows) do
+    revisions =
+      Map.new(
+        display_rows,
+        &{{&1["source_ref"], &1["target"]["pathway_id"]}, &1["source_revision"]}
+      )
+
+    Enum.map(input_rows, fn
+      %{"source_revision" => nil} = row ->
+        revision = Map.get(revisions, {row["source_ref"], row["target"]["pathway_id"]})
+        %{row | "source_revision" => revision}
+
+      row ->
+        row
+    end)
+  end
+
+  defp observation_source_ref(params) do
+    case Map.get(params, "journal_entry_id") do
+      entry_id when is_binary(entry_id) and entry_id != "" -> entry_id
+      _other -> Map.get(params, "source_ref")
+    end
+  end
+
+  defp accept_observation(socket, %Stop{} = station, input_rows, normalized) do
+    display_rows = Map.get(normalized, "observations", [])
+
+    captures =
+      Map.put(socket.assigns.observation_captures, station.stop_id, %{
+        station: station,
+        input_rows: freeze_source_revisions(input_rows, display_rows),
+        display_rows: display_rows
+      })
+
+    socket
+    |> assign(:observation_captures, captures)
+    |> assign(:observation_captures_run_id, socket.assigns.change_run.id)
+    |> assign(:observation_form, empty_observation_form())
+    |> assign(:observation_error, nil)
+    |> assign(
+      :observation_notice,
+      "Captured #{observation_count(length(display_rows))} for #{station.stop_name}. " <>
+        "Nothing is approved: the helper can only prepare a review you confirm yourself."
+    )
+    |> stream_observation_rows()
+    |> bind_observation_helper()
+  end
+
+  # A refused write keeps the draft and everything already captured, changes no
+  # decision status and moves no context: only the reason is added.
+  defp refuse_observation(socket, draft, reason) do
+    socket
+    |> assign(:observation_form, draft)
+    |> assign(:observation_error, reason)
+    |> assign(:observation_notice, nil)
+    |> push_event("focus_first_error", %{selector: "#station-observation-error"})
+  end
+
+  defp observation_rejection_text(rejections) do
+    detail =
+      rejections
+      |> Enum.map_join(" ", fn rejection ->
+        "Row #{rejection_index(rejection) + 1} (#{rejection_reason_label(rejection)}): " <>
+          rejection_reason_text(Map.get(rejection, "reason"))
+      end)
+
+    "Nothing was captured, and your entry is still here. #{detail}"
+  end
+
+  defp rejection_index(%{"index" => index}) when is_integer(index), do: index
+  defp rejection_index(_rejection), do: 0
+
+  defp rejection_reason_label(%{"source_ref" => ref}) when is_binary(ref) and ref != "", do: ref
+  defp rejection_reason_label(_rejection), do: "measurement"
+
+  defp rejection_reason_text(reason) do
+    Map.get(@observation_rejections, reason) || humanize(reason)
+  end
+
+  defp observation_count(1), do: "1 measurement"
+  defp observation_count(count), do: "#{count} measurements"
+
+  defp observation_switch_notice(nil, %Stop{} = station) do
+    "No measurements captured for #{station.stop_name} yet. The helper summarizes this run until you capture one."
+  end
+
+  defp observation_switch_notice(%Stop{stop_id: stop_id}, %Stop{stop_id: stop_id}) do
+    nil
+  end
+
+  defp observation_switch_notice(%Stop{} = previous, %Stop{} = station) do
+    "Measurements captured for #{previous.stop_name} are kept, and are not part of #{station.stop_name}'s helper."
+  end
+
+  defp observation_switch_notice(_previous, _station), do: nil
+
+  # The conversation is bound to the station this page selected, the run it is
+  # reviewing and the measurements captured for exactly that pair. The snapshot is
+  # the existing `station_imports` envelope: this page installs it and
+  # `StationAssistant` reads it back, so no second protocol exists (CR-4).
+  defp bind_observation_helper(socket) do
+    socket |> install_observation_context() |> drop_stale_suggestion()
+  end
+
+  # A review read for another station, run or measurement set must not stay open
+  # beside a conversation that no longer holds it.
+  defp drop_stale_suggestion(%{assigns: %{station_suggestion: %{command: command}}} = socket) do
+    case station_imports_source(socket) do
+      %{digest: digest} when digest == command.source_digest -> socket
+      _other -> close_station_suggestion(socket)
+    end
+  end
+
+  defp drop_stale_suggestion(socket), do: socket
+
+  defp install_observation_context(socket) do
+    context = Scope.context({:version, socket.assigns.current_gtfs_version.id})
+
+    case observation_source_snapshot(socket) do
+      {:ok, snapshot} ->
+        case Scope.with_source_snapshot(context, snapshot) do
+          {:ok, source_context} ->
+            socket
+            |> assign(:observation_helper_notice, nil)
+            |> AgentPanel.set_context(source_context)
+
+          {:error, reason} ->
+            socket
+            |> assign(:observation_helper_notice, observation_snapshot_notice(reason))
+            |> AgentPanel.set_context(context)
+        end
+
+      :error ->
+        socket
+        |> assign(
+          :observation_helper_notice,
+          "Choose a station to use the import helper. Everything else on this page works without it."
+        )
+        |> AgentPanel.set_context(context)
+    end
+  end
+
+  defp observation_source_snapshot(socket) do
+    with %Stop{} = station <- socket.assigns[:observation_station],
+         %ChangeRun{id: run_id} <- socket.assigns[:change_run],
+         true <- ChangeRunReview.computed_review_run?(socket.assigns.change_run) do
+      {input_rows, _display_rows} = observation_capture(socket, station)
+
+      {:ok,
+       %{
+         kind: "station_imports",
+         payload: %{
+           "station_id" => station.id,
+           "station_stop_id" => station.stop_id,
+           "change_run_id" => run_id,
+           "observations" => input_rows,
+           "observations_digest" => StationAssistant.observations_digest(input_rows)
+         }
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  defp observation_snapshot_notice(:too_large) do
+    "These measurements are larger than the helper can read, so it was not connected. " <>
+      "They stay listed here and nothing was changed."
+  end
+
+  defp observation_snapshot_notice(_reason) do
+    "The helper could not be connected to these measurements, so it was left off. " <>
+      "Everything else on this page works without it."
+  end
+
+  # -- Suggested decisions reviewed and confirmed --------------------------
+
+  # The suggestion a person is reading is page state, not conversation state: it
+  # names the exact entry it came from, the exact command that entry stored, and
+  # the rows this page resolved out of its own review. Nothing else survives a
+  # reload, and nothing here is derived from the conversation afterwards.
+  defp assign_station_suggestion(socket, suggestion) do
+    socket
+    |> assign(:station_suggestion, suggestion)
+    |> assign(:station_suggestion_error, nil)
+    |> assign(:station_suggestion_status, nil)
+    |> assign(
+      :station_suggestion_return_focus,
+      suggestion && Map.get(suggestion, :return_focus_id)
+    )
+  end
+
+  # A forged entry id never reaches the session: a value that is not an integer
+  # is ignored, exactly as a stale or unknown entry is.
+  defp open_station_suggestion(socket, id) do
+    case Integer.parse(to_string(id)) do
+      {entry_id, ""} when entry_id > 0 -> handoff_station_suggestion(socket, entry_id)
+      _other -> socket
+    end
+  end
+
+  defp handoff_station_suggestion(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: %{kind: :station_import_selection} = command}} ->
+        review_station_suggestion(socket, entry_id, command)
+
+      _stale_or_unknown ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # The review is regenerated from the page's own frozen snapshot and the exact
+  # prepared command, so what the reviewer reads is what Confirm will ask the
+  # domain to approve (the CalendarsLive precedent). A command for another run,
+  # another station or another frozen source is one refusal, and the stored
+  # proposal is released only by an exact confirmation.
+  defp review_station_suggestion(socket, entry_id, command) do
+    socket
+    |> reject_foreign_suggestion(command)
+    |> case do
+      {:error, socket} ->
+        socket
+
+      {:ok, socket} ->
+        open_suggestion_review(socket, entry_id, command)
+    end
+  end
+
+  # The prepared command must describe this page's current station and run, and
+  # must have been produced against the very snapshot this page still holds.
+  defp reject_foreign_suggestion(socket, command) do
+    snapshot = station_imports_source(socket)
+
+    matches? =
+      is_map(snapshot) and Map.get(snapshot, :kind) == "station_imports" and
+        Map.get(command, :source_digest) == Map.get(snapshot, :digest) and
+        Map.get(command, :run_id) == change_run_id(socket) and
+        Map.get(command, :station_id) == observation_station_id(socket)
+
+    if matches? do
+      {:ok, socket}
+    else
+      {:error, assign(socket, :agent_notice, @prepared_missing_notice)}
+    end
+  end
+
+  # Each row is regenerated from the page's own frozen snapshot through the same
+  # projection the helper used, and each row's `decision_digest` must still be the
+  # one the prepared command named. A decision the run no longer holds, or one
+  # whose values moved after the suggestion was prepared, recomputes to something
+  # else - so the whole review is refused rather than showing a row that is not
+  # what would be approved (INV-1).
+  defp open_suggestion_review(socket, entry_id, command) do
+    ids =
+      Enum.map(Map.get(command, :decisions) || [], &Map.get(&1, "decision_id"))
+
+    case StationAssistant.prepare_import_selection(AgentPanel.scope(socket), ids) do
+      {:ok, answer, _evidence} ->
+        if answer["input_digest"] == Map.get(command, :input_digest) and
+             answer["selected"] != [] and answer["unresolved"] == [] and answer["excluded"] == [] do
+          assign_station_suggestion(socket, %{
+            entry_id: entry_id,
+            command: command,
+            rows: Enum.map(answer["selected"], &suggestion_row/1),
+            station_stop_id: answer["station_stop_id"],
+            return_focus_id: "agent-prepared-#{entry_id}"
+          })
+          |> focus_suggestion("station-suggestion-confirm")
+        else
+          assign(socket, :agent_notice, @prepared_missing_notice)
+        end
+
+      {:error, _reason} ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # What the reviewer reads is the server's own row: the decision id, the old and
+  # new width, the captured measurement it was reviewed against, and every field
+  # that decision changes.
+  defp suggestion_row(row) do
+    %{
+      decision_id: row["decision_id"],
+      decision_digest: row["decision_digest"],
+      subject: "Pathway #{row["natural_key"]}",
+      current_width: to_string(row["current_value"]),
+      uploaded_width: to_string(row["uploaded_value"]),
+      captured_source: observation_source_label(row["observation"])
+    }
+  end
+
+  # What the reviewer needs of a captured source: what was measured, in what
+  # unit, when, and where it came from. A journal-backed reference is named by
+  # identity only - its body and photos stay on the station page.
+  defp observation_source_label(%{} = observation) do
+    "Measured #{observation["original_value"]} #{observation["unit"]} on " <>
+      "#{observation["captured_date"]} · source #{observation["source_ref"]}"
+  end
+
+  defp observation_source_label(_other), do: nil
+
+  defp observation_station_id(socket) do
+    case socket.assigns[:observation_station] do
+      %Stop{id: id} -> id
+      _other -> nil
+    end
+  end
+
+  defp change_run_id(socket) do
+    case socket.assigns[:change_run] do
+      %ChangeRun{id: id} -> id
+      _other -> nil
+    end
+  end
+
+  defp station_imports_source(socket) do
+    case Scope.source_snapshot(AgentPanel.scope(socket)) do
+      %{kind: "station_imports"} = snapshot -> snapshot
+      _other -> nil
+    end
+  end
+
+  # Confirming asks the domain to approve exactly the reviewed rows and to record
+  # the captured provenance beside them. The page never writes a status itself,
+  # never records a receipt for the helper (only statuses were confirmed, not an
+  # apply) and never relies on what the conversation said afterwards.
+  defp confirm_station_suggestion(%{assigns: %{station_suggestion: nil}} = socket), do: socket
+
+  defp confirm_station_suggestion(socket) do
+    suggestion = socket.assigns.station_suggestion
+
+    case station_imports_source(socket) do
+      %{kind: "station_imports"} = source ->
+        selection = suggestion_selection(suggestion, source)
+
+        case ChangeRuns.confirm_observation_selection(
+               socket.assigns.current_organization.id,
+               socket.assigns.current_gtfs_version.id,
+               socket.assigns.current_user,
+               source,
+               selection
+             ) do
+          {:ok, %{decisions: decisions}} ->
+            socket
+            |> assign(:station_suggestion_status, %{
+              kind: :confirmed,
+              title: "Nothing has been applied yet.",
+              message:
+                "#{approved_label_for(decisions)} approved with the measurement each one was " <>
+                  "reviewed against. Review the whole approved list, then choose Apply decisions."
+            })
+            |> close_station_suggestion()
+            |> refresh_change_review()
+            |> focus_suggestion("station-approved-apply-scope")
+
+          {:error, reason} ->
+            # A refusal changes no status and keeps the review and every draft, so
+            # the person can decide again against the same rows.
+            socket
+            |> assign(:station_suggestion_error, suggestion_refusal_text(reason))
+            |> focus_suggestion("station-suggestion-confirm")
+        end
+
+      _other ->
+        socket
+        |> assign(:station_suggestion_error, @prepared_missing_notice)
+        |> focus_suggestion("station-suggestion-confirm")
+    end
+  end
+
+  defp suggestion_selection(suggestion, source) do
+    command = suggestion.command
+
+    %{
+      "run_id" => Map.get(command, :run_id),
+      "station_stop_id" => Map.get(source.payload, "station_stop_id"),
+      "input_digest" => Map.get(command, :input_digest),
+      "decisions" =>
+        Enum.map(suggestion.rows, fn row ->
+          %{"decision_id" => row.decision_id, "decision_digest" => row.decision_digest}
+        end)
+    }
+  end
+
+  defp approved_label_for([_decision]), do: "1 change is"
+  defp approved_label_for(decisions), do: "#{length(decisions)} changes are"
+
+  defp suggestion_refusal_text(:forbidden), do: @permission_error
+
+  defp suggestion_refusal_text(:evidence_limit),
+    do:
+      "This review has recorded as much captured evidence as it keeps. Nothing was approved and " <>
+        "your measurements are still here."
+
+  defp suggestion_refusal_text(:invalid_selection),
+    do:
+      "That suggestion cannot be confirmed as asked. Nothing was approved, and the review is " <>
+        "still here."
+
+  defp suggestion_refusal_text(_reason),
+    do:
+      "This review changed after the suggestion was prepared, so nothing was approved. The review " <>
+        "and your measurements are still here - ask the helper to prepare it again."
+
+  # Closing drops the page's own copy and hands focus back to the card the review
+  # came from. The entry's stored proposal stays exactly as it was: it is the
+  # conversation's, and only an exact confirmation releases it.
+  defp close_station_suggestion(socket) do
+    socket
+    |> assign(:station_suggestion, nil)
+    |> assign(:station_suggestion_error, nil)
+  end
+
+  # Focus goes back to the card the review was opened from, which is still in the
+  # transcript: cancelling released nothing, so the entry that offered the
+  # decision is exactly where the person should be. The helper's own open control
+  # is the fallback when no review was open.
+  defp cancel_station_suggestion(%{assigns: %{station_suggestion: nil}} = socket) do
+    assign(socket, :station_suggestion_return_focus, nil)
+  end
+
+  defp cancel_station_suggestion(socket) do
+    assign(
+      socket,
+      :station_suggestion_return_focus,
+      socket.assigns.station_suggestion.return_focus_id
+    )
+    |> close_station_suggestion()
+  end
+
+  defp focus_suggestion_return(%{assigns: %{station_suggestion_return_focus: id}} = socket)
+       when is_binary(id),
+       do: push_event(socket, "focus_station_target", %{id: id})
+
+  defp focus_suggestion_return(socket), do: focus_suggestion(socket, "station-helper-open")
+
+  defp focus_suggestion(socket, id) when is_binary(id) and id != "",
+    do: push_event(socket, "focus_station_target", %{id: id})
+
+  defp focus_suggestion(socket, _other), do: socket
+
+  defp empty_observation_form do
+    to_form(
+      %{
+        "pathway_id" => nil,
+        "original_value" => "",
+        "unit" => "cm",
+        "captured_date" => Date.utc_today() |> Date.to_iso8601(),
+        "meaning" => @observation_meaning,
+        "source_ref" => "",
+        "journal_entry_id" => "",
+        "accepted" => "true",
+        "conflict" => "false"
+      },
+      as: :station_observation
+    )
+  end
 
   defp update_change_decision(socket, decision_id, status) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
@@ -1317,9 +2190,61 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               preview_count={@diff_preview_count}
               decisions_stream={@streams.diff_decisions}
               previews_stream={@streams.diff_preview_decisions}
+              observation_stations={@observation_stations}
+              observation_station={@observation_station}
+              observation_scope_form={@observation_scope_form}
+              observation_form={@observation_form}
+              observation_pathways={@observation_pathways}
+              observation_journal_entries={@observation_journal_entries}
+              observation_captures={@observation_captures}
+              observation_error={@observation_error}
+              observation_notice={@observation_notice}
+              observation_helper_notice={@observation_helper_notice}
+              agent_open?={@agent_open?}
+              station_suggestion={@station_suggestion}
+              station_suggestion_error={@station_suggestion_error}
+              station_suggestion_status={@station_suggestion_status}
               version={@current_gtfs_version}
               evolution_targets={@evolution_targets}
             />
+
+            <.card
+              :if={@source == :station and @diff_step == :review}
+              id="station-observations"
+              title="Accepted width measurements"
+              subtitle="Widths staff already measured. Recording one approves and applies nothing."
+            >
+              <.station_observation_section
+                stations={@observation_stations}
+                station={@observation_station}
+                scope_form={@observation_scope_form}
+                form={@observation_form}
+                pathways={@observation_pathways}
+                journal_entries={@observation_journal_entries}
+                rows_stream={@streams.station_observation_rows}
+                captures={@observation_captures}
+                error={@observation_error}
+                notice={@observation_notice}
+                helper_notice={@observation_helper_notice}
+                open?={@agent_open?}
+              />
+            </.card>
+
+            <div :if={@source == :station and @diff_step == :review and @agent_open?} class="min-w-0">
+              <.agent_panel
+                id="agent-panel"
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={"Station import · " <> @current_gtfs_version.name}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+                composer_hint="This helper reads this station's import run and prepares a review of the measurements you captured. It can't approve or apply anything."
+              />
+            </div>
 
             <section
               :if={@recovery_empty and @view.form?}
@@ -1371,14 +2296,28 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     <%!-- Move focus to the first invalid field when validation produces an error,
          using a colocated hook (no embedded script) so keyboard and screen-reader
-         users land on the fixable control. --%>
+         users land on the fixable control. The same hook carries focus back to the
+         helper card a prepared review was opened from, and to the review's own
+         controls when it opens, closes or is refused, and carries the helper panel's
+         own open and close focus. --%>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".ImportErrorFocus">
       export default {
         mounted() {
+          // LiveView puts focus back on the control a submit came from right
+          // after the patch, so the move waits one frame to land last.
+          const focusLater = (el) => {
+            if (el) window.requestAnimationFrame(() => el.focus())
+          }
           this.handleEvent("focus_first_error", ({selector}) => {
-            const el = this.el.querySelector(selector)
-            if (el) el.focus()
+            focusLater(this.el.querySelector(selector))
           })
+          this.handleEvent("focus_station_target", ({id}) => {
+            focusLater(this.el.querySelector(`#${CSS.escape(id)}`))
+          })
+          // The helper panel's own open and close focus. The panel is a sibling of
+          // the review, so the target is found on the page rather than under this
+          // element, as every other host does.
+          this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
           this.handleEvent("focus_gtfs_import_files", () => {
             const el = this.el.querySelector("#gtfs-import-upload-input input")
             if (el) el.focus()
@@ -2046,6 +2985,128 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     """
   end
 
+  # The prepared suggestion, shown for a person to decide. Reviewing it writes
+  # nothing: the two actions are an explicit Confirm, which reaches the native
+  # writer, and a Cancel, which does not. Nothing here claims a change was
+  # applied - confirming only approves, and Apply stays a separate step.
+  attr :suggestion, :any, required: true
+  attr :error, :string, default: nil
+  attr :status, :any, default: nil
+
+  defp station_suggestion_review(assigns) do
+    ~H"""
+    <div
+      :if={@status != nil}
+      id="station-suggestion-status"
+      role="status"
+      tabindex="-1"
+      class="border-t border-subtle px-5 py-4"
+    >
+      <p class="m-0 text-sm font-semibold text-strong">{@status.title}</p>
+      <p class="m-0 mt-1 text-[13px] text-default">{@status.message}</p>
+    </div>
+
+    <div
+      :if={@suggestion != nil}
+      id="station-suggestion-review"
+      class="border-t border-subtle bg-canvas px-5 py-4"
+    >
+      <h3 class="m-0 text-sm font-bold text-strong">Suggested decisions to review</h3>
+      <p class="m-0 mt-1 max-w-[70ch] text-[13px] text-muted">
+        The helper prepared these from the measurements you captured. Confirming approves them
+        with the measurement each one was reviewed against; nothing is applied until you choose
+        Apply changes.
+      </p>
+
+      <div
+        :if={@error}
+        id="station-suggestion-error"
+        role="alert"
+        tabindex="-1"
+        class="mt-3 rounded-control border border-error/40 bg-error/5 px-4 py-3 text-[13px] text-error-fg"
+      >
+        <p class="m-0 font-semibold">Nothing was approved</p>
+        <p class="m-0 mt-1">{@error}</p>
+      </div>
+
+      <ol
+        id="station-suggestion-rows"
+        class="m-0 mt-3 list-none divide-y divide-subtle border-y border-subtle p-0"
+      >
+        <li
+          :for={row <- @suggestion.rows}
+          id={"station-suggestion-row-#{row.decision_id |> String.replace(":", "-")}"}
+          data-suggestion-row
+          data-decision-id={row.decision_id}
+          class="grid gap-x-5 gap-y-1 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+        >
+          <div class="min-w-0">
+            <p class="m-0 text-sm font-semibold text-strong">{row.subject}</p>
+            <p class="m-0 mt-0.5 font-mono text-[13px] break-words text-default">
+              {row.decision_id}
+            </p>
+            <p class="m-0 mt-1 text-[13px] text-default">
+              <span class="text-muted">{row.current_width}</span>
+              <span aria-hidden="true">→</span>
+              <span class="font-semibold text-strong">{row.uploaded_width}</span>
+              <span class="text-muted"> m</span>
+            </p>
+          </div>
+          <div class="min-w-0">
+            <p class="m-0 text-[13px] text-muted">Captured source</p>
+            <p class="m-0 mt-1 text-[13px] text-default">{row.captured_source}</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <.button
+          id="station-suggestion-confirm"
+          type="button"
+          class="min-h-11"
+          phx-click="station-suggestion-confirm"
+        >
+          Confirm decisions
+        </.button>
+        <.button
+          id="station-suggestion-cancel"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="station-suggestion-cancel"
+        >
+          Cancel
+        </.button>
+        <p class="m-0 text-[13px] text-muted">
+          Confirming approves {length(@suggestion.rows)} {Wording.noun(
+            length(@suggestion.rows),
+            "change",
+            "changes"
+          )}. It applies nothing.
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  defp approved_scope_note(0, _reviewed, _total),
+    do: "No change is approved, so Apply would do nothing."
+
+  defp approved_scope_note(count, reviewed, total) do
+    "Apply will make all #{count} approved #{Wording.noun(count, "change", "changes")} of #{total} in " <>
+      "this review, including #{MapSet.size(reviewed)} confirmed against a captured " <>
+      "measurement#{Wording.noun(MapSet.size(reviewed), "", "s")} and the rest approved natively."
+  end
+
+  # Which of this run's decisions carry captured provenance. Read from the
+  # persisted manifest rather than from the conversation, so a reload or a helper
+  # restart still tells an approved row apart from a measured one (INV-1).
+  defp reviewed_decision_ids(run), do: run |> ChangeRuns.reviewed_evidence() |> reviewed_id_set()
+
+  defp reviewed_id_set(entries) do
+    MapSet.new(entries, & &1["decision_id"])
+  end
+
   attr :step, :atom, required: true
   attr :run, :any, default: nil
   attr :summary, :map, required: true
@@ -2057,8 +3118,22 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   attr :preview_count, :integer, default: 0
   attr :decisions_stream, :any, required: true
   attr :previews_stream, :any, required: true
+  attr :observation_stations, :list, default: []
+  attr :observation_station, :any, default: nil
+  attr :observation_scope_form, Phoenix.HTML.Form, required: true
+  attr :observation_form, Phoenix.HTML.Form, required: true
+  attr :observation_pathways, :list, default: []
+  attr :observation_journal_entries, :list, default: []
+  attr :observation_captures, :map, default: %{}
+  attr :observation_error, :string, default: nil
+  attr :observation_notice, :string, default: nil
+  attr :observation_helper_notice, :string, default: nil
+  attr :agent_open?, :boolean, default: false
   attr :version, :any, required: true
   attr :evolution_targets, :map, default: %{}
+  attr :station_suggestion, :any, default: nil
+  attr :station_suggestion_error, :string, default: nil
+  attr :station_suggestion_status, :any, default: nil
 
   defp station_panel(%{step: :review} = assigns) do
     approved = approved_decisions(assigns.decisions)
@@ -2069,6 +3144,15 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:approved_count, length(approved))
       |> assign(:total, map_size(assigns.decisions))
       |> assign(:consequence, consequence(approved))
+      |> assign(
+        :reviewed_ids,
+        # History is kept after a rejection, so only rows that are approved now
+        # count as confirmed against a measurement.
+        MapSet.intersection(
+          reviewed_decision_ids(assigns.run),
+          MapSet.new(approved, & &1.decision_id)
+        )
+      )
       |> assign(:bulk, bulk_actions(assigns.filter, assigns.summary, assigns.decisions))
 
     ~H"""
@@ -2219,6 +3303,48 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         </ol>
       </div>
 
+      <.station_suggestion_review
+        suggestion={@station_suggestion}
+        error={@station_suggestion_error}
+        status={@station_suggestion_status}
+      />
+
+      <div
+        id="station-approved-apply-scope"
+        tabindex="-1"
+        class="border-t border-subtle px-5 py-4 focus:outline-none"
+      >
+        <h3 class="m-0 text-sm font-bold text-strong">Approved changes Apply will make</h3>
+        <p class="m-0 mt-1 text-[13px] text-muted">
+          {approved_scope_note(@approved_count, @reviewed_ids, @total)}
+        </p>
+        <ol
+          :if={@approved != []}
+          id="station-approved-apply-scope-list"
+          class="m-0 mt-3 list-none divide-y divide-subtle p-0"
+        >
+          <li
+            :for={decision <- @approved}
+            id={"station-approved-row-#{decision.id}"}
+            data-apply-scope-row
+            data-reviewed={to_string(MapSet.member?(@reviewed_ids, decision.decision_id))}
+            class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
+          >
+            <span class="min-w-0 font-semibold text-default">
+              {decision.entity_type} <span class="font-mono">{decision.natural_key}</span>
+            </span>
+            <span class="text-muted">
+              {if MapSet.member?(@reviewed_ids, decision.decision_id),
+                do: "confirmed against a captured measurement",
+                else: "approved natively"}
+            </span>
+          </li>
+        </ol>
+        <p :if={@approved == []} class="m-0 mt-3 text-[13px] text-muted">
+          Nothing is approved, so Apply would do nothing.
+        </p>
+      </div>
+
       <%!-- The apply bar stays in view while a long list scrolls, and names the two
            costs the approvals include: removals and replaced edits. --%>
       <div class="sticky bottom-0 z-10 border-t border-subtle bg-white px-5 py-4 shadow-[0_-8px_24px_#0a13300d]">
@@ -2309,6 +3435,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       |> assign(:failed, failed)
       |> assign(:unapplied, unapplied)
       |> assign(:counts?, state in [:partial, :failed, :interrupted])
+      |> assign(:outcome, apply_outcome(assigns.decisions, assigns.run))
       |> assign(:retry_label, retry_label(state, failed + unapplied))
       |> assign(:start_over_label, start_over_label(state))
 
@@ -2341,6 +3468,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         <p :if={@state == :partial} id="diff-partial-note" class="m-0 text-[13px] text-muted">
           Applied changes stay in this version. Start over to review the remaining differences against the current data.
         </p>
+
+        <.apply_outcome_list :if={@state == :partial} outcome={@outcome} />
 
         <.failed_decisions_list
           :if={@state in [:partial, :failed, :interrupted]}
@@ -2393,12 +3522,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     applied = run_count(assigns.run, "applied")
     failed = run_count(assigns.run, "failed")
     unapplied = run_count(assigns.run, "unapplied")
+    outcome = apply_outcome(assigns.decisions, assigns.run)
 
     assigns =
       assigns
       |> assign(:applied, applied)
       |> assign(:failed, failed)
       |> assign(:unapplied, unapplied)
+      |> assign(:outcome, outcome)
 
     ~H"""
     <section
@@ -2445,6 +3576,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
             {"diff-count-unapplied", "Not tried", @unapplied}
           ]}
         />
+
+        <.apply_outcome_list outcome={@outcome} />
       </div>
       <div class="border-t border-subtle bg-canvas px-5 py-3">
         <.button
@@ -2460,6 +3593,326 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     </section>
     """
   end
+
+  attr :outcome, :list, required: true
+
+  defp apply_outcome_list(assigns) do
+    ~H"""
+    <%!-- What the worker actually did, told apart from what was approved before
+     it ran. A row confirmed against a captured measurement is named as
+     such, an approval that predates it is named separately, and the
+     actual applied/failed/stale outcome of each row is its own fact
+     rather than a claim this page remembers (INV-1). --%>
+    <div
+      :if={@outcome != []}
+      id="station-apply-outcome"
+      class="max-w-2xl border-t border-subtle pt-4"
+    >
+      <h3 class="m-0 text-sm font-bold text-strong">What each approved change did</h3>
+      <ol class="m-0 mt-3 list-none divide-y divide-subtle p-0">
+        <li
+          :for={row <- @outcome}
+          id={"station-apply-outcome-row-#{row.decision.id}"}
+          data-apply-outcome-row
+          data-outcome={row.status}
+          data-reviewed={to_string(row.reviewed?)}
+          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-[13px]"
+        >
+          <span class="min-w-0 font-semibold text-default">
+            {row.decision.entity_type} <span class="font-mono">{row.decision.natural_key}</span>
+          </span>
+          <span class="text-muted">
+            {outcome_sentence(row)}
+          </span>
+        </li>
+      </ol>
+    </div>
+    """
+  end
+
+  # What the worker actually recorded for each decision that carried an approval,
+  # read from the persisted decisions and the persisted provenance rather than
+  # from anything this page kept in memory. An approved row that was never tried
+  # is left out: it has no outcome to report yet.
+  defp apply_outcome(decisions_by_id, run) do
+    reviewed = reviewed_decision_ids(run)
+
+    decisions_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.status in [:applied, :failed, :stale]))
+    |> Enum.sort_by(& &1.decision_id)
+    |> Enum.map(
+      &%{decision: &1, status: &1.status, reviewed?: MapSet.member?(reviewed, &1.decision_id)}
+    )
+  end
+
+  defp outcome_sentence(%{reviewed?: true, status: :applied}),
+    do: "confirmed against a captured measurement · applied"
+
+  defp outcome_sentence(%{reviewed?: true, status: :failed}),
+    do: "confirmed against a captured measurement · failed"
+
+  defp outcome_sentence(%{reviewed?: true, status: :stale}),
+    do: "confirmed against a captured measurement · stale, nothing written"
+
+  defp outcome_sentence(%{reviewed?: false, status: :applied}), do: "approved natively · applied"
+  defp outcome_sentence(%{reviewed?: false, status: :failed}), do: "approved natively · failed"
+
+  defp outcome_sentence(%{reviewed?: false, status: :stale}),
+    do: "approved natively · stale, nothing written"
+
+  # Capturing a measurement is native input, not a helper action: the person names
+  # the exact pathway, what was measured and where it came from, and the server
+  # checks it against the run before the helper can read it. Nothing here approves
+  # or applies a change (INV-2).
+  attr :stations, :list, required: true
+  attr :station, :any, required: true
+  attr :scope_form, Phoenix.HTML.Form, required: true
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :pathways, :list, required: true
+  attr :journal_entries, :list, required: true
+  attr :rows_stream, :any, required: true
+  attr :captures, :map, required: true
+  attr :error, :string, default: nil
+  attr :notice, :string, default: nil
+  attr :helper_notice, :string, default: nil
+  attr :open?, :boolean, required: true
+
+  defp station_observation_section(assigns) do
+    ~H"""
+    <div>
+      <div class="flex flex-wrap items-start justify-between gap-3 px-5 pt-5">
+        <div class="max-w-[62ch]">
+          <p class="m-0 text-[13px] text-muted">
+            The helper reads these widths to prepare a review of the changes they support.
+          </p>
+        </div>
+        <.button
+          id="station-helper-open"
+          type="button"
+          variant="secondary"
+          phx-click="agent_open"
+          aria-expanded={to_string(@open?)}
+          aria-controls="agent-panel"
+          class="min-h-11"
+        >
+          <.icon name="hero-sparkles" class="size-4" /> Open helper
+        </.button>
+      </div>
+
+      <p id="station-helper-freshness" class="m-0 mt-3 text-[13px] text-muted">
+        {@helper_notice}
+      </p>
+
+      <.form
+        for={@scope_form}
+        id="station-observation-scope-form"
+        phx-change="station-observation-scope"
+        class="mt-4 max-w-md px-5"
+      >
+        <.input
+          field={@scope_form[:station_stop_id]}
+          type="select"
+          id="station-observation-scope-input"
+          label="Station"
+          prompt="Choose a station in this review"
+          options={Enum.map(@stations, &{"#{&1.stop_name} (#{&1.stop_id})", &1.stop_id})}
+          help="Only stations whose pathways this review changes can be measured."
+        />
+      </.form>
+
+      <p
+        :if={@notice}
+        id="station-observation-notice"
+        role="status"
+        class="m-0 mt-3 px-5 text-[13px] text-default"
+      >
+        {@notice}
+      </p>
+
+      <div
+        :if={@error}
+        id="station-observation-error"
+        role="alert"
+        tabindex="-1"
+        class="mx-5 mt-4 rounded-control border border-error/40 bg-error/5 px-4 py-3 text-[13px] text-error-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      >
+        <p class="m-0 font-semibold">This measurement was not captured</p>
+        <p class="m-0 mt-1">{@error}</p>
+      </div>
+
+      <div class="grid gap-6 px-5 pb-5 pt-5 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:items-start">
+        <div>
+          <h3 class="m-0 text-sm font-bold text-strong">Add a measurement</h3>
+          <p :if={@station == nil} class="m-0 mt-1 text-[13px] text-muted">
+            Choose a station above to record a measurement.
+          </p>
+          <.form
+            :if={@station != nil}
+            for={@form}
+            id="station-observation-form"
+            phx-submit="station-observation-save"
+            class="mt-3 grid grid-cols-1 gap-1"
+          >
+            <.input
+              field={@form[:pathway_id]}
+              type="select"
+              id="station-observation-pathway"
+              label="Pathway"
+              prompt="Choose a pathway this review changes"
+              options={Enum.map(@pathways, &{&1.label, &1.pathway_id})}
+              help="Only the pathways this review changes for this station are listed."
+            />
+            <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <.input
+                field={@form[:original_value]}
+                type="text"
+                id="station-observation-value"
+                label="Measured value"
+                inputmode="decimal"
+                help="The number as it was written down, before conversion."
+              />
+              <.input
+                field={@form[:unit]}
+                type="select"
+                id="station-observation-unit"
+                label="Unit"
+                options={observation_units()}
+              />
+            </div>
+            <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <.input
+                field={@form[:captured_date]}
+                type="date"
+                id="station-observation-date"
+                label="Date captured"
+              />
+              <.input
+                field={@form[:meaning]}
+                type="select"
+                id="station-observation-meaning"
+                label="What it measures"
+                prompt="Choose what was measured"
+                options={observation_meanings()}
+              />
+            </div>
+            <.input
+              field={@form[:source_ref]}
+              type="text"
+              id="station-observation-source"
+              label="Source reference"
+              help="Where the measurement came from, e.g. a survey sheet reference."
+            />
+            <.input
+              field={@form[:journal_entry_id]}
+              type="select"
+              id="station-observation-journal"
+              label="Station note (optional)"
+              prompt="No station note"
+              options={Enum.map(@journal_entries, &{&1.label, &1.id})}
+              help="Naming a note records its date and identity only. Read the note itself on the station page."
+            />
+            <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <.input
+                field={@form[:accepted]}
+                type="checkbox"
+                id="station-observation-accepted"
+                label="Staff accepted this measurement"
+              />
+              <.input
+                field={@form[:conflict]}
+                type="checkbox"
+                id="station-observation-conflict"
+                label="A conflict is recorded against it"
+              />
+            </div>
+            <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+              <.button
+                id="station-observation-save"
+                type="submit"
+                class="min-h-11"
+                disabled={@pathways == []}
+                data-unavailable={@pathways == []}
+              >
+                Save measurement
+              </.button>
+              <p class="m-0 text-[13px] text-muted">
+                Saving records the measurement against this run. It approves nothing.
+              </p>
+            </div>
+          </.form>
+        </div>
+
+        <div class="min-w-0">
+          <h3 class="m-0 text-sm font-bold text-strong">Captured for this station</h3>
+          <ol
+            id="station-observation-list"
+            phx-update="stream"
+            class="m-0 mt-3 list-none divide-y divide-subtle p-0"
+          >
+            <li
+              id="station-observation-empty"
+              class="hidden px-0 py-3 text-[13px] text-muted only:block"
+            >
+              No measurement is captured for this station yet. The helper summarizes the run until you
+              capture one.
+            </li>
+            <li
+              :for={{dom_id, {row, _position}} <- @rows_stream}
+              id={dom_id}
+              class="py-3"
+            >
+              <p class="m-0 text-sm font-semibold text-strong">
+                {row["target"]["pathway_id"]} · {row["normalized_value"]} m
+              </p>
+              <p class="m-0 mt-0.5 text-[13px] text-muted">
+                Measured {row["original_value"]} {row["unit"]} on {row["captured_date"]} as the minimum clear width
+              </p>
+              <p class="m-0 mt-0.5 text-[13px] text-muted">
+                Source {row["source_ref"]}{if row["conflict"],
+                  do: " · a conflict is recorded against this measurement"}
+              </p>
+            </li>
+          </ol>
+
+          <div
+            :if={
+              Enum.any?(@captures, fn {stop_id, _capture} ->
+                stop_id != observation_station_stop(@station)
+              end)
+            }
+            id="station-observation-captures"
+            class="mt-4 pr-5"
+          >
+            <h4 class="m-0 text-[13px] font-bold uppercase tracking-wide text-muted">
+              Measurements kept for other stations
+            </h4>
+            <ul class="m-0 mt-2 list-none space-y-1 p-0 text-[13px] text-muted">
+              <li
+                :for={{stop_id, capture} <- @captures}
+                :if={capture.station.stop_id != observation_station_stop(@station)}
+              >
+                {capture.station.stop_name} ({stop_id}) · {observation_count(
+                  length(capture.display_rows)
+                )}
+              </li>
+            </ul>
+            <p class="m-0 mt-1 text-[13px] text-muted">
+              These stay out of the helper's context until you choose that station again.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp observation_units, do: @observation_units
+
+  defp observation_meanings, do: @observation_meanings
+
+  defp observation_station_stop(%Stop{stop_id: stop_id}), do: stop_id
+  defp observation_station_stop(_station), do: nil
 
   attr :version, :any, required: true
 
@@ -2858,6 +4311,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp decision_failure_reason(%{apply_failure_code: "drifted"}),
     do: "Changed since the review was computed"
+
+  defp decision_failure_reason(%{apply_failure_code: "stale_reviewed_evidence"}),
+    do: "No longer matches the accepted observation it was reviewed with"
 
   defp decision_failure_reason(%{apply_failure_code: "dependencies_unmet"}),
     do: "Depends on a change that was not applied"

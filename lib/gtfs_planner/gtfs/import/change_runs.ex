@@ -25,6 +25,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer
   alias GtfsPlanner.Gtfs.Import.ChangeRun
+  alias GtfsPlanner.Gtfs.Import.ChangeRunReview
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -35,6 +36,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   @lease_seconds Application.compile_env(:gtfs_planner, :change_run_lease_seconds, 300)
   @terminal_states [:partial, :completed, :failed, :interrupted, :cancelled, :expired]
   @decision_statuses [:pending, :approved, :rejected, :preview, :applied, :failed, :stale]
+  # A confirmation names at most one bounded page of decisions, the same page a
+  # prepared selection can hold.
+  @max_confirmed_decisions 100
   @decision_actions [:add, :modify, :remove, :conflict]
   @started_over_code "started_over"
 
@@ -311,6 +315,399 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   end
 
   def set_decision_status(_, _, _, _), do: {:error, :invalid_decision_status}
+
+  @doc """
+  Confirms selected native decisions and their captured provenance atomically.
+
+  This is the only writer for a prepared accepted-width selection, and it is
+  native-only: nothing a model, tool argument or client payload names reaches it.
+  The station, the run and the accepted observations come from `frozen_source`,
+  the server-frozen `station_imports` source snapshot a host read through
+  `GtfsPlanner.Agents.Scope.source_snapshot/1`; the organization, version and
+  actor come from the server context calling it (AC-1).
+
+  `selection` is what a host shows staff before it asks: the run and station the
+  selection was prepared for, the preparation's own `input_digest`, and the
+  selected rows themselves, each carrying the `decision_digest` the projection
+  gave that row:
+
+      %{
+        "run_id" => run_id,
+        "station_stop_id" => station_stop_id,
+        "input_digest" => input_digest,
+        "decisions" => [%{"decision_id" => "pathway:PW_W14", "decision_digest" => digest}]
+      }
+
+  Every transaction attempt follows INV-1: the scoped run row is locked first, the
+  actor's current editor membership is re-read next, and only then come the
+  version, the decision rows and the stale comparison. A revoked membership, a
+  run that is no longer in `:review`, another version's run, a changed source
+  file, a changed decision value, a changed status or an observation the frozen
+  snapshot no longer describes all refuse **every** selected write: the answer is
+  `{:error, :forbidden}`, `:unavailable`, `:stale` or `:invalid_selection`, and
+  the run, its manifest and every decision are exactly as they were.
+
+  On success the selected decisions become `:approved` and one history entry per
+  decision is appended to the run's `source_manifest` under `reviewed_evidence`,
+  in the same transaction. The base source files and their total bytes are never
+  rewritten. Reconfirming identical decision and source digests is idempotent: it
+  approves nothing new and appends no history, but a decision that has since been
+  applied is `{:error, :stale}` and stays applied. A different confirmation
+  appends, and no confirmation ever erases an earlier entry. At the history bound the
+  confirmation is refused as `{:error, :evidence_limit}` before any status or
+  manifest write, so the host keeps its draft (INV-1, AC-9).
+  """
+  @spec confirm_observation_selection(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          actor(),
+          map(),
+          map()
+        ) ::
+          {:ok, %{decisions: [ChangeDecision.t()], run: ChangeRun.t()}} | {:error, term()}
+  def confirm_observation_selection(
+        organization_id,
+        gtfs_version_id,
+        actor,
+        frozen_source,
+        selection
+      )
+      when is_map(frozen_source) and is_map(selection) and is_map(actor) do
+    transaction_with_broadcast(fn ->
+      with {:ok, source} <-
+             ChangeRunReview.source(frozen_source, organization_id, gtfs_version_id, actor.id),
+           {:ok, requested} <- requested_selection(selection, source),
+           %ChangeRun{} = run <- lock_run(organization_id, source.run_id),
+           _membership <- lock_actor!(organization_id, actor),
+           :ok <- version_in_scope_for_confirmation(organization_id, gtfs_version_id),
+           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
+           :ok <- confirmable_run(run, gtfs_version_id),
+           {:ok, fresh, _evidence} <- ChangeRunReview.confirm_selection(source, requested.ids),
+           {:ok, plan} <- confirmation_plan(run, source, requested, fresh, actor) do
+        persist_confirmation(run, plan)
+      else
+        nil -> {{:error, :unavailable}, []}
+        %ChangeRun{} = run -> {{:error, :unavailable}, [run.id]}
+        {:error, reason} -> {{:error, reason}, []}
+      end
+    end)
+  end
+
+  def confirm_observation_selection(_, _, _, _, _), do: {:error, :invalid_selection}
+
+  # The selection a host is confirming: the run and station it was prepared for,
+  # the preparation's own digest, and at most 100 distinct decisions, each naming
+  # the digest its projected row carried. Anything else is one invalid selection,
+  # and no foreign run, station or decision is named back.
+  defp requested_selection(selection, source) do
+    rows = Map.get(selection, "decisions")
+    ids = Enum.map(List.wrap(rows), &Map.get(&1, "decision_id"))
+
+    valid? =
+      is_list(rows) and rows != [] and length(rows) <= @max_confirmed_decisions and
+        Enum.all?(rows, &requested_row?/1) and length(Enum.uniq(ids)) == length(ids) and
+        selection_matches_source?(selection, source) and
+        digest?(Map.get(selection, "input_digest"))
+
+    if valid? do
+      {:ok, %{ids: ids, input_digest: selection["input_digest"], rows: rows}}
+    else
+      {:error, :invalid_selection}
+    end
+  end
+
+  defp requested_row?(row) when is_map(row) do
+    is_binary(Map.get(row, "decision_id")) and
+      byte_size(Map.get(row, "decision_id")) in 1..512 and
+      digest?(Map.get(row, "decision_digest"))
+  end
+
+  defp requested_row?(_row), do: false
+
+  # The selection must be the one this frozen source prepared, and the station it
+  # names must be the station in that source.
+  defp selection_matches_source?(selection, source) do
+    Map.get(selection, "run_id") == source.run_id and
+      case Map.get(selection, "station_stop_id") do
+        nil -> true
+        station_stop_id -> station_stop_id == source.station_stop_id
+      end
+  end
+
+  defp digest?(value) when is_binary(value), do: value =~ ~r/\A[0-9a-f]{64}\z/
+  defp digest?(_value), do: false
+
+  defp confirmable_run(%ChangeRun{gtfs_version_id: version_id} = run, version_id)
+       when run.kind == :station_diff and run.state == :review,
+       do: :ok
+
+  defp confirmable_run(_run, _version_id), do: {:error, :unavailable}
+
+  # A version this organization does not hold is this command's one unavailable
+  # refusal, checked before the version lock so a foreign or deleted version
+  # discloses nothing at all (AC-1). The lock itself still runs inside the
+  # transaction, after the run row and the membership, in the existing order.
+  defp version_in_scope_for_confirmation(organization_id, gtfs_version_id) do
+    if version_in_scope?(organization_id, gtfs_version_id),
+      do: :ok,
+      else: {:error, :unavailable}
+  end
+
+  # Each decision is confirmed now, already confirmed identically, or refused.
+  # Nothing in between is approved, and a decision is never approved because
+  # another one next to it was.
+  defp confirmation_plan(run, source, requested, fresh, actor) do
+    with {:ok, selected} <- freshly_selected(requested, fresh),
+         {:ok, selected} <- refresh_decisions(run, selected),
+         {:ok, confirmed} <- already_confirmed(run, source, requested, selected),
+         :ok <- unchanged_inputs(fresh, requested, selected) do
+      {:ok,
+       %{
+         decisions: Enum.map(selected, & &1.decision) ++ Enum.map(confirmed, & &1.decision),
+         entries: Enum.map(selected, &evidence_entry(&1.row, run, source, actor))
+       }}
+    end
+  end
+
+  # Anything the fresh projection still selects is approved by this very
+  # selection, so a preparation digest that no longer recomputes means the source,
+  # the run or the decisions changed under the host. A reconfirmation that
+  # approves nothing new recomputes nothing, so it is not stale for that reason.
+  defp unchanged_inputs(fresh, requested, selected) do
+    if selected == [] or fresh["input_digest"] == requested.input_digest,
+      do: :ok,
+      else: {:error, :stale}
+  end
+
+  # A freshly selected row must be exactly the row the host showed: same decision
+  # id, same decision digest. A requested decision the fresh projection does not
+  # select is left to `already_confirmed/5`, which tells an idempotent
+  # reconfirmation apart from a refusal; only a row whose digest disagrees is a
+  # stale request for a decision that is still selected under other values.
+  defp freshly_selected(requested, fresh) do
+    selected = Map.new(fresh["selected"], &{&1["decision_id"], &1})
+
+    requested.rows
+    |> Enum.reduce_while({:ok, []}, &freshly_selected_step(&1, &2, selected))
+    |> reverse_result()
+  end
+
+  defp freshly_selected_step(row, {:ok, acc}, selected) do
+    case Map.get(selected, row["decision_id"]) do
+      %{"decision_digest" => decision_digest} = projected when is_map(projected) ->
+        if decision_digest == row["decision_digest"] do
+          {:cont, {:ok, [%{row: projected, request: row} | acc]}}
+        else
+          {:halt, {:error, :stale}}
+        end
+
+      _other ->
+        {:cont, {:ok, acc}}
+    end
+  end
+
+  # Each selected row is then locked, and it must still be pending: a decision
+  # whose status changed while this transaction waited is stale, not approved.
+  defp refresh_decisions(run, selected) do
+    selected
+    |> Enum.reduce_while({:ok, []}, &refresh_decision_step(&1, &2, run))
+    |> reverse_result()
+  end
+
+  defp refresh_decision_step(entry, {:ok, acc}, run) do
+    case lock_decision(run.id, entry.row["decision_id"]) do
+      %ChangeDecision{status: :pending} = decision ->
+        {:cont, {:ok, [Map.put(entry, :decision, decision) | acc]}}
+
+      _other ->
+        {:halt, {:error, :stale}}
+    end
+  end
+
+  # A decision that is no longer selected but already carries this confirmation's
+  # own decision, source and snapshot digests was confirmed by this very
+  # selection, so reconfirming it writes nothing and adds no history. The same
+  # decision approved by somebody else, with no matching evidence of ours, is
+  # stale: this confirmation may not lend its provenance to somebody else's
+  # approval.
+  defp already_confirmed(run, source, requested, selected) do
+    approved = Enum.map(selected, & &1.row["decision_id"])
+
+    requested.rows
+    |> Enum.reduce_while({:ok, []}, &already_confirmed_step(&1, &2, run, source, approved))
+    |> reverse_result()
+  end
+
+  defp already_confirmed_step(row, {:ok, acc}, run, source, approved) do
+    if row["decision_id"] in approved do
+      {:cont, {:ok, acc}}
+    else
+      step_confirmed_decision(confirmed_decision(run, source, row), acc)
+    end
+  end
+
+  defp step_confirmed_decision({:ok, decision}, acc),
+    do: {:cont, {:ok, [%{decision: decision} | acc]}}
+
+  defp step_confirmed_decision({:error, reason}, _acc), do: {:halt, {:error, reason}}
+
+  defp reverse_result({:ok, acc}), do: {:ok, Enum.reverse(acc)}
+  defp reverse_result({:error, reason}), do: {:error, reason}
+
+  defp confirmed_decision(run, source, row) do
+    case lock_decision(run.id, row["decision_id"]) do
+      %ChangeDecision{status: :approved} = decision ->
+        if matching_entry(run, row, source) do
+          {:ok, decision}
+        else
+          {:error, :stale}
+        end
+
+      # A decision that has since been applied moved past this review. The
+      # confirmation neither reports success for it nor writes its status again.
+      %ChangeDecision{status: :applied} ->
+        {:error, :stale}
+
+      _other ->
+        {:error, :invalid_selection}
+    end
+  end
+
+  # The latest history entry for this decision that binds the same decision,
+  # source and snapshot digests. A different binding is not a match: it is a
+  # different observation, never a retroactive edit of this one.
+  defp matching_entry(run, row, source) do
+    run.source_manifest
+    |> reviewed_manifest()
+    |> reviewed_entries()
+    |> Enum.find(fn entry ->
+      entry["decision_id"] == row["decision_id"] and
+        entry["decision_digest"] == row["decision_digest"] and
+        entry["source_digest"] == ChangeRunReview.base_source_digest(run) and
+        entry["snapshot_digest"] == source.source_snapshot.digest
+    end)
+  end
+
+  # One history entry: what was measured, from which source, in which frozen
+  # snapshot, by which editor, for which decision values. The journal body, its
+  # photos, the actor's email and every storage key stay out of it (AC-13).
+  defp evidence_entry(row, run, source, actor) do
+    observation = Map.get(row, "observation") || %{}
+
+    %{
+      "decision_id" => row["decision_id"],
+      "decision_digest" => row["decision_digest"],
+      "source_digest" => ChangeRunReview.base_source_digest(run),
+      "snapshot_digest" => source.source_snapshot.digest,
+      "station_id" => source.station_id,
+      "actor_id" => actor.id,
+      "confirmed_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      "observations" => [
+        %{
+          "target" => %{"pathway_id" => row["natural_key"]},
+          "field" => Map.get(observation, "field"),
+          "original_value" => Map.get(observation, "original_value"),
+          "normalized_value" => Map.get(observation, "normalized_value"),
+          "unit" => Map.get(observation, "unit"),
+          "meaning" => Map.get(observation, "meaning"),
+          "captured_date" => Map.get(observation, "captured_date"),
+          "source_ref" => Map.get(observation, "source_ref"),
+          "source_revision" => Map.get(observation, "source_revision"),
+          "source_digest" => Map.get(observation, "source_digest")
+        }
+      ]
+    }
+  end
+
+  # The manifest first, then the statuses: either the whole confirmation lands or
+  # neither does. The history bound is checked before the first write, so a full
+  # history refuses with every selected decision still pending.
+  defp persist_confirmation(run, plan) do
+    case append_reviewed_evidence(run, plan.entries) do
+      :ok -> approve_locked(run, plan.decisions)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp append_reviewed_evidence(_run, []), do: :ok
+
+  defp append_reviewed_evidence(run, entries) do
+    manifest = reviewed_manifest(run.source_manifest)
+    limits = ChangeRun.reviewed_evidence_limits()
+    namespace = %{"version" => 1, "entries" => reviewed_entries(manifest) ++ entries}
+    updated = Map.put(manifest, "reviewed_evidence", namespace)
+
+    if length(namespace["entries"]) <= limits.max_entries and
+         Jason.encode!(namespace) |> byte_size() <= limits.max_bytes do
+      case Repo.update(ChangeRun.system_changeset(run, %{source_manifest: updated})) do
+        {:ok, _run} -> :ok
+        {:error, _changeset} -> {:error, :invalid_reviewed_evidence}
+      end
+    else
+      {:error, :evidence_limit}
+    end
+  end
+
+  defp approve_locked(run, decisions) do
+    Enum.reduce_while(decisions, {:ok, []}, fn decision, {:ok, acc} ->
+      case Repo.update(ChangeDecision.system_changeset(decision, %{status: :approved})) do
+        {:ok, approved} -> {:cont, {:ok, acc ++ [approved]}}
+        {:error, _changeset} -> {:halt, {:error, :invalid_transition}}
+      end
+    end)
+    |> case do
+      {:ok, approved} ->
+        reloaded = Repo.get!(ChangeRun, run.id)
+
+        {{:ok, %{decisions: Enum.sort_by(approved, & &1.decision_id), run: reloaded}}, [run.id]}
+
+      {:error, reason} ->
+        {{:error, reason}, []}
+    end
+  end
+
+  @doc """
+  The captured confirmation history persisted in this run's source manifest.
+
+  A native host reads this to show which of a run's approved decisions carry
+  captured measurement provenance and which were approved by hand, so that
+  distinction survives a reload instead of living in one conversation's memory.
+  A manifest without the namespace, and either stored key convention, reads as
+  an empty history rather than as an error (INV-1).
+  """
+  @spec reviewed_evidence(ChangeRun.t() | map() | nil) :: [map()]
+  def reviewed_evidence(%ChangeRun{source_manifest: manifest}),
+    do: reviewed_entries(manifest)
+
+  def reviewed_evidence(%{source_manifest: manifest}), do: reviewed_entries(manifest)
+  def reviewed_evidence(_other), do: []
+
+  @doc """
+  Whether `decision_id` carries captured provenance in this run's history.
+
+  The latest entry for a decision is the one that binds its current approval.
+  """
+  @spec reviewed_evidence_decision?(ChangeRun.t() | map() | nil, String.t()) :: boolean()
+  def reviewed_evidence_decision?(run, decision_id) when is_binary(decision_id) do
+    run
+    |> reviewed_evidence()
+    |> Enum.any?(&(&1["decision_id"] == decision_id))
+  end
+
+  def reviewed_evidence_decision?(_run, _decision_id), do: false
+
+  # The manifest tolerates a legacy map that never carried the namespace, and both
+  # key conventions a stored manifest may use.
+  defp reviewed_manifest(manifest) when is_map(manifest), do: manifest
+  defp reviewed_manifest(_manifest), do: %{}
+
+  defp reviewed_entries(manifest) do
+    case manifest do
+      %{"reviewed_evidence" => %{"entries" => entries}} when is_list(entries) -> entries
+      %{reviewed_evidence: %{entries: entries}} when is_list(entries) -> entries
+      _other -> []
+    end
+  end
 
   @doc false
   @spec approve_all(Ecto.UUID.t(), Ecto.UUID.t(), atom()) ::
@@ -1204,6 +1601,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          :ok <- invoke_step(opts, :before_fingerprint),
          {:ok, current} <- current_entity(run, decision),
          :ok <- fingerprint_matches?(decision, current),
+         :ok <- reviewed_binding_current?(run, decision),
          :ok <- dependencies_satisfied?(run, decision),
          :ok <- no_dependents?(run, decision),
          :ok <- invoke_step(opts, :before_mutation),
@@ -1217,6 +1615,52 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
       {{:ok, applied}, [run.id]}
     else
       {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # A decision a native confirmation captured provenance for is applied only
+  # against the values, source, station and frozen observation that confirmation
+  # recorded. The check reads the locked run's own manifest and the locked
+  # decision, so it sees the same rows every later step of this transaction sees,
+  # and it runs before any entity, audit or status write: a stale binding rolls
+  # the transaction back with the ordinary failure path and the recorded evidence
+  # stays exactly as it was.
+  #
+  # The captured snapshot digest is checked for presence and shape rather than
+  # recomputed: the server-frozen snapshot is not persisted with the entry, and
+  # the metadata explicitly records an immutable captured observation rather than
+  # claiming current journal freshness (CR-3). The existing `current_fingerprint`
+  # comparison continues to own live database drift.
+  defp reviewed_binding_current?(run, decision) do
+    case latest_reviewed_entry(run, decision.decision_id) do
+      nil -> :ok
+      entry -> binding_current?(run, decision, entry)
+    end
+  end
+
+  # The last entry recorded for this decision is the one that binds the current
+  # approval. An entry for another decision never speaks for this one.
+  defp latest_reviewed_entry(run, decision_id) do
+    run.source_manifest
+    |> reviewed_manifest()
+    |> reviewed_entries()
+    |> Enum.reverse()
+    |> Enum.find(&(&1["decision_id"] == decision_id))
+  end
+
+  defp binding_current?(run, decision, entry) do
+    if entry["decision_digest"] == ChangeRunReview.confirmed_digest(decision) and
+         entry["source_digest"] == ChangeRunReview.base_source_digest(run) and
+         digest?(entry["snapshot_digest"]) and
+         ChangeRunReview.station_attribution(
+           run.organization_id,
+           run.gtfs_version_id,
+           entry["station_id"],
+           decision
+         ) do
+      :ok
+    else
+      {:error, :stale_reviewed_evidence}
     end
   end
 
@@ -1474,6 +1918,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   defp failure_code(reason) when is_binary(reason), do: String.slice(reason, 0, 128)
   defp failure_code(_reason), do: "apply_failed"
   defp failure_status(:drifted), do: :stale
+  # A captured binding that no longer describes this decision is stale for the
+  # same reason a drifted record is: what would be applied is not what was
+  # reviewed. It is a separate code so a host can say which one happened.
+  defp failure_status(:stale_reviewed_evidence), do: :stale
   defp failure_status(_reason), do: :failed
 
   defp invoke_step(opts, step) do

@@ -13,8 +13,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   alias GtfsPlannerWeb.StationWorkspace
 
   import GtfsPlannerWeb.Gtfs.StationReachabilityComponents
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
+
+  alias GtfsPlanner.Agents.Scope
+  alias GtfsPlannerWeb.AgentPanel
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -63,11 +67,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
      |> assign(:sections, [])
      |> assign(:expanded_keys, MapSet.new())
      |> assign(:trips, %{})
-     |> assign(:graph, nil)}
+     |> assign(:graph, nil)
+     |> assign(:station_helper_notice, nil)
+     |> AgentPanel.mount("station_results", open_button: "station-helper-open")}
   end
 
   @impl Phoenix.LiveView
-  def handle_params(%{"validation_id" => validation_id} = params, _uri, socket) do
+  def handle_params(%{"validation_id" => validation_id}, _uri, socket) do
     run = Validations.get_validation_run!(validation_id)
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -83,11 +89,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         {:noreply, push_navigate(socket, to: ~p"/gtfs/#{gtfs_version_id}/validation/#{run.id}")}
 
       true ->
-        {:noreply, assign_run(socket, run, Map.get(params, "stop_id"))}
+        {:noreply, assign_run(socket, run)}
     end
   end
 
-  defp assign_run(socket, run, param_stop_id) do
+  # The station this page is about comes from the run's own recorded metadata,
+  # never from the URL: a query parameter could name any station in the
+  # organization, and this page only explains the run it is showing.
+  defp assign_run(socket, run) do
     if connected?(socket) and run.status in ["pending", "started", "running"] do
       Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, Reachability.topic(run.id))
     end
@@ -97,7 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     legacy? = Legacy.legacy_station_run?(run)
-    stop_id = station_stop_id(run) || param_stop_id
+    stop_id = station_stop_id(run)
 
     socket =
       socket
@@ -111,6 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       |> assign(:expanded_keys, MapSet.new())
       |> assign(:trips, %{})
       |> assign(:graph, nil)
+      |> bind_result_helper(run.id)
 
     if legacy? do
       assign(socket, :legacy_results, Legacy.list_run_results(run.id))
@@ -120,6 +130,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
       |> assign(:sections, build_sections(run.result_json))
     end
   end
+
+  # The helper's conversation is bound to this run and to the station record the
+  # scoped read resolves, so it explains exactly the result on screen. A run
+  # whose metadata names no station of this organization leaves the panel on the
+  # plain version context, which the pack refuses rather than guessing.
+  defp bind_result_helper(socket, run_id) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    context = Scope.context({:version, version_id})
+
+    with station when not is_nil(station) <- socket.assigns[:station],
+         true <- station.location_type == 1,
+         stop_id when is_binary(stop_id) and stop_id != "" <- station.stop_id,
+         {:ok, scoped} <-
+           Reachability.get_station_run(organization_id, version_id, stop_id, run_id),
+         true <- scoped.id == run_id do
+      snapshot = %{
+        kind: "station_results",
+        payload: %{
+          "station_id" => station.id,
+          "station_stop_id" => stop_id,
+          "run_id" => run_id
+        }
+      }
+
+      case Scope.with_source_snapshot(context, snapshot) do
+        {:ok, source_context} ->
+          socket
+          |> assign(:station_helper_notice, nil)
+          |> AgentPanel.set_context(source_context)
+
+        {:error, reason} ->
+          socket
+          |> assign(:station_helper_notice, result_helper_notice(reason))
+          |> AgentPanel.set_context(context)
+      end
+    else
+      _other ->
+        socket
+        |> assign(
+          :station_helper_notice,
+          "This check is not about a station of this version, so the helper has nothing to read here."
+        )
+        |> AgentPanel.set_context(context)
+    end
+  end
+
+  defp result_helper_notice(:too_large),
+    do: "This result's helper context is too large to send, so the helper is unavailable here."
+
+  defp result_helper_notice(_reason),
+    do: "This result's helper context could not be built, so the helper is unavailable here."
 
   @impl Phoenix.LiveView
   def handle_info({:reachability_run_completed, run_id}, socket) do
@@ -287,6 +349,84 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
           to run a new check.
         </p>
 
+        <%!--
+        The helper is a read of this exact result, so it sits beside the results
+        rather than inside them and never carries an action of its own. The
+        wrapper survives the panel, so the focus events still have a listener
+        after the panel is closed. --%>
+        <div
+          id="station-result-helper"
+          phx-hook=".StationResultHelperFocus"
+          class={[
+            "print:hidden",
+            @agent_open? && "lg:grid lg:gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
+        >
+          <div class={@agent_open? && "hidden lg:block"}>
+            <section
+              id="station-result-helper-bar"
+              aria-labelledby="station-result-helper-bar-title"
+              class="mt-6 overflow-clip rounded-card border border-subtle bg-white"
+            >
+              <div class="flex flex-wrap items-start justify-between gap-3 border-b border-subtle bg-canvas px-5 py-4">
+                <div class="max-w-[60ch]">
+                  <h2
+                    id="station-result-helper-bar-title"
+                    class="text-[13px] font-bold uppercase tracking-wide text-muted"
+                  >
+                    Explain this result
+                  </h2>
+                  <p class="mt-1 text-sm text-default">
+                    Ask what this recorded check found and what changed in the station since. The
+                    helper reads this result and the station's current report facts; it can't run a
+                    check or change data.
+                  </p>
+                </div>
+                <.button
+                  id="station-helper-open"
+                  type="button"
+                  phx-click="agent_open"
+                  variant="secondary"
+                  aria-expanded={to_string(@agent_open?)}
+                  aria-controls="agent-panel"
+                  class="min-h-11"
+                >
+                  <.icon name="hero-sparkles" class="size-4" /> Open helper
+                </.button>
+              </div>
+              <p id="station-helper-freshness" class="px-5 py-3 text-[13px] text-muted tabular-nums">
+                {result_freshness_text(@run)}
+              </p>
+              <p
+                :if={@station_helper_notice}
+                id="station-helper-notice"
+                role="status"
+                class="border-t border-subtle px-5 py-3 text-[13px] text-default"
+              >
+                {@station_helper_notice}
+              </p>
+            </section>
+          </div>
+
+          <div
+            :if={@agent_open?}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Station check · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              composer_hint="This helper only reads recorded results and current report facts. It can't run a check or change data."
+            />
+          </div>
+        </div>
         <%= cond do %>
           <% @run.status == "failed" -> %>
             <.failed_state run={@run} reachability_path={@reachability_path} />
@@ -308,8 +448,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
             />
         <% end %>
       </div>
+
+      <%!--
+    The panel's focus events belong to the wrapper above, which survives the
+    panel's own removal. This hook only moves focus; it never decides focus for
+    the server. --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".StationResultHelperFocus">
+        export default {
+          mounted() {
+            this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
     </Layouts.app>
     """
+  end
+
+  # The freshness line states what this stored run recorded and nothing more.
+  # Whether today's station input still equals that recorded input is the
+  # projection's equality verdict, reported in the helper's server evidence
+  # rather than asserted here.
+  defp result_freshness_text(%{result_json: %{"input_provenance" => %{"digest" => digest}}})
+       when is_binary(digest) do
+    "Recorded graph result · this check recorded its input (digest #{binary_part(digest, 0, 12)}). Whether the station still matches it is reported in the helper's server evidence."
+  end
+
+  defp result_freshness_text(%{}) do
+    "Recorded graph result · this check recorded no input digest, so how current its input is, is unknown."
   end
 
   attr :run, :map, required: true

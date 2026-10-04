@@ -92,6 +92,20 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       returned;
     * the `prepare_block_suggestion` and `prepare_run_suggestion` tool results
       get the prepared-sentence the panel follows with a native drawer;
+    * a `"user"` message about station widths gets a
+      `prepare_station_import_decisions` call for the three seeded
+      `BROWSER_PW_ELEVATOR`, `BROWSER_PW_SAME_LEVEL` and `BROWSER_PW_CROSS_LEVEL`
+      decisions of the import review the import page computed, so the station
+      journey reviews a real prepared selection beside the rows the review
+      leaves unresolved;
+    * the `prepare_station_import_decisions` tool result gets the
+      prepared-measurement sentence;
+    * a `"user"` message asking what the recorded check found gets a
+      `get_station_result` call; one asking which pairs it recorded gets a
+      `list_station_result_pairs` call; one asking what is true of the station
+      today gets a `get_station_report_facts` call. All three take their station
+      and check from the page's own context, so the stand-in names no ids;
+    * each of those three tool results gets its own fixed sentence;
     * anything else gets the helper's generic sentence.
 
   The in-seat script is the Blocks page's own worked example, and it is the one the
@@ -178,6 +192,22 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   @prepared_transfer "I prepared the transfer rule. Review it before applying."
   @compared_connections "I compared the connections you approved with the minimum you supplied. The margins beside this reply are this version's own numbers."
+  # The station journey's own sentence. It claims nothing was applied: the
+  # journey confirms the statuses and then applies them itself.
+  @prepared_measurement "I prepared the width decisions those measurements support. Review them before applying."
+  # The three decisions the import page's computed review holds for the seeded
+  # elevator, same-level and cross-level pathways. The journey captures an
+  # accepted measurement for the first and a disputed one for the second, and
+  # changes two fields on the third, so one row prepares and two stay unresolved
+  # for the reasons the domain gives.
+  @station_width_decisions [
+    "pathway:BROWSER_PW_ELEVATOR",
+    "pathway:BROWSER_PW_SAME_LEVEL",
+    "pathway:BROWSER_PW_CROSS_LEVEL"
+  ]
+  @recorded_result "That is what the recorded check stored. The server evidence beside it is the answer."
+  @recorded_pairs "Those are the recorded pairs. The card lists them; the list may be a bounded page."
+  @current_facts "Those are the station's current report facts, captured now. They are not an explanation of the recorded check."
   # The end date the browser journey approves in the Calendars page's own form,
   # 200 days from today: inside the 366-day horizon, and later than the seeded
   # calendar's own end date, so the tool can only prepare it from that approval.
@@ -322,6 +352,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       content =~ @timetable_row ->
         tool_calls_reply("read_timetable_source", %{})
 
+      station_result_question?(content) ->
+        tool_calls_reply(station_result_tool(content), %{})
+
+      station_width_question?(content) ->
+        tool_calls_reply("prepare_station_import_decisions", station_width_arguments())
+
       BrowserFeedQuality.question?(content) ->
         {name, arguments} = BrowserFeedQuality.user_reply(content)
         tool_calls_reply(name, arguments)
@@ -451,6 +487,27 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp calendar_question?(content) do
     Enum.any?([~r/route/i, ~r/dates|week/i, ~r/school/i], &Regex.match?(&1, content))
+  end
+
+  # Keyed on the word the station journey uses, so no other scripted journey
+  # reaches the station pack by accident.
+  defp station_width_question?(content), do: content =~ ~r/width|clear width/i
+
+  defp station_width_arguments, do: %{"decision_ids" => @station_width_decisions}
+
+  # Keyed on the words the station result journey uses, which no other scripted
+  # journey mentions, so the station result pack is only reached deliberately.
+  defp station_result_question?(content),
+    do: content =~ ~r/recorded check|which pairs|right now|current station report/i
+
+  # The first matching phrase wins, so a question naming both a recorded result
+  # and the current facts still gets the branch the journey expects.
+  defp station_result_tool(content) do
+    cond do
+      content =~ ~r/which pairs/i -> "list_station_result_pairs"
+      content =~ ~r/right now|current station report/i -> "get_station_report_facts"
+      true -> "get_station_result"
+    end
   end
 
   defp calendar_question_reply(content) do
@@ -593,15 +650,21 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp calendar_tool_reply(_other, _messages), do: text_reply(@generic)
 
-  # Three tools are answered with one scripted sentence each: the two the
-  # Transfers page drafts with, and the connections read, whose whole answer
-  # comes from the approved source rather than from anything scripted here. Any
-  # other tool leaves `nil` and is answered by the Schedule pack's clauses.
+  # These tools are answered with one scripted sentence each: the two the
+  # Transfers page drafts with, the connections read, whose whole answer comes
+  # from the approved source rather than from anything scripted here, and the
+  # station import review and result tools. Any other tool leaves `nil` and is
+  # answered by the Schedule pack's clauses.
   defp prose_sentence(name)
        when name in ["inspect_transfer_competition", "prepare_transfer_policy"],
        do: @prepared_transfer
 
   defp prose_sentence("compare_connection_margins"), do: @compared_connections
+
+  defp prose_sentence("prepare_station_import_decisions"), do: @prepared_measurement
+  defp prose_sentence("get_station_result"), do: @recorded_result
+  defp prose_sentence("list_station_result_pairs"), do: @recorded_pairs
+  defp prose_sentence("get_station_report_facts"), do: @current_facts
 
   defp prose_sentence(_other), do: nil
 
