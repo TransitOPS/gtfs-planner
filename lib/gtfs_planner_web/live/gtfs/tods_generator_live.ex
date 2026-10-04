@@ -134,6 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
      |> assign(:request_token, nil)
      |> assign(:request_input, nil)
      |> assign(:retry_save?, false)
+     |> assign(:save_pending, nil)
      |> assign(:save_task, nil)
      |> assign(:save_error, nil)
      |> assign(:receipt, nil)}
@@ -149,7 +150,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
 
       # A save this page started put the token in the URL; the patch that carries it
       # back is not a refresh, so it must not re-read or replace the running state.
-      socket.assigns.save_task != nil ->
+      socket.assigns.save_task != nil or socket.assigns.save_pending != nil ->
         {:noreply, socket}
 
       # The request already answered the page: a repeated patch of the same URL
@@ -217,7 +218,8 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
       is_nil(preview) or is_nil(request_id) ->
         {:noreply, socket}
 
-      socket.assigns.save_task != nil or match?(%TodsGeneration{}, socket.assigns.receipt) ->
+      socket.assigns.save_task != nil or socket.assigns.save_pending != nil or
+          match?(%TodsGeneration{}, socket.assigns.receipt) ->
         {:noreply, socket}
 
       not preview.result.save_available? ->
@@ -227,6 +229,20 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
         {:noreply, start_save(socket, preview, request_id)}
     end
   end
+
+  # Only the browser can acknowledge that the recovery URL reached its history.
+  # Its token selects the pending server-owned preview; no client plan is accepted.
+  def handle_event("save_url_ready", %{"request" => request_id}, socket) do
+    case socket.assigns.save_pending do
+      %{request_id: ^request_id, preview: preview} ->
+        {:noreply, launch_save(assign(socket, :save_pending, nil), preview, request_id)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("save_url_ready", _params, socket), do: {:noreply, socket}
 
   # A version switch keeps this page, because the page belongs to the version it
   # names: the new version's own ranges, garages and rules are what it must show.
@@ -324,6 +340,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
     |> assign(:preview_running, false)
     |> assign(:preview_error, nil)
     |> assign(:save_task, nil)
+    |> assign(:save_pending, nil)
     |> assign(
       :save_error,
       if(socket.assigns.retry_save?, do: socket.assigns.save_error, else: nil)
@@ -443,6 +460,14 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
   # --- the save ---------------------------------------------------------------
 
   defp start_save(socket, preview, request_id) do
+    socket
+    |> assign(:save_pending, %{request_id: request_id, preview: preview})
+    |> assign(:save_error, nil)
+    |> assign(:receipt, nil)
+    |> push_patch(to: request_path(socket, request_id, preview.normalized_inputs))
+  end
+
+  defp launch_save(socket, preview, request_id) do
     audit = AuditContext.from_assigns(socket.assigns)
 
     # The request is the stored preview's own: the input the preview normalized and
@@ -462,7 +487,6 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
     |> assign(:save_task, task)
     |> assign(:save_error, nil)
     |> assign(:receipt, nil)
-    |> push_patch(to: request_path(socket, request_id, preview.normalized_inputs))
   end
 
   # The request values go into the URL beside the token so a refresh has the same
@@ -935,6 +959,27 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
+      <div
+        id="tods-save-recovery"
+        phx-hook=".SaveRecovery"
+        phx-update="ignore"
+      >
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".SaveRecovery">
+          export default {
+            mounted() {
+              this.onPatch = event => {
+                if (!event.detail.patch) return
+                const request = new URL(window.location.href).searchParams.get("request")
+                if (request) this.pushEvent("save_url_ready", {request})
+              }
+              window.addEventListener("phx:navigate", this.onPatch)
+            },
+            destroyed() {
+              window.removeEventListener("phx:navigate", this.onPatch)
+            }
+          }
+        </script>
+      </div>
       <div id="tods-generator-page" phx-hook="FormErrorFocus" class="ds-page">
         <.header>
           TODS generator
@@ -1155,7 +1200,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
         </.message>
 
         <.message
-          :if={@save_task}
+          :if={@save_task || @save_pending}
           id="tods-save-running"
           kind="info"
           role="status"
@@ -1365,7 +1410,9 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
               phx-click="save_generation"
               id="tods-save-button"
               class="min-h-11"
-              disabled={not @preview.result.save_available? or @save_task != nil}
+              disabled={
+                not @preview.result.save_available? or @save_task != nil or @save_pending != nil
+              }
               data-unavailable={not @preview.result.save_available?}
             >
               {save_button_label(@retry_save?)}

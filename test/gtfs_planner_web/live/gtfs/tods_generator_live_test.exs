@@ -100,6 +100,14 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLiveTest do
   # answer, with no sleeps: the task process is monitored, its DOWN message is
   # asserted, and the page is read until it has cleared the task it waited on.
   defp await_save(view) do
+    # LiveViewTest has no browser history or JavaScript hooks. Emulate the browser
+    # acknowledgement only after the patched URL has been delivered.
+    state = :sys.get_state(view.pid).socket.assigns
+
+    if state.save_pending do
+      render_hook(view, "save_url_ready", %{"request" => state.save_pending.request_id})
+    end
+
     for pid <- Task.Supervisor.children(GtfsPlanner.TaskSupervisor) do
       ref = Process.monitor(pid)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 15_000
@@ -619,6 +627,46 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLiveTest do
              )
 
       assert text_in(html, "#tods-result-operators-note") =~ "Operators ·"
+    end
+
+    test "no save starts until the browser acknowledges its recovery URL", context do
+      {:ok, view, _html} = open_world_generator(context.conn, context)
+      preview_generation(view)
+      view |> element("#tods-save-button") |> render_click()
+      request_path = assert_patch(view)
+      request_id = URI.decode_query(URI.parse(request_path).query)["request"]
+
+      assert Repo.aggregate(TodsGeneration, :count) == 0
+      assert :sys.get_state(view.pid).socket.assigns.save_task == nil
+      render_hook(view, "save_url_ready", %{"request" => Ecto.UUID.generate()})
+      assert :sys.get_state(view.pid).socket.assigns.save_task == nil
+      assert Repo.aggregate(TodsGeneration, :count) == 0
+
+      render_hook(view, "save_url_ready", %{"request" => request_id})
+      await_save(view)
+      assert Repo.one!(TodsGeneration).request_id == request_id
+      assert has_element?(view, "#tods-generation-result")
+    end
+
+    test "disconnect before URL acknowledgement leaves an unwritten recoverable request",
+         context do
+      conn = log_in_user(context.conn, context.editor, organization: context.world.organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{context.world.version.id}#{@generator_path}")
+      preview_generation(view)
+      view |> element("#tods-save-button") |> render_click()
+      request_path = assert_patch(view)
+      ref = Process.monitor(view.pid)
+      GenServer.stop(view.pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, _, :normal}
+
+      assert Repo.aggregate(TodsGeneration, :count) == 0
+      {:ok, reloaded, _html} = live(conn, request_path)
+      assert has_element?(reloaded, "#tods-save-status")
+      assert Repo.aggregate(TodsGeneration, :count) == 0
+      preview_generation(reloaded)
+      reloaded |> element("#tods-save-button") |> render_click()
+      await_save(reloaded)
+      assert Repo.aggregate(TodsGeneration, :count) == 1
     end
 
     test "a repeated save event cannot start a second generation", context do

@@ -358,7 +358,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
       refute Enum.any?(preview.roster_lines, &(&1.weekday == 1 and &1.run_id == night.run_id))
     end
 
-    test "a stale stored slot holds its run-day without exporting it" do
+    test "a stale stored slot leaves a partially staffed date open" do
       world = roster_world_fixture() |> stored_runs_fixture(stored_runs())
 
       assert {:ok, before} = roster_preview(world)
@@ -386,6 +386,13 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.RosterPlanTest do
       assert day_type_key == world.monday_day_type
       assert run_id == run.run_id
       assert Enum.any?(preview.roster_findings, &(&1.code == :stale_slot))
+
+      # Other Monday runs are staffed by new lines. Partial coverage must appear
+      # both as an affected date and as a date with work still open.
+      assert length(runs_on(preview, world.monday_day_type)) > 1
+      assert roster_monday(world) in preview.coverage.affected_dates
+      assert roster_monday(world) in preview.coverage.open_dates
+      refute Date.add(roster_monday(world), 1) in preview.coverage.open_dates
     end
 
     test "a run with an error finding is not proposed and stays unstaffed" do

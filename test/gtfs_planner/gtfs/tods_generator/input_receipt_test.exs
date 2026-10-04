@@ -186,6 +186,41 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.InputReceiptTest do
       assert errors_on(changeset)[:representative_week] == ["must be a Monday"]
     end
 
+    test "a representative week can start before the range when its Sunday intersects", context do
+      for start_date <- ["2026-03-03", "2026-03-08"] do
+        changeset =
+          Input.changeset(
+            %Input{},
+            %{
+              "start_date" => start_date,
+              "end_date" => "2026-03-08",
+              "representative_week" => "2026-03-02",
+              "garage_id" => context.garage.id
+            },
+            @active_dates
+          )
+
+        assert changeset.valid?, "week should intersect range starting #{start_date}"
+      end
+    end
+
+    test "a representative week ending before the range is rejected", context do
+      changeset =
+        Input.changeset(
+          %Input{},
+          %{
+            "start_date" => "2026-03-09",
+            "end_date" => "2026-03-15",
+            "representative_week" => "2026-03-02",
+            "garage_id" => context.garage.id
+          },
+          @active_dates
+        )
+
+      assert errors_on(changeset)[:representative_week] ==
+               ["must fall within the selected dates"]
+    end
+
     test "a representative week outside the range names the representative week", context do
       changeset =
         Input.changeset(

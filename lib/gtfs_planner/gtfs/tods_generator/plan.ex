@@ -1343,7 +1343,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
       base_week: base_week_days(roster.base_week, stored_base, additions),
       affected_dates: affected,
       beyond_range_dates: Enum.reject(affected, &in_range?(&1, start_date, end_date)),
-      open_dates: open_dates(day_types, runs, affected, start_date, end_date),
+      open_dates: open_dates(day_types, runs, staffed, start_date, end_date),
       other_service_dates: assignments.other_service_dates,
       exported_dates: exported_dates(assignments)
     }
@@ -1360,7 +1360,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         not is_nil(slot.run),
         not error_run?(slot.run),
         into: MapSet.new(),
-        do: {weekday, slot.day_type_key}
+        do: {weekday, slot.day_type_key, slot.run_id}
   end
 
   # Every date a saved slot reaches: each date of a day type whose weekday the plan
@@ -1370,21 +1370,23 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     for day_type <- day_types,
         day_runs(runs, day_type.key) != [],
         date <- day_type.dates,
-        MapSet.member?(staffed, {Date.day_of_week(date), day_type.key}),
+        Enum.any?(day_runs(runs, day_type.key), fn run ->
+          MapSet.member?(staffed, {Date.day_of_week(date), day_type.key, run.run_id})
+        end),
         do: date
   end
 
-  # The dates inside the selected range with service that nothing would staff.
+  # The dates inside the selected range with any run left unstaffed.
   # Only a day type the request derived runs for counts: a day type whose trips were
   # never cut has nothing this plan could have staffed.
-  defp open_dates(day_types, runs, affected, start_date, end_date) do
-    staffed = MapSet.new(affected)
-
+  defp open_dates(day_types, runs, staffed, start_date, end_date) do
     for day_type <- day_types,
         day_runs(runs, day_type.key) != [],
         date <- day_type.dates,
         in_range?(date, start_date, end_date),
-        not MapSet.member?(staffed, date),
+        Enum.any?(day_runs(runs, day_type.key), fn run ->
+          not MapSet.member?(staffed, {Date.day_of_week(date), day_type.key, run.run_id})
+        end),
         do: date
   end
 

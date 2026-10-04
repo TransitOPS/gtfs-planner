@@ -125,8 +125,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Input do
     end
   end
 
-  # A representative week is a whole Monday-to-Sunday week inside the selected
-  # range, so it has to start on a Monday and overlap the range it represents.
+  # A representative week starts on Monday and intersects the selected range;
+  # its Monday can precede the range when a later day of that week is selected.
   defp validate_representative_week(changeset) do
     week = Ecto.Changeset.get_field(changeset, :representative_week)
 
@@ -142,7 +142,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Input do
         Ecto.Changeset.add_error(changeset, :representative_week, "must be a Monday")
 
       Date.compare(week, Ecto.Changeset.get_field(changeset, :end_date)) == :gt or
-          Date.compare(week, Ecto.Changeset.get_field(changeset, :start_date)) == :lt ->
+          Date.compare(Date.add(week, 6), Ecto.Changeset.get_field(changeset, :start_date)) == :lt ->
         Ecto.Changeset.add_error(
           changeset,
           :representative_week,
