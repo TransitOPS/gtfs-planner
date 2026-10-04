@@ -22,7 +22,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
     "stop_name" => "Name",
     "stop_code" => "Code",
     "stop_desc" => "Description",
-    "stop_url" => "URL"
+    "stop_url" => "URL",
+    # Named only in a row's errors: a located stop must keep its coordinates.
+    "stop_lat" => "Latitude",
+    "stop_lon" => "Longitude"
   }
 
   @doc """
@@ -405,7 +408,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
                 </p>
                 <ul class="mt-0.5 pl-5.5">
                   <li :for={{field, messages} <- Enum.sort(row.errors)}>
-                    {field}: {Enum.join(messages, ", ")}
+                    {field_label(field)}: {Enum.join(messages, ", ")}
                   </li>
                 </ul>
               </td>
@@ -467,7 +470,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
   defp save_reason(%{changed: 0}), do: "Nothing would change."
   defp save_reason(_review), do: nil
 
-  defp field_label(field), do: Map.fetch!(@field_labels, field)
+  # A field the drawer has no label for reads as its key rather than raising.
+  defp field_label(field), do: Map.get(@field_labels, field, field)
 
   defp unchanged_text(1), do: "1 stop already has these values and is not listed."
   defp unchanged_text(count), do: "#{count} stops already have these values and are not listed."

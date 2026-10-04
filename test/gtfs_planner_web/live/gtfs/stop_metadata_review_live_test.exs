@@ -154,7 +154,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopMetadataReviewLiveTest do
                "S410 cannot be saved"
              )
 
-      assert has_element?(view, "#stop-review-stop-#{context.stops["S410"].id}", "stop_lat: ")
+      row = "#stop-review-stop-#{context.stops["S410"].id}"
+      assert has_element?(view, row, "Latitude: ")
+      assert has_element?(view, row, "Longitude: ")
+      refute has_element?(view, row, "stop_lat")
       assert assigns(view).stop_review.review.valid? == false
       assert stamps() == before
     end

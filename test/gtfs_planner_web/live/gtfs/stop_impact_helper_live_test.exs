@@ -239,6 +239,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopImpactHelperLiveTest do
       assert has_element?(view, "#agent-notice", "The helper is unavailable right now.")
     end
 
+    test "a stop deleted while the helper is open says what stopped without naming routes",
+         context do
+      view = open_map(context, "?stop=1434")
+      view |> element("#agent-helper-open") |> render_click()
+      stop_uuid = context.stops["1434"].id
+      Repo.delete_all(from(s in Stop, where: s.id == ^stop_uuid))
+
+      view
+      |> element("#agent-composer")
+      |> render_submit(%{"agent" => %{"message" => "What uses this stop?"}})
+
+      assert has_element?(
+               view,
+               "#agent-notice",
+               "What this helper was working on is no longer available, so it stopped."
+             )
+
+      refute render(view) =~ "route or calendar"
+    end
+
     test "with the provider failing, the edit form still saves a name change", context do
       ScriptedProvider.stub_outage()
 

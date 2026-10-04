@@ -168,7 +168,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
   @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
-  @unavailable_context_text "This route or calendar is no longer available, so the helper stopped."
+  @unavailable_context_text "What this helper was working on is no longer available, so it stopped."
 
   @weekdays %{
     monday: 1,

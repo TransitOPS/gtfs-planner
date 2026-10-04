@@ -562,7 +562,7 @@ defmodule GtfsPlannerWeb.AgentComponents do
   defp status_text(:forbidden), do: "Your access changed. The helper stopped."
 
   defp status_text(:unavailable),
-    do: "This route or service version is no longer available. The helper stopped."
+    do: "What this helper was working on is no longer available. The helper stopped."
 
   defp status_text(:limit), do: "This conversation reached its limit. Start a new conversation."
 
