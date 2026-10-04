@@ -442,6 +442,31 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       assert stored_hours(context) == @proposed_hours
     end
 
+    test "an area renamed after staging marks the stage stale and the save is refused at the page",
+         context do
+      view = ready_view(context)
+      prepared_entry(context, view)
+      view |> element("#flex-policy-stage") |> render_click()
+      refute has_element?(view, "#flex-policy-stage-stale")
+
+      rename_area(view, context, "a1", "Greater Newport")
+
+      # The rename moved the page the guard was built for, so the page says so
+      # before any transaction runs. Detected late, the guarded transaction
+      # would answer with the baseline copy ("the saved service changed"),
+      # although nothing saved moved.
+      assert has_element?(view, "#flex-policy-stage-stale")
+
+      view |> element("#flex-service-form") |> render_submit(%{})
+
+      assert text_of(doc(view), "#flex-service-save-error") =~ "moved after the prepared change"
+      refute has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#flex-policy-staged")
+      assert stored_area_name(context, "a1") == "Newport"
+      assert stored_hours(context) == saved_hours(context)
+      assert lock_version(context) == original_lock_version(context)
+    end
+
     test "a replaced source drops the review and keeps the staged rows behind a lapsed guard",
          context do
       view = ready_view(context)

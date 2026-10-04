@@ -3714,7 +3714,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # them, so they are rebuilt together (and `dirty?` counts the areas, so
   # "Use this area" asks for a Save).
   defp put_areas_draft(socket, draft) do
-    socket = invalidate_flex_policy_stage(socket)
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     geojson = socket.assigns.area_geojson
@@ -3731,6 +3730,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:dirty?, draft_changed?(draft, socket.assigns.saved, geojson))
     |> assign_hub_choices()
     |> assign_checks()
+    |> invalidate_flex_policy_stage()
     |> maybe_push_card_payload(payload)
   end
 
