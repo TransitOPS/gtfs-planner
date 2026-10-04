@@ -16,9 +16,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
     * a source fact changed after the preview — a garage's geometry, a trip's times,
       a stored base choice — is `:stale_plan` with nothing written, and a revoked
       editor is `:forbidden`;
-    * a SQL failure on the receipt insert, forced through a test-local trigger,
-      rolls the whole generation back: no block, run, choice, line, slot, operator
-      or audit survives it;
+    * a change log the transaction refuses is `{:audit_failed, reason}` with the
+      block and attribute rows it was written after rolled back with it, and a SQL
+      failure on the receipt insert, forced through a test-local trigger, rolls the
+      whole generation back: no block, run, choice, line, slot, operator or audit
+      survives it;
     * receipt retrieval is scoped to the audit's organization and version and never
       creates a row.
 
@@ -278,6 +280,32 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
     end
   end
 
+  describe "a write the transaction refuses inside the plan" do
+    test "a refused change log answers the block writer's {:audit_failed, reason}" do
+      world = world()
+      assert {:ok, preview} = roster_preview(world)
+      before = generation_state(world)
+      request_id = Ecto.UUID.generate()
+
+      refuse_change_logs!()
+
+      # The moved trip's change log is the block plan's own audit write, so its
+      # refusal is that writer's reason rather than `:write_failed` or a raise, and
+      # it rolls back the block and attribute rows written before it.
+      assert {:error, {:audit_failed, _reason}} = apply_preview(world, preview, request_id)
+      assert generation_state(world) == before
+
+      # The same request then commits with the trigger removed, so the refusal above
+      # removed real writes rather than a call that wrote nothing.
+      remove_change_log_refusal!()
+
+      assert {:ok, receipt} = apply_preview(world, preview, request_id)
+      assert receipt.summary["blocks"] == 1
+      assert stored_blocks(world)[trip_uuid(world, "gen-a")] == "103"
+      assert length(audit_ids(world)) == 1
+    end
+  end
+
   describe "reading a completed request" do
     test "is scoped to the caller's organization and version and creates no row" do
       world = world()
@@ -474,6 +502,33 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
     """)
 
     on_exit(&remove_receipt_refusal!/0)
+  end
+
+  # A test-local trigger that refuses every change-log insert, the shape the receipt
+  # case above uses and the same one an audit insert a database rejects has. The
+  # fixture is removed by the case and again in `on_exit`, so a failed case cannot
+  # leave it behind.
+  defp refuse_change_logs! do
+    Repo.query!("""
+    CREATE OR REPLACE FUNCTION tods_test_refuse_change_log() RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'test fixture refuses change log inserts' USING ERRCODE = 'P0001';
+    END;
+    $$ LANGUAGE plpgsql;
+    """)
+
+    Repo.query!("""
+    CREATE TRIGGER tods_test_refuse_change_log
+    BEFORE INSERT ON change_logs
+    FOR EACH ROW EXECUTE FUNCTION tods_test_refuse_change_log();
+    """)
+
+    on_exit(&remove_change_log_refusal!/0)
+  end
+
+  defp remove_change_log_refusal! do
+    Repo.query!("DROP TRIGGER IF EXISTS tods_test_refuse_change_log ON change_logs")
+    Repo.query!("DROP FUNCTION IF EXISTS tods_test_refuse_change_log()")
   end
 
   defp remove_receipt_refusal! do

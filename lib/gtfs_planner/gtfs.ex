@@ -5809,10 +5809,13 @@ defmodule GtfsPlanner.Gtfs do
 
   The refusals are `{:error, changeset}` for a refused input, `:forbidden` for a
   revoked editor, `:not_found` for a foreign, unusable or malformed request,
-  `:stale_plan`, `:request_conflict` for a completed request with another input,
-  `:nothing_to_save`, `:busy` after three exhausted attempts, and `:write_failed`
-  for a write no retry can fix. A repeated identical request answers with the
-  receipt it already has, so a lost reply cannot generate twice.
+  `:missing_garages` or `{:too_large, count}` when the source the attempt re-reads
+  holds no usable garage or is above the admission bound, `:stale_plan`,
+  `:request_conflict` for a completed request with another input,
+  `:nothing_to_save`, `:busy` after three exhausted attempts, `{:audit_failed, reason}`
+  for a change log the transaction refused, and `:write_failed` for a write no retry
+  can fix. A repeated identical request answers with the receipt it already has, so a
+  lost reply cannot generate twice.
   """
   @spec apply_tods_generation(AuditContext.t(), map()) ::
           {:ok, TodsGeneration.t()} | {:error, TodsGenerator.apply_error()}

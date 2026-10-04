@@ -570,20 +570,32 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
 
   @typedoc """
   Every refusal `apply/2` can answer with: a refused business input, a revoked or
-  absent editor, a foreign or unusable version, a source that no longer matches the
+  absent editor, a foreign or unusable version, a missing garage or an over-bound
+  scope the attempt's own re-read answers, a source that no longer matches the
   reviewed fingerprint, a scoped request already completed with a different input,
-  a candidate with nothing to add, three exhausted attempts, or a write that
-  failed for a reason no retry can fix.
+  a candidate with nothing to add, three exhausted attempts, a change log the
+  transaction refused, or a write that failed for a reason no retry can fix.
+
+  Two of them are the preview's own admission refusals, because an attempt re-reads
+  the source through the same loader and candidate composition the preview uses: a
+  range admitted when it was previewed can lose the organization's last garage
+  (`:missing_garages`) or grow past the 3,000-distinct-trip bound
+  (`{:too_large, count}`) before it is saved. `{:audit_failed, reason}` is the moved
+  trips' change log, which the block writer rolls back to its caller as its own
+  documented refusal.
   """
   @type apply_error ::
           Ecto.Changeset.t()
           | :forbidden
           | :not_found
+          | :missing_garages
           | :stale_plan
           | :request_conflict
           | :nothing_to_save
           | :busy
+          | {:audit_failed, term()}
           | :write_failed
+          | {:too_large, non_neg_integer()}
 
   @doc """
   Applies one reviewed preview once and returns its completed receipt.
@@ -609,6 +621,14 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   request with a different input is `:request_conflict`. A transient serialization
   failure or deadlock is retried; anything else is reported, and an exception is
   logged and answered `:write_failed` instead of escaping to the caller.
+
+  That re-read is the preview's own loader and candidate composition, so the two
+  admission refusals a preview answers arrive here too: `:missing_garages` when the
+  organization holds no usable garage, and `{:too_large, count}` when the completed
+  scope is above the admission bound. They are members of the refusal union,
+  because a range admitted when it was previewed can be above the bound by the time
+  it is saved. A change log of the moved trips that the transaction refuses is
+  `{:audit_failed, reason}`, the reason the block writer's own plan reports it with.
   """
   @spec apply(AuditContext.t(), map()) :: {:ok, TodsGeneration.t()} | {:error, apply_error()}
   def apply(
