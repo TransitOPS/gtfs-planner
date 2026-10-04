@@ -131,6 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZone
@@ -149,6 +150,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @invalid_selection_message "Some selected stops are no longer in this version. Clear your selection and select again."
 
   @save_failed_message "Changes couldn’t be saved. Your edits are still here."
+
+  # The helper handoff's refusals. Each names what stopped the review and what to
+  # do next; none changes the page's own state (AC-6).
+  @helper_unavailable_notice "That prepared assignment is no longer available. Ask the helper again."
+
+  @helper_close_first_notice "Close the open review, drawer or dialog first, then review the assignment again."
+
+  @helper_selection_notice "Clear your selection first, or select exactly the prepared stops."
+
+  @helper_changed_notice "The routes' stops or zones changed after this was prepared. Ask the helper again."
+
+  @helper_zone_gone_notice "The target zone is no longer in this version. Ask the helper again."
 
   @undo_stale_message "Undo wasn’t applied because some stops changed after the save."
 
@@ -413,6 +426,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   def handle_event("undo_assignment", _params, socket) do
     {:noreply, undo_assignment(socket)}
   end
+
+  # The helper's prepared card asks for its review. The entry ID comes from the
+  # browser, so it is parsed, looked up in this socket's own conversation and
+  # checked against the current data before anything on the page changes.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_assignment(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   # Opening the drawer is a read of the inventory the page already holds: create
   # starts from an empty form, and edit starts from the entry the panel shows,
@@ -1346,13 +1369,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp review(socket, mode, opts) do
     target = if mode == :assign, do: Keyword.get(opts, :target, default_target(socket)), else: nil
     error = Keyword.get(opts, :error)
+    origin = current_origin(socket)
 
     if mode == :assign and is_nil(target) do
-      assign(socket, :assignment, assignment_state(mode, nil, nil, error))
+      assign(socket, :assignment, assignment_state(mode, nil, nil, error, origin))
     else
       case preview(socket, target) do
         {:ok, preview} ->
-          assign(socket, :assignment, assignment_state(mode, target, preview, error))
+          assign(socket, :assignment, assignment_state(mode, target, preview, error, origin))
 
         {:error, :unknown_zone} when mode == :assign ->
           socket
@@ -1363,10 +1387,131 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           assign(
             socket,
             :assignment,
-            assignment_state(mode, target, nil, error || @invalid_selection_message)
+            assignment_state(mode, target, nil, error || @invalid_selection_message, origin)
           )
       end
     end
+  end
+
+  # A review the helper opened keeps its origin while the editor changes the target
+  # or the review is rebuilt; a manual review has none.
+  defp current_origin(%{assigns: %{assignment: %{origin: origin}}}), do: origin
+  defp current_origin(_socket), do: nil
+
+  # The helper handoff. Every refusal is a notice in the panel and no change to the
+  # page: an open review, drawer or delete dialog is the editor's work, and a
+  # selection of other stops is too. A prepared assignment opens only when the
+  # entry is this conversation's, the routes still serve exactly the prepared stops
+  # with the zones they had, and the target zone still exists.
+  defp review_prepared_assignment(socket, id) do
+    with {:ok, entry_id} <- parse_entry_id(id),
+         :ok <- require_ready(socket),
+         :ok <- require_no_open_work(socket),
+         {:ok, prepared} <- fetch_prepared(socket, entry_id),
+         {:ok, %{predicate: predicate, stop_ids: stop_ids, target: target} = command} <-
+           zone_command(prepared),
+         :ok <- require_compatible_selection(socket, stop_ids),
+         :ok <- require_current_selection(socket, command),
+         :ok <- require_target(socket, stop_ids, predicate, target) do
+      open_prepared_assignment(socket, entry_id, prepared, command)
+    else
+      {:refuse, notice} -> assign(socket, :agent_notice, notice)
+    end
+  end
+
+  defp parse_entry_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} when entry_id > 0 -> {:ok, entry_id}
+      _other -> {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  defp parse_entry_id(_id), do: {:refuse, @helper_unavailable_notice}
+
+  defp require_ready(%{assigns: %{load_state: :ready, inventory: %{}}}), do: :ok
+  defp require_ready(_socket), do: {:refuse, @helper_unavailable_notice}
+
+  defp require_no_open_work(socket) do
+    assigns = socket.assigns
+
+    if assigns.assignment || assigns.zone_drawer_open || assigns.zone_delete,
+      do: {:refuse, @helper_close_first_notice},
+      else: :ok
+  end
+
+  defp fetch_prepared(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, prepared} -> {:ok, prepared}
+      _stale_or_unknown -> {:refuse, @helper_unavailable_notice}
+    end
+  end
+
+  defp zone_command(%{command: {:zone_assignment, %{stop_ids: [_ | _]} = command}}),
+    do: {:ok, command}
+
+  defp zone_command(_prepared), do: {:refuse, @helper_unavailable_notice}
+
+  # The page holds either nothing or exactly the prepared stops: a different
+  # selection is work the handoff must not replace.
+  defp require_compatible_selection(socket, stop_ids) do
+    selection = socket.assigns.selection
+
+    if MapSet.size(selection) == 0 or selection == MapSet.new(stop_ids),
+      do: :ok,
+      else: {:refuse, @helper_selection_notice}
+  end
+
+  defp require_current_selection(socket, command) do
+    case FareZones.route_selection(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           command.predicate
+         ) do
+      {:ok, %{fingerprint: fingerprint, stops: stops}} when fingerprint == command.fingerprint ->
+        if Enum.sort(Enum.map(stops, & &1.id)) == Enum.sort(command.stop_ids),
+          do: :ok,
+          else: {:refuse, @helper_changed_notice}
+
+      _changed_or_unresolved ->
+        {:refuse, @helper_changed_notice}
+    end
+  end
+
+  defp require_target(socket, stop_ids, _predicate, target) do
+    case FareZones.preview_assignment(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           stop_ids,
+           target
+         ) do
+      {:ok, _preview} -> :ok
+      {:error, :unknown_zone} -> {:refuse, @helper_zone_gone_notice}
+      {:error, :invalid_selection} -> {:refuse, @helper_changed_notice}
+    end
+  end
+
+  # The review opens on exactly the prepared stops, against the prepared target,
+  # and remembers which card of which conversation it came from.
+  defp open_prepared_assignment(socket, entry_id, prepared, command) do
+    origin = %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: entry_id,
+      command: {:zone_assignment, command},
+      summary: prepared.summary,
+      return_focus_id: "agent-prepared-#{entry_id}"
+    }
+
+    socket
+    |> assign_selection(MapSet.new(command.stop_ids))
+    |> restream_page()
+    |> assign(:agent_notice, nil)
+    |> assign(:assignment, %{origin: origin})
+    |> review(:assign, target: command.target)
   end
 
   defp preview(socket, target) do
@@ -1378,8 +1523,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     )
   end
 
-  defp assignment_state(mode, target, preview, error) do
-    %{mode: mode, target: target, preview: preview, error: error, stale: 0}
+  defp assignment_state(mode, target, preview, error, origin) do
+    %{mode: mode, target: target, preview: preview, error: error, stale: 0, origin: origin}
   end
 
   # Only a current review with something to save is a write. A review whose

@@ -12,13 +12,29 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
 
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
-  import GtfsPlanner.Agents.PackTurn, only: [setup_conversations: 0]
+
+  import GtfsPlanner.Agents.PackTurn,
+    only: [expect_reply: 1, setup_conversations: 0, text_reply: 1, tool_calls_reply: 1]
+
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.FareSelectionFixtures
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.GtfsFixtures
+  alias GtfsPlanner.Repo
+
+  @prepare_arguments ~s({"route_ids":["R6"],"only_unzoned":true,"exclude_stop_ids":["AIR1"],"zone_id":"B"})
+
+  @unavailable_notice "That prepared assignment is no longer available. Ask the helper again."
+  @close_first_notice "Close the open review, drawer or dialog first, then review the assignment again."
+  @selection_notice "Clear your selection first, or select exactly the prepared stops."
+  @changed_notice "The routes' stops or zones changed after this was prepared. Ask the helper again."
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -92,7 +108,205 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
     end
   end
 
+  describe "the handoff into the assignment review" do
+    test "a prepared turn writes nothing, and Review opens the review on exactly the prepared stops",
+         context do
+      before = zones()
+      {view, _pid} = prepared_view(context)
+
+      assert has_element?(view, "#agent-review-prepared-2")
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+      assert zones() == before
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#fare-zone-assignment-dialog")
+      assert has_element?(view, "#fare-zone-assignment-row-1", "Alder")
+      assert has_element?(view, "#fare-zone-assignment-row-2", "Cedar")
+      refute has_element?(view, "#fare-zone-assignment-row-3")
+      review = view |> element("#fare-zone-assignment-review") |> render()
+      refute review =~ "Birch"
+      refute review =~ "Airport Gate"
+      assert has_element?(view, "#fare-zone-assignment-target option[selected][value=B]")
+      assert has_element?(view, "#fare-zone-selection-count", "2 stops selected")
+      assert zones() == before
+
+      assert %{origin: %{entry_id: 2, return_focus_id: "agent-prepared-2"}} =
+               assigns(view).assignment
+    end
+
+    test "a different manual selection keeps its work and gets the literal notice", context do
+      {view, _pid} = prepared_view(context)
+
+      render_click(view, "toggle_stop", %{"id" => context.stops["AIR2"].id})
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+      assert has_element?(view, "#fare-zone-selection-count", "1 stop selected")
+      assert has_element?(view, "#agent-panel", @selection_notice)
+    end
+
+    test "the prepared set already selected opens the review", context do
+      {view, _pid} = prepared_view(context)
+
+      render_click(view, "toggle_stop", %{"id" => context.stops["A1"].id})
+      render_click(view, "toggle_stop", %{"id" => context.stops["A3"].id})
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#fare-zone-assignment-dialog")
+      assert has_element?(view, "#fare-zone-selection-count", "2 stops selected")
+    end
+
+    test "an open review or an open drawer is never replaced", context do
+      {view, _pid} = prepared_view(context)
+
+      render_click(view, "toggle_stop", %{"id" => context.stops["AIR2"].id})
+      view |> element("#fare-zone-assign-selection") |> render_click()
+      assert has_element?(view, "#fare-zone-assignment-dialog")
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-panel", @close_first_notice)
+      assert assigns(view).assignment.origin == nil
+      assert has_element?(view, "#fare-zone-assignment-row-1", "Airport Terminal")
+
+      view |> element("#fare-zone-assignment-dialog-cancel") |> render_click()
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+
+      render_click(view, "clear_selection", %{})
+      view |> element("#fare-zone-create") |> render_click()
+      assert has_element?(view, "#fare-zone-drawer")
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-panel", @close_first_notice)
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+    end
+
+    test "a delete dialog is never replaced", context do
+      {view, _pid} = prepared_view(context)
+
+      render_click(view, "open_delete_zone", %{"zone_id" => "C"})
+      assert assigns(view).zone_delete
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-panel", @close_first_notice)
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+    end
+
+    test "a forged, unknown or reset entry opens nothing and changes nothing", context do
+      {view, pid} = prepared_view(context)
+      before = zones()
+      assert has_element?(view, "#agent-review-prepared-2")
+
+      for id <- ["abc", "999", "-1", "0", "2.5", ""] do
+        render_click(view, "agent_review_prepared", %{"entry" => id})
+
+        assert has_element?(view, "#agent-panel", @unavailable_notice), "entry #{inspect(id)}"
+        refute has_element?(view, "#fare-zone-assignment-dialog")
+      end
+
+      assert render_click(view, "agent_review_prepared", %{"entry" => 7}) =~ "agent-panel"
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+
+      # An entry of the conversation that New conversation replaced is gone.
+      view |> element("#agent-new-conversation") |> render_click()
+      assert_receive {:agent_event, ^pid, {:reset, _conversation_id}}, 5_000
+      render(view)
+
+      render_click(view, "agent_review_prepared", %{"entry" => "2"})
+
+      assert has_element?(view, "#agent-panel", @unavailable_notice)
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+      assert zones() == before
+    end
+
+    test "a stop that joined the route after the preparation is a changed selection", context do
+      {view, _pid} = prepared_view(context)
+
+      GtfsFixtures.stop_time_fixture(context.organization.id, context.version.id, "T6", "U1", %{
+        stop_sequence: 9
+      })
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-panel", @changed_notice)
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+      refute has_element?(view, "#fare-zone-selection-count")
+    end
+
+    test "a zone change on a stop of the route after the preparation is a changed selection",
+         context do
+      {view, _pid} = prepared_view(context)
+
+      Repo.update_all(from(s in Stop, where: s.id == ^context.stops["A2"].id),
+        set: [zone_id: nil]
+      )
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-panel", @changed_notice)
+      refute has_element?(view, "#fare-zone-assignment-dialog")
+    end
+
+    test "choosing another target in the open review keeps the origin", context do
+      {view, _pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      view
+      |> element("#fare-zone-assignment-target-form")
+      |> render_change(%{"target" => "C"})
+
+      assert has_element?(view, "#fare-zone-assignment-target option[selected][value=C]")
+      assert %{origin: %{entry_id: 2}} = assigns(view).assignment
+    end
+  end
+
   ## Helpers
+
+  defp zones,
+    do: Repo.all(from(s in Stop, order_by: s.id, select: {s.id, s.zone_id, s.updated_at}))
+
+  defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
+
+  # Opens the helper, attaches this process to the same conversation so the settled
+  # entry can be awaited, and scripts the two provider replies of one prepare turn.
+  defp prepared_view(context) do
+    {:ok, view, _html} = open_zones(context)
+    view |> element("#agent-helper-open") |> render_click()
+
+    pid = assigns(view).agent_session
+    assert {:ok, ^pid, _snapshot} = Agents.open(scope(context))
+
+    expect_reply(tool_calls_reply([{"call_1", "prepare_zone_assignment", @prepare_arguments}]))
+    expect_reply(text_reply("I prepared the zone assignment."))
+
+    view
+    |> element("#agent-composer")
+    |> render_submit(%{"agent" => %{"message" => "Put those stops in Zone B"}})
+
+    assert_receive {:agent_event, ^pid,
+                    {:entry, %{status: :done, prepared: %{command: command}}}},
+                   5_000
+
+    assert {:zone_assignment, %{target: "B", stop_ids: [_, _]}} = command
+    render(view)
+
+    {view, pid}
+  end
+
+  defp scope(context) do
+    %Scope{
+      organization_id: context.organization.id,
+      gtfs_version_id: context.version.id,
+      user_id: context.user.id,
+      user_email: context.user.email,
+      pack_id: "fare_zones",
+      version_name: context.version.name,
+      resource_context: Scope.context({:version, context.version.id})
+    }
+  end
 
   defp log_in(conn, context),
     do: log_in_user(conn, context.user, organization: context.organization)
