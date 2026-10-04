@@ -101,10 +101,16 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ConcurrencyTest do
             end)
           end
 
-        for task <- tasks do
-          assert_receive {:ready, pid}, @receive_timeout
-          assert pid == task.pid
-        end
+        # Both tasks report ready from their own spawned process, so the two
+        # messages can arrive in either order; the barrier needs both present,
+        # not a fixed order.
+        ready_pids =
+          for _task <- tasks do
+            assert_receive {:ready, pid}, @receive_timeout
+            pid
+          end
+
+        assert MapSet.new(ready_pids) == MapSet.new(Enum.map(tasks, & &1.pid))
 
         Enum.each(tasks, fn task -> send(task.pid, :go) end)
 
