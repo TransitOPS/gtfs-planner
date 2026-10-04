@@ -2640,22 +2640,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # will normalize and hand it to the save, so the guard and the arguments the
   # write submits are the same three values.
   defp flex_policy_guard(socket, prepared, merged) do
-    case Guard.candidate_digest(
-           socket.assigns.saved,
-           page_attrs(normalize_rules(merged)),
-           area_inputs(socket)
-         ) do
-      {:ok, candidate_digest} ->
-        Guard.new(%{
-          source_digest: prepared.source_digest,
-          context_digest: prepared.context_digest,
-          saved_fingerprint: prepared.saved_fingerprint,
-          patch_digest: Guard.patch_digest(prepared.patch),
-          candidate_digest: candidate_digest
-        })
+    saved = socket.assigns.saved
+    attrs = page_attrs(normalize_rules(merged))
 
-      :invalid ->
-        :invalid
+    with {:ok, candidate_digest} <- Guard.candidate_digest(saved, attrs, area_inputs(socket)),
+         {:ok, calendars_digest} <- Guard.calendars_digest(saved, attrs) do
+      Guard.new(%{
+        source_digest: prepared.source_digest,
+        context_digest: prepared.context_digest,
+        saved_fingerprint: prepared.saved_fingerprint,
+        patch_digest: Guard.patch_digest(prepared.patch),
+        candidate_digest: candidate_digest,
+        calendars_digest: calendars_digest
+      })
     end
   end
 

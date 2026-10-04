@@ -7,7 +7,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   The expectations are hand-derived from the acceptance cases and from the
   native fixtures, not from a second invocation of the code under test:
 
-    * A reviewed guard carries five server-computed digests, and a save that
+    * A reviewed guard carries six server-computed digests, and a save that
       presents one persists the whole native page — the replaced hours and
       booking rules, and every contact, eligibility, area name and polygon the
       candidate did not touch.
@@ -19,6 +19,8 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
       guarded save overwriting the other editor's area.
     * A field edited after the review refuses the save too, because the guard
       carries the digest of the whole page the review showed.
+    * A calendar only the proposal names, which the baseline does not cover,
+      refuses the save through the guard's own calendar digest.
     * The exclusive fence is proven with two real independent connections: a
       guarded save that holds it excludes both a calendar `FOR UPDATE` writer
       and an ordinary Flex `FOR SHARE` writer, and a calendar writer that
@@ -37,6 +39,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   import Ecto.Query
 
   import GtfsPlanner.FlexFixtures
+  import GtfsPlanner.GtfsFixtures, only: [calendar_fixture: 3]
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -88,6 +91,9 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   # The one calendar write the interleaving cases commit: the saved service's
   # weekday calendar gains Saturday, which changes no flex service row at all.
   @weekday_command {:save, "weekday", %{saturday: 1}}
+
+  # The same kind of write on a calendar no saved row of the service names.
+  @holiday_command {:save, "holiday", %{saturday: 1}}
 
   setup do
     {:ok, supervisor: start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})}
@@ -220,6 +226,50 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
                {"a2", "Toledo"}
              ]
 
+      assert row_counts(context.organization.id) == after_calendar
+    end
+
+    test "a commit to a calendar only the proposal names is assistant_stale", context do
+      # The saved rows name weekday, saturday and office. The proposal adds an
+      # hours row on `holiday`, which none of them name, so the baseline
+      # fingerprint cannot see it.
+      calendar_fixture(context.organization.id, context.version.id, %{service_id: "holiday"})
+
+      holiday_row = %{
+        "area_key" => "a1",
+        "service_id" => "holiday",
+        "start" => "10:00",
+        "end" => "14:00"
+      }
+
+      reviewed = reviewed(context, @hours_patch ++ [holiday_row])
+
+      baseline = fn ->
+        context.organization.id
+        |> Assistant.dependencies(context.version.id, reviewed.loaded)
+        |> Assistant.fingerprint()
+      end
+
+      before = baseline.()
+      assert {:ok, _result} = save_holiday_calendar(context)
+      assert baseline.() == before
+
+      after_calendar = row_counts(context.organization.id)
+
+      assert {:error, :assistant_stale} =
+               Flex.save_service(
+                 context.audit,
+                 reviewed.loaded,
+                 reviewed.attrs,
+                 reviewed.area_inputs,
+                 %{assistant_guard: reviewed.guard}
+               )
+
+      assert {:ok, unchanged} =
+               Flex.get_service(context.organization.id, context.version.id, context.service.id)
+
+      assert unchanged.lock_version == reviewed.loaded.lock_version
+      assert unchanged.hours == reviewed.loaded.hours
       assert row_counts(context.organization.id) == after_calendar
     end
 
@@ -530,14 +580,14 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   # One real preparation, one real guard and the whole page the review showed,
   # exactly as the service page would hold them: the loaded struct, the native
   # page attrs and the native area inputs, all from the same workspace read.
-  defp reviewed(context) do
+  defp reviewed(context, hours \\ @hours_patch) do
     assert {:ok, workspace, _evidence} =
              Assistant.workspace(context.scope, context.service.id)
 
     assert {:ok, prepared} =
              Assistant.prepare(context.scope, %{
                "scope" => "hours_only",
-               "hours" => @hours_patch
+               "hours" => hours
              })
 
     loaded = workspace.dependencies.service
@@ -567,7 +617,8 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
                  Guard.candidate_digest(loaded, attrs, area_inputs)
                  |> then(fn
                    {:ok, digest} -> digest
-                 end)
+                 end),
+               calendars_digest: elem(Guard.calendars_digest(loaded, attrs), 1)
              })
 
     guard
@@ -685,6 +736,20 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
       %{"weekday" => payload.fingerprint},
       context.audit
     )
+  end
+
+  defp save_holiday_calendar(context) do
+    assert {:ok, payload} =
+             Gtfs.get_calendar(context.organization.id, context.version.id, "holiday")
+
+    assert {:ok, review} =
+             Gtfs.review_calendar_change(
+               @holiday_command,
+               %{"holiday" => payload.fingerprint},
+               context.audit
+             )
+
+    Gtfs.apply_calendar_change(@holiday_command, review.fingerprint, context.audit)
   end
 
   defp save_weekday_calendar(context) do

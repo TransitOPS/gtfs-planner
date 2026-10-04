@@ -1085,7 +1085,21 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
 
   defp office_service_id(_rule), do: nil
 
-  defp referenced_calendar_rows(organization_id, version_id, %FlexService{} = service) do
+  @doc """
+  The weekly row, exceptions and attributes of every calendar one service's
+  fields name, read now and keyed by calendar ID.
+
+  `dependencies/3` reads it for the saved service. A guard also reads it for the
+  candidate page, because a calendar only the proposal names, such as a new
+  business-day rule's office calendar, is not among the saved service's
+  calendars (`GtfsPlanner.Gtfs.Flex.Assistant.Guard.calendars_digest/2`). A
+  calendar that does not exist is present with no rows, so its later creation
+  moves the digest too.
+  """
+  @spec referenced_calendar_rows(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) :: %{
+          optional(String.t()) => calendar_row()
+        }
+  def referenced_calendar_rows(organization_id, version_id, %FlexService{} = service) do
     service_ids = referenced_calendar_ids(service)
 
     weekly = calendar_rows(Calendar, organization_id, version_id, service_ids)

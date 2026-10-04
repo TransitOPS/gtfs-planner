@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
   (AC-10, AC-11; CL-5).
 
   A guard is created on the server, after an editor has reviewed a prepared
-  candidate against a frozen workspace, and it carries five digests and nothing
+  candidate against a frozen workspace, and it carries six digests and nothing
   else:
 
     * `source_digest` — the accepted source envelope's own server-computed
@@ -16,12 +16,18 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
     * `patch_digest` — the exact prepared patch the review compared, through
       `patch_digest/1`;
     * `candidate_digest` — the final whole page the review was shown, through
-      `candidate_digest/3`.
+      `candidate_digest/3`;
+    * `calendars_digest` — the calendars that final page names, as stored when
+      the editor staged it, through `calendars_digest/2`. The baseline covers
+      only the calendars the saved rows name, so this is what notices a change
+      to a calendar only the proposal names, such as a new business-day rule's
+      office calendar.
 
-  Of those five, the guarded transaction
-  (`GtfsPlanner.Gtfs.Flex.save_service/5`) verifies two under the exclusive
-  version fence: `saved_fingerprint` against a re-read baseline, and
-  `candidate_digest` against the page the save submits. The other three bind the
+  Of those six, the guarded transaction
+  (`GtfsPlanner.Gtfs.Flex.save_service/5`) verifies three under the exclusive
+  version fence: `saved_fingerprint` against a re-read baseline,
+  `candidate_digest` against the page the save submits, and `calendars_digest`
+  against the calendars that page names. The other three bind the
   guard to the conversation rather than to stored state, and they are enforced
   by the host that owns that conversation rather than by the transaction:
   `source_digest` and `context_digest` are checked against the scope's own
@@ -55,7 +61,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
     :context_digest,
     :saved_fingerprint,
     :patch_digest,
-    :candidate_digest
+    :candidate_digest,
+    :calendars_digest
   ]
 
   # Every digest in this slice is a lowercase hex SHA256 over one canonical
@@ -83,14 +90,15 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
           context_digest: String.t(),
           saved_fingerprint: String.t(),
           patch_digest: String.t(),
-          candidate_digest: String.t()
+          candidate_digest: String.t(),
+          calendars_digest: String.t()
         }
 
   @typedoc "Why a proposed guard is not a guard at all."
   @type error :: {:invalid_guard, term()}
 
   @doc """
-  Builds a guard from exactly its five digests.
+  Builds a guard from exactly its six digests.
 
   Anything else — a missing field, an extra field, a value that is not a
   64-character lowercase hex digest — is `{:error, {:invalid_guard, reason}}`,
@@ -148,6 +156,30 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant.Guard do
            ]),
          areas: Enum.map(area_inputs, &area_content/1)
        })}
+    end
+  end
+
+  @doc """
+  The digest of the calendars the page one save will write names.
+
+  `loaded` and `attrs` are the same pair `candidate_digest/3` reads, so the
+  candidate is the native changeset's applied result. The digest covers the
+  weekly row, exceptions and attributes of every calendar its hours, booking
+  rules and detour calendars name, read now, so it describes the calendars as
+  stored when it is computed. The host computes it when the editor stages the
+  change, and the guarded transaction computes it again under the exclusive
+  version fence.
+
+  `:invalid` means the native changeset refuses this page, as for
+  `candidate_digest/3`.
+  """
+  @spec calendars_digest(FlexService.t(), map()) :: {:ok, String.t()} | :invalid
+  def calendars_digest(%FlexService{} = loaded, attrs) when is_map(attrs) do
+    with {:ok, candidate} <- candidate(loaded, attrs) do
+      {:ok,
+       loaded.organization_id
+       |> Assistant.referenced_calendar_rows(loaded.gtfs_version_id, candidate)
+       |> digest()}
     end
   end
 

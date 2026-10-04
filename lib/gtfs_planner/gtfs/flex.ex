@@ -691,12 +691,20 @@ defmodule GtfsPlanner.Gtfs.Flex do
       Repo.rollback(:assistant_stale)
     end
 
-    case Assistant.Guard.candidate_digest(loaded, attrs, inputs) do
-      {:ok, digest} ->
-        if digest != guard.candidate_digest, do: Repo.rollback(:assistant_stale)
+    verify_candidate_guard!(guard, loaded, attrs, inputs)
+  end
 
-      :invalid ->
-        :ok
+  # The page and the calendars it names, both as the review showed them. The
+  # baseline only covers the calendars the saved rows name, so a calendar only
+  # the proposal names is bound here.
+  defp verify_candidate_guard!(%Assistant.Guard{} = guard, loaded, attrs, inputs) do
+    with {:ok, page} <- Assistant.Guard.candidate_digest(loaded, attrs, inputs),
+         {:ok, calendars} <- Assistant.Guard.calendars_digest(loaded, attrs) do
+      if page != guard.candidate_digest or calendars != guard.calendars_digest do
+        Repo.rollback(:assistant_stale)
+      end
+    else
+      :invalid -> :ok
     end
   end
 
