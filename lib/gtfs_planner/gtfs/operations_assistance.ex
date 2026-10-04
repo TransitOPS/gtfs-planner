@@ -1401,14 +1401,39 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   @spec context(Scope.identity(), map()) ::
           {:ok, Scope.resource_context()} | {:error, :invalid_snapshot | :too_large}
   def context(identity, payload) when is_map(payload) do
-    with {:ok, kind} <- snapshot_kind(payload) do
-      Scope.with_source_snapshot(Scope.context(identity), %{kind: kind, payload: payload})
-    else
-      :error -> {:error, :invalid_snapshot}
+    case snapshot_kind(payload) do
+      {:ok, kind} ->
+        Scope.with_source_snapshot(Scope.context(identity), %{kind: kind, payload: payload})
+
+      :error ->
+        {:error, :invalid_snapshot}
     end
   end
 
   def context(_identity, _payload), do: {:error, :invalid_snapshot}
+
+  @doc """
+  Binds the selection a projected payload froze.
+
+  The digest is taken over the payload's own `selection` map, so it changes with
+  the displayed block and trip selection and with nothing else. It is what a
+  host recomputes from the selection it re-projects before it honours a prepared
+  configuration, and what a pack writes into that configuration's command. Both
+  sides call this function, so a host and the pack that produced a proposal
+  cannot disagree about which selection it was prepared for.
+
+  A payload that is not a projection, or one that carries no selection, has no
+  such binding and returns the empty string.
+  """
+  @spec selection_digest(map()) :: String.t()
+  def selection_digest(payload) when is_map(payload) do
+    case Map.fetch(payload, "selection") do
+      {:ok, selection} -> sha(:erlang.term_to_binary(selection, [:deterministic]))
+      :error -> ""
+    end
+  end
+
+  def selection_digest(_payload), do: ""
 
   defp snapshot_kind(%{"section" => @section_blocks}), do: {:ok, @snapshot_kind_blocks}
   defp snapshot_kind(%{"section" => @section_runs}), do: {:ok, @snapshot_kind_runs}

@@ -556,6 +556,32 @@ defmodule GtfsPlannerWeb.Gtfs.InSeatAssistanceLiveTest do
     end
   end
 
+  describe "the panel shared with the Blocks helper" do
+    test "asking about a group moves the one panel to the in-seat helper, and choosing Blocks releases the source",
+         context do
+      view = helper_view(context)
+
+      # The page mounts the Blocks helper, so the group is not its source yet.
+      assert assign(view, :agent_pack_id) == "blocks"
+      assert has_element?(view, "#blocks-helper-mode-blocks[aria-pressed='true']")
+      refute has_element?(view, "#in-seat-helper-source")
+
+      view |> element("#in-seat-helper-group") |> render_click()
+
+      assert assign(view, :agent_pack_id) == "in_seat"
+      assert has_element?(view, "#blocks-helper-mode-in_seat[aria-pressed='true']")
+      assert has_element?(view, "#in-seat-helper-source", "2 connections in this group")
+
+      # Leaving the in-seat helper drops the source with it, so the page stops
+      # describing connections the panel can no longer read.
+      view |> element("#blocks-helper-mode-blocks") |> render_click()
+
+      assert assign(view, :agent_pack_id) == "blocks"
+      refute has_element?(view, "#in-seat-helper-source")
+      assert %{kind: "operations_blocks"} = assign(view, :agent_context).source_snapshot
+    end
+  end
+
   describe "what the helper may not reach" do
     test "a forged entry id opens no review and writes nothing", context do
       view = helper_view(context)

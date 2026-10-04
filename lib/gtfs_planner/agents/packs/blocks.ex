@@ -561,14 +561,9 @@ defmodule GtfsPlanner.Agents.Packs.Blocks do
 
   # The selection digest binds the exact blocks the editor had selected when the
   # copy was published, so the host can refuse a prepared scope whose selection
-  # has since changed without this pack ever naming a target.
-  defp selection_digest(payload) do
-    payload
-    |> Map.fetch!("selection")
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-  end
+  # has since changed without this pack ever naming a target. It is the shared
+  # projection's own function, so the host recomputes exactly what this wrote.
+  defp selection_digest(payload), do: OperationsAssistance.selection_digest(payload)
 
   defp configuration_result(payload, mode, command) do
     {_tag, prepared} = command

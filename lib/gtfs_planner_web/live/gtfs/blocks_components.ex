@@ -2442,6 +2442,73 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
+  Renders what the helper's last prepared configuration asked for: the day, the
+  scope, how many selected blocks it would rebuild, what the frozen copy left out
+  of inspection, and the consequence of the one scope that replaces hand-tuned
+  blocks.
+
+  This is configuration, not a preview. Nothing here is a plan and nothing here
+  was computed by this page's own solver: the day, scope and exclusions were
+  read from the frozen copy the configuration was checked against, and the block
+  count is the selection the page is displaying now. The rebuild warning is shown
+  before the drawer is used rather than after it, because the scope it describes
+  is the one whose Apply asks for confirmation.
+
+  The count is absent for a scope that is not built from a selection, rather than
+  printed as zero: “0 selected blocks” beside an unassigned-only scope would read
+  as a claim that the scope has no work rather than as “this is not a
+  selection”.
+  """
+  attr :review, :map, required: true, doc: "the reviewed configuration, from the LiveView"
+
+  def blocks_helper_scope(assigns) do
+    ~H"""
+    <section
+      id="blocks-helper-scope-details"
+      aria-labelledby="blocks-helper-scope-title"
+      class="mb-3 rounded-control border border-subtle bg-white px-3.5 py-3"
+    >
+      <h2 id="blocks-helper-scope-title" class="text-[13px] font-[650] text-strong">
+        Configuration to review
+      </h2>
+      <dl class="mt-2 grid gap-1.5 text-[13px]">
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Service day</dt>
+          <dd class="text-right font-[650] text-strong">{@review.day_key}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-muted">Scope</dt>
+          <dd class="text-right font-[650] text-strong">{@review.mode_label}</dd>
+        </div>
+        <div :if={@review.selected_block_count} class="flex justify-between gap-4">
+          <dt class="text-muted">Selected blocks</dt>
+          <dd class="text-right font-[650] text-strong">{@review.selected_block_count}</dd>
+        </div>
+      </dl>
+
+      <p :if={@review.exclusions != []} class="mt-2 text-[13px] text-muted">
+        Not inspected: {Enum.map_join(@review.exclusions, ", ", fn {label, count} ->
+          "#{count} #{label}"
+        end)}.
+      </p>
+
+      <p
+        :if={@review.replacement?}
+        id="blocks-helper-replacement-warning"
+        class="mt-2 text-[13px] text-muted"
+      >
+        This scope plans every scheduled trip again, so hand-tuned blocks may change. Applying asks
+        you to confirm.
+      </p>
+
+      <p class="mt-2 text-[13px] text-muted">
+        Nothing is built or saved until you preview and then apply in the drawer.
+      </p>
+    </section>
+    """
+  end
+
+  @doc """
   Renders the trip drawer: the trip's identity, its stored times and
   block, every service day it runs in with the all-dates scope sentence, its own
   findings and every type 4/5 record naming it.

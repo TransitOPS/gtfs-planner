@@ -52,6 +52,41 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   on each render from the same server-only `:connections_all` the timeline's
   setting chips and the connection drawer read, so no surface can describe one
   connection differently from another.
+
+  ## The Blocks helper
+
+  This page also hosts one helper panel. `AgentPanel.mount/3` is called once,
+  here, with `blocks` as the default and `["blocks", "in_seat"]` on offer, so a
+  prepared card, a conversation and a draft always belong to the one helper the
+  panel holds. The panel's own events are owned by its hooks; this module adds
+  `helper_mode`, which hands the panel to the other helper through
+  `AgentPanel.select_pack/3` with a context this page derives, and
+  `agent_review_prepared`, which opens the held helper's own review - the
+  in-seat review for `in_seat`, or the handoff of one prepared configuration
+  into the native drawer below for `blocks`.
+
+  The panel reads a frozen copy of the loaded day, not the day itself. After
+  every authoritative load, day-type, version, selection or completed-plan
+  change, `publish_helper_context/1` projects the day through
+  `OperationsAssistance` and admits it as this conversation's source snapshot;
+  a refused projection drops the copy rather than admitting half of one. The
+  panel is the only holder of that copy, so replacing the context replaces the
+  transcript with it and no late result from a replaced day can repopulate the
+  current one (INV-1).
+
+  The handoff re-reads the day before it trusts a command. `Agents.prepared/3`
+  returns the configuration the session stored; the page then reloads the
+  scoped native day through `Gtfs.load_blocking_day/3` - the socket's own
+  assigns cannot see another tab's edit - re-projects it with the selection
+  currently displayed, and refuses unless the day key, the source digest and
+  the selection digest all still match. A refusal keeps every native draft and
+  says why.
+
+  Opening the configuration starts nothing. The drawer opens on the scope the
+  command carries, set after the drawer's own default, so a `unassigned_only`
+  preparation over an empty pool cannot be promoted to a rebuild of the whole
+  service day. Preview and Apply remain this page's own existing handlers and
+  are the only things that build or write a suggestion (INV-2).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -66,6 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
@@ -394,6 +430,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @subtitle "A block is one vehicle's trips for a service day, in order. Check that they fit, and give every trip a vehicle."
 
+  # --- the page's helpers --------------------------------------------------
+
+  # The one panel this page mounts offers both helpers: `blocks` reads the loaded
+  # day, `in_seat` reads the connections the reader selects. The set is compile
+  # owned, so a forged mode event can only name one of them.
+  @helper_packs ["blocks", "in_seat"]
+
+  # One refusal message per way the Blocks handoff can decline. Each names what
+  # changed and what still stands, because the person asking has a day's work on
+  # screen and a configuration they cannot use.
+  @helper_stale_notice "This configuration was prepared from a different day or selection. Open the Suggest blocks drawer and ask again."
+  @helper_section_notice "This configuration belongs to a different page. Open its own drawer and ask again."
+  @helper_missing_notice "That configuration is no longer available. Open the Suggest blocks drawer and ask again."
+  @helper_busy_notice "A suggestion is already being built. Wait for it to finish, then review the configuration."
+  @helper_preview_notice "Discard the current suggestion first. It was built from this day, and only one suggestion can be on the page."
+  @helper_no_day_notice "Load a service day first. The helper reads the day this page has loaded."
+  @helper_unavailable_notice "The helper could not read this service day, so it has no evidence to work from. Your blocks are unchanged."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -439,8 +493,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:bulk_ref, 0)
      |> assign(:connection_pair_ref, nil)
      |> assign(:connection_ref, 0)
+     |> assign(:helper_notice, nil)
+     |> assign(:helper_review, nil)
+     |> assign(:helper_suggest_scope, nil)
      |> assign_empty_derived()
-     |> AgentPanel.mount("in_seat")}
+     |> AgentPanel.mount("blocks", allowed_packs: @helper_packs)}
   end
 
   @impl true
@@ -452,7 +509,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:state, state)
      |> ensure_day_loaded()
      |> resolve_drawers()
-     |> assign_page_rows_if_loaded()}
+     |> assign_page_rows_if_loaded()
+     |> publish_helper_context()}
   end
 
   @impl true
@@ -689,11 +747,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The prepared card hands over one entry id and nothing else: the proposal this
   # page reviews is the one that entry prepared, never one a client names
   # (INV-1, CR-3).
-  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+  def handle_event(
+        "agent_review_prepared",
+        %{"entry" => id},
+        %{assigns: %{agent_pack_id: "in_seat"}} = socket
+      ) do
     {:noreply, review_in_seat_prepared(socket, id)}
   end
 
-  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+  # The panel holds one helper at a time, and the mode switch is the one place
+  # that changes which. The event names a pack and nothing else; the context the
+  # panel is bound to is this page's own (`select_helper_mode/2`).
+  def handle_event("helper_mode", %{"pack" => pack_id}, socket) when pack_id in @helper_packs do
+    {:noreply, select_helper_mode(socket, pack_id)}
+  end
+
+  def handle_event("helper_mode", _params, socket), do: {:noreply, socket}
 
   def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
 
@@ -1142,6 +1211,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("suggest_scope_change", _params, socket), do: {:noreply, socket}
+
+  # --- the helper handoff -------------------------------------------------
+
+  # The prepared card hands its configuration to this page's own drawer. Every
+  # identity involved is server-held; the client contributes only the entry id.
+  # This opens configuration and starts nothing: Preview and Apply below remain
+  # the only handlers that build or write a suggestion (INV-2).
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    case review_prepared_suggestion(socket, id) do
+      # An opened configuration patches the drawer into the URL; a refusal is a
+      # panel-only answer that leaves the page and every draft where they were.
+      {:open, socket} -> patch(socket, %{drawer: "suggest"})
+      {:refused, socket} -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   # Preview builds the plan and stores it; it writes nothing. A
   # second submit while one is being built is refused, and a submit on a page with
@@ -2199,21 +2285,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # --- the in-seat helper ---------------------------------------------------
 
-  # The helper is offered wherever this page can supply a connection to read: a
-  # loaded day in the Connections view, or a connection drawer the reader has
-  # open. A day with neither has nothing to hand over, so the button is not
-  # offered rather than opened onto an empty selection (AC-12).
-  defp helper_action?(assigns),
-    do:
-      assigns.load_state == :loaded and
-        (assigns.state.view == :connections or not is_nil(assigns.gap_view))
-
-  defp agent_scope_line(assigns), do: "Blocks · " <> assigns.current_gtfs_version.name
-
-  # The panel's action label is named for this page's one prepared command kind,
-  # so the button never promises a review another page owns (INV-1).
-  defp agent_review_label(_prepared), do: "Review prepared in-seat setting"
-
   # What the helper is reading, in the reader's own words: the group it is
   # holding, or the one connection the drawer is showing.
   defp in_seat_source_label(%{scope: :group, pairs: pairs}),
@@ -2267,25 +2338,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
             socket
             |> assign(:in_seat_source, selection)
             |> assign(:in_seat_notice, nil)
-            |> AgentPanel.set_context(context)
+            |> AgentPanel.select_pack("in_seat", context)
 
           {:error, _reason} ->
             socket
             |> assign(:in_seat_source, nil)
             |> assign(:in_seat_notice, @in_seat_source_failed)
-            |> AgentPanel.set_context(base)
+            |> AgentPanel.select_pack("in_seat", base)
         end
     end
   end
 
   # Taking the selection back drops the snapshot with it, so the panel has
-  # nothing to read until the reader supplies connections again (INV-2).
+  # nothing to read until the reader supplies connections again (INV-2). Only the
+  # in-seat helper holds a source; while the Blocks helper holds the panel, its
+  # frozen day is not this page's to replace.
   defp clear_in_seat_source(socket) do
     socket
     |> assign(:in_seat_source, nil)
     |> assign(:in_seat_origin, nil)
-    |> AgentPanel.set_context(Scope.context({:version, socket.assigns.current_gtfs_version.id}))
+    |> release_in_seat_context()
   end
+
+  defp release_in_seat_context(%{assigns: %{agent_pack_id: "in_seat"}} = socket),
+    do: AgentPanel.set_context(socket, Scope.context(helper_identity(socket)))
+
+  defp release_in_seat_context(socket), do: socket
 
   # One connection's group token is the group this page derived it into, falling
   # back to the pair's own identity when the day holds no such group. The token is
@@ -2705,6 +2783,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign(:selection, selection)
     |> assign_selected_trips()
     |> assign_page_rows()
+    |> publish_helper_context()
   end
 
   defp assign_selected_trips(socket) do
@@ -2741,6 +2820,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign(:block_selection, selection)
     |> assign(:selected_blocks, selected_blocks(socket.assigns.day, selection))
     |> assign_page_rows()
+    |> publish_helper_context()
   end
 
   defp selected_blocks(nil, _selection), do: []
@@ -4320,8 +4400,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # timeline has one — which is what “Rebuild selected blocks” means; with no
   # selection the day type's unassigned trips are the safe default, and the
   # rebuild-all scope stays one click away.
+  #
+  # A scope the helper prepared is the exception, and it is resolved here rather
+  # than assigned after the patch: `patch/3` runs `handle_params/3` after this
+  # handler returns, so an assignment made afterwards would be replaced by this
+  # default. That matters because `suggest_scope/1` promotes an empty pool to
+  # `:replace_all`, and a prepared `unassigned_only` scope over an empty pool
+  # would silently become a rebuild of the whole service day (AC-7, PM-3). The
+  # pending scope is consumed exactly once, so a later resolve — a closed and
+  # reopened drawer, a day change — is derived again from the page.
   defp resolve_suggest(socket, :suggest) do
-    assign(socket, :suggest, %{@empty_suggest | scope: suggest_scope(socket)})
+    case socket.assigns[:helper_suggest_scope] do
+      nil ->
+        assign(socket, :suggest, %{@empty_suggest | scope: suggest_scope(socket)})
+
+      scope ->
+        socket
+        |> assign(:suggest, %{@empty_suggest | scope: scope})
+        |> assign(:helper_suggest_scope, nil)
+    end
   end
 
   defp resolve_suggest(socket, _drawer), do: assign(socket, :suggest, @empty_suggest)
@@ -4388,6 +4485,323 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     Gtfs.suggest_blocks(organization_id, version_id, day_type_key, mode)
   end
 
+  # --- the helper's frozen copy and its handoff ----------------------------
+
+  # The helper reads a frozen copy of the day this page has loaded, published
+  # after every authoritative change: a load or reload, a day-type or version
+  # change, a selection change, and a completed plan. It is published only from
+  # a successful load or a completed plan - never from a pending, failed or
+  # discarded one - so the panel never holds a copy describing a day this page
+  # is not showing (AC-3).
+  #
+  # The selection travels with the copy because which blocks and trips the page
+  # is displaying is part of what the panel is allowed to describe. A refused
+  # projection drops the copy instead of admitting a partial one: the panel is
+  # then answering from nothing, which its own unavailable state states, rather
+  # than from half a day.
+  #
+  # Only the Blocks helper reads the day. While the in-seat helper holds the
+  # panel, a load leaves the panel alone, and choosing the Blocks helper again
+  # freezes whatever day is loaded then (`select_helper_mode/2`).
+  defp publish_helper_context(%{assigns: %{agent_pack_id: "blocks"}} = socket),
+    do: select_blocks_helper(socket)
+
+  defp publish_helper_context(socket), do: socket
+
+  defp select_blocks_helper(socket) do
+    case helper_payload(socket) do
+      {:ok, payload} ->
+        case OperationsAssistance.context(helper_identity(socket), payload) do
+          {:ok, context} ->
+            socket
+            |> AgentPanel.select_pack("blocks", context)
+            |> assign(:helper_notice, nil)
+
+          {:error, _refused} ->
+            drop_helper_context(socket)
+        end
+
+      :error ->
+        drop_helper_context(socket)
+    end
+  end
+
+  # A page with no loaded day type has nothing to freeze. The copy is dropped
+  # rather than left describing the day that was on screen a moment ago, so the
+  # panel cannot answer about a day this page no longer shows.
+  defp drop_helper_context(socket) do
+    socket
+    |> AgentPanel.select_pack("blocks", Scope.context(helper_identity(socket)))
+    |> assign(:helper_notice, @helper_unavailable_notice)
+  end
+
+  defp helper_identity(%{assigns: %{current_gtfs_version: version}}), do: {:version, version.id}
+
+  # The mode switch hands the panel to the other helper. The context is this
+  # page's own: the Blocks helper gets the day it has loaded, frozen now, and the
+  # in-seat helper starts with no source until the reader selects connections on
+  # the Connections view. Both helpers' context never leaves the page, so the
+  # event names a pack and nothing else. Choosing the helper the panel already
+  # holds changes nothing. Leaving the in-seat helper drops the source it held, so
+  # the page stops describing connections the panel can no longer read.
+  defp select_helper_mode(%{assigns: %{agent_pack_id: pack_id}} = socket, pack_id), do: socket
+
+  defp select_helper_mode(socket, "blocks") do
+    socket
+    |> assign(:in_seat_source, nil)
+    |> assign(:helper_review, nil)
+    |> select_blocks_helper()
+  end
+
+  defp select_helper_mode(socket, "in_seat") do
+    socket
+    |> assign(:helper_review, nil)
+    |> assign(:helper_notice, nil)
+    |> AgentPanel.select_pack("in_seat", Scope.context(helper_identity(socket)))
+  end
+
+  defp helper_modes do
+    packs = Agents.packs()
+    Enum.map(@helper_packs, &%{id: &1, title: Map.fetch!(packs, &1).title()})
+  end
+
+  # The day's own copy, with the current plan attached when one has been
+  # completed. The plan is this page's own successful native job result, which
+  # is the only thing that may carry one.
+  defp helper_payload(%{assigns: %{day_type: nil}}), do: :error
+
+  defp helper_payload(socket) do
+    with {:ok, payload} <-
+           OperationsAssistance.block_day(socket.assigns.day, helper_selection(socket)) do
+      attach_helper_plan(socket, payload)
+    end
+  end
+
+  defp attach_helper_plan(%{assigns: %{plan_preview: nil}}, payload), do: {:ok, payload}
+
+  defp attach_helper_plan(socket, payload) do
+    case OperationsAssistance.with_plan(payload, :blocks, socket.assigns.plan_preview) do
+      {:ok, with_plan} -> {:ok, with_plan}
+      {:error, _unavailable} -> {:ok, payload}
+    end
+  end
+
+  # The selection the page is currently displaying: the block IDs the timeline's
+  # checkboxes named, and the trip IDs the pool and list named. Both are technical
+  # identities the loaded day already resolved, and neither a block nor a trip
+  # the day no longer holds is ever named.
+  defp helper_selection(socket) do
+    %{
+      selected_block_ids: Enum.map(socket.assigns.selected_blocks, & &1.summary.block_id),
+      selected_trip_ids: Enum.map(socket.assigns.selected_trips, & &1.trip_id)
+    }
+  end
+
+  # 1. The native state decides first. A suggestion being built, or one already
+  #    on the page, is a page-level fact that makes opening this configuration
+  #    meaningless whatever the card said, so it is reported before the card is
+  #    even looked up.
+  # 2. The session hands back the configuration it stored, or nothing. A stale,
+  #    reset or ended conversation refuses here.
+  # 3. The command must belong to this section. A command from another page is
+  #    never interpreted by this one.
+  # 4. The day is re-read from the database. The socket's own assigns are this
+  #    tab's last load and cannot see another tab's edit, so a day that changed
+  #    underneath the panel has to be caught by a fresh read (AC-9).
+  # 5. The fresh day is re-projected with the selection on screen now, and the
+  #    command's own digests must match that projection. This is what refuses a
+  #    configuration prepared for another day, another version or another
+  #    selection.
+  defp review_prepared_suggestion(socket, entry_id) do
+    case helper_native_state(socket) do
+      {:error, notice} ->
+        {:refused, assign(socket, :helper_notice, notice)}
+
+      :ok ->
+        open_helper_entry(socket, entry_id)
+    end
+  end
+
+  defp open_helper_entry(socket, entry_id) do
+    with {:ok, id} <- read_entry_id(entry_id),
+         {:ok, command} <- prepared_command(socket, id) do
+      open_helper_suggestion(socket, command)
+    else
+      {:error, notice} -> {:refused, assign(socket, :helper_notice, notice)}
+    end
+  end
+
+  # `phx-value-entry` carries the entry number, so it arrives as the string the
+  # DOM holds. A session addresses its entries by number, so the string is read
+  # as the number it names and anything else never reaches the session.
+  defp read_entry_id(entry_id) when is_binary(entry_id) do
+    case Integer.parse(entry_id) do
+      {id, ""} when id > 0 -> {:ok, id}
+      _other -> :error
+    end
+  end
+
+  defp read_entry_id(entry_id) when is_integer(entry_id) and entry_id > 0, do: {:ok, entry_id}
+  defp read_entry_id(_entry_id), do: :error
+
+  defp prepared_command(socket, entry_id) do
+    with {:ok, %{command: {:operations_suggestion, command}}} <-
+           Agents.prepared(
+             socket.assigns.agent_session,
+             socket.assigns.agent_conversation_id,
+             entry_id
+           ),
+         {:ok, command} <- read_helper_command(command) do
+      {:ok, command}
+    else
+      _refused -> {:error, @helper_missing_notice}
+    end
+  end
+
+  # The command is a map this page's own pack wrote. Everything in it is checked
+  # for shape before it is used, because a value that arrives as an unexpected
+  # term is a refusal rather than a crash on the page.
+  defp read_helper_command(%{
+         section: "blocks",
+         day_key: day_key,
+         source_digest: source_digest,
+         selection_digest: selection_digest,
+         mode: mode
+       })
+       when is_binary(day_key) and is_binary(source_digest) and is_binary(selection_digest) do
+    if suggest_scope?(mode),
+      do:
+        {:ok,
+         %{
+           day_key: day_key,
+           source_digest: source_digest,
+           selection_digest: selection_digest,
+           mode: suggest_scope_name(mode)
+         }},
+      else: :error
+  end
+
+  defp read_helper_command(%{section: section}) when section != "blocks",
+    do: {:error, @helper_section_notice}
+
+  defp read_helper_command(_command), do: :error
+
+  defp open_helper_suggestion(%{assigns: %{day_type: nil}}, _command),
+    do: {:error, @helper_no_day_notice}
+
+  defp open_helper_suggestion(socket, command) do
+    with {:ok, fresh} <- reload_helper_day(socket),
+         {:ok, payload} <- recheck_helper_command(socket, fresh, command) do
+      {:open, open_suggest_drawer(socket, command, payload)}
+    else
+      {:error, notice} -> {:refused, assign(socket, :helper_notice, notice)}
+    end
+  end
+
+  # A suggestion being built, or one already stored on the page, is the native
+  # state the card calls a draft guard. Opening the drawer under either would
+  # either queue a second job behind the first or describe a day with a plan
+  # drawn over it, so both refuse and keep everything the reader had.
+  defp helper_native_state(%{assigns: %{suggest: %{busy: true}}}),
+    do: {:error, @helper_busy_notice}
+
+  defp helper_native_state(%{assigns: %{plan_preview: plan}}) when not is_nil(plan),
+    do: {:error, @helper_preview_notice}
+
+  defp helper_native_state(_socket), do: :ok
+
+  # The fresh read is scoped to this page's own organization and version and to
+  # the day type the command names, so a command for another version's day is
+  # answered by this version's catalog rather than by the socket's stale assigns.
+  defp reload_helper_day(socket) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Gtfs.load_blocking_day(organization.id, version.id, socket.assigns.state.day) do
+      {:ok, day} -> {:ok, day}
+      {:error, _reason} -> {:error, @helper_stale_notice}
+    end
+  end
+
+  # The command's digests are compared against a projection of the day as it is
+  # now. The day key is compared first because a projection of a different day
+  # would answer with digests that simply do not match, and saying which day
+  # moved is the more useful refusal.
+  defp recheck_helper_command(socket, fresh, command) do
+    with {:ok, day_key} <- helper_day_key(fresh),
+         true <- day_key == command.day_key,
+         {:ok, payload} <- OperationsAssistance.block_day(fresh, helper_selection(socket)),
+         true <- payload["source_digest"] == command.source_digest,
+         true <- OperationsAssistance.selection_digest(payload) == command.selection_digest do
+      {:ok, Map.put(payload, "day_key", day_key)}
+    else
+      _different_day_or_selection -> {:error, @helper_stale_notice}
+    end
+  end
+
+  defp helper_day_key(%{day_type: %{key: key}}) when is_binary(key), do: {:ok, key}
+  defp helper_day_key(_day), do: :error
+
+  # The scope is set after the drawer's own default, not instead of it. The
+  # drawer's `suggest_scope/1` promotes an empty pool to `replace_all`, so a
+  # prepared `unassigned_only` scope that was merely defaulted would silently
+  # become a rebuild of the whole service day (AC-7, PM-3).
+  # Everything the open state needs is assigned before the patch, because
+  # `patch/3` answers `{:noreply, socket}` and its `handle_params/3` run then
+  # replaces the scope default this page would otherwise derive.
+  defp open_suggest_drawer(socket, command, payload) do
+    socket
+    |> assign(:helper_suggest_scope, command.mode)
+    |> assign(:helper_notice, nil)
+    |> assign(:helper_review, helper_review(command, payload, socket))
+  end
+
+  # What the review shows beside the open drawer: the day, the mode, how many
+  # selected blocks the scope would rebuild, what the frozen copy excluded from
+  # inspection, and the consequence of the one mode that replaces hand-tuned
+  # work. Every value is read from the copy the command was just checked against
+  # or from the selection that copy binds, so the drawer and this summary cannot
+  # describe different scopes.
+  defp helper_review(command, payload, socket) do
+    %{
+      day_key: command.day_key,
+      mode: command.mode,
+      mode_label: helper_mode_label(command.mode),
+      selected_block_count: helper_selected_block_count(command.mode, socket),
+      exclusions: helper_exclusions(payload),
+      replacement?: command.mode == :replace_all
+    }
+  end
+
+  # Only the `selected` mode has targets, and it names the block IDs the page is
+  # displaying now - which the digest check above has already proved are the ones
+  # the copy froze. The other two modes are not given a count: they are not built
+  # from a selection, and printing "0 selected blocks" beside them would read as
+  # a claim that the scope has no work rather than as "this is not a selection".
+  defp helper_selected_block_count(:selected, socket), do: length(socket.assigns.selected_blocks)
+  defp helper_selected_block_count(_mode, _socket), do: nil
+
+  defp helper_mode_label(:unassigned_only), do: "Unassigned trips only"
+  defp helper_mode_label(:selected), do: "Selected blocks"
+  defp helper_mode_label(:replace_all), do: "Rebuild this service day’s blocks"
+
+  # The exclusions the frozen copy itself records: repeating service and
+  # unplottable trips inside the scope, and the rows a narrower selection left
+  # out. They are named by kind and count, because the copy holds opaque refs
+  # rather than the rows, and a count is what a reader can act on.
+  defp helper_exclusions(payload) do
+    payload
+    |> Map.get("exclusions", [])
+    |> Enum.frequencies_by(& &1["kind"])
+    |> Enum.map(fn {kind, count} -> {helper_exclusion_label(kind), count} end)
+    |> Enum.sort()
+  end
+
+  defp helper_exclusion_label("frequency_trip"), do: "repeating trips"
+  defp helper_exclusion_label("unplottable"), do: "trips with no plottable times"
+  defp helper_exclusion_label("outside_scope"), do: "rows outside the selected scope"
+  defp helper_exclusion_label(kind) when is_binary(kind), do: kind
+  defp helper_exclusion_label(_kind), do: "other rows"
+
   # The result is one of the context's own answers, and each is handled where it
   # belongs: a plan is stored and the drawer closes, a too-large scope keeps the
   # drawer open with its count and writes no preview, and a scope with no
@@ -4408,6 +4822,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:timeline_key, nil)
       |> show_preview(plan)
       |> assign_page_rows()
+      # The native job completed successfully, so this is the one moment a plan
+      # copy may join the frozen evidence. A discarded or failed preview never
+      # reaches here, so no failed or stale result is ever published (AC-3).
+      |> publish_helper_context()
 
     patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil})
   end
@@ -6001,6 +6419,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign(:timeline_key, nil)
     |> assign_derived(socket.assigns.day)
     |> assign_page_rows()
+    # The discarded plan leaves the frozen copy with it, so the panel stops
+    # describing a proposal the page no longer holds.
+    |> publish_helper_context()
   end
 
   # Everything the Suggested blocks panel renders, derived here rather than in
@@ -6127,12 +6548,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           <%!-- The header's Review action is the page's primary until the selection
           bar, the first-use panel or a previewed suggestion takes it. --%>
           <:actions :if={@load_state == :loaded}>
-            <%!-- The helper reads connections, so it is offered wherever this page
-            can supply one: the Connections view's group or the connection drawer
-            the reader has open. A day with neither has nothing to hand over, so
-            the button is not offered rather than opened onto nothing. --%>
+            <%!-- The helper reads the day this page has loaded, so it is offered
+            only where there is a day to read and a suggestion to configure. --%>
             <.button
-              :if={helper_action?(assigns)}
               id="agent-helper-open"
               type="button"
               phx-click="agent_open"
@@ -6141,7 +6559,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
               variant="quiet"
               class="min-h-11"
             >
-              Open helper
+              <.icon name="hero-sparkles" class="size-4" /> Open helper
             </.button>
             <%!-- A suggestion is built from garages, so a version with none cannot
             produce one; the button says why it is off rather than opening a drawer
@@ -6171,354 +6589,365 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           </:actions>
         </.header>
 
-        <div class="space-y-4">
-          <.message
-            :if={@load_state == :unavailable}
-            id="blocks-unavailable"
-            kind="error"
-            title="We couldn't load blocks."
-          >
-            Your saved assignments haven't changed. Reload to try again.
-            <:action>
-              <.button
-                id="blocks-retry"
-                type="button"
-                variant="secondary"
-                class="min-h-11"
-                phx-click="retry"
-              >
-                <.icon name="hero-arrow-path" class="size-4" /> Reload blocks
-              </.button>
-            </:action>
-          </.message>
-
-          <%= cond do %>
-            <% @load_state == :loading -> %>
-              <BlocksComponents.page_state kind={:loading} />
-            <% @load_state == :no_dates -> %>
-              <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
-            <% @load_state == :empty -> %>
-              <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
-            <% @load_state == :unknown -> %>
-              <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
-            <% @day_type -> %>
+        <%!-- The panel takes a right-hand column while it is open and the day's own
+        work keeps the rest, so a prepared configuration is reviewed beside the
+        blocks and counts it describes rather than instead of them. At phone width
+        the panel leads, so the reader reaches it without scrolling past the day. --%>
+        <div class={[
+          "flex flex-col lg:grid lg:gap-6",
+          @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+        ]}>
+          <div class="min-w-0">
+            <div class="space-y-4">
               <.message
-                :if={@mixed_timezones?}
-                id="blocks-mixed-timezones"
-                kind="warning"
-                title="Agencies in this version use different time zones."
+                :if={@load_state == :unavailable}
+                id="blocks-unavailable"
+                kind="error"
+                title="We couldn't load blocks."
               >
-                Times are shown as stored, so trips from different agencies may not line up.
+                Your saved assignments haven't changed. Reload to try again.
+                <:action>
+                  <.button
+                    id="blocks-retry"
+                    type="button"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="retry"
+                  >
+                    <.icon name="hero-arrow-path" class="size-4" /> Reload blocks
+                  </.button>
+                </:action>
               </.message>
 
-              <div class="rounded-card border border-subtle bg-white">
-                <BlocksComponents.scope_header
-                  day_types={@day_types}
-                  day_type={@day_type}
-                  routes={@routes}
-                  state={@state}
-                  min_layover_minutes={@min_layover_minutes}
-                  estimated_pairs={@estimated_pairs}
-                  preview?={not is_nil(@plan_preview)}
-                />
-                <BlocksComponents.summary_strip
-                  day_type={@day_type}
-                  counts={@counts}
-                  figures={@figures}
-                  peak={@peak}
-                  preview?={not is_nil(@plan_preview)}
-                />
-              </div>
+              <%= cond do %>
+                <% @load_state == :loading -> %>
+                  <BlocksComponents.page_state kind={:loading} />
+                <% @load_state == :no_dates -> %>
+                  <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
+                <% @load_state == :empty -> %>
+                  <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
+                <% @load_state == :unknown -> %>
+                  <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
+                <% @day_type -> %>
+                  <.message
+                    :if={@mixed_timezones?}
+                    id="blocks-mixed-timezones"
+                    kind="warning"
+                    title="Agencies in this version use different time zones."
+                  >
+                    Times are shown as stored, so trips from different agencies may not line up.
+                  </.message>
 
-              <BlocksComponents.plan_notices
-                fleet_shortfalls={@fleet_shortfalls}
-                garages?={@garages?}
-                vehicles?={@vehicles?}
-                version_id={@state.version_id}
-              />
+                  <div class="rounded-card border border-subtle bg-white">
+                    <BlocksComponents.scope_header
+                      day_types={@day_types}
+                      day_type={@day_type}
+                      routes={@routes}
+                      state={@state}
+                      min_layover_minutes={@min_layover_minutes}
+                      estimated_pairs={@estimated_pairs}
+                      preview?={not is_nil(@plan_preview)}
+                    />
+                    <BlocksComponents.summary_strip
+                      day_type={@day_type}
+                      counts={@counts}
+                      figures={@figures}
+                      peak={@peak}
+                      preview?={not is_nil(@plan_preview)}
+                    />
+                  </div>
 
-              <%!-- The panel sits between the notices and the workbench so the
+                  <BlocksComponents.plan_notices
+                    fleet_shortfalls={@fleet_shortfalls}
+                    garages?={@garages?}
+                    vehicles?={@vehicles?}
+                    version_id={@state.version_id}
+                  />
+
+                  <%!-- The panel sits between the notices and the workbench so the
               proposal, the counts above and the rows it changes are all on one
               screen: a preview is a reading of the page, not a replacement of it. --%>
-              <BlocksComponents.suggestion_panel
-                :if={not is_nil(@plan_preview)}
-                plan={@suggestion.plan}
-                day_type={@day_type}
-                scope={@suggestion.scope}
-                runs_touched={@runs_touched}
-                version_id={@current_gtfs_version.id}
-                picked={@suggestion.picked}
-                minimum={@suggestion.minimum}
-                existing_problems={@suggestion.existing}
-                fixed_problems={@suggestion.fixed}
-                repeating_trip_ids={@suggest_repeating_trip_ids}
-                estimated_pairs={@estimated_pairs}
-                apply={@apply}
-              />
+                  <BlocksComponents.suggestion_panel
+                    :if={not is_nil(@plan_preview)}
+                    plan={@suggestion.plan}
+                    day_type={@day_type}
+                    scope={@suggestion.scope}
+                    runs_touched={@runs_touched}
+                    version_id={@current_gtfs_version.id}
+                    picked={@suggestion.picked}
+                    minimum={@suggestion.minimum}
+                    existing_problems={@suggestion.existing}
+                    fixed_problems={@suggestion.fixed}
+                    repeating_trip_ids={@suggest_repeating_trip_ids}
+                    estimated_pairs={@estimated_pairs}
+                    apply={@apply}
+                  />
 
-              <%!-- The applied message takes the panel's place once the plan is
+                  <%!-- The applied message takes the panel's place once the plan is
               saved: there is no preview left to read, and the sentence that
               outlives it is the page's answer to what changed. --%>
-              <BlocksComponents.suggestion_applied
-                :if={is_nil(@plan_preview) and not is_nil(@applied)}
-                applied={@applied}
-              />
+                  <BlocksComponents.suggestion_applied
+                    :if={is_nil(@plan_preview) and not is_nil(@applied)}
+                    applied={@applied}
+                  />
 
-              <BlocksComponents.suggestion_replace_dialog
-                :if={not is_nil(@plan_preview)}
-                replace={@replace}
-                day_type={@day_type}
-                pending={@apply.status == :pending}
-              />
+                  <BlocksComponents.suggestion_replace_dialog
+                    :if={not is_nil(@plan_preview)}
+                    replace={@replace}
+                    day_type={@day_type}
+                    pending={@apply.status == :pending}
+                  />
 
-              <BlocksComponents.connection_result
-                :if={not is_nil(@connection_result)}
-                result={@connection_result}
-                version_id={@state.version_id}
-                day={@state.day}
-              />
+                  <BlocksComponents.connection_result
+                    :if={not is_nil(@connection_result)}
+                    result={@connection_result}
+                    version_id={@state.version_id}
+                    day={@state.day}
+                  />
 
-              <%!-- The helper's own selection. Which connections the helper may
+                  <%!-- The helper's own selection. Which connections the helper may
               read is this page's answer, not the reader's: the button offers the
               group or the drawer pair the page already derived, and the receipt
               below names what was offered so a later proposal can be checked
               against it. --%>
-              <div
-                :if={@state.view == :connections or not is_nil(@gap_view)}
-                id="in-seat-helper"
-                class="rounded-card border border-subtle bg-white p-4"
-              >
-                <h2 class="text-sm font-semibold text-strong">In-seat assistance</h2>
-                <p id="in-seat-helper-note" class="mt-1 text-[13px] text-muted">
-                  The helper works from connections you select here. It prepares a change; you
-                  review and save it on this page.
-                </p>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
-                  <.button
-                    :if={not is_nil(@connections.group)}
-                    id="in-seat-helper-group"
-                    type="button"
-                    variant="secondary"
-                    class="min-h-11"
-                    phx-click="in_seat_helper_group"
-                    phx-disabled-with="Handing over…"
+                  <div
+                    :if={@state.view == :connections or not is_nil(@gap_view)}
+                    id="in-seat-helper"
+                    class="rounded-card border border-subtle bg-white p-4"
                   >
-                    Ask the helper about this group
-                  </.button>
-                  <.button
-                    :if={not is_nil(@gap_view)}
-                    id="in-seat-helper-connection"
-                    type="button"
-                    variant="secondary"
-                    class="min-h-11"
-                    phx-click="in_seat_helper_connection"
-                    phx-disabled-with="Handing over…"
-                  >
-                    Ask the helper about this connection
-                  </.button>
-                  <.button
-                    :if={not is_nil(@in_seat_source)}
-                    id="in-seat-helper-clear"
-                    type="button"
-                    variant="quiet"
-                    class="min-h-11"
-                    phx-click="in_seat_helper_clear"
-                  >
-                    Stop
-                  </.button>
-                </div>
-                <p
-                  :if={not is_nil(@in_seat_source)}
-                  id="in-seat-helper-source"
-                  class="mt-2 text-[13px] text-default"
-                >
-                  Reading {in_seat_source_label(@in_seat_source)} from {in_seat_day_label(@day_type)}.
-                </p>
-                <p
-                  :if={not is_nil(@in_seat_notice)}
-                  id="in-seat-helper-notice"
-                  class="mt-2 text-[13px] text-default"
-                >
-                  {@in_seat_notice}
-                </p>
-              </div>
+                    <h2 class="text-sm font-semibold text-strong">In-seat assistance</h2>
+                    <p id="in-seat-helper-note" class="mt-1 text-[13px] text-muted">
+                      The helper works from connections you select here. It prepares a change; you
+                      review and save it on this page.
+                    </p>
+                    <div class="mt-3 flex flex-wrap items-center gap-2">
+                      <.button
+                        :if={not is_nil(@connections.group)}
+                        id="in-seat-helper-group"
+                        type="button"
+                        variant="secondary"
+                        class="min-h-11"
+                        phx-click="in_seat_helper_group"
+                        phx-disabled-with="Handing over…"
+                      >
+                        Ask the helper about this group
+                      </.button>
+                      <.button
+                        :if={not is_nil(@gap_view)}
+                        id="in-seat-helper-connection"
+                        type="button"
+                        variant="secondary"
+                        class="min-h-11"
+                        phx-click="in_seat_helper_connection"
+                        phx-disabled-with="Handing over…"
+                      >
+                        Ask the helper about this connection
+                      </.button>
+                      <.button
+                        :if={not is_nil(@in_seat_source)}
+                        id="in-seat-helper-clear"
+                        type="button"
+                        variant="quiet"
+                        class="min-h-11"
+                        phx-click="in_seat_helper_clear"
+                      >
+                        Stop
+                      </.button>
+                    </div>
+                    <p
+                      :if={not is_nil(@in_seat_source)}
+                      id="in-seat-helper-source"
+                      class="mt-2 text-[13px] text-default"
+                    >
+                      Reading {in_seat_source_label(@in_seat_source)} from {in_seat_day_label(
+                        @day_type
+                      )}.
+                    </p>
+                    <p
+                      :if={not is_nil(@in_seat_notice)}
+                      id="in-seat-helper-notice"
+                      class="mt-2 text-[13px] text-default"
+                    >
+                      {@in_seat_notice}
+                    </p>
+                  </div>
 
-              <BlocksComponents.workspace
-                state={@state}
-                counts={@counts}
-                visible_count={@visible_count}
-                pool_visible_count={@pool_visible_count}
-                page_size={@page_size}
-                block_rows={@streams.block_rows}
-                list_rows={@streams.list_rows}
-                pool_rows={@streams.pool_rows}
-                untimed_trips={@untimed_trips}
-                findings_by_trip={@findings_by_trip}
-                axis={@axis}
-                max_piece_minutes={@max_piece_minutes}
-                routes={@routes}
-                connection_settings={@connection_settings}
-                connection_setting_options={@connection_setting_options}
-                connections={@connections}
-                bulk_choice={@bulk_choice}
-                bulk_result={@bulk_result}
-                selected_ids={@selection}
-                selected_block_ids={@block_selection}
-                page_block_ids={@timeline_block_ids}
-                block_selected_count={length(@selected_blocks)}
-                bulk={@bulk}
-                primary={@primary}
-                preview?={not is_nil(@plan_preview)}
-                changed_block_ids={@suggestion.changed_block_ids}
-              />
-
-              <BlocksComponents.service_dates_drawer
-                open={@open_drawer == :service_dates}
-                day_type={@day_type}
-              />
-              <BlocksComponents.checks_drawer
-                open={@open_drawer == :checks}
-                day_type={@day_type}
-                findings={@findings}
-                trip_labels={@trip_labels}
-                in_seat_review={@in_seat_review}
-                unmatched={@unmatched_in_seat}
-                remove_stale={@remove_stale}
-                remove_unmatched={@remove_unmatched}
-                remove_pending={@remove_pending}
-              />
-              <BlocksComponents.plan_summary_drawer
-                open={@open_drawer == :plan_summary}
-                figures={@figures}
-                peak={@peak}
-                fleet_rows={@fleet}
-                chart={@plan_chart}
-                day_type={@day_type}
-                min_layover_minutes={@min_layover_minutes}
-                longest_stretch={@longest_stretch}
-                max_piece_minutes={@max_piece_minutes}
-                relief_stop_count={@relief_stop_count}
-                estimated?={@estimated?}
-                repeating?={@repeating?}
-                errors?={@errors?}
-                garages?={@garages?}
-                vehicles?={@vehicles?}
-                version_id={@state.version_id}
-              />
-              <BlocksComponents.block_rules_drawer
-                open={@open_drawer == :block_rules}
-                form={@block_rules_form}
-                interlining={@block_rules.interlining || to_string(@settings.interlining)}
-                routes={@routes}
-                route_rows={block_rules_rows(assigns)}
-                route_errors={@block_rules.route_errors}
-                garages={@garages}
-                vehicle_types={@vehicle_types}
-                error={@block_rules.error}
-                error_count={@block_rules_error_count}
-              />
-
-              <BlocksComponents.driving_times_drawer
-                open={@open_drawer == :driving_times}
-                rows={@driving_times_rows}
-                day_label={@day_type.label}
-                circuity={@settings.deadhead_circuity}
-                speed={@settings.deadhead_speed_kmh}
-                estimated_only?={@driving_times.estimated_only?}
-                estimated_count={driving_times_estimated_count(@driving_times.pairs)}
-                total_count={length(@driving_times.pairs)}
-                focus_id={driving_times_focus_id(@driving_times_rows)}
-                error={@driving_times.error}
-              />
-
-              <BlocksComponents.operator_changes_drawer
-                open={@open_drawer == :operator_changes}
-                rows={@operator_changes_rows}
-                limit={@operator_changes.limit}
-                limit_error={@operator_changes.limit_error}
-                error={@operator_changes.error}
-              />
-
-              <BlocksComponents.suggest_drawer
-                open={@open_drawer == :suggest}
-                scope={@suggest.scope}
-                options={suggest_scope_options(assigns)}
-                rules={suggest_rules(assigns)}
-                estimated_pairs={@estimated_pairs}
-                repeating_trip_ids={@suggest_repeating_trip_ids}
-                operator_checked?={not is_nil(@max_piece_minutes)}
-                too_large={@suggest.too_large}
-                error={@suggest.error}
-                busy={@suggest.busy}
-                day_label={@day_type.label}
-              />
-
-              <%= case @trip_view do %>
-                <% {:trip, trip, day_types} -> %>
-                  <BlocksComponents.trip_drawer
-                    open={true}
-                    trip={trip}
+                  <BlocksComponents.workspace
+                    state={@state}
+                    counts={@counts}
+                    visible_count={@visible_count}
+                    pool_visible_count={@pool_visible_count}
+                    page_size={@page_size}
+                    block_rows={@streams.block_rows}
+                    list_rows={@streams.list_rows}
+                    pool_rows={@streams.pool_rows}
+                    untimed_trips={@untimed_trips}
+                    findings_by_trip={@findings_by_trip}
+                    axis={@axis}
+                    max_piece_minutes={@max_piece_minutes}
                     routes={@routes}
-                    version_id={@state.version_id}
-                    calendar_label={calendar_label(day_types, trip)}
-                    day_types={day_types}
-                    findings={Map.get(@findings_by_trip, trip.id, [])}
-                    in_seat={Map.get(@in_seat, trip.id, [])}
-                    back_block={@back_block}
-                    assign={@assign}
-                    assign_form={@assign_form}
-                    destination_options={@destination_options}
-                    destination_total={@destination_total}
-                    remove_record={@remove_record}
+                    connection_settings={@connection_settings}
+                    connection_setting_options={@connection_setting_options}
+                    connections={@connections}
+                    bulk_choice={@bulk_choice}
+                    bulk_result={@bulk_result}
+                    selected_ids={@selection}
+                    selected_block_ids={@block_selection}
+                    page_block_ids={@timeline_block_ids}
+                    block_selected_count={length(@selected_blocks)}
+                    bulk={@bulk}
+                    primary={@primary}
+                    preview?={not is_nil(@plan_preview)}
+                    changed_block_ids={@suggestion.changed_block_ids}
+                  />
+
+                  <BlocksComponents.service_dates_drawer
+                    open={@open_drawer == :service_dates}
+                    day_type={@day_type}
+                  />
+                  <BlocksComponents.checks_drawer
+                    open={@open_drawer == :checks}
+                    day_type={@day_type}
+                    findings={@findings}
+                    trip_labels={@trip_labels}
+                    in_seat_review={@in_seat_review}
+                    unmatched={@unmatched_in_seat}
+                    remove_stale={@remove_stale}
+                    remove_unmatched={@remove_unmatched}
                     remove_pending={@remove_pending}
                   />
-                <% {:elsewhere, trip_id, day_types} -> %>
-                  <BlocksComponents.trip_elsewhere
-                    open={true}
-                    trip_id={trip_id}
-                    day_types={day_types}
+                  <BlocksComponents.plan_summary_drawer
+                    open={@open_drawer == :plan_summary}
+                    figures={@figures}
+                    peak={@peak}
+                    fleet_rows={@fleet}
+                    chart={@plan_chart}
+                    day_type={@day_type}
+                    min_layover_minutes={@min_layover_minutes}
+                    longest_stretch={@longest_stretch}
+                    max_piece_minutes={@max_piece_minutes}
+                    relief_stop_count={@relief_stop_count}
+                    estimated?={@estimated?}
+                    repeating?={@repeating?}
+                    errors?={@errors?}
+                    garages?={@garages?}
+                    vehicles?={@vehicles?}
                     version_id={@state.version_id}
                   />
-                <% {:unknown, trip_id} -> %>
-                  <BlocksComponents.trip_elsewhere
-                    open={true}
-                    trip_id={trip_id}
-                    version_id={@state.version_id}
+                  <BlocksComponents.block_rules_drawer
+                    open={@open_drawer == :block_rules}
+                    form={@block_rules_form}
+                    interlining={@block_rules.interlining || to_string(@settings.interlining)}
+                    routes={@routes}
+                    route_rows={block_rules_rows(assigns)}
+                    route_errors={@block_rules.route_errors}
+                    garages={@garages}
+                    vehicle_types={@vehicle_types}
+                    error={@block_rules.error}
+                    error_count={@block_rules_error_count}
                   />
-                <% _other -> %>
-              <% end %>
 
-              <%= if gap = @gap_view do %>
-                <BlocksComponents.gap_drawer
-                  open={true}
-                  from={gap.from}
-                  to={gap.to}
-                  gap={gap.gap}
-                  movement={gap.movement}
-                  windows={gap.windows}
-                  relief_checked?={gap.relief_checked?}
-                  day_label={gap.day_label}
-                  block_id={gap.block_id}
-                  records={gap.records}
-                  routes={@routes}
-                  setting={gap.setting}
-                  place={gap.place}
-                  turnback?={gap.turnback?}
-                  short?={gap.short?}
-                  back_block={@back_block}
-                  version_id={@state.version_id}
-                  connection_form={@connection_form}
-                  connection_draft={@connection_draft}
-                  connection_saved={@connection_saved}
-                  connection_check={@connection_check}
-                  connection_scope={@connection_scope}
-                  connection_error={@connection_error}
-                  connection_pending={@connection_pending}
-                  discard={@connection_discard}
-                />
-              <% end %>
+                  <BlocksComponents.driving_times_drawer
+                    open={@open_drawer == :driving_times}
+                    rows={@driving_times_rows}
+                    day_label={@day_type.label}
+                    circuity={@settings.deadhead_circuity}
+                    speed={@settings.deadhead_speed_kmh}
+                    estimated_only?={@driving_times.estimated_only?}
+                    estimated_count={driving_times_estimated_count(@driving_times.pairs)}
+                    total_count={length(@driving_times.pairs)}
+                    focus_id={driving_times_focus_id(@driving_times_rows)}
+                    error={@driving_times.error}
+                  />
 
-              <%!-- The Set-all review is the page's second non-modal inspector: it
+                  <BlocksComponents.operator_changes_drawer
+                    open={@open_drawer == :operator_changes}
+                    rows={@operator_changes_rows}
+                    limit={@operator_changes.limit}
+                    limit_error={@operator_changes.limit_error}
+                    error={@operator_changes.error}
+                  />
+
+                  <BlocksComponents.suggest_drawer
+                    open={@open_drawer == :suggest}
+                    scope={@suggest.scope}
+                    options={suggest_scope_options(assigns)}
+                    rules={suggest_rules(assigns)}
+                    estimated_pairs={@estimated_pairs}
+                    repeating_trip_ids={@suggest_repeating_trip_ids}
+                    operator_checked?={not is_nil(@max_piece_minutes)}
+                    too_large={@suggest.too_large}
+                    error={@suggest.error}
+                    busy={@suggest.busy}
+                    day_label={@day_type.label}
+                  />
+
+                  <%= case @trip_view do %>
+                    <% {:trip, trip, day_types} -> %>
+                      <BlocksComponents.trip_drawer
+                        open={true}
+                        trip={trip}
+                        routes={@routes}
+                        version_id={@state.version_id}
+                        calendar_label={calendar_label(day_types, trip)}
+                        day_types={day_types}
+                        findings={Map.get(@findings_by_trip, trip.id, [])}
+                        in_seat={Map.get(@in_seat, trip.id, [])}
+                        back_block={@back_block}
+                        assign={@assign}
+                        assign_form={@assign_form}
+                        destination_options={@destination_options}
+                        destination_total={@destination_total}
+                        remove_record={@remove_record}
+                        remove_pending={@remove_pending}
+                      />
+                    <% {:elsewhere, trip_id, day_types} -> %>
+                      <BlocksComponents.trip_elsewhere
+                        open={true}
+                        trip_id={trip_id}
+                        day_types={day_types}
+                        version_id={@state.version_id}
+                      />
+                    <% {:unknown, trip_id} -> %>
+                      <BlocksComponents.trip_elsewhere
+                        open={true}
+                        trip_id={trip_id}
+                        version_id={@state.version_id}
+                      />
+                    <% _other -> %>
+                  <% end %>
+
+                  <%= if gap = @gap_view do %>
+                    <BlocksComponents.gap_drawer
+                      open={true}
+                      from={gap.from}
+                      to={gap.to}
+                      gap={gap.gap}
+                      movement={gap.movement}
+                      windows={gap.windows}
+                      relief_checked?={gap.relief_checked?}
+                      day_label={gap.day_label}
+                      block_id={gap.block_id}
+                      records={gap.records}
+                      routes={@routes}
+                      setting={gap.setting}
+                      place={gap.place}
+                      turnback?={gap.turnback?}
+                      short?={gap.short?}
+                      back_block={@back_block}
+                      version_id={@state.version_id}
+                      connection_form={@connection_form}
+                      connection_draft={@connection_draft}
+                      connection_saved={@connection_saved}
+                      connection_check={@connection_check}
+                      connection_scope={@connection_scope}
+                      connection_error={@connection_error}
+                      connection_pending={@connection_pending}
+                      discard={@connection_discard}
+                    />
+                  <% end %>
+
+                  <%!-- The Set-all review is the page's second non-modal inspector: it
               sits over the Connections workspace beside the group panel it
               describes, so the reader can still see the rows they are including
               and the choice they made.
@@ -6530,88 +6959,164 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
               wrapper is a fixed, transparent, pointer-transparent layer at
               `z-[1100]`, so the review is the top surface while it is open and
               the map beside it keeps working. --%>
-              <%!-- The helper panel is a right-hand layer rather than a column in
-              the page: the Blocks workspace is a map and a table that already
-              claim the width, and a review the helper opens has to be readable
-              beside the rows it describes. It sits below the Set-all review's
-              own layer, so a review opened from the panel paints over it. --%>
-              <div :if={@agent_open?} class="pointer-events-none fixed inset-0 z-[1050]">
-                <div class="pointer-events-auto flex justify-end p-4">
-                  <div class="max-h-[calc(100dvh-2rem)] w-[380px] max-w-full overflow-y-auto">
-                    <.agent_panel
-                      id="agent-panel"
-                      title={@agent_title}
-                      intro={@agent_intro}
-                      examples={@agent_examples}
-                      scope_line={agent_scope_line(assigns)}
-                      status={@agent_status}
-                      entries={@streams.agent_entries}
-                      form={@agent_form}
-                      notice={@agent_notice}
-                      entries_empty?={@agent_entries_empty?}
-                      review_label={&agent_review_label/1}
+                  <div class="pointer-events-none fixed inset-0 z-[1100]">
+                    <BlocksComponents.set_all_review
+                      :if={@bulk_review}
+                      review={@bulk_review}
+                      routes={@routes}
+                      pending={@bulk_pending}
+                      error={@bulk_error}
                     />
                   </div>
-                </div>
-              </div>
 
-              <div class="pointer-events-none fixed inset-0 z-[1100]">
-                <BlocksComponents.set_all_review
-                  :if={@bulk_review}
-                  review={@bulk_review}
-                  routes={@routes}
-                  pending={@bulk_pending}
-                  error={@bulk_error}
-                />
-              </div>
+                  <%= if block = @block_view do %>
+                    <BlocksComponents.block_drawer
+                      open={true}
+                      block={block}
+                      routes={@routes}
+                      movements={block.movements}
+                      max_piece_minutes={@max_piece_minutes}
+                      action={@block_action}
+                      form={@block_action_form}
+                      merge_options={@merge_options}
+                      merge_total={@merge_total}
+                      attributes={@block_attributes}
+                      attributes_form={block_attributes_form(@block_attributes)}
+                      garages={@garages}
+                      vehicle_types={@vehicle_types}
+                      route_settings={@route_settings}
+                      day_types={@day_types}
+                      selected_day_type={@day_type}
+                      connection_settings={@connection_settings}
+                    />
+                  <% end %>
 
-              <%= if block = @block_view do %>
-                <BlocksComponents.block_drawer
-                  open={true}
-                  block={block}
-                  routes={@routes}
-                  movements={block.movements}
-                  max_piece_minutes={@max_piece_minutes}
-                  action={@block_action}
-                  form={@block_action_form}
-                  merge_options={@merge_options}
-                  merge_total={@merge_total}
-                  attributes={@block_attributes}
-                  attributes_form={block_attributes_form(@block_attributes)}
-                  garages={@garages}
-                  vehicle_types={@vehicle_types}
-                  route_settings={@route_settings}
-                  day_types={@day_types}
-                  selected_day_type={@day_type}
-                  connection_settings={@connection_settings}
-                />
-              <% end %>
-
-              <%!-- The selection-scoped form sits in its own dialog (the trip
+                  <%!-- The selection-scoped form sits in its own dialog (the trip
               drawer holds the single-trip one); the review renders after it, so
               a confirmation is the top of the stack. --%>
-              <BlocksComponents.assign_dialog
-                :if={@assign && @assign.scope == :selection}
-                assign={@assign}
-                form={@assign_form}
-                options={@destination_options}
-                total={@destination_total}
-                total_dates={@selection_dates}
-              />
+                  <BlocksComponents.assign_dialog
+                    :if={@assign && @assign.scope == :selection}
+                    assign={@assign}
+                    form={@assign_form}
+                    options={@destination_options}
+                    total={@destination_total}
+                    total_dates={@selection_dates}
+                  />
 
-              <BlocksComponents.review_dialog
-                review={@review}
-                stale?={@review_stale?}
-                error={pending_error(assigns)}
-                day_type={@day_type}
-                version_name={@current_gtfs_version.name}
-                return_focus_id={review_focus(assigns)}
-              />
-            <% true -> %>
-          <% end %>
+                  <BlocksComponents.review_dialog
+                    review={@review}
+                    stale?={@review_stale?}
+                    error={pending_error(assigns)}
+                    day_type={@day_type}
+                    version_name={@current_gtfs_version.name}
+                    return_focus_id={review_focus(assigns)}
+                  />
+                <% true -> %>
+              <% end %>
+            </div>
+          </div>
+
+          <%!-- The helper's own column: what pack it is reading, what the last
+          configuration it opened was, and why a request could not be honoured.
+          Each is stated as its own element so the reason for a refusal survives
+          the panel being closed. --%>
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <section
+              id="blocks-helper-mode"
+              aria-labelledby="blocks-helper-mode-label"
+              class="mb-3 rounded-control border border-subtle bg-white px-3.5 py-3"
+            >
+              <h2 id="blocks-helper-mode-label" class="text-[13px] font-[650] text-strong">
+                Helper
+              </h2>
+              <div
+                class="mt-2 flex flex-wrap gap-2"
+                role="group"
+                aria-labelledby="blocks-helper-mode-label"
+              >
+                <.button
+                  :for={choice <- helper_modes()}
+                  id={"blocks-helper-mode-#{choice.id}"}
+                  type="button"
+                  phx-click="helper_mode"
+                  phx-value-pack={choice.id}
+                  variant={if choice.id == @agent_pack_id, do: "primary", else: "secondary"}
+                  aria-pressed={to_string(choice.id == @agent_pack_id)}
+                  class="min-h-11"
+                >
+                  {choice.title}
+                </.button>
+              </div>
+              <p
+                :if={@agent_pack_id == "in_seat" and is_nil(@in_seat_source)}
+                id="blocks-helper-in-seat-note"
+                class="mt-2 text-[13px] text-muted"
+              >
+                The in-seat helper reads connections you select in the Connections view.
+              </p>
+            </section>
+
+            <.message
+              :if={@helper_notice}
+              id="blocks-helper-notice"
+              kind="warning"
+              title={@helper_notice}
+            />
+
+            <BlocksComponents.blocks_helper_scope :if={@helper_review} review={@helper_review} />
+
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={helper_scope_line(assigns)}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label={helper_review_label(@agent_pack_id)}
+              composer_hint={helper_composer_hint(@agent_pack_id)}
+            />
+          </div>
         </div>
+
+        <%!--
+        The panel's focus listener belongs to the wrapper above, which survives both the panel and
+        the page's own drawers. This hook only moves focus; it never decides focus for the
+        server. --%>
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".BlocksHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
       </div>
     </Layouts.app>
     """
   end
+
+  # The panel names the day it is bound to, from the loaded day rather than from
+  # the URL, so the line always agrees with the day below it. The in-seat helper
+  # reads the connections the reader selected, which name their own day.
+  defp helper_scope_line(%{agent_pack_id: "in_seat"} = assigns),
+    do: "Blocks · " <> assigns.current_gtfs_version.name
+
+  defp helper_scope_line(%{day_type: nil}), do: "Blocks · no service day loaded"
+
+  defp helper_scope_line(%{day_type: day_type} = assigns),
+    do: "#{day_type.label} · #{assigns.current_gtfs_version.name}"
+
+  # Each action label is named for what its own pack prepares, so a button never
+  # promises a review the other helper owns (INV-1).
+  defp helper_review_label("in_seat"), do: "Review prepared in-seat setting"
+  defp helper_review_label(_blocks), do: "Review configuration"
+
+  defp helper_composer_hint("in_seat"), do: "Review changes before applying."
+  defp helper_composer_hint(_blocks), do: "Start suggestions in the native drawer"
 end
