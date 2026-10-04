@@ -24,12 +24,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
-  alias GtfsPlanner.Gtfs.FareZones
-  alias GtfsPlannerWeb.Gtfs.FaresComponents
   alias GtfsPlanner.FareSelectionFixtures
+  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.GtfsFixtures
   alias GtfsPlanner.Repo
+  alias GtfsPlannerWeb.Gtfs.FaresComponents
 
   @prepare_arguments ~s({"route_ids":["R6"],"only_unzoned":true,"exclude_stop_ids":["AIR1"],"zone_id":"B"})
 

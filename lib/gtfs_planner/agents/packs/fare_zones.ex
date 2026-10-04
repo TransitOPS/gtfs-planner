@@ -25,8 +25,8 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   alias GtfsPlanner.Agents.Packs.FareEvidence
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.FareZones
 
   @source_ref "gtfs_fare_zones"
   @zone_limit 50
@@ -468,18 +468,16 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
 
   defp shared_route_line(selection, predicate) do
     case shared_routes(selection, predicate) do
-      [] ->
-        nil
-
-      shared ->
-        "Also served by " <>
-          Enum.map_join(shared, ", ", fn route ->
-            count = route["stop_count"]
-
-            "route #{route["route_short_name"]} (#{count} #{if count == 1, do: "stop", else: "stops"})"
-          end)
+      [] -> nil
+      shared -> "Also served by " <> Enum.map_join(shared, ", ", &shared_route_phrase/1)
     end
   end
+
+  defp shared_route_phrase(%{"route_short_name" => name, "stop_count" => 1}),
+    do: "route #{name} (1 stop)"
+
+  defp shared_route_phrase(%{"route_short_name" => name, "stop_count" => count}),
+    do: "route #{name} (#{count} stops)"
 
   defp export_line(scope) do
     if Fares.managed?(scope.organization_id, scope.gtfs_version_id) do

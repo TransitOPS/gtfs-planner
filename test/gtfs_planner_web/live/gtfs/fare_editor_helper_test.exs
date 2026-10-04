@@ -26,8 +26,8 @@ defmodule GtfsPlannerWeb.Gtfs.FareEditorHelperTest do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareProduct
-  alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.FareEditorComponents
 
