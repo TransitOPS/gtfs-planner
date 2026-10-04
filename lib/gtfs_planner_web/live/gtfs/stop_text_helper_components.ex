@@ -19,7 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
   @basis_labels %{stop_id: "by stop ID", stop_code: "by code", stop_name: "by name"}
 
   @doc """
-  The `Helper stops` section: a heading row that always shows the approved count,
+  The `Helper stops` section: a heading row that always shows the approved count, the helper button and Clear stops,
   and a body with the form, the resolution of the last Find and the approved list.
 
   `resolution` is nil or `%{resolved, ambiguous, unresolved, choices}`; `stop_set`
@@ -31,6 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
   attr :notice, :string, default: nil, doc: "why the last Approve changed nothing"
   attr :resolution, :map, default: nil
   attr :stop_set, :list, default: nil
+  attr :helper_open?, :boolean, default: false, doc: "whether the helper panel is open"
 
   def stop_set_section(assigns) do
     ~H"""
@@ -62,15 +63,27 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
         >
           {summary_text(@stop_set)}
         </p>
-        <button
-          :if={@stop_set}
-          id="stop-set-clear"
-          type="button"
-          phx-click="stop_set_clear"
-          class="ml-auto inline-flex min-h-11 items-center text-[13px] font-[650] text-action hover:underline"
-        >
-          Clear stops
-        </button>
+        <div :if={@stop_set} class="ml-auto flex items-center gap-4">
+          <.button
+            id="agent-helper-open"
+            type="button"
+            phx-click="agent_open"
+            aria-expanded={to_string(@helper_open?)}
+            aria-controls="agent-panel"
+            variant="secondary"
+            class="min-h-11"
+          >
+            Open helper
+          </.button>
+          <button
+            id="stop-set-clear"
+            type="button"
+            phx-click="stop_set_clear"
+            class="inline-flex min-h-11 items-center text-[13px] font-[650] text-action hover:underline"
+          >
+            Clear stops
+          </button>
+        </div>
       </div>
 
       <div :if={@open?} id="stop-set-body" class="border-t border-subtle px-4 py-4 md:px-5">
@@ -97,7 +110,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
               <.button
                 id="stop-set-find"
                 type="submit"
-                variant={if(@resolution, do: "secondary", else: "primary")}
+                variant={if(@resolution || @stop_set, do: "secondary", else: "primary")}
                 class="min-h-11"
                 phx-disable-with="Finding…"
               >

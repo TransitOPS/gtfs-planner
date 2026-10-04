@@ -504,3 +504,66 @@ test("stop set approval", async ({ page }) => {
     await expect.poll(() => focusedId(page)).toBe("stop-set-toggle");
   }
 });
+
+// -- stop text panel -----------------------------------------------------------
+
+// Opens the stop text helper on an approved set of BROWSER_TXT_A1 and A4. Nothing is
+// sent to the provider and nothing is saved.
+test("stop text panel", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signInHeadsignEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/stops`);
+    await waitForLiveView(page);
+
+    // No approved set, so no helper.
+    await expect(page.locator("#agent-helper-open")).toHaveCount(0);
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+
+    await activate(page.locator("#stop-set-toggle"));
+    await page.locator("#stop-set-refs").fill("BROWSER_TXT_A1\nBROWSER_TXT_A4");
+    await activate(page.locator("#stop-set-find"));
+    await activate(page.locator("#stop-set-approve"));
+    await expect(page.locator("#stop-set-summary")).toContainText("2 stops approved");
+
+    // An approved set offers the helper, closed.
+    const open = page.locator("#agent-helper-open");
+    await expect(open).toBeVisible();
+    await expect(open).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    expect(await fitsViewport(page)).toBe(true);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await captureViewport(page, "stop-text-panel", `closed-${label}`);
+
+    // Opening shows first-use copy and puts focus in the composer.
+    await activate(open);
+    const panel = page.locator("#agent-panel");
+    await expect(panel).toBeVisible();
+    await expect(open).toHaveAttribute("aria-expanded", "true");
+    await expect(panel).toContainText("Stop text helper");
+    await expect(panel).toContainText("2 approved stops");
+    await expect(panel.locator("#agent-example-1")).toBeVisible();
+    await expect.poll(() => focusedId(page)).toBe("agent-composer-input");
+    expect(await fitsViewport(page)).toBe(true);
+
+    // The catalog and the approval form stay usable beside the helper.
+    await expect(page.locator("#stop-search-form input")).toBeEnabled();
+    await expect(page.locator("#stop-set-clear")).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await captureViewport(page, "stop-text-panel", `open-${label}`);
+
+    // Closing returns focus to the button that opened it.
+    await page.locator("#agent-panel-close").click();
+    await expect(panel).toHaveCount(0);
+    await expect.poll(() => focusedId(page)).toBe("agent-helper-open");
+
+    // Clearing the set removes the helper with the context it belongs to.
+    await activate(page.locator("#stop-set-clear"));
+    await expect(page.locator("#agent-helper-open")).toHaveCount(0);
+  }
+});
