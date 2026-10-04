@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
@@ -32,6 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
@@ -41,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -213,6 +216,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:label_remove, nil)
      |> assign(:label_focus_id, nil)
      |> stream(:patterns, [])
+     |> AgentPanel.mount("headsigns")
      |> attach_hook(:editor_ui_gate, :handle_event, &editor_ui_gate/3)}
   end
 
@@ -278,10 +282,63 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     socket = stage_requested_stop(socket, params["add_stop"])
 
     case RoutePatternAlignmentEvents.ensure_loaded(socket) do
-      {:ok, socket} -> {:noreply, socket}
-      {:error, :not_found} -> {:noreply, not_found(socket)}
+      {:ok, socket} -> {:noreply, bind_agent_context(socket)}
+      {:error, :not_found} -> {:noreply, socket |> not_found() |> bind_agent_context()}
     end
   end
+
+  # The Headsign helper's conversation belongs to the pattern this page shows and,
+  # on Running times, the timing it shows. The page binds that target from its own
+  # assigns, so the model never names it, and a change of pattern, timing or task
+  # is a new context and therefore a new conversation (INV-2, INV-3). Anywhere the
+  # helper cannot serve, the bare version context is bound and the pack refuses it
+  # with the one unavailable result. An unchanged context is a no-op.
+  defp bind_agent_context(socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    context =
+      with true <- headsign_helper?(socket.assigns),
+           {:ok, bound} <-
+             Scope.with_source_snapshot(Scope.context({:route, socket.assigns.route.id}), %{
+               kind: "headsign_scope",
+               payload: headsign_scope_payload(socket.assigns)
+             }) do
+        bound
+      else
+        _unbound -> Scope.context({:version, version_id})
+      end
+
+    AgentPanel.set_context(socket, context)
+  end
+
+  # Offered only for a loaded pattern's Details task and for Running times with a
+  # selected timing: the two tasks the pack can read a headsign target for.
+  defp headsign_helper?(
+         %{live_action: :show, route: %{id: _}, pattern: %RoutePattern{}} = assigns
+       ) do
+    case assigns do
+      %{task: :details} -> true
+      %{task: :timings, selected_timing: %TimedPattern{}} -> true
+      _other -> false
+    end
+  end
+
+  defp headsign_helper?(_assigns), do: false
+
+  defp headsign_scope_payload(%{task: task, pattern: pattern, selected_timing: timing}) do
+    %{
+      "schema_version" => 1,
+      "pattern_id" => pattern.id,
+      "timing_id" => if(task == :timings, do: timing.id)
+    }
+  end
+
+  # `pattern_label/1` reads the pattern from a socket's assigns.
+  defp helper_scope_line(%{task: :details} = assigns),
+    do: "Pattern #{pattern_label(%{assigns: assigns})} · Details"
+
+  defp helper_scope_line(%{selected_timing: timing} = assigns),
+    do: "Pattern #{pattern_label(%{assigns: assigns})} · Running times · #{timing.name}"
 
   # `?review=group` is the Patterns tab with the grouping review open. The preview
   # is read once per patch rather than once per screen load: leaving the review and
@@ -344,6 +401,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      socket
      |> assign(:editor_revoked?, not editor_access?(socket))
      |> load_screen()}
+  end
+
+  # A prepared card's button. The handoff into the native headsign staging is not
+  # wired yet, so the card says so instead of crashing the page.
+  @impl true
+  def handle_event("agent_review_prepared", _params, socket) do
+    {:noreply, assign(socket, :agent_notice, "Review is not ready on this page yet.")}
   end
 
   @impl true
@@ -2136,6 +2200,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:headsign_view, headsign_view(assigns))
       |> assign(:timing_headsign_view, timing_headsign_view(assigns))
       |> assign(:headsign_result, headsign_result_view(assigns))
+      |> assign(:headsign_helper?, headsign_helper?(assigns))
 
     ~H"""
     <Layouts.app
@@ -2384,104 +2449,160 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </.message>
                 </div>
 
-                <div class="mt-5">
-                  <%= cond do %>
-                    <% @task == :details -> %>
-                      <RoutePatternComponents.details_task
-                        form={@details_form}
-                        submit_event={
-                          if(@live_action == :new, do: "create_pattern", else: "save_details")
-                        }
-                        pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
-                        dirty?={@dirty?}
-                        headsign_usage={@headsign_view.usage}
-                        headsign_changed?={@headsign_view.changed?}
-                        headsign_box={@headsign_view.box}
-                        headsign_warnings={@headsign_view.warnings}
-                      />
-                    <% @task == :stops -> %>
-                      <RoutePatternComponents.stops_task
-                        creating={@live_action == :new}
-                        stop_rows={stop_rows(assigns)}
-                        ring_color={ring_color(@route)}
-                        custom_trip_count={detail_custom_trip_count(assigns)}
-                        trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
-                        timing_count={max(length(@timings), 1)}
-                        reorderable?={reorderable?(assigns)}
-                        dirty?={@stops_dirty? or (@live_action == :new and @staged_occurrences != [])}
-                        search_form={@stop_search_form}
-                        search_options={@stop_search_options}
-                        search_status={@stop_search_status}
-                        search_truncated?={@stop_search_truncated?}
-                        insert_form={@insert_form}
-                        busy?={@applying? or @offline?}
-                      />
-                    <% @task == :alignment -> %>
-                      <%= if @alignment do %>
-                        <RoutePatternAlignmentComponents.alignment_task
-                          alignment={@alignment}
+                <div
+                  id="pattern-helper-layout"
+                  phx-hook=".PatternHelperFocus"
+                  class={[
+                    "mt-5",
+                    @headsign_helper? && "flex flex-col lg:grid lg:gap-6",
+                    @headsign_helper? && @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+                  ]}
+                >
+                  <div class="min-w-0">
+                    <div :if={@headsign_helper?} id="pattern-helper-actions" class="flex justify-end">
+                      <.button
+                        id="agent-helper-open"
+                        type="button"
+                        phx-click="agent_open"
+                        aria-expanded={to_string(@agent_open?)}
+                        aria-controls="agent-panel"
+                        variant="quiet"
+                        class="min-h-11"
+                      >
+                        Open helper
+                      </.button>
+                    </div>
+
+                    <%= cond do %>
+                      <% @task == :details -> %>
+                        <RoutePatternComponents.details_task
+                          form={@details_form}
+                          submit_event={
+                            if(@live_action == :new, do: "create_pattern", else: "save_details")
+                          }
+                          pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
+                          dirty?={@dirty?}
+                          headsign_usage={@headsign_view.usage}
+                          headsign_changed?={@headsign_view.changed?}
+                          headsign_box={@headsign_view.box}
+                          headsign_warnings={@headsign_view.warnings}
+                        />
+                      <% @task == :stops -> %>
+                        <RoutePatternComponents.stops_task
+                          creating={@live_action == :new}
+                          stop_rows={stop_rows(assigns)}
+                          ring_color={ring_color(@route)}
+                          custom_trip_count={detail_custom_trip_count(assigns)}
+                          trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
+                          timing_count={max(length(@timings), 1)}
+                          reorderable?={reorderable?(assigns)}
+                          dirty?={
+                            @stops_dirty? or (@live_action == :new and @staged_occurrences != [])
+                          }
+                          search_form={@stop_search_form}
+                          search_options={@stop_search_options}
+                          search_status={@stop_search_status}
+                          search_truncated?={@stop_search_truncated?}
+                          insert_form={@insert_form}
+                          busy?={@applying? or @offline?}
+                        />
+                      <% @task == :alignment -> %>
+                        <%= if @alignment do %>
+                          <RoutePatternAlignmentComponents.alignment_task
+                            alignment={@alignment}
+                            version_id={@current_gtfs_version.id}
+                            state={@alignment_state}
+                            notice={@alignment_notice}
+                            dialog_open={@alignment_dialog == :help}
+                            editable?={@alignment_editable}
+                            offline?={@offline?}
+                            applying?={@applying?}
+                            pending={@alignment_pending}
+                            save_notice={@alignment_save_notice}
+                            version_name={@current_gtfs_version.name}
+                            organization_name={@current_organization.name}
+                            delete_dialog={@alignment_delete_dialog}
+                            discard_dialog={@alignment_discard_dialog}
+                            simplify_dialog={@alignment_simplify_dialog}
+                            import_card={@alignment_import_card}
+                            generation={@alignment_generation}
+                            generate_dialog={@alignment_generate_dialog}
+                            generate_notice={@alignment_generate_notice}
+                            file_import={@map_line_file}
+                            file_fit={@file_fit}
+                            map_line_upload={@uploads.map_line_file}
+                          />
+                        <% else %>
+                          <.skeleton
+                            id="alignment-loading"
+                            label="Loading map line"
+                            rows={3}
+                            aria-busy="true"
+                          />
+                        <% end %>
+                      <% true -> %>
+                        <RoutePatternComponents.timings_task
+                          timings={@timings}
+                          selected_timing={@selected_timing}
+                          timing_rows={@timing_rows}
+                          timing_form={@timing_form}
+                          timing_options={@timing_options}
+                          preview_time={@preview_time}
+                          timing_headsign={@timing_headsign}
+                          headsign_summary={@timing_headsign_view.summary}
+                          headsign_open?={@timing_headsign_open?}
+                          headsign_usage={@timing_headsign_view.usage}
+                          headsign_changed?={@timing_headsign_view.changed?}
+                          headsign_box={@timing_headsign_view.box}
+                          headsign_warnings={@timing_headsign_view.warnings}
+                          timing_error={@timing_error}
+                          timing_blank_note={@timing_blank_note}
+                          blank_count={@blank_count}
                           version_id={@current_gtfs_version.id}
-                          state={@alignment_state}
-                          notice={@alignment_notice}
-                          dialog_open={@alignment_dialog == :help}
-                          editable?={@alignment_editable}
+                          fill={@fill}
+                          fill_preview={@fill_preview}
+                          fill_distances={@fill_distances}
+                          fill_coords={@fill_coords}
+                          fill_sections={@fill_sections}
+                          retime={@retime}
                           offline?={@offline?}
-                          applying?={@applying?}
-                          pending={@alignment_pending}
-                          save_notice={@alignment_save_notice}
-                          version_name={@current_gtfs_version.name}
-                          organization_name={@current_organization.name}
-                          delete_dialog={@alignment_delete_dialog}
-                          discard_dialog={@alignment_discard_dialog}
-                          simplify_dialog={@alignment_simplify_dialog}
-                          import_card={@alignment_import_card}
-                          generation={@alignment_generation}
-                          generate_dialog={@alignment_generate_dialog}
-                          generate_notice={@alignment_generate_notice}
-                          file_import={@map_line_file}
-                          file_fit={@file_fit}
-                          map_line_upload={@uploads.map_line_file}
+                          custom_trip_count={@detail_custom_trip_count}
+                          dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
+                          busy?={@applying? or @offline?}
+                          filling?={@fill != nil}
                         />
-                      <% else %>
-                        <.skeleton
-                          id="alignment-loading"
-                          label="Loading map line"
-                          rows={3}
-                          aria-busy="true"
-                        />
-                      <% end %>
-                    <% true -> %>
-                      <RoutePatternComponents.timings_task
-                        timings={@timings}
-                        selected_timing={@selected_timing}
-                        timing_rows={@timing_rows}
-                        timing_form={@timing_form}
-                        timing_options={@timing_options}
-                        preview_time={@preview_time}
-                        timing_headsign={@timing_headsign}
-                        headsign_summary={@timing_headsign_view.summary}
-                        headsign_open?={@timing_headsign_open?}
-                        headsign_usage={@timing_headsign_view.usage}
-                        headsign_changed?={@timing_headsign_view.changed?}
-                        headsign_box={@timing_headsign_view.box}
-                        headsign_warnings={@timing_headsign_view.warnings}
-                        timing_error={@timing_error}
-                        timing_blank_note={@timing_blank_note}
-                        blank_count={@blank_count}
-                        version_id={@current_gtfs_version.id}
-                        fill={@fill}
-                        fill_preview={@fill_preview}
-                        fill_distances={@fill_distances}
-                        fill_coords={@fill_coords}
-                        fill_sections={@fill_sections}
-                        retime={@retime}
-                        offline?={@offline?}
-                        custom_trip_count={@detail_custom_trip_count}
-                        dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
-                        busy?={@applying? or @offline?}
-                        filling?={@fill != nil}
-                      />
-                  <% end %>
+                    <% end %>
+                  </div>
+
+                  <div
+                    :if={@headsign_helper? and @agent_open?}
+                    class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+                  >
+                    <.agent_panel
+                      id="agent-panel"
+                      title={@agent_title}
+                      intro={@agent_intro}
+                      examples={@agent_examples}
+                      scope_line={helper_scope_line(assigns)}
+                      status={@agent_status}
+                      entries={@streams.agent_entries}
+                      form={@agent_form}
+                      notice={@agent_notice}
+                      entries_empty?={@agent_entries_empty?}
+                      review_label={fn _prepared -> "Review headsigns" end}
+                    />
+                  </div>
+
+                  <%!--
+                  The panel's focus listener belongs to this wrapper, which survives the conditional panel;
+                  the hook only moves focus and never decides it for the server. --%>
+                  <script :type={Phoenix.LiveView.ColocatedHook} name=".PatternHelperFocus">
+                    export default {
+                      mounted() {
+                        this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+                      }
+                    }
+                  </script>
                 </div>
 
                 <RoutePatternComponents.save_bar
@@ -2992,7 +3113,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
-    assign_dirty(socket)
+    socket |> assign_dirty() |> bind_agent_context()
   end
 
   # The label groups the drawer reads, keyed by the owner's natural ID — the ID
