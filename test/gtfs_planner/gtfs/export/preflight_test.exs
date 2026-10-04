@@ -406,13 +406,13 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
     } do
       arrange_every_violation(org.id, version.id)
 
-      assert [station, stops, gate, agencies, transfers, trips] =
+      assert [station, stops, gate, timezones, transfers, trips] =
                Preflight.inspect_summary(org.id, version.id, :full)
 
       assert {station.unit, station.total} == {:stations, 1}
       assert {stops.unit, stops.total} == {:stations, 1}
       assert {gate.unit, gate.total} == {:pathways, 1}
-      assert {agencies.unit, agencies.total} == {:agencies, 2}
+      assert {timezones.unit, timezones.total} == {:timezones, 2}
       assert {transfers.unit, transfers.total} == {:transfers, 1}
       assert {trips.unit, trips.total} == {:trips, 1}
 

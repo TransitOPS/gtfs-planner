@@ -83,7 +83,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
           code: String.t(),
           message: String.t(),
           total: non_neg_integer(),
-          unit: :transfers | :trips | :stations | :agencies | :pathways | :fares,
+          unit: :transfers | :trips | :stations | :timezones | :pathways | :fares,
           examples: [String.t()],
           completeness: String.t()
         }
@@ -111,8 +111,8 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   one, so a caller can show an exact number next to its examples.
 
   `mixed_agency_timezones` reports the number of conflicting timezones the
-  existing message states, with `unit: :agencies` naming the entities the check
-  is about.
+  existing message states, with `unit: :timezones` naming what that number counts
+  (not the agencies that use them).
   """
   @spec inspect_summary(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
           [summary()]
@@ -287,7 +287,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
     )
     |> Repo.all()
     |> summarize()
-    |> finding("mixed_agency_timezones", :agencies, fn count, examples ->
+    |> finding("mixed_agency_timezones", :timezones, fn count, examples ->
       "Agencies in this feed use #{count} different timezones (#{examples}). " <>
         "GTFS requires one timezone for every agency in a feed. " <>
         "Set the same timezone on every agency in Settings > Agencies."
