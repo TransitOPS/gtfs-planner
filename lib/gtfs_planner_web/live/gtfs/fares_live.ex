@@ -108,6 +108,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
   import GtfsPlannerWeb.Gtfs.FaresComponents,
     only: [
       assignment_dialog: 1,
@@ -136,6 +138,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -197,7 +200,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
      |> assign(:map_mounted?, false)
      |> assign(:map_filter, nil)
      |> assign(:map_snapshot_after_load, false)
-     |> stream(:stops, [])}
+     |> stream(:stops, [])
+     |> AgentPanel.mount("fare_zones")}
   end
 
   @impl true
@@ -525,6 +529,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           empty state carries its own single primary, so the header's goes away. --%>
           <:actions :if={@live_action == :zones and not first_use?(assigns)}>
             <.button
+              :if={@load_state == :ready}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
+            <.button
               id="fare-zone-create"
               variant={if MapSet.size(@selection) > 0, do: "secondary", else: "primary"}
               class="min-h-11"
@@ -544,101 +560,144 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           checks_tone={if @load_state == :ready, do: checks_tone(@checks), else: nil}
         />
 
-        <%!-- One column that may shrink below its content: a card is `overflow-clip`,
-        so without `minmax(0, 1fr)` a wide table would stretch the page instead. --%>
-        <div class="mt-4 grid grid-cols-1 gap-4">
-          <.loading :if={@load_state == :loading} />
+        <%!-- The workspace and the helper panel share one row from 1024px. Below that the
+        panel stacks above the workspace, where the `Open helper` button that opened it
+        sits. The panel's focus listener belongs to this wrapper, which survives the
+        panel and the assignment dialog. --%>
+        <div
+          id="fares-helper-layout"
+          phx-hook=".FaresHelperFocus"
+          class={[
+            "flex flex-col lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
+        >
+          <div class="min-w-0">
+            <%!-- One column that may shrink below its content: a card is `overflow-clip`,
+            so without `minmax(0, 1fr)` a wide table would stretch the page instead. --%>
+            <div class="mt-4 grid grid-cols-1 gap-4">
+              <.loading :if={@load_state == :loading} />
 
-          <.message :if={@notice} id="fare-zone-notice" kind="success" title={@notice} />
+              <.message :if={@notice} id="fare-zone-notice" kind="success" title={@notice} />
 
-          <.load_error :if={@load_state == :unavailable} />
+              <.load_error :if={@load_state == :unavailable} />
 
-          <%= if @load_state == :ready do %>
-            <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
+              <%= if @load_state == :ready do %>
+                <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
 
-            <.saved_callout
-              :if={@undo && @live_action == :zones && @inventory.zones != []}
-              undo={@undo}
-            />
-
-            <section
-              :if={@live_action == :zones and @inventory.zones != []}
-              id="fare-zones-panel"
-              aria-label="Fare zones and stops"
-              class="overflow-clip rounded-card border border-subtle bg-white"
-            >
-              <div class="flex flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 sm:px-5">
-                <.zone_inventory
-                  inventory={@inventory}
-                  filter={@filter}
-                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                <.saved_callout
+                  :if={@undo && @live_action == :zones && @inventory.zones != []}
+                  undo={@undo}
                 />
-                <.stop_search q={@q} />
-              </div>
 
-              <.stage_header
-                title={stage_title(@filter, @inventory)}
-                subtitle={stage_subtitle(@filter, @inventory)}
-                view={@view}
-              >
-                <:actions :if={stage_zone_id(@filter, @inventory)}>
-                  <.button
-                    id="fare-zone-edit"
-                    variant="secondary"
-                    class="min-h-11"
-                    phx-click="open_zone_drawer"
-                    phx-value-zone_id={stage_zone_id(@filter, @inventory)}
-                    phx-value-opener_id="fare-zone-edit"
-                  >
-                    Edit zone
-                  </.button>
-                </:actions>
-              </.stage_header>
-
-              <%!-- The workspace is one fixed-height region from 1024px: the map and
-              the list are equal columns and each scrolls on its own, so the map never
-              leaves the screen while the list scrolls. Below that they stack, map
-              first. --%>
-              <div
-                id="fare-zone-stage"
-                class={[
-                  "grid grid-cols-1",
-                  @view == :map && "lg:h-[clamp(420px,calc(100dvh-486px),760px)] lg:grid-cols-2",
-                  @view == :list && "lg:h-[clamp(420px,calc(100dvh-486px),760px)]"
-                ]}
-              >
-                <%!-- The map is the stage's first surface in Map and list view:
-                choosing List removes the root and its hook, and Retry map renders it
-                again, where the new mount hydrates from its own reply. The legend
-                stays under the fallback: the colors it names are the ones the list
-                shows. --%>
-                <div
-                  :if={@view == :map}
-                  id="fare-zone-map-panel"
-                  class="flex min-h-0 min-w-0 flex-col max-lg:border-b max-lg:border-subtle lg:border-r lg:border-subtle"
+                <section
+                  :if={@live_action == :zones and @inventory.zones != []}
+                  id="fare-zones-panel"
+                  aria-label="Fare zones and stops"
+                  class="overflow-clip rounded-card border border-subtle bg-white"
                 >
-                  <.zone_map :if={@map_state == :ready} />
-                  <.map_unavailable :if={@map_state == :unavailable} />
-                  <.map_legend zones={@inventory.zones} />
-                </div>
+                  <div class="flex flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 sm:px-5">
+                    <.zone_inventory
+                      inventory={@inventory}
+                      filter={@filter}
+                      patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                    />
+                    <.stop_search q={@q} />
+                  </div>
 
-                <.stop_list
-                  stops={@streams.stops}
-                  stop_page={@stop_page}
-                  zones={@inventory.zones}
-                  filter={@filter}
-                  q={@q}
-                  view={@view}
-                  patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
-                  selection={@selection}
-                  matching_count={MapSet.size(@matching_ids)}
-                />
-              </div>
+                  <.stage_header
+                    title={stage_title(@filter, @inventory)}
+                    subtitle={stage_subtitle(@filter, @inventory)}
+                    view={@view}
+                  >
+                    <:actions :if={stage_zone_id(@filter, @inventory)}>
+                      <.button
+                        id="fare-zone-edit"
+                        variant="secondary"
+                        class="min-h-11"
+                        phx-click="open_zone_drawer"
+                        phx-value-zone_id={stage_zone_id(@filter, @inventory)}
+                        phx-value-opener_id="fare-zone-edit"
+                      >
+                        Edit zone
+                      </.button>
+                    </:actions>
+                  </.stage_header>
 
-              <.selection_bar selection={@selection} matching_ids={@matching_ids} />
-            </section>
-          <% end %>
+                  <%!-- The workspace is one fixed-height region from 1024px: the map and
+                  the list are equal columns and each scrolls on its own, so the map never
+                  leaves the screen while the list scrolls. Below that they stack, map
+                  first. --%>
+                  <div
+                    id="fare-zone-stage"
+                    class={[
+                      "grid grid-cols-1",
+                      @view == :map && "lg:h-[clamp(420px,calc(100dvh-486px),760px)] lg:grid-cols-2",
+                      @view == :list && "lg:h-[clamp(420px,calc(100dvh-486px),760px)]"
+                    ]}
+                  >
+                    <%!-- The map is the stage's first surface in Map and list view:
+                    choosing List removes the root and its hook, and Retry map renders it
+                    again, where the new mount hydrates from its own reply. The legend
+                    stays under the fallback: the colors it names are the ones the list
+                    shows. --%>
+                    <div
+                      :if={@view == :map}
+                      id="fare-zone-map-panel"
+                      class="flex min-h-0 min-w-0 flex-col max-lg:border-b max-lg:border-subtle lg:border-r lg:border-subtle"
+                    >
+                      <.zone_map :if={@map_state == :ready} />
+                      <.map_unavailable :if={@map_state == :unavailable} />
+                      <.map_legend zones={@inventory.zones} />
+                    </div>
+
+                    <.stop_list
+                      stops={@streams.stops}
+                      stop_page={@stop_page}
+                      zones={@inventory.zones}
+                      filter={@filter}
+                      q={@q}
+                      view={@view}
+                      patch_base={~p"/gtfs/#{@current_gtfs_version.id}/settings/fares/zones"}
+                      selection={@selection}
+                      matching_count={MapSet.size(@matching_ids)}
+                    />
+                  </div>
+
+                  <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+                </section>
+              <% end %>
+            </div>
+          </div>
+
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 mt-4 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Fare zones · #{@current_gtfs_version.name}"}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label="Review assignment"
+              composer_hint="Prepares a review. You save it on this page."
+            />
+          </div>
         </div>
+
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".FaresHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
 
         <.assignment_dialog
           :if={@assignment}

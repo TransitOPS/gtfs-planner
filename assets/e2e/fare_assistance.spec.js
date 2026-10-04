@@ -1,4 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { bodyFitsViewport } from "./browser_helpers.js";
 
 /**
  * Fare helper journeys: the Fare zones helper on /settings/fares/zones and the
@@ -24,6 +27,16 @@ const EDITOR = {
 };
 
 const ASSISTANCE_VERSION = "Browser Fare Assistance Version";
+const ZONES_VERSION = "Browser Fare Zones Version";
+
+const VIEWPORTS = [
+  { label: "1440", width: 1440, height: 1000 },
+  { label: "320", width: 320, height: 800 },
+];
+
+// Set FARE_ASSISTANCE_CAPTURE_DIR to keep the captures beside the spec package;
+// otherwise they stay in Playwright's own output directory.
+const CAPTURE_DIR = process.env.FARE_ASSISTANCE_CAPTURE_DIR;
 
 // A 1×1 transparent PNG. The zone workspace's map requests tiles, and answering
 // them locally keeps a journey from depending on the Geoapify plan or on network
@@ -80,11 +93,11 @@ async function versionIdByName(page, name) {
   return versionId;
 }
 
-async function openZones(page) {
+async function openZones(page, versionName = ASSISTANCE_VERSION) {
   await routeBlankTiles(page);
   await logIn(page);
 
-  const versionId = await versionIdByName(page, ASSISTANCE_VERSION);
+  const versionId = await versionIdByName(page, versionName);
   await page.goto(`/gtfs/${versionId}/settings/fares/zones`);
   await waitForLiveView(page);
   await expect(page.locator("#fare-zones-panel")).toBeAttached();
@@ -100,6 +113,20 @@ async function openPrices(page) {
   await waitForLiveView(page);
 
   return versionId;
+}
+
+async function capture(page, testInfo, name) {
+  let path = testInfo.outputPath(`${name}.png`);
+
+  if (CAPTURE_DIR) {
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    path = resolve(CAPTURE_DIR, `${name}.png`);
+  }
+
+  // The selection bar is sticky to the viewport's bottom; from the top of the
+  // page a full-page capture shows it where a reader sees it.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path, fullPage: true });
 }
 
 test.describe("seed", () => {
@@ -119,4 +146,47 @@ test.describe("seed", () => {
     await expect(page.locator("#setup-adult")).toHaveCount(0);
     await expect(page.locator("#price-local_ride-adult")).toHaveValue("$1.50");
   });
+});
+
+test.describe("zones helper panel", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`opens beside the stage at ${viewport.label}`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openZones(page, ZONES_VERSION);
+
+      // The page's own controls work before the panel opens.
+      await expect(page.locator("#fare-zone-create")).toBeVisible();
+      await page.locator("#agent-helper-open").click();
+
+      const panel = page.locator("#agent-panel");
+      await expect(panel).toBeVisible();
+      await expect(page.locator("#agent-composer-input")).toBeFocused();
+      await expect(page.locator("#agent-helper-open")).toHaveAttribute("aria-expanded", "true");
+
+      const stage = await page.locator("#fare-zones-panel").boundingBox();
+      const box = await panel.boundingBox();
+
+      if (viewport.width >= 1024) {
+        // A 24rem column to the right of the workspace, which keeps its own width.
+        expect(Math.round(box.width)).toBe(384);
+        expect(box.x).toBeGreaterThanOrEqual(stage.x + stage.width);
+        expect(stage.width).toBeGreaterThan(600);
+      } else {
+        // Stacked above the workspace the Open helper button belongs to.
+        expect(box.y + box.height).toBeLessThanOrEqual(stage.y + 1);
+      }
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      // The workspace is still usable with the panel open.
+      await page.locator("#fare-zone-row-unassigned").click();
+      await expect(page).toHaveURL(/[?&]filter=unassigned$/);
+
+      await capture(page, testInfo, `zones-panel-${viewport.label}`);
+
+      await page.locator("#agent-panel-close").click();
+      await expect(panel).toHaveCount(0);
+      await expect(page.locator("#agent-helper-open")).toBeFocused();
+    });
+  }
 });
