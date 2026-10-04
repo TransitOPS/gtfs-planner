@@ -147,6 +147,57 @@ defmodule GtfsPlanner.Gtfs.StationAssistantImportsTest do
       end
     end
 
+    test "stops moved from one station to another, and their pathway, belong to neither", ctx do
+      moved_x =
+        child_stop(ctx.organization.id, ctx.version.id, ctx.other_station, "MOVED_X", "L2", "X")
+
+      moved_y =
+        child_stop(ctx.organization.id, ctx.version.id, ctx.other_station, "MOVED_Y", "L2", "Y")
+
+      # Persisted under STATION_B; the upload re-parents both under STATION_A.
+      moved = fn stop ->
+        decision("stop:#{stop.stop_id}", :stop, :modify, stop.stop_id,
+          current: %{"parent_station" => "STATION_B"},
+          uploaded: %{"parent_station" => "STATION_A"}
+        )
+      end
+
+      run =
+        persisted_run(ctx, %{
+          decisions: [
+            moved.(moved_x),
+            moved.(moved_y),
+            decision("pathway:PW_MOVED", :pathway, :modify, "PW_MOVED",
+              current: %{
+                "from_stop_id" => "MOVED_X",
+                "to_stop_id" => "MOVED_Y",
+                "min_width" => "1.00"
+              },
+              uploaded: %{
+                "from_stop_id" => "MOVED_X",
+                "to_stop_id" => "MOVED_Y",
+                "min_width" => "1.05"
+              }
+            )
+          ],
+          summary: %{applicable: 3, modify: 3, add: 0},
+          diagnostics: []
+        })
+
+      # Each decision speaks about two stations at once: its current record is
+      # STATION_B's and its uploaded record is STATION_A's. Neither helper may
+      # read it, because either one would see the other station's values.
+      for station <- [ctx.station, ctx.other_station] do
+        assert {:ok, result, _evidence} =
+                 StationAssistant.import_review(run_scope(ctx, station, run), %{})
+
+        assert result["decisions"] == [], "#{station.stop_id} must not read a moved stop"
+        assert result["counts"]["station_total"] == 0
+        assert result["counts"]["excluded_total"] == 3
+        refute Jason.encode!(result) =~ "MOVED_"
+      end
+    end
+
     test "the projected rows carry the native decision shape and no free text", ctx do
       run = persisted_run(ctx, hand_enumerated_review(ctx))
 

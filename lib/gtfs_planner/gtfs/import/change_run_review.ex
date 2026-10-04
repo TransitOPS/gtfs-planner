@@ -590,9 +590,16 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
 
   defp entry_stop_id(%{stop_id: stop_id}), do: stop_id
 
+  # The chain this run would leave behind: proposed rows over persisted ones.
   defp station_stop?(world, station, stop_id) do
     match?({:station, _stop_id}, resolve_stop(world, station, stop_id, []))
   end
+
+  # The chain as persisted today, with none of this run's proposed re-parenting
+  # layered on top. A stop the upload moves between stations is in one station
+  # now and another afterwards, and each chain has to resolve on its own.
+  defp current_station_stop?(world, station, stop_id),
+    do: station_stop?(%{world | proposed: %{}}, station, stop_id)
 
   # A stop belongs to the station when its current parent chain and its uploaded
   # parent chain both resolve to it. The station row itself is a member of its
@@ -619,7 +626,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     do: true
 
   defp current_stop_resolves?(world, station, key, _values),
-    do: station_stop?(world, station, key)
+    do: current_station_stop?(world, station, key)
 
   defp uploaded_stop_resolves?(_world, _station, _key, uploaded) when map_size(uploaded) == 0,
     do: true
@@ -638,15 +645,12 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   # and uploaded alike - resolves wholly to it. One endpoint on another station,
   # or one endpoint that resolves to nothing, excludes the whole pathway.
   defp pathway_attributed?(decision, world, station) do
-    case decision_endpoints(decision) do
-      [] -> false
-      endpoints -> Enum.all?(endpoints, &station_stop?(world, station, &1))
-    end
-  end
+    current = endpoint_pairs(decision.current_values || %{})
+    uploaded = endpoint_pairs(decision.uploaded_values || %{})
 
-  defp decision_endpoints(decision) do
-    endpoint_pairs(decision.current_values || %{}) ++
-      endpoint_pairs(decision.uploaded_values || %{})
+    current ++ uploaded != [] and
+      Enum.all?(current, &current_station_stop?(world, station, &1)) and
+      Enum.all?(uploaded, &station_stop?(world, station, &1))
   end
 
   defp endpoint_pairs(values) when map_size(values) == 0, do: []
