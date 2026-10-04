@@ -518,6 +518,46 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLiveTest do
 
       assert exited.assigns.preview_error.title =~ "could not be built"
     end
+
+    test "a read that passes its deadline answers a message instead of crashing", context do
+      {:ok, view, _html} = open_world_generator(context.conn, context)
+      preview_generation(view)
+
+      socket = :sys.get_state(view.pid).socket
+
+      # The read boundary's own refusals, not the plan's: the answer to the request
+      # on screen is `Export.with_read_snapshot/1`'s `{:error, :snapshot_timeout}`
+      # past its deadline, or its `{:error, :rollback}` when the read's snapshot
+      # rolled back. Neither is a refusal the page names, so mapping them to a
+      # message is what keeps `handle_async/3` from raising away the reader's request.
+      assert {:noreply, timed_out} =
+               TodsGeneratorLive.handle_async(
+                 {:preview, socket.assigns.preview_revision},
+                 {:ok, {:error, :snapshot_timeout}},
+                 socket
+               )
+
+      assert timed_out.assigns.preview_error.title =~ "could not be read in time"
+
+      assert {:noreply, rolled_back} =
+               TodsGeneratorLive.handle_async(
+                 {:preview, socket.assigns.preview_revision},
+                 {:ok, {:error, :rollback}},
+                 socket
+               )
+
+      assert rolled_back.assigns.preview_error.title =~ "rolled back"
+
+      # A refusal this page has no clause for is a message too, never a crash.
+      assert {:noreply, unknown} =
+               TodsGeneratorLive.handle_async(
+                 {:preview, socket.assigns.preview_revision},
+                 {:ok, {:error, :refused_later}},
+                 socket
+               )
+
+      assert unknown.assigns.preview_error.title =~ "could not be built"
+    end
   end
 
   describe "saving a preview" do

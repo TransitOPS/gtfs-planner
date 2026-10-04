@@ -408,6 +408,38 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
     }
   end
 
+  # The read boundary's own refusals, which `Export.with_read_snapshot/1` answers
+  # outside the plan's: its transaction deadline, and the rollback it reports on
+  # the same boundary.
+  defp preview_failure(:snapshot_timeout) do
+    %{
+      kind: "error",
+      role: "alert",
+      title: "The preview could not be read in time.",
+      body: "Nothing was saved. Try a shorter date range, or preview again."
+    }
+  end
+
+  defp preview_failure(:rollback) do
+    %{
+      kind: "error",
+      role: "alert",
+      title: "The preview read was rolled back.",
+      body: "Nothing was saved. Preview again, or try a smaller date range."
+    }
+  end
+
+  # No live read refusal this page does not name is a crash: the read answers with
+  # whatever its own boundary refused, so the last clause states the generic case.
+  defp preview_failure(_reason) do
+    %{
+      kind: "error",
+      role: "alert",
+      title: "The preview could not be built.",
+      body: "Nothing was saved. Preview again, or try a smaller date range."
+    }
+  end
+
   # --- the save ---------------------------------------------------------------
 
   defp start_save(socket, preview, request_id) do
