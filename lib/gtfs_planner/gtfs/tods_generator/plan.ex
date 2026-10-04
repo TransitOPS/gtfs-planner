@@ -333,7 +333,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   service the plan leaves unstaffed, `other_service_dates` is the dates whose day
   type is not their weekday's base (different service, nothing exported for them),
   and `exported_dates` is the dates and services `AssignmentsExport.rows/1` would
-  write — a run signing on before midnight is dated the previous day.
+  write — a run signing on before midnight keeps its day type's own date and
+  service, with its clocks read a day later.
   """
   @type coverage :: %{
           range: %{start_date: Date.t(), end_date: Date.t(), representative_week: Date.t()},
@@ -1023,9 +1024,10 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
         roster: roster,
         day_types: day_types,
         run_days: runs,
-        # The export's own service reservation (`TodsExport`) names the `_prev`
-        # service; a preview holds no supplement, so it reports the date the
-        # exporter shifts to and leaves the service to the export that writes it.
+        # A run signing on before midnight keeps the day type's own date and
+        # service (`TodsExport` names the same service day its trips operate on);
+        # a preview holds no supplement, so it reports that date and leaves the
+        # service to the export that writes it.
         services: nil
       })
 
