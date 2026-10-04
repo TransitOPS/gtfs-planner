@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Exercise the aggregate gate without application, database or network setup.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+baseline=(
+  CHANGES_RESULT=success
+  ELIXIR_CHANGED=false JS_CHANGED=false DOCKER_CHANGED=false INFRA_CHANGED=false
+  ELIXIR_DEPS_RESULT=skipped ELIXIR_DEV_RESULT=skipped ELIXIR_TEST_RESULT=skipped
+  JS_RESULT=skipped JS_BROWSER_RESULT=skipped DOCKER_RESULT=skipped INFRA_RESULT=skipped
+)
+checks=0
+
+expect() {
+  local name=$1 expected=$2 actual output
+  shift 2
+  if output=$(env "${baseline[@]}" "$@" bin/check-ci-results 2>&1); then
+    actual=pass
+  else
+    actual=fail
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "$name: expected $expected, got $actual: $output" >&2
+    exit 1
+  fi
+  checks=$((checks + 1))
+}
+
+expect 'docs-only intentional skips' pass
+expect 'full successful run' pass \
+  ELIXIR_CHANGED=true JS_CHANGED=true DOCKER_CHANGED=true INFRA_CHANGED=true \
+  ELIXIR_DEPS_RESULT=success ELIXIR_DEV_RESULT=success ELIXIR_TEST_RESULT=success \
+  JS_RESULT=success JS_BROWSER_RESULT=success DOCKER_RESULT=success INFRA_RESULT=success
+expect 'failed detection cannot green all skips' fail CHANGES_RESULT=failure
+expect 'skipped detection cannot green all skips' fail CHANGES_RESULT=skipped
+expect 'missing detection' fail CHANGES_RESULT=
+expect 'missing selector' fail ELIXIR_CHANGED=
+expect 'invalid selector' fail JS_CHANGED=invalid
+expect 'selected dependency skipped' fail ELIXIR_CHANGED=true
+expect 'selected static checks skipped' fail ELIXIR_CHANGED=true ELIXIR_DEPS_RESULT=success
+expect 'selected ExUnit skipped' fail \
+  ELIXIR_CHANGED=true ELIXIR_DEPS_RESULT=success ELIXIR_DEV_RESULT=success
+expect 'selected JavaScript skipped' fail JS_CHANGED=true ELIXIR_DEPS_RESULT=success
+expect 'selected browser skipped' fail \
+  JS_CHANGED=true ELIXIR_DEPS_RESULT=success JS_RESULT=success
+expect 'selected Docker skipped' fail DOCKER_CHANGED=true
+expect 'selected infrastructure skipped' fail INFRA_CHANGED=true
+expect 'failed unselected job' fail JS_RESULT=failure
+expect 'cancelled job' fail ELIXIR_TEST_RESULT=cancelled
+expect 'missing result' fail INFRA_RESULT=
+expect 'unknown result' fail DOCKER_RESULT=pending
+expect 'Elixir selected and successful' pass \
+  ELIXIR_CHANGED=true ELIXIR_DEPS_RESULT=success ELIXIR_DEV_RESULT=success ELIXIR_TEST_RESULT=success
+expect 'JavaScript selected and successful' pass \
+  JS_CHANGED=true ELIXIR_DEPS_RESULT=success JS_RESULT=success JS_BROWSER_RESULT=success
+
+echo "CI result guard: $checks scenarios passed."

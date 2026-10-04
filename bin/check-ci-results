@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Fail closed when change detection or a selected CI job did not complete.
+# Unselected jobs may intentionally be skipped (for example a docs-only PR).
+set -euo pipefail
+
+fail() {
+  echo "CI incomplete: $*" >&2
+  exit 1
+}
+
+[ "${CHANGES_RESULT:-}" = success ] || fail "change detection: ${CHANGES_RESULT:-missing}"
+
+for flag in ELIXIR_CHANGED JS_CHANGED DOCKER_CHANGED INFRA_CHANGED; do
+  case ${!flag:-} in
+    true | false) ;;
+    *) fail "$flag is not a boolean: ${!flag:-missing}" ;;
+  esac
+done
+
+check_job() {
+  local name=$1 selected=$2 result=$3
+  case $result in
+    success) ;;
+    skipped)
+      [ "$selected" = false ] || fail "$name was selected but skipped"
+      ;;
+    *) fail "$name: ${result:-missing}" ;;
+  esac
+}
+
+deps_selected=false
+if [ "$ELIXIR_CHANGED" = true ] || [ "$JS_CHANGED" = true ]; then
+  deps_selected=true
+fi
+
+check_job elixir_deps "$deps_selected" "${ELIXIR_DEPS_RESULT:-}"
+check_job elixir_dev "$ELIXIR_CHANGED" "${ELIXIR_DEV_RESULT:-}"
+check_job elixir_test "$ELIXIR_CHANGED" "${ELIXIR_TEST_RESULT:-}"
+check_job js "$JS_CHANGED" "${JS_RESULT:-}"
+check_job js_browser "$JS_CHANGED" "${JS_BROWSER_RESULT:-}"
+check_job docker "$DOCKER_CHANGED" "${DOCKER_RESULT:-}"
+check_job infra "$INFRA_CHANGED" "${INFRA_RESULT:-}"
+
+echo "CI passed: change detection and every selected check succeeded."

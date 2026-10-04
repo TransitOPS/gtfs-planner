@@ -27,6 +27,8 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Check CI result guard
+        run: bash test/scripts/check-ci-results-test
       - name: Check for changes
         id: changes
         uses: ./.github/actions/changed
@@ -85,6 +87,12 @@ jobs:
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
     needs: [changes, elixir_deps]
     if: ${{ needs.changes.outputs.elixir-changed == 'true' }}
+    env:
+      # bin/test-all otherwise starts host pg_tmp servers and ignores this service.
+      # Use the disposable PostGIS service for the full suite and validator CLI.
+      TEST_PARTITIONS: '1'
+      MIX_ENV: test
+      GTFS_PLANNER_TEST_DATABASE_URL: postgres://gtfs_planner_test:gtfs_planner_test@localhost:5432/gtfs_planner_exunit
 
     services:
       postgres:
@@ -116,6 +124,8 @@ jobs:
           path: |
             deps
             _build
+      - name: Compile without warnings
+        run: mix compile --force --warnings-as-errors
       - name: Run tests with coverage
         run: mise run test:elixir --cover
       - name: Set up Java
@@ -151,6 +161,8 @@ jobs:
           path: |
             deps
             _build
+      - name: Check unused lock entries
+        run: MIX_ENV=test mix deps.unlock --check-unused
       - name: Check formatting
         run: mise run lint:elixir:format
       - name: Run credo
@@ -345,11 +357,22 @@ jobs:
   ci_passed:
     name: CI Passed?
     runs-on: ${{ fromJSON(vars.GH_RUNNER_LABEL) }}
-    needs: [elixir_deps, elixir_dev, elixir_test, js, js_browser, docker, infra]
+    needs: [changes, elixir_deps, elixir_dev, elixir_test, js, js_browser, docker, infra]
     if: ${{ always() }}
     steps:
-      - run: |
-          echo "CI failed :("
-          exit 1
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-      - run: echo "CI passed!"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Verify selected checks completed
+        run: bin/check-ci-results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          ELIXIR_CHANGED: ${{ needs.changes.outputs.elixir-changed }}
+          JS_CHANGED: ${{ needs.changes.outputs.js-changed }}
+          DOCKER_CHANGED: ${{ needs.changes.outputs.docker-changed }}
+          INFRA_CHANGED: ${{ needs.changes.outputs.infra-changed }}
+          ELIXIR_DEPS_RESULT: ${{ needs.elixir_deps.result }}
+          ELIXIR_DEV_RESULT: ${{ needs.elixir_dev.result }}
+          ELIXIR_TEST_RESULT: ${{ needs.elixir_test.result }}
+          JS_RESULT: ${{ needs.js.result }}
+          JS_BROWSER_RESULT: ${{ needs.js_browser.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+          INFRA_RESULT: ${{ needs.infra.result }}

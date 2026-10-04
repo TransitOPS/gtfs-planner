@@ -1,4 +1,5 @@
 name: Set up Elixir
+description: Install the pinned Erlang, Elixir and protobuf toolchain for CI jobs.
 
 outputs:
   otp-version:
