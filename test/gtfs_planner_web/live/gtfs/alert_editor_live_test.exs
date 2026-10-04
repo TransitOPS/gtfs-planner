@@ -644,7 +644,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLiveTest do
 
       view |> element("#alert-repair-replace-0") |> render_click()
       search_replacements(view, 0, "Harbor")
-      render_async(view)
+      render_async(view, 5_000)
 
       # A stop of this organization that the schedule has but the search did not return,
       # and one it never had, are both outside what the picker offered.
