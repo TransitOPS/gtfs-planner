@@ -17,7 +17,6 @@ defmodule GtfsPlanner.Agents.Packs.HeadsignsVariantsTest do
 
   alias GtfsPlanner.Agents.Dispatch
   alias GtfsPlanner.Agents.Packs.Headsigns
-  alias GtfsPlanner.Agents.Scope
 
   setup do
     organization = organization_fixture()
@@ -177,27 +176,8 @@ defmodule GtfsPlanner.Agents.Packs.HeadsignsVariantsTest do
   defp scope(context, a01, timing \\ nil),
     do: scope_for(context, a01.route, a01.pattern, timing)
 
-  defp scope_for(context, route, pattern, timing \\ nil) do
-    {:ok, admitted} =
-      Scope.with_source_snapshot(Scope.context({:route, route.id}), %{
-        kind: "headsign_scope",
-        payload: %{
-          "schema_version" => 1,
-          "pattern_id" => pattern.id,
-          "timing_id" => timing && timing.id
-        }
-      })
-
-    %Scope{
-      organization_id: context.organization.id,
-      gtfs_version_id: context.version.id,
-      user_id: context.user.id,
-      user_email: context.user.email,
-      pack_id: "headsigns",
-      version_name: context.version.name,
-      resource_context: admitted
-    }
-  end
+  defp scope_for(context, route, pattern, timing \\ nil),
+    do: helper_scope(context.organization, context.version, context.user, route, pattern, timing)
 
   # Sixty trips on one default, ten minutes apart from 05:00, so departure order is
   # the trip number.

@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Values
+  alias GtfsPlanner.Wording
 
   @snapshot_kind "headsign_scope"
   @source_ref "gtfs_headsign_usage"
@@ -31,6 +32,10 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
   @page_size 25
   @max_value_length 200
   @max_offset 100_000
+  @max_trips 100
+  @named_limit 5
+  @kept_named_limit 3
+  @exclusions_limit 10
 
   @stop_level_note "Stop-level headsigns are never changed by a headsign rename."
 
@@ -105,6 +110,34 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_headsign_change",
+        description:
+          "Prepare a rename of this page's default headsign for the editor to review and save. " <>
+            "current_text must be the exact current default the summary reported (an empty " <>
+            "string when there is none) and new_text the approved wording. The trips that " <>
+            "follow the default are selected for you; list trip_ids from find_headsign_variants " <>
+            "in exclude_trip_ids only for exceptions the person named. It saves nothing.",
+        activity: "Prepared a headsign change",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "current_text" => %{"type" => "string", "maxLength" => @max_value_length},
+            "new_text" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "maxLength" => @max_value_length
+            },
+            "exclude_trip_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string", "maxLength" => 100},
+              "maxItems" => @max_trips
+            }
+          },
+          "required" => ["current_text", "new_text"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -127,6 +160,7 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
   @impl true
   def call("summarize_headsigns", _args, %Scope{} = scope), do: summarize_headsigns(scope)
   def call("find_headsign_variants", args, %Scope{} = scope), do: find_variants(args, scope)
+  def call("prepare_headsign_change", args, %Scope{} = scope), do: prepare_change(args, scope)
 
   # -- summarize_headsigns ----------------------------------------------------
 
@@ -290,6 +324,230 @@ defmodule GtfsPlanner.Agents.Packs.Headsigns do
       source_revision: nil,
       scope: Pack.evidence_scope(scope),
       exclusions: [],
+      resources: []
+    }
+  end
+
+  # -- prepare_headsign_change --------------------------------------------------
+
+  # The selection is native: the followers the usage read reports for the scope's
+  # own default, minus the trips the person excluded by GTFS trip ID. The pack
+  # compares no headsign text of its own, writes nothing, and hands the native
+  # review the exact trip UUIDs it selected, so the prepared command is what that
+  # review would accept (AC-3, AC-4, CR-3).
+  defp prepare_change(args, scope) do
+    with {:ok, bound} <- require_bound(scope),
+         default = effective_default(bound),
+         {:ok, usage} <- read_usage(scope, bound, from: default),
+         :ok <- check_current(args["current_text"], default),
+         {:ok, to} <- check_new(args["new_text"], default),
+         {:ok, selection} <- select_followers(usage, Map.get(args, "exclude_trip_ids", [])),
+         :ok <- check_cap(selection.selected),
+         ids = selection.selected |> Enum.map(& &1.id) |> Enum.sort(),
+         :ok <- review_natively(scope, bound, to, ids) do
+      command =
+        {:headsign_change,
+         %{
+           pattern_id: bound.pattern.id,
+           scope: if(bound.timing, do: {:timing, bound.timing.id}, else: :pattern),
+           from: default,
+           to: to,
+           trip_ids: ids
+         }}
+
+      {:prepared, prepared_summary(bound, usage, selection, default, to, command),
+       change_result(bound, usage, selection, default, to), change_evidence(selection, to, scope)}
+    end
+  end
+
+  defp check_current(current_text, default) do
+    if Headsigns.normalize(current_text) == default do
+      :ok
+    else
+      {:error,
+       "current_text is not this page's current default. " <>
+         if(default,
+           do: "The default is \"#{default}\".",
+           else: "There is no default headsign; pass an empty current_text."
+         )}
+    end
+  end
+
+  defp check_new(new_text, default) do
+    case Headsigns.normalize(new_text) do
+      nil -> {:error, "new_text must not be blank."}
+      ^default -> {:error, "new_text is already the default headsign; nothing would change."}
+      to -> {:ok, to}
+    end
+  end
+
+  # Followers are the usage read's `:follows` group; an excluded trip may be any
+  # trip of the scope's usage, and a name outside it is refused.
+  defp select_followers(usage, exclude_trip_ids) do
+    in_scope = usage.groups |> Enum.flat_map(& &1.trips) |> MapSet.new(& &1.trip_id)
+    excluded = MapSet.new(exclude_trip_ids)
+
+    case exclude_trip_ids |> Enum.uniq() |> Enum.reject(&MapSet.member?(in_scope, &1)) do
+      [] ->
+        followers =
+          usage.groups
+          |> Enum.filter(&(&1.kind == :follows))
+          |> Enum.flat_map(& &1.trips)
+
+        {kept_followers, selected} =
+          Enum.split_with(followers, &MapSet.member?(excluded, &1.trip_id))
+
+        differing =
+          usage.groups |> Enum.reject(&(&1.kind == :follows)) |> Enum.flat_map(& &1.trips)
+
+        {:ok, %{selected: selected, kept_followers: kept_followers, differing: differing}}
+
+      unknown ->
+        {:error,
+         "These trip IDs are not trips of this page's scope: " <>
+           Enum.join(Enum.take(unknown, @named_limit), ", ") <>
+           if(length(unknown) > @named_limit, do: " and more.", else: ".")}
+    end
+  end
+
+  defp check_cap(selected) when length(selected) > @max_trips do
+    {:error,
+     "#{Wording.count_noun(length(selected), "trip")} follow the default, over the #{@max_trips} " <>
+       "this helper prepares. The native Also-update control handles larger sets; " <>
+       "excluding trips prepares a smaller one."}
+  end
+
+  defp check_cap(_selected), do: :ok
+
+  defp review_natively(scope, bound, to, ids) do
+    selection = %{headsign_trip_ids: ids}
+
+    operation =
+      if bound.timing,
+        do: {:timing, bound.timing.id, %{headsign: to}, selection},
+        else: {:details, %{headsign: to}, selection}
+
+    case Gtfs.review(bound.pattern.id, operation, nil, Scope.audit_context(scope)) do
+      {:ok, %{proposed: proposed}} ->
+        with %{headsign_changes: changes} <- unwrap_proposal(proposed),
+             true <- changes |> Enum.map(& &1.id) |> Enum.sort() == ids do
+          :ok
+        else
+          _other -> {:error, "The native review did not confirm that selection."}
+        end
+
+      {:error, reason} ->
+        {:error, review_error(reason)}
+    end
+  end
+
+  # A details review proposes the map itself; a timing review wraps it in `{:ok, _}`,
+  # which `timing_save_blanks_test` pins as the native contract.
+  defp unwrap_proposal({:ok, proposal}), do: proposal
+  defp unwrap_proposal(proposal), do: proposal
+
+  defp review_error(:invalid_selection), do: "The native review refused that trip selection."
+  defp review_error(:not_found), do: "This helper's pattern is not available."
+  defp review_error(_reason), do: "The native review refused that headsign change."
+
+  defp prepared_summary(bound, usage, selection, default, to, command) do
+    kept = selection.kept_followers ++ selection.differing
+
+    %{
+      command: command,
+      summary: %{
+        title: ~s(Rename headsign to "#{to}"),
+        detail: "#{scope_label(bound)} · #{quoted(default)} to #{quoted(to)}",
+        lines:
+          change_lines(selection.selected, kept) ++
+            ["Stop-level headsigns are not changed"] ++
+            shielded_line(usage) ++
+            ["Trips whose text matches the default by coincidence are treated as following it"]
+      }
+    }
+  end
+
+  defp change_lines(selected, kept) do
+    changing =
+      case length(selected) do
+        1 -> "1 trip changes"
+        count -> "#{Wording.count_noun(count, "trip")} change"
+      end
+
+    case kept do
+      [] ->
+        [changing]
+
+      kept ->
+        named = kept |> Enum.take(@kept_named_limit) |> Enum.map_join(", ", & &1.trip_id)
+        more = length(kept) - @kept_named_limit
+
+        [
+          changing,
+          "#{Wording.count_noun(length(kept), "trip")} keep their own text (" <>
+            named <> if(more > 0, do: " and #{more} more", else: "") <> ")"
+        ]
+    end
+  end
+
+  defp shielded_line(%{shielded: []}), do: []
+
+  defp shielded_line(%{shielded: shielded}) do
+    trips = shielded |> Enum.map(& &1.trip_count) |> Enum.sum()
+    ["#{Wording.count_noun(trips, "trip")} on timings with their own headsign are not changed"]
+  end
+
+  defp scope_label(%{timing: nil, pattern: pattern}), do: "Pattern #{pattern.route_pattern_name}"
+
+  defp scope_label(%{timing: timing, pattern: pattern}),
+    do: "#{pattern.route_pattern_name} / #{timing.name}"
+
+  defp quoted(nil), do: "no headsign"
+  defp quoted(text), do: ~s("#{text}")
+
+  # What the model reads: the server's own counts and the first named trips it kept,
+  # never a number the model supplied.
+  defp change_result(bound, usage, selection, default, to) do
+    kept = selection.kept_followers ++ selection.differing
+
+    %{
+      "prepared" => true,
+      "scope" => if(bound.timing, do: "timing", else: "pattern"),
+      "from" => default,
+      "to" => to,
+      "trips_change" => length(selection.selected),
+      "trips_kept" => length(kept),
+      "kept_examples" => kept |> Enum.take(@kept_named_limit) |> Enum.map(& &1.trip_id),
+      "trips_shielded" => usage.shielded |> Enum.map(& &1.trip_count) |> Enum.sum(),
+      "note" => "Nothing is saved until the editor reviews and saves the change on this page."
+    }
+  end
+
+  defp change_evidence(selection, to, scope) do
+    kept =
+      Enum.map(selection.kept_followers, &"#{&1.trip_id} (excluded)") ++
+        Enum.map(selection.differing, &"#{&1.trip_id} (keeps its own text)")
+
+    exclusions =
+      Enum.take(kept, @exclusions_limit) ++
+        if(length(kept) > @exclusions_limit,
+          do: ["#{length(kept) - @exclusions_limit} more trips keep their text"],
+          else: []
+        )
+
+    %{
+      kind: "headsign_change",
+      title: ~s(Rename headsign to "#{to}"),
+      total: length(selection.selected),
+      total_label: "trips will change",
+      completeness: :complete,
+      completeness_reason: nil,
+      facts: [%{label: "New headsign", value: to}],
+      source_ref: @source_ref,
+      digest: digest(%{to: to, trips: Enum.map(selection.selected, & &1.id)}),
+      source_revision: nil,
+      scope: Pack.evidence_scope(scope),
+      exclusions: exclusions,
       resources: []
     }
   end

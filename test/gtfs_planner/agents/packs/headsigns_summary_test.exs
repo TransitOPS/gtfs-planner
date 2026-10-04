@@ -294,11 +294,18 @@ defmodule GtfsPlanner.Agents.Packs.HeadsignsSummaryTest do
   end
 
   describe "pack declaration" do
-    test "the shipped registry names the pack and its read-only tool" do
+    test "the shipped registry names the pack and its prepare-only tools" do
       assert Agents.packs()["headsigns"] == Headsigns
       assert Headsigns.id() == "headsigns"
       assert Headsigns.title() == "Headsign helper"
-      assert Enum.map(Headsigns.tools(), & &1.name) == ["summarize_headsigns"]
+
+      # Reads and one prepare tool; no tool is named for a native write (CR-1).
+      assert Enum.map(Headsigns.tools(), & &1.name) == [
+               "summarize_headsigns",
+               "find_headsign_variants",
+               "prepare_headsign_change"
+             ]
+
       assert Headsigns.skill() =~ "summarize_headsigns"
     end
   end

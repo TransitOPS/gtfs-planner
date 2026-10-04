@@ -22,6 +22,7 @@ defmodule GtfsPlanner.HeadsignHelperFixtures do
   import Ecto.Query, only: [from: 2]
   import GtfsPlanner.GtfsFixtures
 
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -149,6 +150,33 @@ defmodule GtfsPlanner.HeadsignHelperFixtures do
       off_peak: bundle.timing,
       peak: peak,
       trips: Map.merge(off_peak_trips, peak_trips)
+    }
+  end
+
+  @doc """
+  A `headsigns` helper scope for `user`, admitted through the real
+  `Scope.with_source_snapshot/2` exactly as the Pattern page admits it: the route
+  identity, the pattern and, for a Running-times task, the timing.
+  """
+  def helper_scope(organization, version, user, route, pattern, timing \\ nil) do
+    {:ok, context} =
+      Scope.with_source_snapshot(Scope.context({:route, route.id}), %{
+        kind: "headsign_scope",
+        payload: %{
+          "schema_version" => 1,
+          "pattern_id" => pattern.id,
+          "timing_id" => timing && timing.id
+        }
+      })
+
+    %Scope{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      user_id: user.id,
+      user_email: user.email,
+      pack_id: "headsigns",
+      version_name: version.name,
+      resource_context: context
     }
   end
 
