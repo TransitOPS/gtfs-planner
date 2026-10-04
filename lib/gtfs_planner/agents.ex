@@ -60,6 +60,7 @@ defmodule GtfsPlanner.Agents do
     "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
     "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
     "flex_policy" => GtfsPlanner.Agents.Packs.FlexPolicy,
+    "headsigns" => GtfsPlanner.Agents.Packs.Headsigns,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
     "release_comparison" => GtfsPlanner.Agents.Packs.ReleaseComparison,
     "runs" => GtfsPlanner.Agents.Packs.Runs,
