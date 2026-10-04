@@ -145,6 +145,29 @@ defmodule GtfsPlannerWeb.Gtfs.StopImpactHelperLiveTest do
       assert third.agent_context.source_snapshot.payload["candidate"]["lat"] == lat2
     end
 
+    test "a saved correction ends the pin's conversation and the page's pending move",
+         context do
+      view = open_map(context, "?stop=1434")
+      view |> element("#agent-helper-open") |> render_click()
+
+      # Within the 8 m correction band, so the form saves without a move review.
+      {lon, lat} = north(staged_lat(), 1.5)
+      render_hook(view, "pin_moved", %{"lat" => lat, "lon" => lon})
+      moved = assigns(view)
+      assert moved.agent_context.source_snapshot.payload["candidate"] != nil
+      assert has_element?(view, "#agent-panel", "pin placed")
+
+      view |> form("#stops-map-edit-form") |> render_submit()
+      settle(view)
+
+      saved = assigns(view)
+      assert saved.edit_move == nil
+      assert saved.agent_context.source_snapshot.payload["candidate"] == nil
+      assert saved.agent_conversation_id != moved.agent_conversation_id
+      refute has_element?(view, "#agent-panel", "pin placed")
+      refute has_element?(view, "#stops-map-edit-moved")
+    end
+
     test "putting the pin back, or choosing another stop, rebinds without a pin notice",
          context do
       view = open_map(context, "?stop=1434")

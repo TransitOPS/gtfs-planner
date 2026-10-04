@@ -2265,6 +2265,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:selected_stop_id, stop.stop_id)
     |> assign(:edit_stop, edit_stop_row(stop, socket.assigns))
     |> assign(:edit_loaded_updated_at, stop.updated_at)
+    # The baseline is the draft again, so a pending move measured from the old
+    # baseline (a correction that has just been saved) is over.
+    |> assign(:edit_move, nil)
     |> assign(:edit_baseline, draft)
     |> assign(:edit_errors, %{})
     |> assign(:edit_outcome, :none)
