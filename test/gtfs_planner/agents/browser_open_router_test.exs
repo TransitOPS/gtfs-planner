@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Model
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.FarePrices
   alias GtfsPlanner.Agents.Packs.FareZones
   alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
@@ -536,6 +537,83 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted fare price replies" do
+    @user_price "Raise the Local ride adult and reduced cash prices to 1.75 and 0.85"
+    @price_changes %{
+      "currency" => "USD",
+      "changes" => [
+        %{
+          "fare_product_id" => "local_ride_adult_cash",
+          "rider_category_id" => "adult",
+          "fare_media_id" => "cash",
+          "amount" => "1.75"
+        },
+        %{
+          "fare_product_id" => "local_ride_reduced_cash",
+          "rider_category_id" => "reduced",
+          "fare_media_id" => "cash",
+          "amount" => "0.85"
+        }
+      ]
+    }
+
+    test "a Local ride request reads the cells first" do
+      body = post([system(FarePrices.skill()), user(@user_price)])
+
+      assert {arguments, "list_price_cells"} = tool_call(body)
+      assert Jason.decode!(arguments) == %{"search" => "Local ride"}
+    end
+
+    test "the cells result prepares the two exact changes" do
+      body = post(price_conversation(["list_price_cells"]))
+
+      assert {arguments, "prepare_price_changes"} = tool_call(body)
+      assert Jason.decode!(arguments) == @price_changes
+    end
+
+    test "the prepare result gets the prepared sentence, and a refusal says nothing was prepared" do
+      prepared =
+        final_text(post(price_conversation(["list_price_cells", "prepare_price_changes"])))
+
+      assert prepared == "I prepared 2 price changes. Review them before saving."
+
+      refused =
+        price_conversation(["list_price_cells", "prepare_price_changes"])
+        |> List.replace_at(
+          -1,
+          tool_result("call_prepare_price_changes", %{
+            "error" => "Every price already equals the amount you gave."
+          })
+        )
+        |> post()
+        |> final_text()
+
+      assert refused =~ "I could not prepare those prices."
+    end
+
+    test "a percentage asks for exact amounts and calls no tool, other messages are generic" do
+      percent = post([system(FarePrices.skill()), user("Raise Local ride prices by 10%")])
+
+      assert final_text(percent) =~ "exact amounts"
+
+      assert final_text(post([system(FarePrices.skill()), user("Hello")])) =~
+               "I can list this version's fare prices"
+    end
+
+    test "the price marker is the pack's own heading and the other scripts are unchanged" do
+      assert FarePrices.skill() =~ "# Fare price helper"
+      refute FareZones.skill() =~ "Fare price helper"
+      refute Calendars.skill() =~ "Fare price helper"
+      refute Alerts.skill() =~ "Fare price helper"
+
+      assert {_arguments, "query_zone_targets"} =
+               post([system(FareZones.skill()), user(@user_zone)]) |> tool_call()
+
+      # The same words under the Calendars skill still get its own generic sentence.
+      assert final_text(post([system(Calendars.skill()), user(@user_price)])) == @generic_sentence
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -703,6 +781,32 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
       end)
 
     [system(FareZones.skill()), user(@user_zone)] ++ calls
+  end
+
+  defp price_conversation(answered_tools) do
+    changes = %{
+      "currency" => "USD",
+      "changes" => [
+        %{
+          "fare_product_id" => "local_ride_adult_cash",
+          "rider_category_id" => "adult",
+          "fare_media_id" => "cash",
+          "amount" => "1.75"
+        }
+      ]
+    }
+
+    calls =
+      Enum.flat_map(answered_tools, fn name ->
+        arguments = if name == "list_price_cells", do: %{"search" => "Local ride"}, else: changes
+
+        [
+          assistant_tool_call("call_#{name}", name, arguments),
+          tool_result("call_#{name}", %{"currency" => "USD"})
+        ]
+      end)
+
+    [system(FarePrices.skill()), user(@user_price)] ++ calls
   end
 
   defp assistant_tool_call(id, name, arguments) do

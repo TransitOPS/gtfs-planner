@@ -209,6 +209,20 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       and its result gets the question of which of the two stops is meant;
     * any other message gets the helper's generic sentence.
 
+  The Fare price script drives the prices journey on the "Browser Fare Assistance
+  Version", where Local ride adult cash is 1.50 and reduced cash 0.75:
+
+    * a `"user"` message containing a percent sign gets a sentence that asks for
+      exact amounts and no tool call, because the pack takes no percentages;
+    * a `"user"` message mentioning Local ride gets a `list_price_cells` call for
+      `Local ride`;
+    * the `list_price_cells` result gets `prepare_price_changes` for adult cash 1.75
+      and reduced cash 0.85, the IDs the seeded fare carries;
+    * the `prepare_price_changes` result gets the prepared sentence, which says
+      "prepared" and never that anything was saved, unless the result is a tool
+      error, which gets a sentence that says nothing was prepared;
+    * any other message gets the helper's generic sentence.
+
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
 
@@ -372,6 +386,14 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @fare_zones_which_stop "Three stops match Beach: Agate Beach, Nye Beach and South Beach Park & Ride. Which one do you mean?"
   @fare_zones_generic "I can find stops by route, show their fare zones and prepare a zone assignment for you to review."
 
+  # The Fare price skill's own heading, and the sentences the fare price script
+  # answers with.
+  @fare_prices_marker "Fare price helper"
+  @fare_prices_prepared "I prepared 2 price changes. Review them before saving."
+  @fare_prices_not_prepared "I could not prepare those prices. Tell me the exact amounts."
+  @fare_prices_exact "I can only change prices to exact amounts. Tell me the new amount for each price."
+  @fare_prices_generic "I can list this version's fare prices and prepare exact price changes for you to review."
+
   @impl Plug
   def init(opts), do: opts
 
@@ -394,6 +416,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       system_marked?(messages, @in_seat_marker) -> in_seat_reply(messages)
       system_marked?(messages, @alerts_marker) -> alerts_reply(messages)
       system_marked?(messages, @fare_zones_marker) -> fare_zones_reply(messages)
+      system_marked?(messages, @fare_prices_marker) -> fare_prices_reply(messages)
       system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
       system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
       system_marked?(messages, @stop_text_marker) -> stop_text_reply(messages)
@@ -1361,6 +1384,70 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # AGATE, NTC and LCTC; LCTC is already in CST, so the selection is DEPOE and AGATE.
   defp zone_selection do
     %{"route_ids" => ["1"], "only_unzoned" => true, "exclude_stop_ids" => ["NTC"]}
+  end
+
+  defp fare_prices_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        fare_prices_user_reply(content)
+
+      %{"role" => "tool"} = tool_message ->
+        fare_prices_tool_reply(messages, tool_message)
+
+      _other ->
+        text_reply(@fare_prices_generic)
+    end
+  end
+
+  defp fare_prices_user_reply(content) do
+    cond do
+      content =~ "%" ->
+        text_reply(@fare_prices_exact)
+
+      content =~ ~r/local ride/i ->
+        tool_calls_reply("list_price_cells", %{"search" => "Local ride"})
+
+      true ->
+        text_reply(@fare_prices_generic)
+    end
+  end
+
+  defp fare_prices_tool_reply(messages, %{"tool_call_id" => tool_call_id} = tool_message) do
+    case answered_tool(messages, tool_call_id) do
+      "list_price_cells" ->
+        if tool_error?(tool_message),
+          do: text_reply(@fare_prices_not_prepared),
+          else: tool_calls_reply("prepare_price_changes", local_ride_changes())
+
+      "prepare_price_changes" ->
+        if tool_error?(tool_message),
+          do: text_reply(@fare_prices_not_prepared),
+          else: text_reply(@fare_prices_prepared)
+
+      _other ->
+        text_reply(@fare_prices_generic)
+    end
+  end
+
+  # Local ride adult and reduced cash: 1.50 to 1.75 and 0.75 to 0.85.
+  defp local_ride_changes do
+    %{
+      "currency" => "USD",
+      "changes" => [
+        %{
+          "fare_product_id" => "local_ride_adult_cash",
+          "rider_category_id" => "adult",
+          "fare_media_id" => "cash",
+          "amount" => "1.75"
+        },
+        %{
+          "fare_product_id" => "local_ride_reduced_cash",
+          "rider_category_id" => "reduced",
+          "fare_media_id" => "cash",
+          "amount" => "0.85"
+        }
+      ]
+    }
   end
 
   defp alerts_reply(messages) do
