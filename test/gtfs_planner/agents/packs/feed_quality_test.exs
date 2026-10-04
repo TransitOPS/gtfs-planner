@@ -19,6 +19,14 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
       result is delivered; and prose that claims the findings are fixed cannot
       change the stored totals or invent a typed link.
 
+    * a model is never shown a run id, so the Result page's attached run is the
+      default `run_ref`, a different run of the same version is refused, and the
+      Export page (no attached run) still resolves a named run inside the scope;
+    * the two export tools read a ready artifact and its checks without raising,
+      return only the artifact's digest, size, expiry and profile (never its file
+      name or its run's id), and mark a card incomplete whenever a cursor remains
+      or only the last five checks are listed.
+
   The registry, session, turn loop, dispatch fence, pack and Evidence read are
   the shipped ones, so a pack that was never registered, a tool that never
   reached the domain and evidence that never reached the entry all fail here
@@ -36,6 +44,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
   alias GtfsPlanner.Agents.Packs.FeedQuality
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.SessionSupervisor
+  alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
@@ -46,6 +55,16 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
   @turn_supervisor GtfsPlanner.Agents.TurnSupervisor
 
   @final_text "This version has one WARNING code with 170 stored findings, three of which are retained."
+
+  @digest String.duplicate("a", 64)
+
+  @profile %{
+    "schema_version" => 1,
+    "export_type" => "full",
+    "include_flex" => false,
+    "artifact_kind" => "primary",
+    "estimate_method" => nil
+  }
 
   setup {Req.Test, :verify_on_exit!}
 
@@ -92,7 +111,11 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
              ]
 
       assert Enum.all?(FeedQuality.tools(), &(&1.parameters["additionalProperties"] == false))
-      assert FeedQuality.skill() =~ "list_validation_findings"
+
+      # The skill names every tool the pack registers, so a model is told about
+      # the preparation and navigation tools as well as the five reads.
+      for tool <- FeedQuality.tools(), do: assert(FeedQuality.skill() =~ tool.name)
+      refute FeedQuality.skill() =~ "exactly five tools"
 
       assert {:ok, session, snapshot} = Agents.open(context.scope)
       assert is_pid(session)
@@ -150,7 +173,9 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
       assert group["total_instances"] == 170
       assert group["retained_instances"] == 3
       assert group["completeness"] == "sampled"
-      assert length(group["instances"]) == 3
+
+      # A group page is its header; the samples come from a code-filtered page.
+      assert group["instances"] == []
 
       # The card's count is the server's count over the same read.
       assert [evidence] = entry.evidence
@@ -177,7 +202,8 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
       foreign_run = completed_run(foreign_organization, foreign_version, foreign_notices())
 
       # The foreign row really does exist and really does hold the report, so
-      # only the scoped predicate can be what hides it.
+      # only the scoped predicate can be what hides it. The Export page attaches
+      # no run, so the named reference reaches that predicate.
       assert %ValidationRun{} = Validations.get_validation_run(foreign_run.id)
 
       expect_reply(
@@ -188,7 +214,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
 
       expect_reply(text_reply("That run is not available here."))
 
-      entry = run_turn(context.scope, "Read that run.")
+      entry = run_turn(export_scope(context), "Read that run.")
 
       assert entry.status == :done
       assert %{"error" => message} = tool_result()
@@ -240,7 +266,243 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityTest do
     end
   end
 
+  describe "the attached run is the default run_ref" do
+    test "an omitted run_ref reads the run the page shows", context do
+      expect_reply(tool_calls_reply([{"call_1", "list_validation_findings", "{}"}]))
+      expect_reply(text_reply(@final_text))
+
+      entry = run_turn(context.scope, "What did the last check find?")
+
+      assert entry.status == :done
+      result = tool_result()
+      assert result["total_instances"] == 170
+      assert result["retained_instances"] == 3
+    end
+
+    test "explaining a code needs no run_ref either", context do
+      expect_reply(tool_calls_reply([{"call_1", "explain_notice", ~s({"code":"duplicate_key"})}]))
+      expect_reply(text_reply("That code is stored."))
+
+      assert run_turn(context.scope, "What does duplicate_key mean?").status == :done
+
+      result = tool_result()
+      assert result["code"] == "duplicate_key"
+      assert result["findings"]["total_instances"] == 170
+    end
+
+    test "a different run of the same version is refused, and the Export page needs a name",
+         context do
+      other = completed_run(context.organization, context.version, wrapped_notices())
+
+      assert {:tool_error, message} =
+               Dispatch.call(
+                 FeedQuality,
+                 context.scope,
+                 "list_validation_findings",
+                 list_arguments(other.id)
+               )
+
+      assert message =~ "not available"
+
+      # No run is attached on the Export page: omitting run_ref is a request to
+      # name one, and a named run of this version resolves.
+      assert {:tool_error, named} =
+               Dispatch.call(FeedQuality, export_scope(context), "list_validation_findings", "{}")
+
+      assert named =~ "run_ref"
+
+      assert {:ok, %{"total_instances" => 170}, _evidence} =
+               Dispatch.call(
+                 FeedQuality,
+                 export_scope(context),
+                 "list_validation_findings",
+                 list_arguments(other.id)
+               )
+    end
+  end
+
+  describe "the export tools" do
+    test "get_export_readiness projects the selected artifact and states the relationship",
+         context do
+      run = ready_export_run(context)
+      completed_check(context, checked_zip_sha256: @digest, checked_export_profile: @profile)
+
+      expect_reply(
+        tool_calls_reply([{"call_1", "get_export_readiness", ~s({"export_type":"full"})}])
+      )
+
+      expect_reply(text_reply("The export's bytes were checked."))
+
+      assert run_turn(export_scope(context), "Was the full export checked?").status == :done
+
+      result = tool_result()
+      assert result["relationship"] == "checked"
+      assert result["digest"] == @digest
+
+      # Only what compares bytes: no file name and no export run id.
+      assert result["selected_artifact"] == %{
+               "artifact_kind" => "primary",
+               "sha256" => @digest,
+               "size_bytes" => 1024,
+               "expires_at" => DateTime.to_iso8601(Repo.reload!(run).artifact_expires_at),
+               "available" => true,
+               "profile" => @profile
+             }
+    end
+
+    test "with no export the selected artifact is null, not a string", context do
+      expect_reply(
+        tool_calls_reply([{"call_1", "get_export_readiness", ~s({"export_type":"full"})}])
+      )
+
+      expect_reply(text_reply("There is no export yet."))
+
+      assert run_turn(export_scope(context), "Was the full export checked?").status == :done
+
+      result = tool_result()
+      assert result["relationship"] == "unavailable"
+      assert result["selected_artifact"] == nil
+    end
+
+    test "get_export_validation names the checks and the selected artifact", context do
+      ready_export_run(context)
+      check = completed_check(context, checked_zip_sha256: @digest)
+
+      expect_reply(tool_calls_reply([{"call_1", "get_export_validation", "{}"}]))
+      expect_reply(text_reply("One check read these bytes without a known profile."))
+
+      entry = run_turn(export_scope(context), "Which checks cover this export?")
+      assert entry.status == :done
+
+      # The setup's own completed run is the second check: it recorded no digest.
+      result = tool_result()
+      assert result["relationship"] == "unknown"
+      assert result["selected_artifact"]["sha256"] == @digest
+
+      assert [@digest, nil] ==
+               result["recent_checks"]
+               |> Enum.sort_by(&(&1["checked_digest"] == nil))
+               |> Enum.map(& &1["checked_digest"])
+
+      assert check.id in Enum.map(result["recent_checks"], & &1["id"])
+
+      assert [evidence] = entry.evidence
+      assert evidence.kind == "export_validation"
+      assert evidence.total == 2
+      assert evidence.completeness == :complete
+    end
+
+    test "the last five checks are never shown as the whole history", context do
+      ready_export_run(context)
+      for _index <- 1..5, do: completed_check(context, [])
+
+      expect_reply(tool_calls_reply([{"call_1", "get_export_validation", "{}"}]))
+      expect_reply(text_reply("Five checks are listed."))
+
+      assert [evidence] = run_turn(export_scope(context), "How many checks are there?").evidence
+
+      assert evidence.total == 5
+      assert evidence.completeness == :incomplete
+      assert evidence.exclusions == ["older_checks_not_listed · last 5 shown"]
+      assert evidence.completeness_reason =~ "excluded"
+    end
+  end
+
+  describe "a bounded findings page is never a complete answer" do
+    test "a fully retained report read at the default limit is incomplete while a cursor remains",
+         context do
+      run = completed_run(context.organization, context.version, complete_groups(25))
+
+      expect_reply(
+        tool_calls_reply([{"call_1", "list_validation_findings", list_arguments(run.id)}])
+      )
+
+      expect_reply(text_reply("The first twenty groups."))
+
+      entry = run_turn(export_scope(context), "What are the findings?")
+
+      result = tool_result()
+      assert length(result["groups"]) == 20
+      assert result["completeness"] == "complete"
+      assert is_binary(result["next_cursor"])
+
+      # Every group retains all of its findings, yet the page left five groups
+      # out, so the card must not read as complete.
+      assert [evidence] = entry.evidence
+      assert evidence.total == 25
+      assert evidence.completeness == :incomplete
+      assert evidence.exclusions == ["groups_not_on_this_page · 5"]
+      assert evidence.completeness_reason =~ "next_cursor"
+    end
+  end
+
   # -- fixtures ---------------------------------------------------------------
+
+  defp complete_groups(count) do
+    Enum.map(0..(count - 1), fn index ->
+      %{
+        "code" => "code_#{String.pad_leading(Integer.to_string(index), 2, "0")}",
+        "severity" => "WARNING",
+        "total_notices" => 1,
+        "notices" => [sample(index)],
+        "retained_notices" => 1,
+        "sample_completeness" => "complete"
+      }
+    end)
+  end
+
+  defp export_scope(%{scope: %Scope{} = scope} = context) do
+    %{
+      scope
+      | resource_context:
+          snapshot_context(context.version.id, %{
+            "schema_version" => 1,
+            "section" => "export",
+            "type" => "full"
+          })
+    }
+  end
+
+  # A ready export run with its artifact metadata already committed; readiness
+  # reads the run's stored digest, size and expiry, not the host's storage.
+  defp ready_export_run(context) do
+    now = DateTime.utc_now()
+
+    Repo.insert!(
+      Run.system_changeset(%Run{}, %{
+        export_type: :full,
+        state: :ready,
+        include_flex: false,
+        estimate_missing_times: false,
+        artifact_key: "runs/#{context.organization.id}/main.zip",
+        artifact_filename: "gtfs.zip",
+        artifact_sha256: @digest,
+        artifact_size_bytes: 1024,
+        artifact_expires_at: DateTime.add(now, 3_600, :second),
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        started_at: now,
+        finished_at: now
+      })
+    )
+  end
+
+  defp completed_check(context, provenance) do
+    {:ok, run} =
+      Validations.create_validation_run(
+        context.organization.id,
+        context.version.id,
+        "mobility_data"
+      )
+
+    updates =
+      Keyword.merge([status: "completed", completed_at: DateTime.utc_now()], provenance)
+
+    {1, _} =
+      Repo.update_all(from(stored in ValidationRun, where: stored.id == ^run.id), set: updates)
+
+    Repo.get!(ValidationRun, run.id)
+  end
 
   # A historical wrapper group: its own total says 1 while the embedded upstream
   # report carries the true `totalNotices` of 170 and only three samples.

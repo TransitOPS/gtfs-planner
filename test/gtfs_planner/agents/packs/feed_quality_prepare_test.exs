@@ -150,6 +150,21 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityPrepareTest do
       assert Repo.aggregate(ChangeLog, :count) == 0
     end
 
+    test "a Validation Result snapshot cannot prepare export options", context do
+      # Review options is the Export page's control; no other host could act on
+      # the card, so the tool refuses before it reads or prepares anything.
+      assert {:tool_error, message} =
+               Dispatch.call(
+                 FeedQuality,
+                 validation_scope(context, %{}),
+                 "prepare_export_options",
+                 ~s({"export_type":"pathways"})
+               )
+
+      assert message =~ "Export page"
+      assert Repo.aggregate(Run, :count) == 0
+    end
+
     test "a scope without a matching snapshot cannot prepare anything", context do
       stale =
         export_scope(context, %{
@@ -212,6 +227,32 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityPrepareTest do
       refute Map.has_key?(handoff, "operation_id")
       refute Map.has_key?(handoff, "command")
       assert handoff_evidence.kind == "remedy_handoff"
+    end
+
+    test "the remedy tools default to the run the page attached", context do
+      resolvable = instance_ref(context, 0)
+      approved = validation_scope(context, %{"requested_instance_ref" => resolvable})
+
+      assert {:ok, handoff, _evidence} =
+               Dispatch.call(
+                 FeedQuality,
+                 approved,
+                 "prepare_remedy_handoff",
+                 Jason.encode!(%{"instance_ref" => resolvable})
+               )
+
+      assert handoff["requested"] == true
+
+      assert [%{"kind" => "stop", "id" => "STOP-1"}] =
+               Enum.map(handoff["handoff"]["targets"], &Map.take(&1, ["kind", "id"]))
+
+      assert {:ok, %{"navigable" => true}, _evidence} =
+               Dispatch.call(
+                 FeedQuality,
+                 approved,
+                 "inspect_remedy_targets",
+                 Jason.encode!(%{"instance_ref" => resolvable})
+               )
     end
 
     test "an unresolvable finding and the remedy list name no correction", context do
@@ -351,7 +392,10 @@ defmodule GtfsPlanner.Agents.Packs.FeedQualityPrepareTest do
 
   defp instance_ref(context, index) do
     scope = validation_scope(context, %{})
-    assert {:ok, report} = Evidence.findings(scope, %{run_id: context.run.id})
+
+    assert {:ok, report} =
+             Evidence.findings(scope, %{run_id: context.run.id, code: "missing_required_field"})
+
     assert [group] = report.groups
     group.instances |> Enum.at(index) |> Map.fetch!(:ref)
   end

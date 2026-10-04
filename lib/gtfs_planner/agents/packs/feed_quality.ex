@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       %{
         name: "list_validation_findings",
         description:
-          "List bounded pages of one completed MobilityData validation report: without code it walks code/severity groups (default 20, max 50); with code it walks that code's retained samples (default 50, max 100). A continuation must pass the next_cursor and digest a first page returned. Exact totals are always reported; retained samples may be fewer than the total.",
+          "List bounded pages of one completed MobilityData validation report: without code it lists code/severity group totals (default 20, max 50) and no samples; with code it walks that code's retained samples (default 50, max 100). On a Result page run_ref is the run the page shows and may be omitted; elsewhere pass the id of a recent check. A continuation must pass the next_cursor and digest a first page returned. Exact totals are always reported; retained samples may be fewer than the total.",
         activity: "Listed validation findings",
         parameters: %{
           "type" => "object",
@@ -68,14 +68,14 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
             "digest" => %{"type" => "string", "maxLength" => 128},
             "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 100}
           },
-          "required" => ["run_ref"],
+          "required" => [],
           "additionalProperties" => false
         }
       },
       %{
         name: "explain_notice",
         description:
-          "Report the stored findings of one notice code with pinned documentation only for the validator version it was captured from; other versions or codes disclose unavailable documentation beside the real findings.",
+          "Report the stored findings of one notice code with pinned documentation only for the validator version it was captured from; other versions or codes disclose unavailable documentation beside the real findings. run_ref defaults to the run a Result page shows.",
         activity: "Explained a notice",
         parameters: %{
           "type" => "object",
@@ -83,14 +83,14 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
             "run_ref" => %{"type" => "string", "maxLength" => 200},
             "code" => %{"type" => "string", "maxLength" => 128}
           },
-          "required" => ["run_ref", "code"],
+          "required" => ["code"],
           "additionalProperties" => false
         }
       },
       %{
         name: "locate_affected_records",
         description:
-          "Return the current GTFS records one retained finding names, resolved inside this organization and service version; a duplicated key or a row number resolves to nothing.",
+          "Return the current GTFS records one retained finding names, resolved inside this organization and service version; a duplicated key or a row number resolves to nothing. instance_ref comes from a code-filtered list_validation_findings page; run_ref defaults to the run a Result page shows.",
         activity: "Located affected records",
         parameters: %{
           "type" => "object",
@@ -98,7 +98,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
             "run_ref" => %{"type" => "string", "maxLength" => 200},
             "instance_ref" => %{"type" => "string", "maxLength" => 300}
           },
-          "required" => ["run_ref", "instance_ref"],
+          "required" => ["instance_ref"],
           "additionalProperties" => false
         }
       },
@@ -139,7 +139,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       %{
         name: "prepare_export_options",
         description:
-          "Prepare a native export selection of one type for Review options; the type is full, pathways, operations or stations (the stations alias names the pathways files). It proposes only the type, starts no export, saves no defaults, and the person still presses the native control.",
+          "Prepare a native export selection of one type for Review options; the type is full, pathways, operations or stations (the stations alias names the pathways files). Works only on the Export page. It proposes only the type, starts no export, saves no defaults, and the person still presses the native control.",
         activity: "Prepared export options",
         parameters: %{
           "type" => "object",
@@ -166,7 +166,8 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       },
       %{
         name: "inspect_remedy_targets",
-        description: "Return the current records one retained finding names, as navigation only.",
+        description:
+          "Return the current records one retained finding names, as navigation only. run_ref defaults to the run a Result page shows.",
         activity: "Inspected remedy targets",
         parameters: %{
           "type" => "object",
@@ -174,7 +175,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
             "run_ref" => %{"type" => "string", "maxLength" => 200},
             "instance_ref" => %{"type" => "string", "maxLength" => 300}
           },
-          "required" => ["run_ref", "instance_ref"],
+          "required" => ["instance_ref"],
           "additionalProperties" => false
         }
       },
@@ -189,7 +190,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
             "run_ref" => %{"type" => "string", "maxLength" => 200},
             "instance_ref" => %{"type" => "string", "maxLength" => 300}
           },
-          "required" => ["run_ref", "instance_ref"],
+          "required" => ["instance_ref"],
           "additionalProperties" => false
         }
       }
@@ -273,7 +274,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   # -- tools ------------------------------------------------------------------
 
   defp list_validation_findings(args, %Scope{} = scope) do
-    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+    with {:ok, run_ref} <- take_run_ref(args, scope),
          {:ok, severity} <- take_bound(args, "severity", 32, false),
          {:ok, code} <- take_bound(args, "code", 128, false),
          {:ok, cursor} <- take_bound(args, "cursor", 1024, false),
@@ -298,7 +299,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   end
 
   defp explain_notice(args, %Scope{} = scope) do
-    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+    with {:ok, run_ref} <- take_run_ref(args, scope),
          {:ok, code} <- take_bound(args, "code", 128, true) do
       answer(
         scope,
@@ -310,7 +311,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   end
 
   defp locate_affected_records(args, %Scope{} = scope) do
-    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+    with {:ok, run_ref} <- take_run_ref(args, scope),
          {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
       answer(
         scope,
@@ -356,11 +357,20 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   # defaults are read here and carried as facts and as a digest the host may
   # pin, so the native form still makes every real choice and nothing is saved.
   defp prepare_export_options(args, %Scope{} = scope) do
-    with {:ok, export_type} <- take_export_type(args),
+    with :ok <- require_export_section(scope),
+         {:ok, export_type} <- take_export_type(args),
          {:ok, readiness} <- readiness_for(scope, export_type) do
       defaults = ExportDefaults.get(scope.organization_id)
       prepared_export_options(readiness, defaults, scope)
     end
+  end
+
+  # Review options is the Export page's native control; no other host handles
+  # the command, so preparing it elsewhere would offer a button that cannot work.
+  defp require_export_section(%Scope{} = scope) do
+    if snapshot_payload(scope)["section"] == "export",
+      do: :ok,
+      else: {:error, "Export options can be prepared only from the Export page."}
   end
 
   defp readiness_for(scope, export_type) do
@@ -405,7 +415,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   end
 
   defp inspect_remedy_targets(args, %Scope{} = scope) do
-    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+    with {:ok, run_ref} <- take_run_ref(args, scope),
          {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
       case Remedies.inspect(scope, run_ref, instance_ref) do
         {:ok, navigation} ->
@@ -430,7 +440,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   # copies; a model argument or paraphrase can never establish it. Without it
   # the person gets discovery, never a handoff, and no edit command exists here.
   defp prepare_remedy_handoff(args, %Scope{} = scope) do
-    with {:ok, run_ref} <- take_bound(args, "run_ref", 200, true),
+    with {:ok, run_ref} <- take_run_ref(args, scope),
          {:ok, instance_ref} <- take_bound(args, "instance_ref", 300, true) do
       requested? = snapshot_payload(scope)["requested_instance_ref"] == instance_ref
 
@@ -624,7 +634,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       "product_visibility" => readiness.product_visibility,
       "preflight" => readiness.preflight,
       "recent_checks" => readiness.recent_checks,
-      "selected_artifact" => Atom.to_string(readiness.selected_artifact),
+      "selected_artifact" => artifact_result(readiness.selected_artifact),
       "relationship" => readiness.relationship,
       "digest" => readiness.digest,
       "currentness" => readiness.currentness,
@@ -640,7 +650,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
 
     {result,
      evidence(
-       readiness,
+       limit_recent_checks(readiness),
        scope,
        "export_readiness",
        "export readiness",
@@ -650,11 +660,26 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
      )}
   end
 
+  # What a person needs to compare bytes. The file name and the export run's id
+  # stay with the host: the model never needs them and cannot act on them.
+  defp artifact_result(nil), do: nil
+
+  defp artifact_result(artifact) do
+    %{
+      "artifact_kind" => Atom.to_string(artifact.artifact_kind),
+      "sha256" => artifact.sha256,
+      "size_bytes" => artifact.size_bytes,
+      "expires_at" => artifact.expires_at && DateTime.to_iso8601(artifact.expires_at),
+      "available" => artifact.available,
+      "profile" => artifact.profile
+    }
+  end
+
   defp validation_result(readiness, %Scope{} = scope) do
     result = %{
       "recent_checks" => readiness.recent_checks,
       "relationship" => readiness.relationship,
-      "selected_artifact" => Atom.to_string(readiness.selected_artifact),
+      "selected_artifact" => artifact_result(readiness.selected_artifact),
       "currentness" => readiness.currentness,
       "publication_status" => readiness.publication_status,
       "digest" => readiness.digest
@@ -667,17 +692,28 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
 
     {result,
      evidence(
-       readiness,
+       limit_recent_checks(readiness),
        scope,
        "export_validation",
        "export validation",
        length(readiness.recent_checks),
-       "completed checks",
+       "most recent completed checks",
        facts
      )}
   end
 
   # -- evidence ---------------------------------------------------------------
+
+  # The readiness read lists only the last few completed checks, so a full list
+  # may stop short of older ones and is never the whole history.
+  defp limit_recent_checks(readiness) do
+    if length(readiness.recent_checks) >= Evidence.recent_check_limit(),
+      do:
+        Map.put(readiness, :exclusions, [
+          "older_checks_not_listed · last #{Evidence.recent_check_limit()} shown"
+        ]),
+      else: readiness
+  end
 
   # The evidence is built from the same read the model received, so the card's
   # count cannot disagree with the rows it describes. `total` is the read's own
@@ -688,7 +724,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       title: title,
       total: total,
       total_label: total_label,
-      completeness: read |> Map.get(:completeness, "complete") |> completeness_atom(),
+      completeness: completeness_atom(read),
       completeness_reason: completeness_reason(read),
       facts: facts,
       source_ref: @source_ref,
@@ -704,24 +740,34 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
     }
   end
 
-  defp completeness_atom("complete"), do: :complete
-  defp completeness_atom("incomplete"), do: :incomplete
-  defp completeness_atom(_other), do: :incomplete
+  # A card is complete only when nothing the answer is about was left out: the
+  # stored report is whole, no cursor remains and the read disclosed no exclusion.
+  defp completeness_atom(read) do
+    if Map.get(read, :completeness, "complete") == "complete" and
+         not is_binary(Map.get(read, :next_cursor)) and Map.get(read, :exclusions, []) == [],
+       do: :complete,
+       else: :incomplete
+  end
 
   # A partial page tells the panel exactly that: follow the cursor with the
   # digest; any other incompleteness reads as itself without invented detail.
-  defp completeness_reason(%{completeness: "complete"}), do: nil
+  defp completeness_reason(read) do
+    cond do
+      completeness_atom(read) == :complete ->
+        nil
 
-  defp completeness_reason(%{completeness: "incomplete", next_cursor: cursor})
-       when is_binary(cursor),
-       do: "Only part of the report; pass next_cursor with the digest to continue."
+      is_binary(Map.get(read, :next_cursor)) ->
+        "Only part of the report; pass next_cursor with the digest to continue."
 
-  # An explanation reads retained samples without a cursor, so its
-  # incompleteness is the samples themselves; the panel still gets a reason.
-  defp completeness_reason(%{completeness: "incomplete"}),
-    do: "Only retained samples of this code's findings are available."
+      Map.get(read, :exclusions, []) != [] ->
+        "Some of this answer is excluded; the exclusions name what."
 
-  defp completeness_reason(_read), do: nil
+      # An explanation reads retained samples without a cursor, so its
+      # incompleteness is the samples themselves; the panel still gets a reason.
+      true ->
+        "Only retained samples of this code's findings are available."
+    end
+  end
 
   defp exclusion_label(%{reason: reason, count: count}), do: "#{reason} · #{count}"
   defp exclusion_label(reason) when is_binary(reason), do: reason
@@ -779,6 +825,29 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       {:ok, _value} -> {:error, invalid_request()}
       :error when required -> {:error, invalid_request()}
       :error -> {:ok, nil}
+    end
+  end
+
+  # The model is never shown a run id, so an omitted run_ref is the run the host
+  # attached to this conversation's snapshot, and a different one is refused as
+  # unavailable even when it is this version's own run. Without an attached run
+  # (the Export page) the reference must be named and still resolves inside the
+  # scope.
+  defp take_run_ref(args, %Scope{} = scope) do
+    with {:ok, supplied} <- take_bound(args, "run_ref", 200, false) do
+      case {supplied, snapshot_payload(scope)["run_ref"]} do
+        {nil, attached} when is_binary(attached) ->
+          {:ok, attached}
+
+        {nil, _none} ->
+          {:error, "Name the validation run to read: pass a run_ref."}
+
+        {supplied, attached} when is_binary(attached) and supplied != attached ->
+          {:error, error_message(:unavailable, :validation)}
+
+        {supplied, _attached} ->
+          {:ok, supplied}
+      end
     end
   end
 

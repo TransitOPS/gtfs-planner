@@ -5,8 +5,9 @@ defmodule GtfsPlanner.Agents.BrowserFeedQuality do
 
   `test/support/browser_seed.exs` builds the `Browser Feed Quality Version` and
   its one completed MobilityData report from these values, and
-  `GtfsPlanner.Agents.BrowserOpenRouter` calls the same run and the same stop
-  for its deterministic replies:
+  `GtfsPlanner.Agents.BrowserOpenRouter` answers about the same run and the same
+  stop. The scripted calls name no run, because a real model is never shown a
+  run id: the Result page's attached run is the default the pack reads.
 
     * the stored report is a historical wrapper: its own length is 1 while the
       embedded upstream `totalNotices` is 170 and only three samples are
@@ -42,13 +43,13 @@ defmodule GtfsPlanner.Agents.BrowserFeedQuality do
   def user_reply(content) do
     cond do
       content =~ ~r/duplicate key/i ->
-        {:explain_notice, %{"run_ref" => @run_id, "code" => "duplicate_key"}}
+        {:explain_notice, %{"code" => "duplicate_key"}}
 
       content =~ ~r/prepare the pathways|review options/i ->
         {:prepare_export_options, %{"export_type" => "pathways"}}
 
       true ->
-        {:list_validation_findings, %{"run_ref" => @run_id}}
+        {:list_validation_findings, %{}}
     end
   end
 
