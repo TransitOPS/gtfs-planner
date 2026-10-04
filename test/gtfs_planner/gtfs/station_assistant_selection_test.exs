@@ -275,6 +275,21 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       refute encoded =~ ctx.editor.email
     end
 
+    test "a 16-byte free-text source reference is a source reference, not a journal id", ctx do
+      run = width_run(ctx)
+      reference = "survey sheet 12A"
+      assert byte_size(reference) == 16
+
+      scope =
+        selection_scope(ctx, ctx.station, run, [observation(reference, "PW_W14", "105", "cm")])
+
+      assert {:ok, result, _evidence} =
+               StationAssistant.normalize_observations(scope, frozen(ctx, scope))
+
+      assert result["rejected"] == []
+      assert [%{"source_ref" => ^reference, "journal_backed" => false}] = result["observations"]
+    end
+
     test "a journal reference from another station, and a wrong revision, both fail", ctx do
       run = width_run(ctx)
       foreign = journal_entry(ctx, "Other station note.", station: ctx.other_station)

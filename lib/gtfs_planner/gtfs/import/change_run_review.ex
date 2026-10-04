@@ -1229,8 +1229,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     end
   end
 
+  # `Ecto.UUID.cast/1` also accepts any raw 16-byte binary, so a free-text
+  # reference of exactly 16 bytes would be looked up as a journal entry id. Only
+  # the canonical 36-character form names a journal entry.
   defp journal_backed?(source_ref) do
-    match?({:ok, _uuid}, Ecto.UUID.cast(source_ref))
+    source_ref =~ ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
   end
 
   # Only identity and timing metadata is frozen. The entry's body, its photos
