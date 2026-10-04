@@ -259,6 +259,27 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.ServiceTest do
       assert trip.service_dates == []
     end
 
+    test "a calendar exception the projection dropped keeps the evaluation incomplete" do
+      # The candidate's Thursday removal has an unreadable exception type, so the
+      # projection drops the row and Thursday stays active. Every date still has
+      # a complete group, which is why only the projection can say what is missing.
+      projection =
+        project(
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}],
+          calendar: [@every_weekday],
+          calendar_dates: [{"WEEK", "20261126", "x"}]
+        )
+
+      assert Enum.any?(projection.unknowns, &(&1.reason == :invalid_exception_type))
+
+      assert {:ok, evaluation} = Service.evaluate(projection, @monday, @friday)
+
+      assert length(evaluation.groups) == 5
+      assert Enum.all?(evaluation.groups, &(&1.count_complete? and &1.span_complete?))
+      assert evaluation.unknowns == []
+      refute evaluation.complete?
+    end
+
     test "raises for a window that ends before it starts" do
       projection = project(stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}])
 
@@ -451,6 +472,29 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.ServiceTest do
       assert group.exact_count == 6
       assert group.count_complete?
       assert evaluation.unknowns == []
+    end
+
+    test "an unreadable later stop time keeps the window's departures and suppresses the span" do
+      projection =
+        project(
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T1", "", "", "S2", "2"}
+          ],
+          stops: [{"S1", "First", "40.1", "-74.1"}, {"S2", "Second", "41.1", "-75.1"}],
+          frequencies: [{"T1", "08:00:00", "09:00:00", "1200", "1"}]
+        )
+
+      assert {:ok, evaluation} = Service.evaluate(projection, @monday, @monday)
+
+      # 08:00, 08:20 and 08:40 are still departures of the first stop.
+      assert [group] = evaluation.groups
+      assert group.exact_count == 3
+      assert group.count_complete?
+
+      # The second stop has no time, so the span is stated incompletely.
+      refute group.span_complete?
+      refute evaluation.complete?
     end
 
     test "an unreadable first-stop time makes every window unusable" do

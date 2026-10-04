@@ -23,6 +23,11 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
   describes is `:unknown_service`; neither case yields a date, so an
   unevaluable service never becomes a service with no service.
 
+  An evaluation is `complete?` only when the projection itself disclosed no
+  unknown. A calendar or calendar-date row the projection could not read is
+  dropped before this module sees it, so the service dates it would have
+  changed are absent without any trace in the evaluation's own unknowns.
+
   ## Scheduled occurrences and exact departures
 
   A trip with no frequency template is one scheduled occurrence per active
@@ -164,11 +169,17 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
            groups: groups,
            evaluated_trips: Enum.sort_by(Map.values(evaluated), & &1.trip_id),
            unknowns: sort_unknowns(unknowns),
-           complete?:
-             unknowns == [] and groups != [] and
-               Enum.all?(groups, &(&1.count_complete? and &1.span_complete?))
+           complete?: complete?(projection, unknowns, groups)
          }}
     end
+  end
+
+  # The projection drops a row it cannot read - a malformed calendar row, a
+  # duplicated service date - so the service that row described is simply absent
+  # from the evaluation. Only the projection's own unknowns say so.
+  defp complete?(projection, unknowns, groups) do
+    unknowns == [] and (Map.get(projection, :unknowns) || []) == [] and groups != [] and
+      Enum.all?(groups, &(&1.count_complete? and &1.span_complete?))
   end
 
   # -- context ----------------------------------------------------------------
@@ -363,7 +374,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Service do
     case offsets do
       [first | _rest] when is_integer(first) ->
         {accepted, overlap_unknowns} = accepted_windows(usable, rejected)
-        summarize(occurrences, Enum.map(offsets, &(&1 - first)), accepted, overlap_unknowns)
+        # An unreadable offset stays nil, so `summarize/4` reports the gap.
+        summarize(occurrences, Enum.map(offsets, &(&1 && &1 - first)), accepted, overlap_unknowns)
 
       _unanchored ->
         unanchored_windows(usable, rejected)

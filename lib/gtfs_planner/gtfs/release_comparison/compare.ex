@@ -27,7 +27,8 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
       rejected a template, so the group reports the departures it can count
       rather than the whole service.
     * `:left_evaluation_incomplete` / `:right_evaluation_incomplete` - one side
-      itself has unknowns, no groups, or an incomplete count or span.
+      itself has unknowns, a row its projection had to drop, no groups, or an
+      incomplete count or span.
     * `:unknown_timezone` / `:timezone_mismatch` - timing is service-day seconds,
       so two trips may only be compared for aligned timing when both routes
       resolve to the same known timezone.

@@ -930,31 +930,26 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
     "#{route},#{agency},1,Main,3"
   end
 
-  # Two services are written as two services: a second calendar row needs its own
-  # header and its own line ending, or the reader sees one unterminated row.
+  # One header and one row per service. A second header line would be read as a
+  # calendar row whose weekday flags are the words "monday" to "sunday", which
+  # the projection rightly drops and discloses as unknown.
   defp calendar_services_csv(service, thursday_service, extra_thursday?) do
-    if extra_thursday? do
-      [weekday_service_csv(service), weekday_service_csv(thursday_service, day: @thursday)]
-      |> Enum.map_join("\n", & &1)
-    else
-      weekday_service_csv(service)
-    end
+    rows =
+      if extra_thursday?,
+        do: [weekday_service_row(service), thursday_service_row(thursday_service)],
+        else: [weekday_service_row(service)]
+
+    "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" <>
+      Enum.join(rows, "\n")
   end
 
-  defp weekday_service_csv(service, opts \\ []) do
-    case Keyword.get(opts, :day) do
-      nil ->
-        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" <>
-          "#{service},1,1,1,1,1,0,0,20260101,20261231"
+  defp weekday_service_row(service), do: "#{service},1,1,1,1,1,0,0,20260101,20261231"
 
-      day ->
-        # The service is Monday to Friday for the whole of 2026. `day/1` narrows
-        # it to the single Thursday the exception below adds.
-        compact = String.replace(day, "-", "")
-
-        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n" <>
-          "#{service},0,0,0,1,0,0,0,#{compact},#{compact}"
-    end
+  # The service is Monday to Friday for the whole of 2026. This one is narrowed to
+  # the single Thursday the exception below adds.
+  defp thursday_service_row(service) do
+    compact = String.replace(@thursday, "-", "")
+    "#{service},0,0,0,1,0,0,0,#{compact},#{compact}"
   end
 
   # A date of 2026112 is seven digits rather than eight, so it is not a

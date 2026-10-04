@@ -577,6 +577,89 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       assert :right_evaluation_incomplete in result.completeness.reasons
     end
 
+    test "a dropped calendar exception never reads as a complete zero change" do
+      trips = [{"R1", "WEEK", "T1", "0"}, {"R1", "HOL", "T2", "0"}]
+
+      stop_times = [
+        {"T1", "08:00:00", "08:00:00", "S1", "1"},
+        {"T2", "09:00:00", "09:00:00", "S1", "1"}
+      ]
+
+      calendar = [every_weekday("WEEK"), every_weekday("HOL")]
+      left = project(trips: trips, stop_times: stop_times, calendar: calendar)
+
+      # The candidate means to remove the holiday service on Thursday, but its
+      # exception type is unreadable, so the row is dropped and Thursday stays
+      # active. Both files then state two departures on every date.
+      right =
+        project(
+          trips: trips,
+          stop_times: stop_times,
+          calendar: calendar,
+          calendar_dates: [{"HOL", "20261126", "x"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      assert Enum.any?(
+               result.unknowns,
+               &(&1.side == :right and &1.reason == :invalid_exception_type)
+             )
+
+      assert result.effective_changes == []
+
+      # Nothing may be concluded about a file whose rows were dropped.
+      assert result.totals.exact_count_delta == nil
+      assert result.totals.scheduled_count_delta == nil
+      assert result.totals.reasons == [:right_evaluation_incomplete]
+
+      assert result.completeness == %{
+               status: :incomplete,
+               reasons: [:right_evaluation_incomplete]
+             }
+    end
+
+    test "a dropped weekly calendar row keeps the lost service from reading as a complete change" do
+      trips = [{"R1", "WEEK", "T1", "0"}, {"R1", "HOL", "T2", "0"}]
+
+      stop_times = [
+        {"T1", "08:00:00", "08:00:00", "S1", "1"},
+        {"T2", "09:00:00", "09:00:00", "S1", "1"}
+      ]
+
+      left =
+        project(
+          trips: trips,
+          stop_times: stop_times,
+          calendar: [every_weekday("WEEK"), every_weekday("HOL")]
+        )
+
+      # The candidate's HOL weekly row has an unreadable Monday flag, so the row
+      # is dropped and HOL states no date at all. WEEK still states service on
+      # every date, which is why the artifact has groups to compare.
+      right =
+        project(
+          trips: trips,
+          stop_times: stop_times,
+          calendar: [
+            every_weekday("WEEK"),
+            {"HOL", "x", "1", "1", "1", "1", "1", "1", "20260101", "20261231"}
+          ]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      # The five dates each lose one of two departures, and that is shown row by
+      # row, but the file that lost them is not fully read.
+      assert length(result.effective_changes) == 5
+      assert Enum.all?(result.effective_changes, &(&1.counts.left.exact_count == 2))
+      assert Enum.all?(result.effective_changes, &(&1.counts.right.exact_count == 1))
+      assert result.totals.exact_count_delta == nil
+      assert result.totals.reasons == [:right_evaluation_incomplete]
+      assert result.completeness.status == :incomplete
+      assert :right_evaluation_incomplete in result.completeness.reasons
+    end
+
     test "an unmapped route keeps every count and suppresses the totals" do
       # Both artifacts name an agency that `agency.txt` does not define, so
       # neither route can be renamed onto the other and no mapping is proven -
