@@ -327,7 +327,100 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
 
   def move_review(_stop_uuid, _point, _audit), do: {:error, :invalid_input}
 
+  # What an impact answer says it does not compute: the pattern lines and the street
+  # path are the native move review's, and the rest is outside the stop's references.
+  @unmodeled [:street_path, :pattern_lines, :boarding_safety, :accessibility, :alerts]
+
+  @doc """
+  Answers "what would moving this stop affect", without a routing request, a lock
+  or a write.
+
+  This is the read half of `move_review/3`: the same distance, native band, weekday
+  trips, patterns, transfers and relief points, read from one `StopReferences.usage/3`,
+  plus every non-empty reference class. It never calls `Alignments.suggest_stop_pairs/4`,
+  so it costs no street-routing request, and it takes no row lock, so it never waits
+  behind another editor. The pattern lines a move would redraw and the walking path
+  are decided by the native review, which is the only place that routes; `unmodeled`
+  names what this answer leaves out.
+
+  `point` is `{lon, lat}`: finite numbers with latitude within +/-90 and longitude
+  within +/-180, anything else is `{:error, :invalid_input}`. A stop outside the audit's
+  organization and version is `{:error, :not_found}` and a non-editor is
+  `{:error, :forbidden}`.
+
+      %{distance_m, band, served?, weekday_trips,
+        patterns: [%{label, route_id, route_pattern_id, headsign, weekday_trips}],
+        transfers: [%{label, before_m, after_m, min_transfer_time}],
+        relief_points: [String.t()],
+        references: [%{key, label, kind, count}],
+        unmodeled: [atom()]}
+  """
+  @spec move_impact(Ecto.UUID.t(), StopPlacement.point(), AuditContext.t()) ::
+          {:ok, map()} | {:error, :forbidden | :not_found | :invalid_input}
+  def move_impact(stop_uuid, point, %AuditContext{} = audit) when is_binary(stop_uuid) do
+    with {:ok, point} <- checked_point(point),
+         :ok <- impact_authorization(audit),
+         {:ok, stop} <- scoped_stop(stop_uuid, audit) do
+      {:ok, build_impact(stop, point, audit)}
+    end
+  end
+
+  def move_impact(_stop_uuid, _point, _audit), do: {:error, :invalid_input}
+
+  defp checked_point({lon, lat})
+       when is_number(lon) and is_number(lat) and lon >= -180 and lon <= 180 and lat >= -90 and
+              lat <= 90,
+       do: {:ok, {lon * 1.0, lat * 1.0}}
+
+  defp checked_point(_point), do: {:error, :invalid_input}
+
+  defp impact_authorization(audit) do
+    case Authorization.authorize_editor(audit) do
+      :ok -> :ok
+      _refused -> {:error, :forbidden}
+    end
+  end
+
+  defp build_impact(stop, point, audit) do
+    usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
+    distance = StopPlacement.distance(point_of(stop), point)
+    served? = served?(stop)
+
+    %{
+      distance_m: distance,
+      band: StopPlacement.move_band(distance, served?),
+      served?: served?,
+      weekday_trips: weekday_trips(usage),
+      patterns: impact_patterns(usage),
+      transfers: review_transfers(stop, point, usage, audit),
+      relief_points: review_relief_points(usage),
+      references: impact_references(usage),
+      unmodeled: @unmodeled
+    }
+  end
+
+  defp impact_patterns(usage) do
+    for %{label: label, detail: detail} = row <- pattern_details(usage) do
+      %{
+        label: label,
+        route_id: detail.route_id,
+        route_pattern_id: detail.route_pattern_id,
+        headsign: detail.headsign,
+        weekday_trips: Map.get(row, :weekday_trips, 0)
+      }
+    end
+  end
+
+  defp impact_references(%{blocking: blocking, descriptive: descriptive}) do
+    Enum.map(blocking, &impact_reference(&1, :blocking)) ++
+      Enum.map(descriptive, &impact_reference(&1, :descriptive))
+  end
+
+  defp impact_reference(item, kind),
+    do: %{key: item.key, label: item.label, kind: kind, count: item.count}
+
   defp build_review(stop, new_point, audit) do
+    usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
     distance = StopPlacement.distance(point_of(stop), new_point)
     band = StopPlacement.move_band(distance, served?(stop))
 
@@ -346,10 +439,10 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     %{
       distance_m: distance,
       band: band,
-      weekday_trips: weekday_trips(stop, audit),
+      weekday_trips: weekday_trips(usage),
       patterns: review_patterns(users, routed, audit),
-      transfers: review_transfers(stop, new_point, audit),
-      relief_points: review_relief_points(stop, audit),
+      transfers: review_transfers(stop, new_point, usage, audit),
+      relief_points: review_relief_points(usage),
       suggestions: routed.suggestions,
       fingerprint:
         review_fingerprint(stop, new_point, users, affected_lock_versions(stop, users, audit))
@@ -541,25 +634,25 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # changes how far a rider walks. Both distances are reported: the editor is
   # deciding whether the new walking distance is acceptable, which is not a
   # question with a before and no after.
-  defp review_transfers(stop, new_point, audit) do
-    usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
-
+  defp review_transfers(stop, new_point, usage, audit) do
     usage
     |> transfer_items()
-    |> Enum.map(fn item -> transfer_row(item, stop, new_point, audit) end)
+    |> Enum.flat_map(& &1.details)
+    |> Enum.map(fn detail -> transfer_row(detail, stop, new_point, audit) end)
   end
 
   defp transfer_items(%{blocking: blocking, descriptive: descriptive}) do
     Enum.filter(blocking ++ descriptive, &(&1.key in [:transfers_from, :transfers_to]))
   end
 
-  defp transfer_row(item, stop, new_point, audit) do
-    detail = item.details |> hd() |> Map.fetch!(:detail)
+  # One row per transfer, not per direction: a stop with two outgoing transfers
+  # has two walking distances to show.
+  defp transfer_row(%{label: label, detail: detail}, stop, new_point, audit) do
     other_id = Map.get(detail, :to_stop_id) || Map.get(detail, :from_stop_id)
     other = other_point(other_id, audit)
 
     %{
-      label: item.details |> hd() |> Map.fetch!(:label),
+      label: label,
       before_m: distance_between(point_of(stop), other),
       after_m: distance_between(new_point, other),
       min_transfer_time: Map.get(detail, :min_transfer_time)
@@ -587,24 +680,23 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
     end
   end
 
-  defp review_relief_points(stop, audit) do
-    %{blocking: blocking, descriptive: descriptive} =
-      StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
-
+  defp review_relief_points(%{blocking: blocking, descriptive: descriptive}) do
     (blocking ++ descriptive)
     |> Enum.filter(&(&1.key == :relief_points))
     |> Enum.flat_map(&Enum.map(&1.details, fn detail -> detail.label end))
   end
 
-  defp weekday_trips(stop, audit) do
-    %{blocking: blocking, descriptive: descriptive} =
-      StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
+  defp weekday_trips(usage) do
+    usage
+    |> pattern_details()
+    |> Enum.map(&Map.get(&1, :weekday_trips, 0))
+    |> Enum.sum()
+  end
 
+  defp pattern_details(%{blocking: blocking, descriptive: descriptive}) do
     (blocking ++ descriptive)
     |> Enum.filter(&(&1.key == :route_pattern_stops))
     |> Enum.flat_map(& &1.details)
-    |> Enum.map(&Map.get(&1, :weekday_trips, 0))
-    |> Enum.sum()
   end
 
   # Everything this review read, hashed. A review answered against a version of
