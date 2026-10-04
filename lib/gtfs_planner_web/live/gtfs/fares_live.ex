@@ -163,6 +163,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   @helper_zone_gone_notice "The target zone is no longer in this version. Ask the helper again."
 
+  @helper_edited_notice "Your edited assignment was saved. The original prepared assignment was not applied."
+
   @undo_stale_message "Undo wasn’t applied because some stops changed after the save."
 
   # AC-13 and AC-15's drawer outcomes, named once so one outcome is never
@@ -400,6 +402,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @impl true
   def handle_event("refresh_assignment", _params, socket) do
     case socket.assigns.assignment do
+      # A review the helper prepared is a fixed selection: refreshing it would
+      # bless stops the helper never prepared, so it is closed and asked for again.
+      %{origin: %{}} ->
+        {:noreply, socket}
+
       %{mode: mode, target: target} ->
         {:noreply, socket |> load_workspace() |> review(mode, target: target)}
 
@@ -1556,7 +1563,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
     case FareZones.apply_assignment(
            AuditContext.from_assigns(socket.assigns),
-           assignment.preview.changes
+           assignment.preview.changes,
+           apply_options(assignment)
          ) do
       {:ok, %{applied: applied}} ->
         # The review is done: the selection it was made from is cleared, and the
@@ -1569,12 +1577,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
           |> load_workspace()
           |> assign(:assignment, nil)
           |> push_map_points_changed(applied)
+          |> record_prepared_applied(assignment)
 
         assign(socket, :undo, %{
           kind: "success",
           applied: applied,
           message: assigned_copy(assignment.mode, applied, zone_name(socket, assignment.target))
         })
+
+      # The routes' stops or zones differ from what the helper prepared: nothing
+      # was written, and the review says so instead of offering a Refresh.
+      {:error, :selection_changed} ->
+        assign(socket, :assignment, %{assignment | origin: %{assignment.origin | changed?: true}})
 
       # A stale result is the whole point of the fence: nothing was written, the
       # stops that moved are counted, and the review stays open to be refreshed.
@@ -1599,6 +1613,40 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         assign(socket, :assignment, %{assignment | error: @save_failed_message})
     end
   end
+
+  # A helper-origin review is written under the fence of the selection it was
+  # prepared from; a manual review has none and calls the same two-argument path
+  # as before.
+  defp apply_options(%{origin: %{command: {:zone_assignment, command}}}) do
+    [
+      selection: %{
+        predicate: command.predicate,
+        fingerprint: command.fingerprint,
+        stop_ids: command.stop_ids
+      }
+    ]
+  end
+
+  defp apply_options(_assignment), do: []
+
+  # One receipt per applied helper review: the command actually saved is the
+  # prepared command with the target the editor confirmed (the stops and the
+  # fingerprint are the ones the fence just verified), so the card is marked
+  # applied only when nothing was edited. Everything here is presentation: the
+  # write already succeeded, so a reset or ended conversation changes nothing.
+  defp record_prepared_applied(
+         socket,
+         %{origin: %{command: {:zone_assignment, command}} = origin} = assignment
+       ) do
+    saved = {:zone_assignment, %{command | target: assignment.target}}
+
+    case Agents.record_applied(origin.session_pid, origin.conversation_id, origin.entry_id, saved) do
+      {:error, :command_changed} -> assign(socket, :agent_notice, @helper_edited_notice)
+      _applied_or_ended -> socket
+    end
+  end
+
+  defp record_prepared_applied(socket, _assignment), do: socket
 
   defp undo_assignment(%{assigns: %{undo: nil}} = socket), do: socket
   defp undo_assignment(%{assigns: %{undo: %{applied: nil}}} = socket), do: socket
