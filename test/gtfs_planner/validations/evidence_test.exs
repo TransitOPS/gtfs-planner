@@ -791,7 +791,6 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
 
     test "a foreign, absent or unsupported run explains nothing", %{
       scope: scope,
-      organization: organization,
       version: version
     } do
       foreign_organization = organization_fixture()
@@ -825,7 +824,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
     end
 
     test "unique natural keys resolve to typed current targets", context do
-      %{scope: scope, organization: organization, version: version, route: route} = context
+      %{scope: scope, organization: organization, version: version} = context
 
       run =
         completed_run(organization, version, [
@@ -851,7 +850,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
     end
 
     test "a trip resolves to its own current route, not to the trip", context do
-      %{scope: scope, organization: organization, version: version, route: route} = context
+      %{scope: scope, organization: organization, version: version} = context
 
       run = completed_run(organization, version, [group_with([%{"tripId" => "T1"}])])
       assert {_report, [instance]} = retained(scope, run.id)
@@ -989,7 +988,7 @@ defmodule GtfsPlanner.Validations.EvidenceTest do
       %{stop: stop}
     end
 
-    test "the correction list is empty and navigation is what is offered", context do
+    test "the correction list is empty and navigation is what is offered" do
       assert %{corrections: [], navigation: true} = Remedies.list()
     end
 
