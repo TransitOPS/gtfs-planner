@@ -283,18 +283,26 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.LifecycleTest do
       assert_claims_released([left, right])
     end
 
-    test "a caller that goes down clears every claim and delivers nothing",
+    test "a caller that goes down stops the compute child and clears every claim",
          %{scope: scope, left: left, right: right, known: known} do
       owner = spawn(fn -> receive do: (:never -> :ok) end)
       assert {:ok, pid} = start(scope, left, right, owner: owner)
-      {_task, _task_ref} = await_compute_child(known, pid, deadline())
+      {task, task_ref} = await_compute_child(known, pid, deadline())
+
+      # A suspended child cannot finish by itself, so the coordinator can only
+      # end it by noticing that its owner is gone. Without the suspension a fast
+      # child would finish, release the claims and exit the coordinator whether or
+      # not the owner's exit was ever observed.
+      true = :erlang.suspend_process(task)
 
       owner_ref = Process.monitor(owner)
       Process.exit(owner, :kill)
       assert_receive {:DOWN, ^owner_ref, :process, ^owner, _reason}
 
+      assert_receive {:DOWN, ^task_ref, :process, ^task, :killed}, 5_000
       assert_coordinator_exits(pid)
       assert_claims_released([left, right])
+      refute_receive {:release_comparison, :start_1, _message}, 100
     end
 
     test "a delayed result from an earlier attempt never wins",
@@ -473,10 +481,20 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.LifecycleTest do
     fresh = MapSet.difference(task_children(), known) |> Enum.reject(&(&1 == coordinator))
 
     case fresh do
-      [child] -> {child, Process.monitor(child)}
-      [] -> await_new_child(known, coordinator, deadline)
+      # The child sets its heap ceiling as its first act, so a child that does
+      # not carry it yet is still starting and is not acted on.
+      [child] ->
+        if heap_limited?(child),
+          do: {child, Process.monitor(child)},
+          else: await_new_child(known, coordinator, deadline)
+
+      [] ->
+        await_new_child(known, coordinator, deadline)
     end
   end
+
+  defp heap_limited?(child),
+    do: match?({:max_heap_size, %{size: size}} when size > 0, Process.info(child, :max_heap_size))
 
   defp await_new_child(known, coordinator, deadline) do
     if System.monotonic_time(:millisecond) >= deadline do

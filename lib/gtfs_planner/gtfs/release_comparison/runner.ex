@@ -80,7 +80,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Runner do
         scope: scope,
         params: params,
         owner_pid: owner_pid,
-        owner_ref: Process.monitor(owner_pid),
+        owner_ref: nil,
         request_ref: request_ref,
         selection: nil,
         claims: %{},
@@ -136,8 +136,14 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Runner do
     ])
   end
 
+  # The owner is monitored here, in the coordinator: a monitor belongs to the
+  # process that created it, so one taken in `start/4` would deliver the owner's
+  # exit to the caller and never reach the `:DOWN` clauses below.
   @doc false
-  def run(state), do: await_start(acquire(state))
+  def run(state) do
+    state = %{state | owner_ref: Process.monitor(state.owner_pid)}
+    await_start(acquire(state))
+  end
 
   # -- acquisition ------------------------------------------------------------
 
