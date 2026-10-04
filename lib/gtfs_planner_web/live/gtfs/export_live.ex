@@ -501,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # comparison no longer describes what the form says, so it is cancelled and
   # its request reference retired. The draft is kept exactly as entered.
   @impl Phoenix.LiveView
-  def handle_event("select_comparison", %{"comparison" => draft}, socket) do
+  def handle_event("select_comparison", %{"comparison" => draft}, socket) when is_map(draft) do
     {:noreply,
      socket
      |> cancel_comparison()
@@ -515,11 +515,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   def handle_event("select_comparison", _params, socket), do: {:noreply, socket}
 
+  # The Compare button is gone while a comparison is held, so only a replayed or
+  # forged event gets here. Starting over it would overwrite the held coordinator
+  # and request reference, orphaning that coordinator and the claims it owns.
+  @impl Phoenix.LiveView
+  def handle_event("start_comparison", _params, %{assigns: %{comparison_status: status}} = socket)
+      when status in [:running, :cancelling],
+      do: {:noreply, socket}
+
   # Authorization is checked again here, on the server, immediately before any
   # claim is taken. The selected runs and window are re-resolved from the form
   # draft rather than from anything the client kept.
-  @impl Phoenix.LiveView
-  def handle_event("start_comparison", %{"comparison" => draft}, socket) do
+  def handle_event("start_comparison", %{"comparison" => draft}, socket) when is_map(draft) do
     socket = assign(socket, :comparison_notice, nil)
     scope = comparison_scope(socket)
 
@@ -596,7 +603,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # against the held result. An empty or unknown selection is refused with the
   # draft retained, and never narrows anything.
   @impl Phoenix.LiveView
-  def handle_event("narrow_comparison", %{"comparison_scope" => draft}, socket) do
+  def handle_event("narrow_comparison", %{"comparison_scope" => draft}, socket)
+      when is_map(draft) do
     socket = assign(socket, :comparison_scope_form, comparison_scope_form(draft))
 
     case socket.assigns.comparison_view do
@@ -978,7 +986,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp page_limit(value) when is_binary(value) do
     case Integer.parse(value) do
-      {limit, ""} -> limit |> max(1) |> min(@comparison_row_limit_max)
+      {limit, _rest} -> limit |> max(1) |> min(@comparison_row_limit_max)
       :error -> @comparison_row_limit
     end
   end
@@ -1106,11 +1114,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         |> stream_comparison(view)
         |> attach_comparison_context(result, selection)
 
+      # A refused scope shows the whole comparison again, so the summary, the
+      # rows and the helper's copy keep describing the same result.
       {:error, :invalid_scope} ->
         socket
+        |> assign(:comparison_view, result.comparison)
         |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
         |> assign(:comparison_scope, nil)
+        |> assign(:comparison_inspected, nil)
         |> stream_comparison(result.comparison)
+        |> attach_comparison_context(result, :all)
     end
   end
 

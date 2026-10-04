@@ -365,6 +365,62 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       assert has_element?(view, "#export-run-status")
     end
 
+    test "a forged second start while one is running keeps the first coordinator", context do
+      %{conn: conn, user: user, organization: organization, version: version} = context
+      left = slow_run!(organization, version)
+      right = slow_run!(organization, gtfs_version_fixture(organization.id))
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), export_path(version))
+
+      start_comparison(view, left, right)
+      assert render(view) =~ "comparison-cancel"
+      coordinator = view.pid |> :sys.get_state() |> Map.fetch!(:socket) |> comparison_pid()
+
+      # The Compare button is gone, so this event can only be forged or replayed.
+      render_hook(view, "start_comparison", %{
+        "comparison" => %{
+          "left_run_id" => left.id,
+          "right_run_id" => right.id,
+          "from" => @from,
+          "to" => @to
+        }
+      })
+
+      # Replacing the coordinator would orphan it with both claims still held.
+      assert view.pid |> :sys.get_state() |> Map.fetch!(:socket) |> comparison_pid() ==
+               coordinator
+
+      render_click(view, "cancel_comparison")
+      await_comparison(view)
+      assert_claims_released([left, right])
+    end
+
+    test "forged event payloads that are not shaped like the form do not crash the page",
+         context do
+      %{conn: conn, user: user, organization: organization, version: version} = context
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), export_path(version))
+
+      # `Integer.parse/1` returns `{12, "abc"}` and `{5, ".5"}` for these.
+      for limit <- ["12abc", "5.5", "-3x", "abc"] do
+        render_hook(view, "page_comparison", %{
+          "collection" => "comparison_differences",
+          "offset" => "0",
+          "limit" => limit
+        })
+      end
+
+      for event <- ["select_comparison", "start_comparison"] do
+        render_hook(view, event, %{"comparison" => "not-a-map"})
+      end
+
+      render_hook(view, "narrow_comparison", %{"comparison_scope" => ["not-a-map"]})
+
+      assert has_element?(view, "#comparison-status-title", "No comparison running")
+    end
+
     test "closing and reopening does not adopt the previous request's result", context do
       %{conn: conn, user: user, organization: organization, version: version} = context
       left = native_run!(organization, version, 15)

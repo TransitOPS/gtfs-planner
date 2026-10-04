@@ -558,6 +558,30 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       assert result_body(view) == full
     end
 
+    test "a refused scope after a narrowed one shows the whole comparison again", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+
+      right =
+        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+
+      view = compare!(view(context), left, right)
+      full = socket_assigns(view).comparison_result.comparison
+
+      narrow!(view, ["R1/R1"], [@thursday])
+      assert held_view(view) != full
+
+      # A date outside the window is refused by the comparison itself.
+      narrow!(view, ["R1/R1"], ["2030-01-01"])
+
+      # The summary, the rows and the helper's copy go back to the whole
+      # comparison rather than keeping the narrowed view beside the full rows.
+      assert held_view(view) == full
+      assert has_element?(view, "#comparison-scope-notice", "aren’t part of this comparison")
+      refute has_element?(view, "#comparison-scope-applied")
+      assert socket_assigns(view).comparison_context.source_snapshot.payload["scope"] == nil
+    end
+
     test "the unknowns are not narrowed away by a scope", context do
       %{organization: organization, version: version} = context
       left = publish_run!(organization, version, full_week_zip())
