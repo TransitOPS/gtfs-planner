@@ -68,6 +68,7 @@ defmodule GtfsPlanner.Agents do
     "station_imports" => GtfsPlanner.Agents.Packs.StationImports,
     "station_results" => GtfsPlanner.Agents.Packs.StationResults,
     "stop_impact" => GtfsPlanner.Agents.Packs.StopImpact,
+    "stop_text" => GtfsPlanner.Agents.Packs.StopText,
     "timetables" => GtfsPlanner.Agents.Packs.Timetables,
     "transfers" => GtfsPlanner.Agents.Packs.Transfers
   }

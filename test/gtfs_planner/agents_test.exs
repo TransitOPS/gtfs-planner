@@ -41,6 +41,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.StationImports
   alias GtfsPlanner.Agents.Packs.StationResults
   alias GtfsPlanner.Agents.Packs.StopImpact
+  alias GtfsPlanner.Agents.Packs.StopText
   alias GtfsPlanner.Agents.Packs.Timetables
   alias GtfsPlanner.Agents.Packs.Transfers
   alias GtfsPlanner.Agents.Scope
@@ -78,6 +79,7 @@ defmodule GtfsPlanner.AgentsTest do
                "station_imports" => StationImports,
                "station_results" => StationResults,
                "stop_impact" => StopImpact,
+               "stop_text" => StopText,
                "timetables" => Timetables,
                "transfers" => Transfers
              }
