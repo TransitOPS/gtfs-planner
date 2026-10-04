@@ -34,6 +34,38 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   alternative — blanking the page — would destroy work the reader can still read
   and cannot get back, in exchange for a message they could have been given
   without the loss.
+
+  ## The Runs helper
+
+  This page also hosts one helper panel. `AgentPanel.mount/2` is called once,
+  here, with `runs` as both the default and the only pack on offer, and the
+  panel's own events stay in its hooks — this module implements only
+  `agent_review_prepared`, the handoff of one prepared configuration into the
+  native *Suggest runs* drawer below.
+
+  The panel reads a frozen copy of the loaded day, not the day itself. After
+  every authoritative change — a load or reload, a day-type change, a crew-rules
+  save, a run move, a completed suggestion or a discarded one —
+  `publish_helper_context/1` projects the loaded day through
+  `OperationsAssistance` and admits it as this conversation's source snapshot. A
+  refused projection drops the copy rather than admitting half of one, and a
+  pending, failed or discarded suggestion never contributes a plan. The panel is
+  the only holder of that copy, so replacing the context replaces the transcript
+  with it (INV-1).
+
+  The handoff re-reads the day before it trusts a command. `Agents.prepared/3`
+  returns the configuration the session stored; the page then reloads the scoped
+  native day through `Gtfs.load_runs/3` — the socket's own assigns cannot see
+  another tab's edit — re-projects it, and refuses unless the day key, the source
+  digest and the selection digest all still match. A refusal keeps the drawer,
+  the scope it had chosen and the plan on screen, and says why. When the day
+  itself moved, the page also adopts the fresh day, which republishes the frozen
+  copy, so asking the helper again works.
+
+  Opening a configuration starts nothing. The drawer opens on the scope the
+  command carries rather than on this page's own default, and only the existing
+  `preview_suggestion`, `apply_suggestion` and `confirm_rebuild` handlers cut or
+  write anything (INV-2).
   """
 
   use GtfsPlannerWeb, :live_view
@@ -46,8 +78,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Values
+  alias GtfsPlannerWeb.AgentPanel
+  alias GtfsPlannerWeb.Gtfs.OperationsHelper
   alias GtfsPlannerWeb.Gtfs.RunsComponents
+
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   on_mount({GtfsPlannerWeb.EnsureRole, :require_gtfs_access})
 
@@ -55,6 +93,25 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # says so in the reader's terms and names what to do, because the alternative —
   # silently doing nothing — reads as a broken button.
   @crew_not_found "That version is no longer published, so these rules cannot be saved."
+
+  # --- the Runs helper ------------------------------------------------------
+
+  # One refusal message per way the handoff can decline. Each names what changed
+  # and what still stands, because the person asking has a day's runs on screen
+  # and a configuration they cannot use.
+  @helper_stale_notice "This configuration was prepared from a different day. The page reloaded the day; ask the helper again."
+  @helper_reread_notice "The page could not re-read this day to check that configuration. Try again in a moment."
+  @helper_section_notice "This configuration belongs to a different page. Open its own drawer and ask again."
+  @helper_missing_notice "That configuration is no longer available. Open the Suggest runs drawer and ask again."
+  @helper_preview_notice "Discard the current suggestion first. It was cut from this day, and only one suggestion can be on the page."
+  @helper_draft_notice "The drawer already has another scope chosen. Cancel it first, or set it back to the prepared scope."
+  @helper_no_day_notice "Load a service day first. The helper reads the day this page has loaded."
+  @helper_unavailable_notice "The helper could not read this service day, so it has no evidence to work from. Your runs are unchanged."
+
+  # The only two scopes `GtfsPlanner.Gtfs.Runs.Cutter` accepts, checked here
+  # rather than passed through: a value arriving as an unexpected term is a
+  # refusal rather than a crash on the page.
+  @helper_scopes [:uncovered_only, :replace_all]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -121,7 +178,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> assign(:run_pieces, [])
-     |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
+     |> assign(:helper_notice, nil)
+     |> assign(:helper_review, nil)
+     |> stream(:run_rows, [], dom_id: &run_dom_id/1)
+     |> AgentPanel.mount("runs")}
   end
 
   defp editor_refusal(socket),
@@ -366,22 +426,46 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
        socket
        |> assign(:suggest_open, true)
        |> assign(:suggest_notice, nil)
-       |> assign(:suggest_scope, default_scope(socket.assigns))}
+       |> assign(:suggest_scope, default_scope(socket.assigns))
+       |> assign(:helper_review, nil)}
     end
   end
 
+  # The configuration summary describes the drawer's scope, so it closes with
+  # the drawer and a native reopen, which re-derives the scope, starts without it.
   def handle_event("close_suggest", _params, socket) do
-    {:noreply, assign(socket, :suggest_open, false)}
+    {:noreply, socket |> assign(:suggest_open, false) |> assign(:helper_review, nil)}
   end
 
   def handle_event("select_scope", %{"value" => value}, socket) do
     case parse_scope(value) do
-      {:ok, scope} -> {:noreply, assign(socket, :suggest_scope, scope)}
-      :error -> {:noreply, socket}
+      {:ok, scope} ->
+        {:noreply,
+         socket |> assign(:suggest_scope, scope) |> OperationsHelper.keep_review_for(scope)}
+
+      :error ->
+        {:noreply, socket}
     end
   end
 
   def handle_event("select_scope", _params, socket), do: {:noreply, socket}
+
+  # --- the helper handoff -------------------------------------------------
+
+  # The prepared card hands its configuration to this page's own drawer. Every
+  # identity involved is server-held; the client contributes only the entry id.
+  # This opens configuration and starts nothing: Preview, Apply and Confirm below
+  # remain the only handlers that cut or write a suggestion (INV-2).
+  #
+  # The drawer is not URL state on this page, so an accepted review assigns the
+  # open drawer and its scope directly rather than patching. A refusal is a
+  # panel-only answer that leaves the page, the drawer and every draft where they
+  # were.
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_suggestion(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   def handle_event("preview_suggestion", _params, socket) do
     preview_with(socket, socket.assigns.day, socket.assigns.suggest_scope)
@@ -444,7 +528,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:apply_state, :idle)
      |> assign(:rebuild_confirm, false)
      |> assign(:suggest_notice, nil)
-     |> stream_run_rows()}
+     |> assign(:helper_review, nil)
+     |> stream_run_rows()
+     # The discarded proposal leaves the frozen copy with it, so the panel stops
+     # describing a proposal the page no longer holds.
+     |> publish_helper_context()}
   end
 
   def handle_event("open_drawer", %{"key" => key}, socket) do
@@ -799,10 +887,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          socket
          |> assign(:plan, plan)
          |> assign(:suggest_open, false)
+         |> assign(:helper_review, nil)
          |> assign(:apply_state, :idle)
          |> assign(:rebuild_confirm, false)
          |> assign(:suggest_notice, nil)
-         |> stream_run_rows()}
+         |> stream_run_rows()
+         # The native job completed successfully, so this is the one moment a
+         # proposal copy may join the frozen evidence. A failed preview never
+         # reaches here, so no failed or stale result is ever published (AC-3).
+         |> publish_helper_context()}
 
       {:error, reason} ->
         {:noreply,
@@ -840,7 +933,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp do_apply(socket) do
     %{plan: plan} = socket.assigns
 
-    socket = assign(socket, :apply_state, :pending)
+    socket = socket |> assign(:apply_state, :pending) |> assign(:helper_review, nil)
 
     case Gtfs.apply_run_plan(AuditContext.from_assigns(socket.assigns), plan) do
       {:ok, %{undo: undo_moves}} when undo_moves != [] ->
@@ -864,7 +957,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> put_toast("There was nothing to apply.", :refused)
          |> assign(:plan, nil)
          |> assign(:apply_state, :idle)
-         |> stream_run_rows()}
+         |> stream_run_rows()
+         # The dropped plan leaves the frozen copy with it. Without this the copy
+         # keeps a digest that includes the plan, and every later review is
+         # refused as a different day.
+         |> publish_helper_context()}
 
       {:error, :stale_plan} ->
         # The suggestion is now unapplicable, not merely unapplied. Apply is
@@ -893,6 +990,175 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   defp apply_failure_detail(_reason),
     do: "Your saved runs are unchanged. Try again, or discard the suggestion."
+
+  # --- the helper's frozen copy and its handoff ----------------------------
+
+  # The helper reads a frozen copy of the day this page has loaded, published
+  # after every authoritative change: a load or reload, a day-type change, a
+  # crew-rules save, a run move, a completed suggestion and a discarded one. It
+  # is published only from a successful load or a completed suggestion, so the
+  # panel never holds a copy describing a day this page is not showing (AC-3).
+  #
+  # A refused projection drops the copy instead of admitting a partial one: the
+  # panel is then answering from nothing, which its own unavailable state states,
+  # rather than from half a day.
+  defp publish_helper_context(socket) do
+    OperationsHelper.publish_context(
+      socket,
+      "runs",
+      helper_payload(socket),
+      @helper_unavailable_notice
+    )
+  end
+
+  # The day's own copy, with the current proposal attached when one has been
+  # completed. The proposal is this page's own successful native result, which is
+  # the only thing that may carry one.
+  defp helper_payload(%{assigns: %{runs_day: nil}}), do: :error
+
+  defp helper_payload(socket) do
+    with {:ok, payload} <- OperationsAssistance.run_day(socket.assigns.runs_day) do
+      attach_helper_plan(socket, payload)
+    end
+  end
+
+  defp attach_helper_plan(%{assigns: %{plan: nil}}, payload), do: {:ok, payload}
+
+  defp attach_helper_plan(socket, payload) do
+    case OperationsAssistance.with_plan(payload, :runs, socket.assigns.plan) do
+      {:ok, with_plan} -> {:ok, with_plan}
+      {:error, _unavailable} -> {:ok, payload}
+    end
+  end
+
+  # 1. The native state decides first. A suggestion on the page is a page-level
+  #    fact that makes opening another configuration meaningless whatever the
+  #    card said, so it is reported before the card is even looked up. A drawer
+  #    already open on a *different* scope is the same kind of conflict: the
+  #    person chose that scope, and overwriting it would silently discard a
+  #    choice they made.
+  # 2. The session hands back the configuration it stored, or nothing. A stale,
+  #    reset or ended conversation refuses here.
+  # 3. The command must belong to this section. A command from another page is
+  #    never interpreted by this one.
+  # 4. The day is re-read from the database. The socket's own assigns are this
+  #    tab's last load and cannot see another tab's edit, so a day that changed
+  #    underneath the panel has to be caught by a fresh read (AC-9).
+  # 5. The fresh day is re-projected and the command's own digests must match it.
+  #    This is what refuses a configuration prepared for another day or another
+  #    copy of this one.
+  defp review_prepared_suggestion(socket, entry_id) do
+    notices = %{missing: @helper_missing_notice, section: @helper_section_notice}
+
+    with :ok <- helper_native_state(socket),
+         {:ok, command} <-
+           OperationsHelper.prepared_command(socket, entry_id, "runs", @helper_scopes, notices),
+         :ok <- helper_draft_state(socket, command) do
+      open_helper_suggestion(socket, command)
+    else
+      {:error, notice} -> assign(socket, :helper_notice, notice)
+    end
+  end
+
+  defp helper_native_state(%{assigns: %{plan: plan}}) when not is_nil(plan),
+    do: {:error, @helper_preview_notice}
+
+  defp helper_native_state(_socket), do: :ok
+
+  # A drawer already open on the prepared scope is not a conflict: the review
+  # re-states what is already on screen. A drawer open on *another* scope is,
+  # because overwriting it would discard a choice the person made without saying
+  # so. Refusing keeps that choice and leaves the configuration they asked for to
+  # be taken again once they have cancelled.
+  defp helper_draft_state(%{assigns: %{suggest_open: false}}, _command), do: :ok
+
+  defp helper_draft_state(%{assigns: %{suggest_scope: scope}}, %{mode: mode}) do
+    if scope == mode, do: :ok, else: {:error, @helper_draft_notice}
+  end
+
+  defp open_helper_suggestion(%{assigns: %{runs_day: nil}} = socket, _command),
+    do: assign(socket, :helper_notice, @helper_no_day_notice)
+
+  defp open_helper_suggestion(socket, command) do
+    with {:ok, fresh} <- reload_helper_day(socket),
+         {:ok, payload} <- recheck_helper_command(fresh, command) do
+      socket
+      |> assign(:suggest_open, true)
+      |> assign(:suggest_notice, nil)
+      |> assign(:suggest_scope, command.mode)
+      |> assign(:helper_notice, nil)
+      |> assign(:helper_review, helper_review(command, payload))
+    else
+      # The fresh read is the day as it is now, and it is not the day the command
+      # was prepared from. The page adopts it, which republishes the frozen copy
+      # and retires the conversation holding the stale card, so asking again
+      # prepares a configuration for the day the page now shows.
+      :changed ->
+        socket |> load_day() |> OperationsHelper.notice_after_reload(@helper_stale_notice)
+
+      {:error, notice} ->
+        assign(socket, :helper_notice, notice)
+    end
+  end
+
+  # The fresh read is scoped to this page's own organization and version and to
+  # the day type the page is showing, so a command for another version's day is
+  # answered by this version's catalog rather than by the socket's stale assigns.
+  defp reload_helper_day(socket) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Gtfs.load_runs(organization.id, version.id, socket.assigns.day) do
+      {:ok, runs_day} -> {:ok, runs_day}
+      {:error, _reason} -> {:error, @helper_reread_notice}
+    end
+  end
+
+  # The command's digests are compared against a projection of the day as it is
+  # now. The day key is compared first because a projection of a different day
+  # would answer with digests that simply do not match, and saying which day
+  # moved is the more useful refusal.
+  defp recheck_helper_command(fresh, command) do
+    with true <- helper_day_key(fresh) == command.day_key,
+         {:ok, payload} <- OperationsAssistance.run_day(fresh),
+         true <- payload["source_digest"] == command.source_digest,
+         true <- OperationsAssistance.selection_digest(payload) == command.selection_digest do
+      {:ok, payload}
+    else
+      _different_day_or_copy -> :changed
+    end
+  end
+
+  defp helper_day_key(%{day: %{day_type: %{key: key}}}) when is_binary(key), do: key
+  defp helper_day_key(_runs_day), do: nil
+
+  # What the review shows beside the open drawer: the day, the scope, how many
+  # runs the day's own copy already holds, how much work that scope would add,
+  # what the frozen copy did not inspect, and the consequence of the one scope
+  # that replaces hand-tuned runs. Every value is read from the copy the command
+  # was just checked against, so the drawer and this summary cannot describe
+  # different days.
+  defp helper_review(command, payload) do
+    uncovered = payload["figures"]["uncovered"]
+
+    %{
+      day_key: command.day_key,
+      mode: command.mode,
+      mode_label: helper_mode_label(command.mode),
+      run_count: length(payload["entities"]["runs"]),
+      uncovered_trips: uncovered["trips"],
+      exclusions: helper_exclusions(payload),
+      replacement?: command.mode == :replace_all
+    }
+  end
+
+  defp helper_mode_label(:uncovered_only), do: "Uncovered work only"
+  defp helper_mode_label(:replace_all), do: "Rebuild this day’s runs"
+
+  # The exclusions the frozen copy itself records: the repeating and unplottable
+  # trips the day's own read left out of the projection. They are named by kind
+  # and count, because the copy holds opaque refs rather than the rows, and a
+  # count is what a reader can act on.
+  defp helper_exclusions(payload), do: OperationsHelper.exclusions(payload)
 
   # A pending apply is ignored, not queued and not re-run. The button is disabled
   # while one is in flight, so this guard only catches what a disabled button
@@ -1587,6 +1853,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         # the new day under the old day's figures for as long as the share read
         # took.
         |> assign(:drawer, nil)
+        # Every authoritative reload of the day republishes the frozen copy:
+        # the first load, a day-type change, a retry, a crew-rules save, a run
+        # move, an undo and the apply that re-reads what it wrote.
+        |> publish_helper_context()
 
       {:error, {:unknown_day_type, []}} ->
         # An empty list is the version saying it has no day types at all, which
@@ -1599,6 +1869,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:day_types, [])
         |> assign(:loaded_day_key, {:key, day})
         |> assign(:load_state, :no_dates)
+        # This page is now showing a day type the version does not have, so the
+        # copy of the day it was showing is dropped rather than left describing a
+        # day this page no longer shows.
+        |> publish_helper_context()
 
       {:error, {:unknown_day_type, day_types}} ->
         # Nothing is applied on the reader's behalf: the page says which day
@@ -1611,6 +1885,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:day_types, day_types)
         |> assign(:loaded_day_key, {:key, day})
         |> assign(:load_state, :unknown)
+        # As above: the day the reader was on is gone, so its copy goes with it.
+        |> publish_helper_context()
 
       {:error, _reason} ->
         # `runs_day` is deliberately untouched, so whatever is on screen stays.
@@ -1894,162 +2170,227 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
       <RunsComponents.toast toast={@toast} undo={@undo} />
 
-      <div id="runs-page" data-load-state={@load_state}>
-        <div class="w-full space-y-4">
-          <RunsComponents.page_head>
-            <:actions>
-              <RunsComponents.review_problems_button
-                :if={@runs_day}
-                findings={@runs_day.derived.findings}
-                uncovered={@runs_day.derived.uncovered}
-                open={@problems_open}
-                primary={@primary == :problems}
-              />
+      <div id="runs-page" data-load-state={@load_state} phx-hook=".RunsHelperFocus">
+        <div class={[
+          "flex flex-col lg:grid lg:gap-6",
+          @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+        ]}>
+          <div class="min-w-0 space-y-4">
+            <RunsComponents.page_head>
+              <:actions>
+                <%!-- The helper reads the day this page has loaded, so it is offered
+                only where there is a day to read and a suggestion to configure. --%>
+                <.button
+                  :if={@runs_day}
+                  id="agent-helper-open"
+                  type="button"
+                  phx-click="agent_open"
+                  aria-expanded={to_string(@agent_open?)}
+                  aria-controls="agent-panel"
+                  variant="quiet"
+                  class="min-h-11"
+                >
+                  <.icon name="hero-sparkles" class="size-4" /> Open helper
+                </.button>
 
-              <RunsComponents.suggest_runs_button
-                :if={@runs_day}
-                primary={@primary == :suggest}
-              />
-            </:actions>
-          </RunsComponents.page_head>
-
-          <RunsComponents.unavailable_callout :if={@load_state == :unavailable} />
-
-          <RunsComponents.scope_bar
-            :if={@load_state == :loaded or @load_state == :unavailable}
-            day_types={@day_types}
-            selected={@day || ""}
-          >
-            <:crew_summary>
-              <RunsComponents.crew_button
-                :if={@runs_day}
-                crew={@runs_day.crew}
-                locked_reason={lock_reason(assigns)}
-              />
-            </:crew_summary>
-            <:counts>
-              <RunsComponents.count_strip
-                :if={@runs_day}
-                stats={shown(assigns).derived.stats}
-                spread_limit_minutes={@runs_day.crew.max_spread_minutes}
-                selected_key={selected_count_tile(@drawer)}
-              />
-
-              <RunsComponents.uncovered_callout
-                :if={@runs_day}
-                segments={shown(assigns).derived.uncovered}
-                duration_secs={shown(assigns).derived.stats.uncovered.secs}
-              />
-            </:counts>
-          </RunsComponents.scope_bar>
-
-          <RunsComponents.relief_callout
-            :if={relief_setup_needed?(assigns)}
-            version_id={@current_gtfs_version.id}
-            day_type_key={@day || ""}
-          />
-
-          <RunsComponents.plan_card
-            :if={panel_state?(@load_state)}
-            version_id={@current_gtfs_version.id}
-          >
-            <RunsComponents.page_state
-              kind={@load_state}
-              version_id={@current_gtfs_version.id}
-              day_types={@day_types}
-            />
-          </RunsComponents.plan_card>
-
-          <div :if={@load_state == :loaded or @load_state == :unavailable} class="mt-4">
-            <div class="flex flex-wrap items-end justify-end gap-3 pb-3">
-              <RunsComponents.tabs
-                :if={@runs_day}
-                panel={@panel}
-                run_count={length(shown(assigns).derived.runs)}
-                uncovered_trips={uncovered_trip_count(shown(assigns))}
-                uncovered_segments={length(uncovered_segments(shown(assigns)))}
-              />
-
-              <.segmented_control
-                :if={@panel == :runs and not first_use?(assigns)}
-                id="runs-view"
-                name="view"
-                legend="Runs view"
-                legend_class="sr-only"
-                options={[{"Timeline", "timeline"}, {"List", "list"}]}
-                value={Atom.to_string(@view)}
-                event="set_view"
-                size={:sm}
-                appearance={:joined}
-                emphasis={:quiet}
-              />
-
-              <.segmented_control
-                :if={@panel == :runs and @view == :timeline and not first_use?(assigns)}
-                id="runs-scale"
-                name="scale"
-                legend="Chart scale"
-                legend_class="sr-only"
-                options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
-                value={Atom.to_string(@scale)}
-                event="set_scale"
-                size={:sm}
-                appearance={:joined}
-                emphasis={:quiet}
-              />
-            </div>
-
-            <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
-              <%= if first_use?(assigns) and @panel != :uncovered do %>
-                <RunsComponents.first_use
-                  version_id={@current_gtfs_version.id}
-                  day_type_key={@day || ""}
-                  uncovered_trips={uncovered_trip_count(shown(assigns))}
+                <RunsComponents.review_problems_button
+                  :if={@runs_day}
+                  findings={@runs_day.derived.findings}
+                  uncovered={@runs_day.derived.uncovered}
+                  open={@problems_open}
+                  primary={@primary == :problems}
                 />
-              <% else %>
-                <%= if @panel == :uncovered do %>
-                  <RunsComponents.uncovered
-                    segments={uncovered_segments(shown(assigns))}
-                    windows={uncovered_windows(shown(assigns))}
-                    locked_reason={lock_reason(assigns)}
-                    routes={@run_routes}
-                    stop_names={@run_stop_names}
+
+                <RunsComponents.suggest_runs_button
+                  :if={@runs_day}
+                  primary={@primary == :suggest}
+                />
+              </:actions>
+            </RunsComponents.page_head>
+
+            <RunsComponents.unavailable_callout :if={@load_state == :unavailable} />
+
+            <RunsComponents.scope_bar
+              :if={@load_state == :loaded or @load_state == :unavailable}
+              day_types={@day_types}
+              selected={@day || ""}
+            >
+              <:crew_summary>
+                <RunsComponents.crew_button
+                  :if={@runs_day}
+                  crew={@runs_day.crew}
+                  locked_reason={lock_reason(assigns)}
+                />
+              </:crew_summary>
+              <:counts>
+                <RunsComponents.count_strip
+                  :if={@runs_day}
+                  stats={shown(assigns).derived.stats}
+                  spread_limit_minutes={@runs_day.crew.max_spread_minutes}
+                  selected_key={selected_count_tile(@drawer)}
+                />
+
+                <RunsComponents.uncovered_callout
+                  :if={@runs_day}
+                  segments={shown(assigns).derived.uncovered}
+                  duration_secs={shown(assigns).derived.stats.uncovered.secs}
+                />
+              </:counts>
+            </RunsComponents.scope_bar>
+
+            <RunsComponents.relief_callout
+              :if={relief_setup_needed?(assigns)}
+              version_id={@current_gtfs_version.id}
+              day_type_key={@day || ""}
+            />
+
+            <RunsComponents.plan_card
+              :if={panel_state?(@load_state)}
+              version_id={@current_gtfs_version.id}
+            >
+              <RunsComponents.page_state
+                kind={@load_state}
+                version_id={@current_gtfs_version.id}
+                day_types={@day_types}
+              />
+            </RunsComponents.plan_card>
+
+            <div :if={@load_state == :loaded or @load_state == :unavailable} class="mt-4">
+              <div class="flex flex-wrap items-end justify-end gap-3 pb-3">
+                <RunsComponents.tabs
+                  :if={@runs_day}
+                  panel={@panel}
+                  run_count={length(shown(assigns).derived.runs)}
+                  uncovered_trips={uncovered_trip_count(shown(assigns))}
+                  uncovered_segments={length(uncovered_segments(shown(assigns)))}
+                />
+
+                <.segmented_control
+                  :if={@panel == :runs and not first_use?(assigns)}
+                  id="runs-view"
+                  name="view"
+                  legend="Runs view"
+                  legend_class="sr-only"
+                  options={[{"Timeline", "timeline"}, {"List", "list"}]}
+                  value={Atom.to_string(@view)}
+                  event="set_view"
+                  size={:sm}
+                  appearance={:joined}
+                  emphasis={:quiet}
+                />
+
+                <.segmented_control
+                  :if={@panel == :runs and @view == :timeline and not first_use?(assigns)}
+                  id="runs-scale"
+                  name="scale"
+                  legend="Chart scale"
+                  legend_class="sr-only"
+                  options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
+                  value={Atom.to_string(@scale)}
+                  event="set_scale"
+                  size={:sm}
+                  appearance={:joined}
+                  emphasis={:quiet}
+                />
+              </div>
+
+              <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
+                <%= if first_use?(assigns) and @panel != :uncovered do %>
+                  <RunsComponents.first_use
+                    version_id={@current_gtfs_version.id}
+                    day_type_key={@day || ""}
+                    uncovered_trips={uncovered_trip_count(shown(assigns))}
                   />
                 <% else %>
-                  <%= if @view == :list do %>
-                    <RunsComponents.list
-                      run_rows={@streams.run_rows}
-                      sort={@sort}
-                      dir={@dir}
-                      day_label={day_label(@runs_day)}
+                  <%= if @panel == :uncovered do %>
+                    <RunsComponents.uncovered
+                      segments={uncovered_segments(shown(assigns))}
+                      windows={uncovered_windows(shown(assigns))}
+                      locked_reason={lock_reason(assigns)}
+                      routes={@run_routes}
+                      stop_names={@run_stop_names}
                     />
                   <% else %>
-                    <RunsComponents.chart_key :if={not first_use?(assigns)} />
-                    <RunsComponents.timeline
-                      run_rows={@streams.run_rows}
-                      axis={@run_axis}
-                      routes={@run_routes}
-                      sort={@sort}
-                      dir={@dir}
-                      scale={@scale}
-                      crew={runs_crew(@runs_day)}
-                    />
+                    <%= if @view == :list do %>
+                      <RunsComponents.list
+                        run_rows={@streams.run_rows}
+                        sort={@sort}
+                        dir={@dir}
+                        day_label={day_label(@runs_day)}
+                      />
+                    <% else %>
+                      <RunsComponents.chart_key :if={not first_use?(assigns)} />
+                      <RunsComponents.timeline
+                        run_rows={@streams.run_rows}
+                        axis={@run_axis}
+                        routes={@run_routes}
+                        sort={@sort}
+                        dir={@dir}
+                        scale={@scale}
+                        crew={runs_crew(@runs_day)}
+                      />
+                    <% end %>
                   <% end %>
                 <% end %>
-              <% end %>
-            </RunsComponents.plan_card>
+              </RunsComponents.plan_card>
+            </div>
+
+            <RunsComponents.suggestion_panel
+              :if={previewing?(assigns) and @panel != :uncovered}
+              plan={@plan}
+              runs_day={@runs_day}
+              day_label={day_label(@runs_day)}
+              apply_state={@apply_state}
+            />
+
+            <RunsComponents.page_footnote :if={@load_state == :loaded} />
           </div>
 
-          <RunsComponents.suggestion_panel
-            :if={previewing?(assigns) and @panel != :uncovered}
-            plan={@plan}
-            runs_day={@runs_day}
-            day_label={day_label(@runs_day)}
-            apply_state={@apply_state}
-          />
+          <%!-- The helper's own column: the configuration it last opened and why
+          a request could not be honoured. Each is stated as its own element
+          rather than folded into the transcript, so a refusal is a fact about
+          this page rather than a line a reader has to find in a conversation. --%>
+          <div
+            :if={@agent_open?}
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
+          >
+            <.message
+              :if={@helper_notice}
+              id="runs-helper-notice"
+              kind="warning"
+              title={@helper_notice}
+            />
 
-          <RunsComponents.page_footnote :if={@load_state == :loaded} />
+            <RunsComponents.runs_helper_scope :if={@helper_review} review={@helper_review} />
+
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={helper_scope_line(assigns)}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label="Review configuration"
+              composer_hint="Start suggestions in the native drawer"
+            />
+          </div>
         </div>
+
+        <%!--
+        The panel's focus listener belongs to the wrapper above, which survives both the panel and
+        the page's own drawers. This hook only moves focus; it never decides focus for the
+        server. --%>
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".RunsHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
       </div>
 
       <RunsComponents.crew_drawer
@@ -2349,4 +2690,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   defp runs_crew(runs_day) when is_map(runs_day), do: runs_day.crew
   defp runs_crew(_runs_day), do: nil
+
+  # The panel names the day it is bound to, from the loaded day rather than from
+  # the URL, so the line always agrees with the day below it.
+  defp helper_scope_line(%{runs_day: nil}), do: "Runs · no service day loaded"
+
+  defp helper_scope_line(%{runs_day: runs_day, current_gtfs_version: version}),
+    do: "#{day_label(runs_day)} · #{version.name}"
 end

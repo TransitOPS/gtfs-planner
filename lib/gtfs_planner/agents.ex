@@ -37,6 +37,11 @@ defmodule GtfsPlanner.Agents do
   pack (INV-1). The Alerts pack is keyed by a subject: its tools read one alert of
   the scope's organization and the active schedule it was opened under, and
   prepare answers for the editor to apply.
+
+  The `blocks` and `runs` packs are registered here and mounted by their own
+  pages: each reads the frozen operations snapshot its own
+  `authorize_context/1` admits and prepares a suggestion scope without starting
+  one, and the Blocks and Runs pages open their panels themselves.
   """
 
   alias GtfsPlanner.Agents.Pack
@@ -49,10 +54,12 @@ defmodule GtfsPlanner.Agents do
 
   @packs %{
     "alerts" => GtfsPlanner.Agents.Packs.Alerts,
+    "blocks" => GtfsPlanner.Agents.Packs.Blocks,
     "calendars" => GtfsPlanner.Agents.Packs.Calendars,
     "connections" => GtfsPlanner.Agents.Packs.Connections,
     "dated_changes" => GtfsPlanner.Agents.Packs.DatedChanges,
     "in_seat" => GtfsPlanner.Agents.Packs.InSeat,
+    "runs" => GtfsPlanner.Agents.Packs.Runs,
     "service_queries" => GtfsPlanner.Agents.Packs.ServiceQueries,
     "timetables" => GtfsPlanner.Agents.Packs.Timetables,
     "transfers" => GtfsPlanner.Agents.Packs.Transfers
