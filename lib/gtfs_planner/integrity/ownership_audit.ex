@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     roster_line_days roster_lines
     route_operating_settings route_pattern_stops route_patterns routes shapes
     station_editing_statuses
-    stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
+    stop_areas stop_levels stop_times stops timed_patterns timeframes tods_generations transfers
     translations trip_runs trips walkability_tests
   )
 
