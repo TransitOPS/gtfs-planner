@@ -39,7 +39,6 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   # A confirmation names at most one bounded page of decisions, the same page a
   # prepared selection can hold.
   @max_confirmed_decisions 100
-  @approved_decision_statuses [:approved, :applied]
   @decision_actions [:add, :modify, :remove, :conflict]
   @started_over_code "started_over"
 
@@ -352,8 +351,9 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   decision is appended to the run's `source_manifest` under `reviewed_evidence`,
   in the same transaction. The base source files and their total bytes are never
   rewritten. Reconfirming identical decision and source digests is idempotent: it
-  approves nothing new and appends no history. A different confirmation appends,
-  and no confirmation ever erases an earlier entry. At the history bound the
+  approves nothing new and appends no history, but a decision that has since been
+  applied is `{:error, :stale}` and stays applied. A different confirmation
+  appends, and no confirmation ever erases an earlier entry. At the history bound the
   confirmation is refused as `{:error, :evidence_limit}` before any status or
   manifest write, so the host keeps its draft (INV-1, AC-9).
   """
@@ -556,12 +556,17 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
 
   defp confirmed_decision(run, source, row) do
     case lock_decision(run.id, row["decision_id"]) do
-      %ChangeDecision{status: status} = decision when status in @approved_decision_statuses ->
+      %ChangeDecision{status: :approved} = decision ->
         if matching_entry(run, row, source) do
           {:ok, decision}
         else
           {:error, :stale}
         end
+
+      # A decision that has since been applied moved past this review. The
+      # confirmation neither reports success for it nor writes its status again.
+      %ChangeDecision{status: :applied} ->
+        {:error, :stale}
 
       _other ->
         {:error, :invalid_selection}

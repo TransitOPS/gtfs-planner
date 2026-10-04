@@ -208,6 +208,41 @@ defmodule GtfsPlanner.Gtfs.Import.ObservationReviewTest do
       assert decision_stamps(run) == stamps
     end
 
+    test "a stale tab reconfirming an applied decision is refused and leaves it applied", ctx do
+      run = width_run(ctx)
+
+      scope =
+        selection_scope(ctx, ctx.station, run, [observation("OBS88", "PW_W14", "105", "cm")])
+
+      payload = prepared_confirmation(scope, ["pathway:PW_W14"])
+
+      assert {:ok, _result} =
+               ChangeRuns.confirm_observation_selection(
+                 ctx.organization.id,
+                 ctx.version.id,
+                 actor(ctx),
+                 frozen_source(scope),
+                 payload
+               )
+
+      # The first tab's confirmation went on to be applied; the run is back in
+      # review with the decision recorded as applied.
+      update_decision(run, "pathway:PW_W14", status: :applied)
+      snapshot = confirmation_snapshot(run)
+
+      assert {:error, :stale} =
+               ChangeRuns.confirm_observation_selection(
+                 ctx.organization.id,
+                 ctx.version.id,
+                 actor(ctx),
+                 frozen_source(scope),
+                 payload
+               )
+
+      assert statuses(run)["pathway:PW_W14"] == :applied
+      assert confirmation_snapshot(run) == snapshot
+    end
+
     test "a later confirmation appends and never erases the earlier evidence", ctx do
       run = width_run(ctx)
 
