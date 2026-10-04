@@ -1443,8 +1443,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
            parse_point(%{"lat" => draft["stop_lat"], "lon" => draft["stop_lon"]}),
          {:ok, {base_lat, base_lon}} <-
            parse_point(%{"lat" => baseline["stop_lat"], "lon" => baseline["stop_lon"]}),
-         distance when distance > 0.5 <-
-           StopPlacement.distance({base_lon, base_lat}, {lon, lat}) do
+         distance = StopPlacement.distance({base_lon, base_lat}, {lon, lat}),
+         true <- StopPlacement.moved?(distance) do
       %{
         distance_m: distance,
         band: StopPlacement.move_band(distance, stop.routes != []),

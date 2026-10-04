@@ -29,8 +29,6 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   @source_ref "gtfs_stop_references"
   @listed_labels 10
   @no_pin "No pin is placed. Move the pin on the map, then ask again."
-  # The host's own no-move threshold: a pin this close to the saved position is not a move.
-  @no_move_metres 0.5
 
   # What a dependency answer does not check, always stated, never guessed.
   @unchecked [
@@ -413,7 +411,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   defp require_move(stop, point) do
     with lon when not is_nil(lon) <- float(stop.stop_lon),
          lat when not is_nil(lat) <- float(stop.stop_lat),
-         true <- StopPlacement.distance({lon, lat}, point) < @no_move_metres do
+         false <- StopPlacement.moved?(StopPlacement.distance({lon, lat}, point)) do
       {:error, "The pin is on the stop's saved position, so there is no move to prepare."}
     else
       _movable -> :ok

@@ -51,6 +51,9 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # that far" is not a reason to accept moving a stop four hundred metres.
   @far_metres 100.0
 
+  # A pin this close to where the stop is saved is the same position, not a move.
+  @no_move_metres 0.5
+
   @type point :: {float(), float()}
   @type line :: [point()]
   @type role :: :shape | :connector
@@ -290,6 +293,15 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
       _ -> nil
     end
   end
+
+  @doc """
+  Whether a pin `metres` from the saved position is a move at all.
+
+  The stops map and the stop impact helper both ask this, so a pin the page
+  does not call a move is one the helper cannot prepare as a move.
+  """
+  @spec moved?(float()) :: boolean()
+  def moved?(metres), do: metres > @no_move_metres
 
   @doc """
   How much a proposed move should worry the editor.
