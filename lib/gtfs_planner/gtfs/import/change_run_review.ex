@@ -59,6 +59,10 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   @source_ref "gtfs_station_assistant"
 
   @max_rows 100
+  # Free text an upload carries that neither membership nor a width read needs.
+  # A model reads tool results as text, so these never leave the server in a
+  # decision row; the stop name stays as the label a person recognizes the stop by.
+  @provider_free_text ~w(stop_desc signposted_as reversed_signposted_as level_name)
   # The only status and live fingerprint state a captured confirmation can record:
   # it approves pending, unmodified, fingerprint-matched decisions and nothing else.
   @confirmed_status "pending"
@@ -737,7 +741,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
       "diagnostics" => run_diagnostics(run),
       "counts" => import_counts(snapshot, station_rows, excluded, length(rows), offset),
       "excluded" => Map.new(excluded, fn {reason, count} -> {to_string(reason), count} end),
-      "decisions" => rows,
+      "decisions" => Enum.map(rows, &provider_row/1),
       "filters" => %{"offset" => offset},
       "next_offset" => if(more?, do: offset + length(rows), else: nil),
       "completeness" => if(more?, do: "incomplete", else: "complete"),
@@ -790,6 +794,23 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
       "apply_failure_code" => decision.apply_failure_code
     }
   end
+
+  # The digests and the confirmation's decision digest are over the full row, so
+  # a dropped field still invalidates a captured selection when it changes. A
+  # changed free-text field is listed by name without its before and after.
+  defp provider_row(row) do
+    %{
+      row
+      | "current_values" => Map.drop(row["current_values"], @provider_free_text),
+        "uploaded_values" => Map.drop(row["uploaded_values"], @provider_free_text),
+        "changed_fields" => Enum.map(row["changed_fields"], &provider_changed_field/1)
+    }
+  end
+
+  defp provider_changed_field(%{"field" => field}) when field in @provider_free_text,
+    do: %{"field" => field}
+
+  defp provider_changed_field(change), do: change
 
   # The stored fingerprint is recomputed from the live record the same way the
   # fenced apply computes it, so drift is visible while reading rather than only
