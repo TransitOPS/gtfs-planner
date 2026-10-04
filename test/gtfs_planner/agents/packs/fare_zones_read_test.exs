@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesReadTest do
   defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   describe "registration" do
-    test "the registry names the pack, which declares list_zones and takes no argument",
+    test "the registry names the pack and the five tools it declares",
          context do
       assert Agents.packs()["fare_zones"] == FareZones
       assert FareZones.id() == "fare_zones"
@@ -69,7 +69,8 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesReadTest do
                "list_zones",
                "find_routes",
                "find_stops",
-               "query_zone_targets"
+               "query_zone_targets",
+               "prepare_zone_assignment"
              ]
 
       assert Enum.all?(FareZones.tools(), &(&1.parameters["additionalProperties"] == false))

@@ -12,7 +12,10 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   resolves a route selection through `FareZones.route_selection/3`, the one owner of
   what such a selection means, into exact counts, a bounded sample with the other
   routes serving each stop, the shared routes and the selection fingerprint as
-  evidence. Each answer returns the server evidence the panel trusts beside the
+  evidence. `prepare_zone_assignment` resolves the same selection again on the
+  server, previews the assignment and returns a prepared command that carries the
+  explicit stop UUIDs, the predicate and the fingerprint; the native zone review
+  decides whether and when it is saved. Each answer returns the server evidence the panel trusts beside the
   model's result. No tool writes anything and none accepts an organization, a
   version, a stop UUID or an "all" flag.
   """
@@ -23,6 +26,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Gtfs.Fares
 
   @source_ref "gtfs_fare_zones"
   @zone_limit 50
@@ -101,6 +105,23 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
           "required" => ["route_ids", "only_unzoned", "exclude_stop_ids"],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_zone_assignment",
+        description:
+          "Prepare assigning the selected stops to one zone, for the person to review. Takes the same route_ids, only_unzoned and exclude_stop_ids as query_zone_targets and zone_id, the exact zone ID from list_zones. Nothing is saved: the person reviews the stops in the zone review and saves there.",
+        activity: "Prepared a zone assignment",
+        parameters: %{
+          "type" => "object",
+          "properties" =>
+            Map.put(selection_properties(), "zone_id", %{
+              "type" => "string",
+              "minLength" => 1,
+              "maxLength" => 200
+            }),
+          "required" => ["route_ids", "only_unzoned", "exclude_stop_ids", "zone_id"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -152,6 +173,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   defp run("find_routes", args, scope), do: find_routes(args, scope)
   defp run("find_stops", args, scope), do: find_stops(args, scope)
   defp run("query_zone_targets", args, scope), do: query_zone_targets(args, scope)
+  defp run("prepare_zone_assignment", args, scope), do: prepare_zone_assignment(args, scope)
 
   # -- tools ------------------------------------------------------------------
 
@@ -311,6 +333,162 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
     end
   end
 
+  defp prepare_zone_assignment(args, %Scope{} = scope) do
+    with {:ok, predicate} <- parse_predicate(args),
+         {:ok, zone_id} <- parse_zone_id(args),
+         {:ok, selection} <- resolve_selection(scope, predicate),
+         :ok <- require_stops(selection),
+         {:ok, review} <- preview(scope, selection, zone_id),
+         :ok <- require_change(review, zone_id) do
+      prepared_assignment(scope, predicate, selection, review, zone_id)
+    end
+  end
+
+  defp parse_zone_id(%{"zone_id" => zone_id}) when is_binary(zone_id) and zone_id != "",
+    do: {:ok, zone_id}
+
+  defp parse_zone_id(_args), do: {:error, "Give the zone_id from list_zones."}
+
+  defp require_stops(%{stops: []}), do: {:error, "No stops match."}
+  defp require_stops(_selection), do: :ok
+
+  defp preview(scope, selection, zone_id) do
+    stop_ids = Enum.map(selection.stops, & &1.id)
+
+    case FareZones.preview_assignment(
+           scope.organization_id,
+           scope.gtfs_version_id,
+           stop_ids,
+           zone_id
+         ) do
+      {:ok, review} ->
+        {:ok, review}
+
+      {:error, :unknown_zone} ->
+        {:error, "Zone #{zone_id} is not in this version. Use list_zones."}
+
+      {:error, :invalid_selection} ->
+        {:error, "The selection changed. Ask again."}
+    end
+  end
+
+  defp require_change(%{changed_count: 0}, zone_id),
+    do: {:error, "Nothing would change: every selected stop is already in zone #{zone_id}."}
+
+  defp require_change(_review, _zone_id), do: :ok
+
+  # Nothing is written here. The command is the only handoff: the host re-resolves
+  # the predicate and the apply recomputes it again under the version lock, so the
+  # stop UUIDs this carries are a fixed set to be checked, never trusted.
+  defp prepared_assignment(scope, predicate, selection, review, zone_id) do
+    zone_name = zone_name(scope, zone_id)
+    stop_ids = Enum.map(selection.stops, & &1.id)
+
+    prepared = %{
+      command:
+        {:zone_assignment,
+         %{
+           target: zone_id,
+           predicate: predicate,
+           stop_ids: stop_ids,
+           fingerprint: selection.fingerprint
+         }},
+      summary: %{
+        title: "Assign #{length(stop_ids)} stops to #{zone_name}",
+        detail:
+          "Review the stops, shared routes and export effect, then save in the zone review.",
+        lines: summary_lines(scope, predicate, selection, review, zone_name)
+      }
+    }
+
+    result = %{
+      "prepared" => true,
+      "zone_id" => zone_id,
+      "zone_name" => zone_name,
+      "selected_count" => length(stop_ids),
+      "added_count" => review.added_count,
+      "moved_count" => review.moved_count,
+      "already_in_zone_count" => review.unchanged_count,
+      "excluded" =>
+        Enum.map(selection.excluded, &%{"stop_id" => &1.stop_id, "stop_name" => &1.stop_name}),
+      "shared_routes" => shared_routes(selection, predicate)
+    }
+
+    evidence =
+      FareEvidence.build(scope, %{
+        kind: "zone_assignment",
+        title: "Zone assignment",
+        total: length(stop_ids),
+        total_label: "stops to assign",
+        facts: [
+          %{label: "Gain a zone", value: Integer.to_string(review.added_count)},
+          %{label: "Move from another zone", value: Integer.to_string(review.moved_count)},
+          %{label: "Already in the zone", value: Integer.to_string(review.unchanged_count)}
+        ],
+        source_ref: @source_ref,
+        digest: selection.fingerprint,
+        resources:
+          Enum.map(
+            selection.routes,
+            &%{kind: "route", id: &1.route_id, label: &1.route_short_name || &1.route_id}
+          )
+      })
+
+    {:prepared, prepared, result, evidence}
+  end
+
+  defp zone_name(scope, zone_id) do
+    scope.organization_id
+    |> FareZones.inventory(scope.gtfs_version_id)
+    |> Map.fetch!(:zones)
+    |> Enum.find_value(zone_id, &(&1.zone_id == zone_id && &1.name))
+  end
+
+  defp summary_lines(scope, predicate, selection, review, zone_name) do
+    [
+      "Routes: " <> Enum.map_join(selection.routes, ", ", &(&1.route_short_name || &1.route_id)),
+      if(predicate.only_unzoned?,
+        do: "Stops with no zone only",
+        else: "Includes stops already in another zone"
+      ),
+      "#{review.added_count} gain a zone, #{review.moved_count} move from another zone, #{review.unchanged_count} already in #{zone_name}",
+      exclusion_line(selection),
+      shared_route_line(selection, predicate),
+      export_line(scope)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp exclusion_line(%{excluded: []}), do: nil
+
+  defp exclusion_line(%{excluded: excluded}),
+    do:
+      "Excluded: " <>
+        Enum.map_join(excluded, ", ", &"#{&1.stop_name || &1.stop_id} (#{&1.stop_id})")
+
+  defp shared_route_line(selection, predicate) do
+    case shared_routes(selection, predicate) do
+      [] ->
+        nil
+
+      shared ->
+        "Also served by " <>
+          Enum.map_join(shared, ", ", fn route ->
+            count = route["stop_count"]
+
+            "route #{route["route_short_name"]} (#{count} #{if count == 1, do: "stop", else: "stops"})"
+          end)
+    end
+  end
+
+  defp export_line(scope) do
+    if Fares.managed?(scope.organization_id, scope.gtfs_version_id) do
+      "This version's areas and stop areas export from these zones."
+    else
+      "These zones export in the stops.txt zone column; fare rules keep their zone references."
+    end
+  end
+
   # The one place a tool turns arguments into a selection predicate. The routes,
   # stops and flag are the model's words; what they mean is decided by
   # `FareZones.route_selection/3`, never here.
@@ -322,7 +500,11 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
        when is_list(route_ids) and is_boolean(only_unzoned) and is_list(exclude_stop_ids) do
     if Enum.all?(route_ids ++ exclude_stop_ids, &(is_binary(&1) and &1 != "")) do
       {:ok,
-       %{route_ids: route_ids, only_unzoned?: only_unzoned, exclude_stop_ids: exclude_stop_ids}}
+       %{
+         route_ids: Enum.uniq(route_ids),
+         only_unzoned?: only_unzoned,
+         exclude_stop_ids: Enum.uniq(exclude_stop_ids)
+       }}
     else
       {:error, "Route IDs and stop IDs must be non-empty strings."}
     end
