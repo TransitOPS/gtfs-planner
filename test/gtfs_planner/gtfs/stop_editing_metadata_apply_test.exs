@@ -128,6 +128,30 @@ defmodule GtfsPlanner.Gtfs.StopEditingMetadataApplyTest do
       assert {stamps(), stop_logs(context)} == before
     end
 
+    test "saves a rename together with a text change to a nameless generic node", context do
+      %{"S500" => oak} = context.stops
+
+      node =
+        stop_fixture(context.organization.id, context.version.id, %{
+          stop_id: "N900",
+          stop_name: nil,
+          stop_lat: nil,
+          stop_lon: nil,
+          location_type: 3
+        })
+
+      rows = [row(oak, %{"stop_name" => "Oak Avenue"}), row(node, %{"stop_desc" => "Stair"})]
+      review = review!(rows, context)
+
+      assert {:ok, %{stops: stops, unchanged: 0}} =
+               StopEditing.apply_metadata_batch(rows, review.fingerprint, context.audit)
+
+      assert length(stops) == 2
+
+      assert {Repo.reload!(oak).stop_name, Repo.reload!(node).stop_desc} ==
+               {"Oak Avenue", "Stair"}
+    end
+
     test "applying the same review twice saves once and then refuses", context do
       %{"S410" => eb} = context.stops
       rows = [row(eb, %{"stop_name" => "Renamed"})]

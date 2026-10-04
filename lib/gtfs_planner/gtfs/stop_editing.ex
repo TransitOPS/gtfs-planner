@@ -609,7 +609,11 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
         |> Repo.all()
         |> Enum.map(fn {stop_id, name} -> {stop_id, name} end)
 
-      siblings = Enum.map(rows, &{&1.stop_id, name_key(&1.new["stop_name"])})
+      # A generic node or boarding area may have no name; it has nothing to duplicate.
+      siblings =
+        for row <- rows,
+            is_binary(row.new["stop_name"]),
+            do: {row.stop_id, name_key(row.new["stop_name"])}
 
       for row <- renamed,
           key = name_key(row.new["stop_name"]),

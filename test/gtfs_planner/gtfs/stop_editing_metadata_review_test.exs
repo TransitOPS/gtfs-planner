@@ -294,6 +294,28 @@ defmodule GtfsPlanner.Gtfs.StopEditingMetadataReviewTest do
              )
   end
 
+  test "a rename in a batch with a nameless generic node reviews without a name to compare",
+       context do
+    %{"S500" => oak} = context.stops
+
+    node =
+      stop_fixture(context.organization.id, context.version.id, %{
+        stop_id: "N900",
+        stop_name: nil,
+        stop_lat: nil,
+        stop_lon: nil,
+        location_type: 3
+      })
+
+    assert {:ok, review} =
+             StopEditing.review_metadata_batch(
+               [row(oak, %{"stop_name" => "Oak Avenue"}), row(node, %{"stop_desc" => "Stair"})],
+               context.audit
+             )
+
+    assert {review.changed, review.valid?, review.warnings} == {2, true, []}
+  end
+
   test "writes nothing, is repeatable, notices a same-second rename and refuses non-editors",
        context do
     %{"S410" => eb, "S411" => wb} = context.stops
