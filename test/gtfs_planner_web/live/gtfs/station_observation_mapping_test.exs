@@ -279,7 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationObservationMappingTest do
       refute encoded =~ ctx.user.email
     end
 
-    test "an unsupported unit, a missing meaning and a nonpositive value each keep the draft",
+    test "an unsupported unit, a missing meaning and a non-finite or nonpositive value each keep the draft",
          ctx do
       view = computed_import_view(ctx)
       run_id = run_id(ctx)
@@ -289,7 +289,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationObservationMappingTest do
       for {params, message, forged_value} <- [
             {%{"unit" => "ft"}, "only units", "105"},
             {%{"meaning" => "door_width"}, "the minimum clear width", "105"},
-            {%{"original_value" => "0"}, "greater than zero", "0"}
+            {%{"original_value" => "0"}, "greater than zero", "0"},
+            {%{"original_value" => "Infinity"}, "measured number", "Infinity"},
+            {%{"original_value" => "1e400"}, "measured number", "1e400"}
           ] do
         forge_measurement(
           view,

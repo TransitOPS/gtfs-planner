@@ -80,6 +80,11 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
   @max_source_revision_bytes 128
   @max_pathway_id_bytes 255
   @max_original_value_bytes 64
+  # A measurement is a plain number: at most 12 significant digits with its
+  # exponent within +-12. Nothing a person writes down needs more, and a parsed
+  # exponent is never expanded into digits before it is checked against this.
+  @max_value_coefficient 1_000_000_000_000
+  @max_value_exponent 12
 
   # A computed review and everything that follows it: the run holds decisions a
   # station may read. A pending compute, a computing run, a failure, a
@@ -1151,8 +1156,15 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunReview do
     # The original text is kept verbatim beside the conversion, so the answer
     # shows what staff measured and not only what it became.
     case Decimal.parse(value) do
-      {decimal, ""} -> {:ok, {value, decimal}}
-      _other -> {:error, :invalid_value}
+      {%Decimal{coef: coef, exp: exp} = decimal, ""}
+      when is_integer(coef) and coef < @max_value_coefficient and
+             exp >= -@max_value_exponent and exp <= @max_value_exponent ->
+        {:ok, {value, decimal}}
+
+      # Infinity and NaN carry a non-integer coefficient, so they land here with
+      # every value whose precision or exponent is out of bounds.
+      _other ->
+        {:error, :invalid_value}
     end
   end
 

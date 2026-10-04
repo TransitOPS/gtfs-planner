@@ -172,25 +172,31 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
       run = width_run(ctx)
 
       for {overrides, reason} <- [
-            [%{"unit" => "ft"}, "unsupported_unit"],
-            [%{"unit" => nil}, "unsupported_unit"],
-            [%{"meaning" => "width"}, "missing_meaning"],
-            [%{"meaning" => nil}, "missing_meaning"],
-            [%{"field" => "length"}, "unsupported_field"],
-            [%{"original_value" => "0"}, "nonpositive_value"],
-            [%{"original_value" => "-1.05"}, "nonpositive_value"],
-            [%{"original_value" => "wide"}, "invalid_value"],
-            [%{"original_value" => "1.05 m"}, "invalid_value"],
-            [%{"captured_date" => "18/09/2026"}, "invalid_captured_date"],
-            [%{"accepted" => "yes"}, "invalid_boolean"],
-            [%{"conflict" => 1}, "invalid_boolean"],
-            [%{"source_ref" => ""}, "invalid_source_ref"],
-            [%{"source_ref" => String.duplicate("x", 513)}, "invalid_source_ref"],
-            [%{"source_revision" => String.duplicate("r", 129)}, "invalid_source_revision"],
-            [%{"target" => %{"pathway_id" => ""}}, "invalid_target"],
-            [%{"target" => %{"pathway_id" => String.duplicate("p", 256)}}, "invalid_target"],
-            [%{"target" => %{"stop_id" => "PLAT_A"}}, "invalid_target"],
-            [%{"extra" => "field"}, "unknown_field"]
+            {%{"unit" => "ft"}, "unsupported_unit"},
+            {%{"unit" => nil}, "unsupported_unit"},
+            {%{"meaning" => "width"}, "missing_meaning"},
+            {%{"meaning" => nil}, "missing_meaning"},
+            {%{"field" => "length"}, "unsupported_field"},
+            {%{"original_value" => "0"}, "nonpositive_value"},
+            {%{"original_value" => "-1.05"}, "nonpositive_value"},
+            {%{"original_value" => "wide"}, "invalid_value"},
+            {%{"original_value" => "1.05 m"}, "invalid_value"},
+            {%{"original_value" => "Infinity"}, "invalid_value"},
+            {%{"original_value" => "inf"}, "invalid_value"},
+            {%{"original_value" => "NaN"}, "invalid_value"},
+            {%{"original_value" => "1e400"}, "invalid_value"},
+            {%{"original_value" => "1e-400"}, "invalid_value"},
+            {%{"original_value" => "1234567890123"}, "invalid_value"},
+            {%{"captured_date" => "18/09/2026"}, "invalid_captured_date"},
+            {%{"accepted" => "yes"}, "invalid_boolean"},
+            {%{"conflict" => 1}, "invalid_boolean"},
+            {%{"source_ref" => ""}, "invalid_source_ref"},
+            {%{"source_ref" => String.duplicate("x", 513)}, "invalid_source_ref"},
+            {%{"source_revision" => String.duplicate("r", 129)}, "invalid_source_revision"},
+            {%{"target" => %{"pathway_id" => ""}}, "invalid_target"},
+            {%{"target" => %{"pathway_id" => String.duplicate("p", 256)}}, "invalid_target"},
+            {%{"target" => %{"stop_id" => "PLAT_A"}}, "invalid_target"},
+            {%{"extra" => "field"}, "unknown_field"}
           ] do
         scope =
           selection_scope(ctx, ctx.station, run, [
@@ -200,8 +206,31 @@ defmodule GtfsPlanner.Gtfs.StationAssistantSelectionTest do
         assert {:ok, result, _evidence} =
                  StationAssistant.normalize_observations(scope, frozen(ctx, scope))
 
-        assert result["observations"] == [], "expected #{reason} to fail the row"
+        assert result["observations"] == [],
+               "expected #{reason} to fail the row #{inspect(overrides)}"
+
         assert [%{"reason" => ^reason}] = result["rejected"]
+      end
+    end
+
+    test "an exponent too large to expand is refused before it is expanded", ctx do
+      run = width_run(ctx)
+
+      # Formatting 1e999999999 as plain digits needs roughly 16 GB. Bounding the
+      # heap makes a regression kill this test rather than the whole node.
+      Process.flag(:max_heap_size, %{size: 32_000_000, kill: true, error_logger: false})
+
+      for value <- ["1e999999999", "1e-999999999", "1E99999999999999999999999999999999999999"] do
+        scope =
+          selection_scope(ctx, ctx.station, run, [
+            Map.put(observation("OBS", "PW_W14", "105", "cm"), "original_value", value)
+          ])
+
+        assert {:ok, result, _evidence} =
+                 StationAssistant.normalize_observations(scope, frozen(ctx, scope))
+
+        assert result["observations"] == [], "expected #{value} to fail the row"
+        assert [%{"reason" => "invalid_value"}] = result["rejected"]
       end
     end
 
