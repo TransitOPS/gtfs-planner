@@ -24,6 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
 
   alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlannerWeb.Gtfs.FaresComponents
   alias GtfsPlanner.FareSelectionFixtures
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.GtfsFixtures
@@ -124,7 +126,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
       assert has_element?(view, "#fare-zone-assignment-row-1", "Alder")
       assert has_element?(view, "#fare-zone-assignment-row-2", "Cedar")
       refute has_element?(view, "#fare-zone-assignment-row-3")
-      review = view |> element("#fare-zone-assignment-review") |> render()
+      review = view |> element("#fare-zone-assignment-rows") |> render()
       refute review =~ "Birch"
       refute review =~ "Airport Gate"
       assert has_element?(view, "#fare-zone-assignment-target option[selected][value=B]")
@@ -263,7 +265,151 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
     end
   end
 
+  describe "the helper-origin review" do
+    test "shows the helper's summary, every row and each stop's other routes, with no Refresh",
+         context do
+      {view, _pid} = prepared_view(context)
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      helper = view |> element("#fare-zone-assignment-helper") |> render()
+
+      for line <- [
+            "Routes: 6",
+            "Stops with no zone only",
+            "2 gain a zone, 0 move from another zone, 0 already in Zone B",
+            "Excluded: Airport Gate (AIR1)",
+            "Also served by route 9 (1 stop)",
+            "These zones export in the stops.txt zone column; fare rules keep their zone references."
+          ] do
+        assert helper =~ line
+      end
+
+      assert text_of(view, "#fare-zone-assignment-row-1") =~ "Alder"
+      assert text_of(view, "#fare-zone-assignment-row-1-routes") == "No other routes"
+      assert text_of(view, "#fare-zone-assignment-row-2-routes") == "9"
+      assert has_element?(view, "#fare-zone-assignment-row-2", "Cedar")
+      refute has_element?(view, "#fare-zone-assignment-refresh")
+      refute has_element?(view, "#fare-zone-assignment-changed")
+      assert has_element?(view, "#fare-zone-assignment-dialog-confirm", "Assign 2 stops")
+    end
+
+    test "lists all 150 stops of a large selection, while a manual review keeps 100 rows",
+         context do
+      GtfsFixtures.route_fixture(context.organization.id, context.version.id, %{route_id: "RBIG"})
+      names = Enum.map(1..150, &"B#{String.pad_leading(Integer.to_string(&1), 3, "0")}")
+
+      FareSelectionFixtures.insert_stops!(
+        context.organization,
+        context.version,
+        Enum.map(names, &%{stop_id: &1, stop_name: "Big #{&1}"})
+      )
+
+      FareSelectionFixtures.call_at!(
+        context.organization,
+        context.version,
+        "RBIG",
+        "T-BIG",
+        names
+      )
+
+      {view, _pid} =
+        prepared_view(
+          context,
+          ~s({"route_ids":["RBIG"],"only_unzoned":true,"exclude_stop_ids":[],"zone_id":"C"})
+        )
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#fare-zone-assignment-row-150", "Big B150")
+      refute has_element?(view, "#fare-zone-assignment-row-151")
+      refute has_element?(view, "#fare-zone-assignment-more")
+
+      view |> element("#fare-zone-assignment-dialog-cancel") |> render_click()
+      render_click(view, "clear_selection", %{})
+
+      ids =
+        Repo.all(
+          from(s in Stop, where: like(s.stop_id, "B1%") or like(s.stop_id, "B0%"), select: s.id)
+        )
+
+      assert length(ids) == 150
+      render_click(view, "select_stops", %{"ids" => ids})
+      view |> element("#fare-zone-assign-selection") |> render_click()
+
+      assert has_element?(view, "#fare-zone-assignment-row-100")
+      refute has_element?(view, "#fare-zone-assignment-row-101")
+      assert text_of(view, "#fare-zone-assignment-more") == "and 50 more"
+      refute has_element?(view, "#fare-zone-assignment-helper")
+    end
+
+    test "a changed selection is stated, cannot be saved and offers no Refresh", context do
+      stop_ids = [context.stops["A1"].id, context.stops["A3"].id]
+
+      {:ok, preview} =
+        FareZones.preview_assignment(context.organization.id, context.version.id, stop_ids, "B")
+
+      origin = %{
+        session_pid: self(),
+        conversation_id: "c",
+        entry_id: 2,
+        command: {:zone_assignment, %{}},
+        summary: %{title: "Assign 2 stops to Zone B", detail: "", lines: ["Routes: 6"]},
+        stop_routes: %{},
+        return_focus_id: "agent-prepared-2",
+        changed?: true
+      }
+
+      html =
+        render_component(&FaresComponents.assignment_dialog/1,
+          assignment: %{
+            mode: :assign,
+            target: "B",
+            preview: preview,
+            error: nil,
+            stale: 0,
+            origin: origin
+          },
+          zones: FareZones.inventory(context.organization.id, context.version.id).zones
+        )
+
+      assert html =~ "fare-zone-assignment-changed"
+      assert html =~ "The routes&#39; stops or zones changed after this was prepared."
+      assert html =~ "Close this review and ask the helper again."
+      refute html =~ "fare-zone-assignment-refresh"
+      assert html =~ ~r/id="fare-zone-assignment-dialog-confirm"[^>]*disabled/
+
+      # A stale review of the same origin has no Refresh either.
+      stale = %{
+        mode: :assign,
+        target: "B",
+        preview: preview,
+        error: nil,
+        stale: 1,
+        origin: %{origin | changed?: false}
+      }
+
+      html = render_component(&FaresComponents.assignment_dialog/1, assignment: stale, zones: [])
+      assert html =~ "fare-zone-assignment-stale"
+      refute html =~ "fare-zone-assignment-refresh"
+
+      # A manual review keeps it.
+      manual = %{stale | origin: nil}
+      html = render_component(&FaresComponents.assignment_dialog/1, assignment: manual, zones: [])
+      assert html =~ "fare-zone-assignment-refresh"
+    end
+  end
+
   ## Helpers
+
+  defp text_of(view, selector) do
+    view
+    |> element(selector)
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.text()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
 
   defp zones,
     do: Repo.all(from(s in Stop, order_by: s.id, select: {s.id, s.zone_id, s.updated_at}))
@@ -272,14 +418,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
 
   # Opens the helper, attaches this process to the same conversation so the settled
   # entry can be awaited, and scripts the two provider replies of one prepare turn.
-  defp prepared_view(context) do
+  defp prepared_view(context, arguments \\ @prepare_arguments) do
     {:ok, view, _html} = open_zones(context)
     view |> element("#agent-helper-open") |> render_click()
 
     pid = assigns(view).agent_session
     assert {:ok, ^pid, _snapshot} = Agents.open(scope(context))
 
-    expect_reply(tool_calls_reply([{"call_1", "prepare_zone_assignment", @prepare_arguments}]))
+    expect_reply(tool_calls_reply([{"call_1", "prepare_zone_assignment", arguments}]))
     expect_reply(text_reply("I prepared the zone assignment."))
 
     view
@@ -290,7 +436,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveHelperTest do
                     {:entry, %{status: :done, prepared: %{command: command}}}},
                    5_000
 
-    assert {:zone_assignment, %{target: "B", stop_ids: [_, _]}} = command
+    assert {:zone_assignment, %{stop_ids: [_ | _]}} = command
     render(view)
 
     {view, pid}

@@ -1411,9 +1411,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
          {:ok, %{predicate: predicate, stop_ids: stop_ids, target: target} = command} <-
            zone_command(prepared),
          :ok <- require_compatible_selection(socket, stop_ids),
-         :ok <- require_current_selection(socket, command),
+         {:ok, selection} <- current_selection(socket, command),
          :ok <- require_target(socket, stop_ids, predicate, target) do
-      open_prepared_assignment(socket, entry_id, prepared, command)
+      open_prepared_assignment(socket, entry_id, prepared, command, selection)
     else
       {:refuse, notice} -> assign(socket, :agent_notice, notice)
     end
@@ -1465,15 +1465,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       else: {:refuse, @helper_selection_notice}
   end
 
-  defp require_current_selection(socket, command) do
+  defp current_selection(socket, command) do
     case FareZones.route_selection(
            socket.assigns.current_organization.id,
            socket.assigns.current_gtfs_version.id,
            command.predicate
          ) do
-      {:ok, %{fingerprint: fingerprint, stops: stops}} when fingerprint == command.fingerprint ->
+      {:ok, %{fingerprint: fingerprint, stops: stops} = selection}
+      when fingerprint == command.fingerprint ->
         if Enum.sort(Enum.map(stops, & &1.id)) == Enum.sort(command.stop_ids),
-          do: :ok,
+          do: {:ok, selection},
           else: {:refuse, @helper_changed_notice}
 
       _changed_or_unresolved ->
@@ -1494,16 +1495,30 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     end
   end
 
+  # Each selected stop's other serving routes, by name: the part of the helper's
+  # summary the review shows per row.
+  defp other_routes(selection, predicate) do
+    Map.new(selection.stops, fn stop ->
+      names =
+        (stop.route_ids -- predicate.route_ids)
+        |> Enum.map(&Map.fetch!(selection.route_names, &1))
+
+      {stop.id, names}
+    end)
+  end
+
   # The review opens on exactly the prepared stops, against the prepared target,
   # and remembers which card of which conversation it came from.
-  defp open_prepared_assignment(socket, entry_id, prepared, command) do
+  defp open_prepared_assignment(socket, entry_id, prepared, command, selection) do
     origin = %{
       session_pid: socket.assigns.agent_session,
       conversation_id: socket.assigns.agent_conversation_id,
       entry_id: entry_id,
       command: {:zone_assignment, command},
       summary: prepared.summary,
-      return_focus_id: "agent-prepared-#{entry_id}"
+      stop_routes: other_routes(selection, command.predicate),
+      return_focus_id: "agent-prepared-#{entry_id}",
+      changed?: false
     }
 
     socket

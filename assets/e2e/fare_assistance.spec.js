@@ -38,6 +38,9 @@ const VIEWPORTS = [
 // otherwise they stay in Playwright's own output directory.
 const CAPTURE_DIR = process.env.FARE_ASSISTANCE_CAPTURE_DIR;
 
+const ZONES_REQUEST =
+  "Put unzoned Route 1 stops in the Coast zone except Newport Transit Center";
+
 // A 1×1 transparent PNG. The zone workspace's map requests tiles, and answering
 // them locally keeps a journey from depending on the Geoapify plan or on network
 // access — the same stub `fare_zones.spec.js` installs.
@@ -115,7 +118,33 @@ async function openPrices(page) {
   return versionId;
 }
 
-async function capture(page, testInfo, name) {
+async function ask(page, message) {
+  await page.locator("#agent-composer-input").fill(message);
+  await page.locator("#agent-send").click();
+}
+
+// Opens the panel on a fresh conversation, asks the scripted helper for the
+// Route 1 assignment and waits for its prepared card.
+async function prepareZoneAssignment(page) {
+  await page.locator("#agent-helper-open").click();
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  await page.locator("#agent-new-conversation").click();
+  await ask(page, ZONES_REQUEST);
+
+  const card = page.locator("#agent-prepared-2");
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  await expect(card).toContainText("Assign 2 stops to Coast zone");
+  return card;
+}
+
+async function focusInside(page, selector) {
+  return page.evaluate(
+    (sel) => document.querySelector(sel)?.contains(document.activeElement) ?? false,
+    selector,
+  );
+}
+
+async function capture(page, testInfo, name, { fullPage = true } = {}) {
   let path = testInfo.outputPath(`${name}.png`);
 
   if (CAPTURE_DIR) {
@@ -125,8 +154,8 @@ async function capture(page, testInfo, name) {
 
   // The selection bar is sticky to the viewport's bottom; from the top of the
   // page a full-page capture shows it where a reader sees it.
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.screenshot({ path, fullPage: true });
+  if (fullPage) await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path, fullPage });
 }
 
 test.describe("seed", () => {
@@ -187,6 +216,59 @@ test.describe("zones helper panel", () => {
       await page.locator("#agent-panel-close").click();
       await expect(panel).toHaveCount(0);
       await expect(page.locator("#agent-helper-open")).toBeFocused();
+    });
+  }
+});
+
+test.describe("zones review", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`shows the prepared selection in the review at ${viewport.label}`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(90_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openZones(page);
+      const card = await prepareZoneAssignment(page);
+
+      // Nothing is saved by preparing: the page still counts four stops with no zone.
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+
+      await page.locator("#agent-review-prepared-2").click();
+
+      const dialog = page.locator("#fare-zone-assignment-dialog");
+      await expect(dialog).toBeVisible();
+      expect(await focusInside(page, "#fare-zone-assignment-dialog")).toBe(true);
+
+      // The selection is the route's unzoned stops minus the exclusion, by name.
+      await expect(page.locator("#fare-zone-assignment-row-1")).toContainText("Agate Beach");
+      await expect(page.locator("#fare-zone-assignment-row-2")).toContainText("Depoe Bay");
+      await expect(page.locator("#fare-zone-assignment-row-3")).toHaveCount(0);
+      await expect(page.locator("#fare-zone-assignment-row-1-routes")).toHaveText("11");
+      await expect(page.locator("#fare-zone-assignment-row-2-routes")).toHaveText("6");
+
+      const helper = page.locator("#fare-zone-assignment-helper");
+      await expect(helper).toContainText("Stops with no zone only");
+      await expect(helper).toContainText("Excluded: Newport Transit Center (NTC)");
+      await expect(helper).toContainText("Also served by");
+      await expect(page.locator("#fare-zone-assignment-refresh")).toHaveCount(0);
+      await expect(page.locator("#fare-zone-assignment-dialog-confirm")).toBeEnabled();
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      // A modal sits in the viewport, so its captures are viewport captures; the
+      // rows list scrolls inside the dialog rather than the page.
+      await capture(page, testInfo, `zones-review-${viewport.label}`, { fullPage: false });
+
+      await page.locator("#fare-zone-assignment-row-2").scrollIntoViewIfNeeded();
+      await expect(page.locator("#fare-zone-assignment-row-2")).toBeInViewport();
+      await capture(page, testInfo, `zones-review-${viewport.label}-rows`, { fullPage: false });
+
+      // Closing returns focus to the prepared card and saves nothing.
+      await page.locator("#fare-zone-assignment-dialog-cancel").click();
+      await expect(dialog).toHaveCount(0);
+      await expect(card).toBeFocused();
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
     });
   }
 });
