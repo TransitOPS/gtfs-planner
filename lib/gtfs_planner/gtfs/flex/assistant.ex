@@ -708,10 +708,21 @@ defmodule GtfsPlanner.Gtfs.Flex.Assistant do
     with :ok <- check_row(:booking_rules, row, index, @rule_fields),
          {:ok, attrs} <- row_attrs(row, @rule_fields),
          :ok <- check_calendar(workspace, attrs, "service_id"),
-         :ok <- check_calendar(workspace, attrs, "office_service_id") do
-      cast_row(FlexBookingRule, @rule_fields, attrs, :booking_rules, index)
+         :ok <- check_calendar(workspace, attrs, "office_service_id"),
+         {:ok, rule} <- cast_row(FlexBookingRule, @rule_fields, attrs, :booking_rules, index) do
+      check_office_calendar(rule, index)
     end
   end
+
+  # A business-day rule counts its days on an office calendar, and the export
+  # names that calendar as `prior_notice_service_id`. Without one the rule
+  # exports as calendar days while the rider wording still says business days,
+  # so an unresolved office calendar refuses the preparation (AC-5, AC-6).
+  defp check_office_calendar(%{"business_days" => true, "office_service_id" => office}, index)
+       when office in [nil, ""],
+       do: {:error, {:invalid_input, {:booking_rules, index, :office_calendar_required}}}
+
+  defp check_office_calendar(rule, _index), do: {:ok, rule}
 
   defp check_row(field, row, index, allowed) do
     cond do

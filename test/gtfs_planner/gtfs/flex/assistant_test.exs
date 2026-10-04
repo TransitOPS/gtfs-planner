@@ -410,6 +410,40 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantTest do
                })
     end
 
+    test "a business-day rule with no office calendar is refused, not exported as calendar days",
+         context do
+      scope = scope_with_source(context.scope, context.area.id)
+
+      rule = %{
+        "service_id" => nil,
+        "when" => "earlier_day",
+        "days" => 1,
+        "by" => "15:00",
+        "business_days" => true
+      }
+
+      # Omitted, null and blank all leave the office calendar unresolved. The
+      # export column `prior_notice_service_id` would be empty, so a consumer
+      # would count calendar days under rider wording that says business days.
+      for row <- [
+            rule,
+            Map.put(rule, "office_service_id", nil),
+            Map.put(rule, "office_service_id", "")
+          ] do
+        assert {:error, {:invalid_input, {:booking_rules, 0, :office_calendar_required}}} =
+                 Assistant.prepare(scope, %{"scope" => "all_supported", "booking_rules" => [row]})
+      end
+
+      # The same days counted as calendar days need no office calendar.
+      assert {:ok, prepared} =
+               Assistant.prepare(scope, %{
+                 "scope" => "all_supported",
+                 "booking_rules" => [Map.put(rule, "business_days", false)]
+               })
+
+      assert hd(prepared.candidate.booking_rules).business_days == false
+    end
+
     test "discretionary same-day prose blocks a complete preparation", context do
       statement = "Same-day booking if the dispatcher permits it."
       scope = scope_with_source(context.scope, context.area.id)

@@ -290,6 +290,20 @@ defmodule GtfsPlanner.Agents.Packs.FlexPolicyTest do
       assert message =~ "That proposal cannot be prepared: hours row 0 is not valid:"
 
       assert {:error, message} =
+               prepare(
+                 %{
+                   "scope" => "all_supported",
+                   "booking_rules" => [Map.delete(business_day_rule(), "office_service_id")]
+                 },
+                 context.scope
+               )
+
+      assert message ==
+               "That proposal cannot be prepared: booking rule 0 counts business days but has " <>
+                 "no office_service_id; name the office calendar from the policy context or " <>
+                 "leave business_days out."
+
+      assert {:error, message} =
                prepare(%{"scope" => "partly", "hours" => [hours_row()]}, context.scope)
 
       assert message ==

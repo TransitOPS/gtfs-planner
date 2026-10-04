@@ -627,6 +627,11 @@ defmodule GtfsPlanner.Agents.Packs.FlexPolicy do
   defp describe({:invalid_booking_rules, index, messages}),
     do: "booking rule #{index} is not valid: #{messages(messages)}"
 
+  defp describe({:booking_rules, index, :office_calendar_required}),
+    do:
+      "booking rule #{index} counts business days but has no office_service_id; " <>
+        "name the office calendar from the policy context or leave business_days out"
+
   defp describe({field, index, :not_a_map}),
     do: "#{label(field)} row #{index} is not an object"
 
