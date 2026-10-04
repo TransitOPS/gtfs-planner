@@ -48,7 +48,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   `fingerprint` covers the predicate and every served stop's zone and serving
   routes, so a later read can tell whether the selection still means the same.
 
-  Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/2`
+  Reviewed bulk assignment uses `preview_assignment/4`, `apply_assignment/3`
   and `undo_assignment/2`. A preview is a read that reports
   each selected boardable stop's current and target zone; an apply writes the
   reviewed changes in one transaction that first locks the actor's membership
@@ -203,6 +203,12 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           moved_count: non_neg_integer(),
           unchanged_count: non_neg_integer(),
           unselected_sibling_count: non_neg_integer()
+        }
+
+  @type selection_fence :: %{
+          predicate: route_selection_input(),
+          fingerprint: String.t(),
+          stop_ids: [Ecto.UUID.t()]
         }
 
   @type stale_stop :: %{
@@ -696,17 +702,27 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   zone ID (nil for unassign) and `updated_at`, and the applied changes are
   returned for `undo_assignment/2`. A pair that is not a published version of the
   organization returns `:not_found` and changes nothing.
+
+  The `:selection` option fences a prepared assignment on the route selection it
+  was built from (`route_selection/3`). Right after the version row is locked, and
+  before the targets are validated, the stops are locked or anything is written,
+  the predicate is resolved again: a fingerprint that differs, a stop set that is
+  not the one prepared, or a predicate that no longer resolves (a deleted route or
+  stop) is `:selection_changed`. A change whose stop is not in the prepared
+  `stop_ids` is `:invalid_selection`. Every refusal writes nothing. Without the
+  option the call is `apply_assignment/2`.
   """
-  @spec apply_assignment(AuditContext.t(), [assignment_change()]) ::
+  @spec apply_assignment(AuditContext.t(), [assignment_change()], selection: selection_fence()) ::
           {:ok, %{applied: [assignment_change()]}}
           | {:error,
              {:stale, [stale_stop()]}
+             | :selection_changed
              | :invalid_selection
              | :unknown_zone
              | :not_found
              | :forbidden}
-  def apply_assignment(%AuditContext{} = audit, changes) do
-    write_assignment(audit, changes, validate_targets?: true)
+  def apply_assignment(%AuditContext{} = audit, changes, opts \\ []) do
+    write_assignment(audit, changes, true, Keyword.get(opts, :selection))
   end
 
   @doc """
@@ -725,7 +741,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           | {:error, {:stale, [stale_stop()]} | :invalid_selection | :not_found | :forbidden}
   def undo_assignment(%AuditContext{} = audit, applied) do
     changes = Enum.map(applied, &%{id: &1.id, from: &1.to, to: &1.from})
-    write_assignment(audit, changes, validate_targets?: false)
+    write_assignment(audit, changes, false, nil)
   end
 
   @doc """
@@ -989,13 +1005,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     end)
   end
 
-  defp write_assignment(%AuditContext{} = audit, changes, opts) do
+  defp write_assignment(%AuditContext{} = audit, changes, validate_targets?, selection) do
     changes = Enum.uniq_by(changes, & &1.id)
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
     VersionLock.transact(audit, fn ->
-      validate_targets(organization_id, gtfs_version_id, changes, opts)
+      verify_selection!(organization_id, gtfs_version_id, changes, selection)
+      validate_targets(organization_id, gtfs_version_id, changes, validate_targets?)
       locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
       stale = stale_changes(locked_stops, changes)
 
@@ -1006,6 +1023,31 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       write_zone_changes(organization_id, gtfs_version_id, changes)
       %{applied: changes}
     end)
+  end
+
+  # Runs after the version row is locked, so a writer that already holds that row
+  # (every membership and zone writer does) has committed before the recompute
+  # reads. Any result but the exact prepared selection rolls back.
+  defp verify_selection!(_organization_id, _gtfs_version_id, _changes, nil), do: :ok
+
+  defp verify_selection!(organization_id, gtfs_version_id, changes, %{
+         predicate: predicate,
+         fingerprint: fingerprint,
+         stop_ids: stop_ids
+       }) do
+    case route_selection(organization_id, gtfs_version_id, predicate) do
+      {:ok, %{fingerprint: ^fingerprint, stops: stops}} ->
+        if Enum.sort(stop_ids) != Enum.sort(Enum.map(stops, & &1.id)),
+          do: Repo.rollback(:selection_changed)
+
+        prepared = MapSet.new(stop_ids)
+
+        if not Enum.all?(changes, &MapSet.member?(prepared, &1.id)),
+          do: Repo.rollback(:invalid_selection)
+
+      _changed_or_unresolved ->
+        Repo.rollback(:selection_changed)
+    end
   end
 
   # A preview has no lock to roll back to, so it returns the target error instead.
@@ -1021,14 +1063,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   # One check per distinct target: a select-all review sends thousands of changes
   # that share a single target, and each check is up to three queries.
-  defp validate_targets(organization_id, gtfs_version_id, changes, validate_targets?: true) do
+  defp validate_targets(organization_id, gtfs_version_id, changes, true) do
     changes
     |> Enum.map(& &1.to)
     |> Enum.uniq()
     |> Enum.each(&validate_target!(organization_id, gtfs_version_id, &1))
   end
 
-  defp validate_targets(_organization_id, _gtfs_version_id, _changes, _opts), do: :ok
+  defp validate_targets(_organization_id, _gtfs_version_id, _changes, false), do: :ok
 
   defp validate_target!(organization_id, gtfs_version_id, target) do
     case validate_target(organization_id, gtfs_version_id, target) do
