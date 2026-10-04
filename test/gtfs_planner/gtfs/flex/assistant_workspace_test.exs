@@ -28,16 +28,15 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
 
   import Ecto.Query
 
+  import GtfsPlanner.ConcurrencyHelpers
   import GtfsPlanner.FlexFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Agents.Scope
-  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.CalendarDate
@@ -47,16 +46,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
   alias GtfsPlanner.Gtfs.Flex.Assistant.Snapshot
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
-  alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.Shape
-  alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Versions.GtfsVersion
 
   @collect_timeout 10_000
   @pause_timeout 30_000
@@ -773,55 +763,17 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
     |> Task.await(@collect_timeout)
   end
 
-  defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
-
-  # Unboxed cases commit, so this package's own fixtures are deleted explicitly.
+  # Unboxed cases commit, so this package's own fixtures are deleted explicitly,
+  # including the foreign organization each scope seeds beside its own and the
+  # outsider, who belongs to no organization for the scope deletion to reach.
   defp cleanup(contexts) do
     unboxed(fn ->
-      organization_ids = Enum.map(contexts, & &1.organization.id)
+      contexts
+      |> Enum.flat_map(&[&1.organization.id, &1.foreign_organization.id])
+      |> delete_committed_scope!()
 
-      Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
-      Repo.delete_all(from(st in StopTime, where: st.organization_id in ^organization_ids))
-
-      Repo.delete_all(
-        from(ps in RoutePatternStop, where: ps.organization_id in ^organization_ids)
-      )
-
-      Repo.delete_all(from(p in RoutePattern, where: p.organization_id in ^organization_ids))
-      Repo.delete_all(from(sh in Shape, where: sh.organization_id in ^organization_ids))
-      Repo.delete_all(from(a in FlexArea, where: a.organization_id in ^organization_ids))
-      Repo.delete_all(from(s in FlexService, where: s.organization_id in ^organization_ids))
-      Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
-      Repo.delete_all(from(st in Stop, where: st.organization_id in ^organization_ids))
-      Repo.delete_all(from(d in CalendarDate, where: d.organization_id in ^organization_ids))
-      Repo.delete_all(from(c in Calendar, where: c.organization_id in ^organization_ids))
-
-      Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id in ^organization_ids))
-
-      Repo.delete_all(from(ag in Agency, where: ag.organization_id in ^organization_ids))
-      Repo.delete_all(from(l in ChangeLog, where: l.organization_id in ^organization_ids))
-      Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-
-      # `organizations_active_gtfs_version_owner_fkey` refuses a delete of the
-      # version an organization has selected, so the pointer is cleared the way an
-      # editor would clear it before the version itself goes.
-      Repo.update_all(
-        from(o in Organization, where: o.id in ^organization_ids),
-        set: [active_gtfs_version_id: nil]
-      )
-
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
-
-      # The generated user emails are reused by the next partition, so the
-      # fixture's committed users go with the organizations that created them.
-      Repo.delete_all(from(u in User, where: like(u.email, "user-%@example.com")))
-
-      refute Repo.exists?(from(s in FlexService, where: s.organization_id in ^organization_ids))
-      refute Repo.exists?(from(c in Calendar, where: c.organization_id in ^organization_ids))
-      refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
-      :ok
+      outsider_ids = Enum.map(contexts, & &1.outsider.id)
+      Repo.delete_all(from(u in User, where: u.id in ^outsider_ids))
     end)
   end
 end

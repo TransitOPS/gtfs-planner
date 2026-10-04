@@ -38,20 +38,16 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
 
   import Ecto.Query
 
+  import GtfsPlanner.ConcurrencyHelpers
   import GtfsPlanner.FlexFixtures
   import GtfsPlanner.GtfsFixtures, only: [calendar_fixture: 3]
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Calendar
-  alias GtfsPlanner.Gtfs.CalendarAttribute
-  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Assistant
@@ -59,21 +55,11 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
-  alias GtfsPlanner.Gtfs.Route
-  alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.Shape
-  alias GtfsPlanner.Gtfs.Stop
-  alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Gtfs.Trip
-  alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
-  alias GtfsPlanner.Versions.GtfsVersion
 
   @collect_timeout 15_000
   @contention_timeout 10_000
-  @poll_interval 10
   @fence_handler {__MODULE__, :hold_version_fence}
   # How long a participant may hold the fence before it releases itself, so a
   # failed case cannot hang the suite. Every poll below finishes well inside it.
@@ -961,87 +947,16 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantSaveGuardTest do
     end
   end
 
-  defp await_blocker(backend, holder_backend, deadline) do
-    blocked_by = blockers_of(backend)
-
-    cond do
-      holder_backend in blocked_by ->
-        :ok
-
-      System.monotonic_time(:millisecond) >= deadline ->
-        {:error, blocked_by}
-
-      true ->
-        Process.sleep(@poll_interval)
-        await_blocker(backend, holder_backend, deadline)
-    end
-  end
-
-  defp blockers_of(backend) do
-    %Postgrex.Result{rows: [[blockers]]} = Repo.query!("SELECT pg_blocking_pids($1)", [backend])
-    List.wrap(blockers)
-  end
-
-  defp backend_pid do
-    %Postgrex.Result{rows: [[backend]]} = Repo.query!("SELECT pg_backend_pid()")
-    backend
-  end
-
   defp in_task(supervisor, fun) do
     supervisor
     |> Task.Supervisor.async_nolink(fn -> unboxed(fun) end)
     |> Task.await(@collect_timeout)
   end
 
-  defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
-
   # Unboxed cases commit, so this package's own fixtures are deleted explicitly.
   defp cleanup(contexts) do
     unboxed(fn ->
-      organization_ids = Enum.map(contexts, & &1.organization.id)
-
-      Repo.delete_all(from(t in Trip, where: t.organization_id in ^organization_ids))
-      Repo.delete_all(from(st in StopTime, where: st.organization_id in ^organization_ids))
-
-      Repo.delete_all(
-        from(ps in RoutePatternStop, where: ps.organization_id in ^organization_ids)
-      )
-
-      Repo.delete_all(from(p in RoutePattern, where: p.organization_id in ^organization_ids))
-      Repo.delete_all(from(sh in Shape, where: sh.organization_id in ^organization_ids))
-      Repo.delete_all(from(a in FlexArea, where: a.organization_id in ^organization_ids))
-      Repo.delete_all(from(s in FlexService, where: s.organization_id in ^organization_ids))
-      Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
-      Repo.delete_all(from(st in Stop, where: st.organization_id in ^organization_ids))
-      Repo.delete_all(from(d in CalendarDate, where: d.organization_id in ^organization_ids))
-      Repo.delete_all(from(c in Calendar, where: c.organization_id in ^organization_ids))
-
-      Repo.delete_all(from(a in CalendarAttribute, where: a.organization_id in ^organization_ids))
-
-      Repo.delete_all(from(ag in Agency, where: ag.organization_id in ^organization_ids))
-      Repo.delete_all(from(l in ChangeLog, where: l.organization_id in ^organization_ids))
-      Repo.delete_all(from(m in UserOrgMembership, where: m.organization_id in ^organization_ids))
-
-      # `organizations_active_gtfs_version_owner_fkey` refuses a delete of the
-      # version an organization has selected, so the pointer is cleared the way an
-      # editor would clear it before the version itself goes.
-      Repo.update_all(
-        from(o in Organization, where: o.id in ^organization_ids),
-        set: [active_gtfs_version_id: nil]
-      )
-
-      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      Repo.delete_all(from(o in Organization, where: o.id in ^organization_ids))
-
-      # The generated user emails are reused by the next partition, so the
-      # fixture's committed users go with the organizations that created them.
-      Repo.delete_all(from(u in User, where: like(u.email, "user-%@example.com")))
-
-      refute Repo.exists?(from(s in FlexService, where: s.organization_id in ^organization_ids))
-      refute Repo.exists?(from(c in Calendar, where: c.organization_id in ^organization_ids))
-      refute Repo.exists?(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
-      refute Repo.exists?(from(o in Organization, where: o.id in ^organization_ids))
-      :ok
+      contexts |> Enum.map(& &1.organization.id) |> delete_committed_scope!()
     end)
   end
 end
