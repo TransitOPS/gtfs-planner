@@ -272,3 +272,84 @@ test.describe("zones review", () => {
     });
   }
 });
+
+test.describe("zones journey", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`asks, reviews, saves and undoes at ${viewport.label}`, async ({ page }, testInfo) => {
+      test.setTimeout(120_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openZones(page);
+      const card = await prepareZoneAssignment(page);
+
+      // The prepared card names what it will do and nothing is saved yet.
+      await expect(card).toContainText("Stops with no zone only");
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+
+      // Keyboard: Enter on the card's Review button opens the review, focus is
+      // inside it, and Escape closes it back onto the card.
+      await page.locator("#agent-review-prepared-2").focus();
+      await page.keyboard.press("Enter");
+
+      const dialog = page.locator("#fare-zone-assignment-dialog");
+      await expect(dialog).toBeVisible();
+      expect(await focusInside(page, "#fare-zone-assignment-dialog")).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(card).toBeFocused();
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+
+      // The review again, then the confirmed save.
+      await page.locator("#agent-review-prepared-2").click();
+      await expect(dialog).toBeVisible();
+      await expect(page.locator("#fare-zone-assignment-row-2")).toContainText("Depoe Bay");
+      await expect(page.locator("#fare-zone-assignment-helper")).toContainText(
+        "This version's areas and stop areas export from these zones.",
+      );
+
+      await page.locator("#fare-zone-assignment-dialog-confirm").click();
+      await expect(dialog).toHaveCount(0);
+
+      const saved = page.locator("#fare-zone-saved");
+      await expect(saved).toContainText("2 stops assigned to Coast zone.");
+      await expect(page.locator("#fare-zone-undo")).toBeVisible();
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("2");
+
+      // Saved, the prepared card has nothing left to review.
+      await expect(page.locator("#agent-review-prepared-2")).toHaveCount(0);
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await capture(page, testInfo, `zones-saved-${viewport.label}`);
+
+      // Undo is the native writer's own, and it restores the seed state.
+      await page.locator("#fare-zone-undo").click();
+      await expect(saved).toContainText("Change undone.");
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+    });
+
+    test(`asks which stop when a name is ambiguous at ${viewport.label}`, async ({
+      page,
+    }, testInfo) => {
+      test.setTimeout(90_000);
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await openZones(page);
+
+      await page.locator("#agent-helper-open").click();
+      await expect(page.locator("#agent-panel")).toBeVisible();
+      await page.locator("#agent-new-conversation").click();
+      await ask(page, "Which zone is Beach in?");
+
+      await expect(page.locator("#agent-entries")).toContainText(
+        "Three stops match Beach: Agate Beach, Nye Beach and South Beach Park & Ride. Which one do you mean?",
+        { timeout: 15_000 },
+      );
+
+      // A question is not a proposal: no prepared card, no review, nothing saved.
+      await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+      await expect(page.locator("#fare-zone-assignment-dialog")).toHaveCount(0);
+      await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
+
+      await capture(page, testInfo, `zones-candidates-${viewport.label}`);
+    });
+  }
+});

@@ -369,7 +369,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @fare_zones_marker "Fare zone helper"
   @fare_zones_prepared "I prepared the zone assignment. Nothing is saved yet. Review the stops in the zone review."
   @fare_zones_not_prepared "I could not prepare that assignment. Tell me which routes, stops and zone you mean."
-  @fare_zones_which_stop "Two stops match Beach: Nye Beach and Agate Beach. Which one do you mean?"
+  @fare_zones_which_stop "Three stops match Beach: Agate Beach, Nye Beach and South Beach Park & Ride. Which one do you mean?"
   @fare_zones_generic "I can find stops by route, show their fare zones and prepare a zone assignment for you to review."
 
   @impl Plug
