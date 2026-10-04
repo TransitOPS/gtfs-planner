@@ -18,9 +18,15 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
     * a forged or ended entry and a settings change are refused with feedback
       while the native selection the person already made stays where it was;
     * this installation ships one helper pack, so no multipack selector is
-      rendered and `AgentPanel.mount/3` does not exist;
+      rendered;
     * a native type change rebinds the panel's source snapshot, so the old
-      prepared card is gone and only the current conversation remains.
+      prepared card is gone and only the current conversation remains;
+    * Review options closes the panel, so the selection is visible at every
+      width, and puts focus on the chosen type's radio;
+    * a finished or newer export, a refresh after the saved defaults changed and
+      a withdrawn membership each leave the section and the panel's snapshot
+      describing the current selection, and a late event from a replaced
+      session reaches nothing.
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
@@ -37,7 +43,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.ValidationRun
-  alias GtfsPlannerWeb.AgentPanel
 
   @owner GtfsPlanner.Agents.Model
   @model "test/model-a"
@@ -52,13 +57,14 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
       organization_fixture(%{alias: "feed-quality-#{System.unique_integer([:positive])}"})
 
     user = user_fixture()
-    organization_membership_fixture(user, organization)
+    membership = organization_membership_fixture(user, organization)
     version = gtfs_version_fixture(organization.id, %{name: "Quality Feed"})
 
     track_sessions()
 
     %{
       organization: organization,
+      membership: membership,
       user: user,
       version: version,
       defaults: ExportDefaults.get(organization.id),
@@ -104,7 +110,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
       assert_patch(view, "/gtfs/#{context.version.id}/export?type=pathways")
       assert has_element?(view, "#export-type-pathways[checked]")
       refute has_element?(view, "#export-type-full[checked]")
-      assert_push_event(view, "agent:focus", %{id: "gtfs-export-form"})
+
+      # The panel closes so the form shows the selection at every width, and
+      # focus lands on the radio that was chosen (a form is not focusable).
+      refute has_element?(view, "#agent-panel")
+      assert_push_event(view, "agent:focus", %{id: "export-type-pathways"})
 
       # Preparing is memory-only: no job, no validation, no audit and no default.
       assert Repo.aggregate(Run, :count) == 0
@@ -203,7 +213,154 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
     end
   end
 
+  describe "the section and the panel follow the selected export" do
+    test "a finished export and a newer one each replace the panel's selected export",
+         context do
+      view = export_view(context)
+
+      assert selected_export_ref(view) == nil
+      assert render(element(view, "#feed-quality-relationship")) =~ "not available"
+
+      first = ready_export_run(context)
+      send(view.pid, {:export_run_changed, first.id})
+
+      # The first export finished: the sentence now says the history cannot be
+      # compared (no check read these bytes), and the panel pins that export.
+      assert render(element(view, "#feed-quality-relationship")) =~ "cannot be compared"
+      assert selected_export_ref(view) == first.id
+
+      second = ready_export_run(context)
+      send(view.pid, {:export_run_changed, second.id})
+      render(view)
+
+      assert selected_export_ref(view) == second.id
+    end
+
+    test "Refresh check reloads defaults saved elsewhere so the helper opens again", context do
+      view = export_view(context)
+      stale_digest = defaults_digest(view)
+
+      # Defaults saved on the Export defaults page reach this page by no message.
+      assert {:ok, saved} =
+               ExportDefaults.update(
+                 context.organization.id,
+                 context.user,
+                 %{"include_flex" => !context.defaults.include_flex}
+               )
+
+      view |> element("#feed-quality-refresh") |> render_click()
+
+      current_digest = defaults_digest(view)
+      assert current_digest == FeedQuality.defaults_digest(saved)
+      refute current_digest == stale_digest
+
+      # A snapshot pinned to the stale digest would stop the helper as unavailable.
+      view |> element("#agent-helper-open") |> render_click()
+      assert has_element?(view, "#agent-panel")
+      refute has_element?(view, "#agent-status", "stopped")
+
+      expect_reply(
+        tool_calls_reply([
+          {"call_1", "prepare_export_options", ~s({"export_type":"pathways"})}
+        ])
+      )
+
+      expect_reply(text_reply("Prepared."))
+      submit(view, @message)
+      assert await_settled(attach_listener(view)).status == :done
+      assert has_element?(view, "#agent-prepared-2")
+    end
+
+    test "a withdrawn membership refuses Review options and leaves the form alone", context do
+      view = export_view(context)
+      view |> element("#agent-helper-open") |> render_click()
+
+      expect_reply(
+        tool_calls_reply([
+          {"call_1", "prepare_export_options", ~s({"export_type":"pathways"})}
+        ])
+      )
+
+      expect_reply(text_reply("Prepared."))
+      submit(view, @message)
+      assert await_settled(attach_listener(view)).status == :done
+
+      deactivate_membership_fixture(context.membership)
+
+      view |> element("#agent-review-prepared-2") |> render_click()
+
+      assert has_element?(view, "#agent-notice")
+      assert has_element?(view, "#export-type-full[checked]")
+      refute has_element?(view, "#export-type-pathways[checked]")
+    end
+
+    test "a forged entry that is not a string and a late event from a replaced session change nothing",
+         context do
+      view = export_view(context)
+      view |> element("#agent-helper-open") |> render_click()
+      old_session = :sys.get_state(view.pid).socket.assigns.agent_session
+
+      render_click(view, "agent_review_prepared", %{"entry" => %{"id" => 1}})
+      assert has_element?(view, "#export-type-full[checked]")
+
+      # The native type change replaces the panel's source and its session.
+      view
+      |> element("#gtfs-export-form")
+      |> render_change(%{"export" => %{"type" => "operations"}})
+
+      assert_patch(view, "/gtfs/#{context.version.id}/export?type=operations")
+      refute :sys.get_state(view.pid).socket.assigns.agent_session == old_session
+
+      send(
+        view.pid,
+        {:agent_event, old_session,
+         {:entry, %{id: 77, role: :assistant, status: :done, text: "late answer"}}}
+      )
+
+      send(view.pid, {:DOWN, make_ref(), :process, old_session, :killed})
+
+      refute render(view) =~ "late answer"
+      assert has_element?(view, "#export-type-operations[checked]")
+    end
+  end
+
   ## Fixtures and helpers
+
+  defp selected_export_ref(view) do
+    :sys.get_state(view.pid).socket.assigns.agent_context.source_snapshot.payload[
+      "selected_export_ref"
+    ]
+  end
+
+  defp defaults_digest(view) do
+    :sys.get_state(view.pid).socket.assigns.agent_context.source_snapshot.payload[
+      "defaults_digest"
+    ]
+  end
+
+  # A ready export run with its artifact metadata committed; the section reads
+  # the run's stored digest and expiry, never the host's storage.
+  defp ready_export_run(context) do
+    now = DateTime.utc_now()
+
+    Repo.insert!(
+      Run.system_changeset(%Run{}, %{
+        export_type: :full,
+        state: :ready,
+        include_flex: false,
+        estimate_missing_times: false,
+        artifact_key: "runs/#{context.organization.id}/#{System.unique_integer([:positive])}.zip",
+        artifact_filename: "gtfs.zip",
+        artifact_sha256: String.duplicate("a", 64),
+        artifact_size_bytes: 1024,
+        artifact_expires_at: DateTime.add(now, 3_600, :second),
+        organization_id: context.organization.id,
+        gtfs_version_id: context.version.id,
+        started_at: now,
+        finished_at: now
+      })
+    )
+  end
 
   defp export_view(context) do
     assert {:ok, view, _html} = live(context.conn, "/gtfs/#{context.version.id}/export")

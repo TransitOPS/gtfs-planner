@@ -113,12 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> reset_publication()
       |> assign_publication()
 
-    # The panel holds the host's own source snapshot; the section reads the
-    # same scoped evidence the helper reads, so both describe one selection.
-    {:noreply,
-     socket
-     |> assign(:feed_quality, feed_quality_summary(socket))
-     |> AgentPanel.set_context(feed_quality_context(socket))}
+    {:noreply, refresh_feed_quality(socket)}
   end
 
   @impl Phoenix.LiveView
@@ -173,15 +168,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   # Re-reads the provider-independent readiness without touching any job or form
-  # draft, and rebinds the panel's snapshot to the section it just read.
+  # draft, and rebinds the panel's snapshot to the section it just read. Defaults
+  # saved on the Export defaults page reach this page only through this read, so
+  # it reloads them first; a stale digest would otherwise stop every request.
   @impl Phoenix.LiveView
   def handle_event("feed_quality_refresh", _params, socket) do
-    summary = feed_quality_summary(socket)
+    defaults = ExportDefaults.get(socket.assigns.current_organization.id)
 
     {:noreply,
      socket
-     |> assign(:feed_quality, summary)
-     |> AgentPanel.set_context(feed_quality_context(socket))}
+     |> assign(:export_defaults, defaults)
+     |> assign(:include_flex, defaults.include_flex)
+     |> refresh_feed_quality()}
   end
 
   @impl Phoenix.LiveView
@@ -225,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            ),
          :ok <- subscribe_export_run(run),
          :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, assign(socket, :export_run, run)}
+      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
     else
       {:error, :invalid_transition} ->
         {:noreply, refresh_export_run(socket)}
@@ -278,7 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          {:ok, run} <- ExportRuns.retry(organization_id, run_id),
          :ok <- subscribe_export_run(run),
          :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, assign(socket, :export_run, run)}
+      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
     else
       {:error, :busy} ->
         {:noreply, export_busy(socket)}
@@ -406,7 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         do: socket,
         else: close_publication_review(socket)
 
-    {:noreply, assign_publication(socket)}
+    {:noreply, socket |> assign_publication() |> refresh_feed_quality()}
   end
 
   # The check the open review is waiting for finished. Building the review again is
@@ -465,6 +463,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign_persisted_validation_result(run)
     |> assign(:validating, false)
     |> assign(:validation_progress, nil)
+    |> refresh_feed_quality()
   end
 
   defp apply_validation_outcome(socket, %{status: "failed"}) do
@@ -535,7 +534,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           <div class={@agent_open? && "hidden lg:block"}>
             <div
               id="export-download-container"
-              class="mt-2 grid gap-6 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start"
+              class={[
+                "mt-2 grid gap-6",
+                !@agent_open? && "lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start"
+              ]}
             >
               <div class="grid min-w-0 gap-6">
                 <.result_section
@@ -881,6 +883,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   # -- Feed quality helper ----------------------------------------------------
 
+  # The section and the panel's snapshot read the same scoped evidence, so both
+  # describe one selection. Every change of the selected export, its checks, its
+  # type or the saved defaults goes through here; `set_context` is a no-op while
+  # the snapshot is unchanged and starts a fresh conversation when it moved.
+  defp refresh_feed_quality(socket) do
+    socket
+    |> assign(:feed_quality, feed_quality_summary(socket))
+    |> AgentPanel.set_context(feed_quality_context(socket))
+  end
+
   # The host builds the snapshot the helper reads: only a server fingerprint of
   # the section, export reference, type and defaults digest - never report JSON,
   # paths, logs or personnel fields. A refused or oversized envelope falls back
@@ -963,12 +975,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> Base.encode16(case: :lower)
   end
 
-  defp review_feed_quality_options(socket, id) do
-    case Integer.parse(to_string(id)) do
+  defp review_feed_quality_options(socket, id) when is_binary(id) do
+    case Integer.parse(id) do
       {entry_id, ""} -> review_feed_quality_entry(socket, entry_id)
       _other -> socket
     end
   end
+
+  defp review_feed_quality_options(socket, _id), do: socket
 
   # The command is read only from the conversation's own prepared entry. Any
   # identity, defaults or context drift is a notice beside the untouched native
@@ -994,11 +1008,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         if type_param in @export_type_params and
              defaults_digest == FeedQuality.defaults_digest(socket.assigns.export_defaults) and
              context_digest == Scope.context_digest(feed_quality_scope(socket)) do
+          # The panel closes so the native form shows the selection at every
+          # width (a phone shows the panel instead of the form), and focus lands
+          # on the chosen type, the control the person goes on to review.
           socket
+          |> assign(:agent_open?, false)
           |> push_patch(
             to: ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/export?type=#{type_param}"
           )
-          |> push_event("agent:focus", %{id: "gtfs-export-form"})
+          |> push_event("agent:focus", %{id: "export-type-#{type_param}"})
         else
           assign(
             socket,
