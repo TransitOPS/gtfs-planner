@@ -21,8 +21,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       and a draft that moved after the review refuses the stage and keeps the
       latest draft (AC-9);
     * a calendar-only commit after staging refuses the Save under the guard, with
-      the whole draft and the accepted source retained and a fresh preparation
-      required (AC-10, AC-12);
+      the whole draft and the accepted source retained, and every later Save
+      refuses it again until a fresh review or the explicit discard (AC-10,
+      AC-11, AC-12);
     * a forged entry id and a forged array or choice are each the same refusal
       and never reach a surface, and a replaced source drops the review but
       leaves the staged rows behind a lapsed guard, so the page's own Save
@@ -340,6 +341,62 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       assert value_of(view, "#service_hours_0_start") == "08:00"
     end
 
+    test "a refused guard keeps the rows behind it, so the next Save is refused again",
+         context do
+      view = ready_view(context)
+      prepared_entry(context, view)
+      view |> element("#flex-policy-stage") |> render_click()
+      save_saturday_calendar(context)
+
+      view |> element("#flex-service-form") |> render_submit(%{})
+      assert text_of(doc(view), "#flex-service-save-error") =~ "calendars changed"
+
+      # The refusal lapses the stage instead of dropping it: the rows are still
+      # assistant-origin, and the page says so and offers the explicit way out.
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#flex-policy-discard-staged")
+
+      # Pressing Save again must not fall through to the ordinary writer. The
+      # calendar commit never touched the service row, so its lock version is
+      # still current and an unguarded save would succeed and persist the rows.
+      view |> element("#flex-service-form") |> render_submit(%{})
+
+      assert has_element?(view, "#flex-service-save-error")
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+      assert stored_hours(context) == saved_hours(context)
+      assert lock_version(context) == original_lock_version(context)
+
+      # Discarding is the explicit way out: the rows leave the draft and the
+      # page is an ordinary native draft again.
+      view |> element("#flex-policy-discard-staged") |> render_click()
+
+      refute has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#service_hours_0_start[value='07:00']")
+    end
+
+    test "reviewing again after a refused guard stages the rows behind a fresh guard", context do
+      view = ready_view(context)
+      prepared_entry(context, view)
+      view |> element("#flex-policy-stage") |> render_click()
+      save_saturday_calendar(context)
+
+      view |> element("#flex-service-form") |> render_submit(%{})
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+
+      # The review the refusal asks for: the staged rows are in the draft, so
+      # the preparation reads them as the overlap and the editor answers it.
+      prepared_entry(context, view)
+      choose(view, "hours", "proposal")
+      view |> element("#flex-policy-stage") |> render_click()
+
+      assert has_element?(view, "#flex-policy-staged")
+      refute has_element?(view, "#flex-policy-stage-lapsed")
+
+      view |> element("#flex-service-form") |> render_submit(%{})
+
+      assert stored_hours(context) == @proposed_hours
+    end
+
     test "a draft edit after staging refuses the save until a fresh review stages it", context do
       view = ready_view(context)
       prepared_entry(context, view)
@@ -473,12 +530,31 @@ defmodule GtfsPlannerWeb.Gtfs.FlexPolicyHelperHandoffTest do
       refute has_element?(view, "#flex-policy-staged")
       assert stored_hours(context) == saved_hours(context)
 
-      # The way forward is the editor's: the staged guard is gone, the whole
-      # draft and the accepted source are still here, and the change may only be
-      # staged again through a fresh review.
+      # The way forward is the editor's: the whole draft and the accepted source
+      # are still here, and the rows stay behind a lapsed guard until a fresh
+      # review stages them again or the editor discards them.
       assert has_element?(view, "#flex-policy-source-accepted")
       assert has_element?(view, "#service_hours_0_start[value='08:00']")
       assert has_element?(view, "#save-bar")
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#flex-policy-discard-staged")
+
+      # Pressing Save again, or "Save both changes", is the same refusal. With
+      # the guard dropped, the page's own writer would have answered the first
+      # with the native stale banner and the second with a write of the staged
+      # rows on top of the other editor's row (AC-11).
+      view |> element("#flex-service-form") |> render_submit(%{})
+
+      refute has_element?(view, "#flex-service-stale")
+      assert has_element?(view, "#flex-service-save-error")
+      assert stored_hours(context) == saved_hours(context)
+
+      render_click(view, "save_both_changes", %{})
+
+      assert has_element?(view, "#flex-policy-stage-lapsed")
+      assert has_element?(view, "#flex-policy-discard-staged")
+      assert stored_hours(context) == saved_hours(context)
+      assert stored_note(context) == "Changed in another session."
     end
 
     test "save both changes on an ordinary draft still works after a conflict", context do

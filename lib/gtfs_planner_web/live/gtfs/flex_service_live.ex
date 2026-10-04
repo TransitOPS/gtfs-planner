@@ -151,7 +151,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   @flex_policy_stale_baseline "The saved service or its calendars changed after this review, so nothing " <>
                                 "was saved. Your draft and the accepted policy source are exactly as you left " <>
-                                "them. Prepare and review the change again before saving it."
+                                "them. Review the prepared change again to save the staged rows, or discard " <>
+                                "them and save your own work."
 
   @flex_policy_stale_stage "This page moved after the prepared change was staged, so nothing was saved. " <>
                              "Your draft and the accepted policy source are unchanged. Review the prepared " <>
@@ -501,8 +502,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # assistant guard is bound to the baseline the review read, and the other
   # session's commit has already moved it, so the guarded transaction refuses
   # this save rather than persisting the staged change on top of a row nobody
-  # reviewed (AC-11). The editor's way forward is the explicit conflict
-  # resolution: discard the staged change, or prepare and review it again.
+  # reviewed (AC-11). The refusal lapses the stage, so every later Save and
+  # this action refuse it again before the transaction. The editor's way
+  # forward is the explicit conflict resolution: discard the staged change, or
+  # prepare and review it again.
   @impl true
   def handle_event("save_both_changes", _params, socket) do
     case Flex.get_service(
@@ -1458,7 +1461,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
               <.flex_policy_review_section
                 review={@flex_policy_review}
                 stage={@flex_policy_stage}
-                lapsed?={lapsed_flex_policy_stage?(@flex_policy_stage)}
+                lapsed={flex_policy_lapse(@flex_policy_stage)}
                 stale?={@flex_policy_stage_stale}
                 notice={@flex_policy_notice}
                 calendars={@calendars}
@@ -2060,22 +2063,27 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       socket.assigns[:flex_policy_stage_stale] ->
         save_error(socket, @flex_policy_stale_stage)
 
-      lapsed_flex_policy_stage?(socket.assigns[:flex_policy_stage]) ->
+      flex_policy_lapse(socket.assigns[:flex_policy_stage]) == :source ->
         save_error(socket, @flex_policy_lapsed_review)
+
+      flex_policy_lapse(socket.assigns[:flex_policy_stage]) == :baseline ->
+        save_error(socket, @flex_policy_stale_baseline)
 
       true ->
         write_page_now(socket, loaded)
     end
   end
 
-  # A staged assistant change whose review belonged to a policy source this page
-  # has replaced. The stage is kept rather than dropped, so the page keeps
-  # routing this draft through the guarded writer and offers the explicit
-  # discard, but the guard's own source and context digests are the replaced
-  # source's, so a save under them would persist rows nobody reviewed against
-  # the source this page now holds (AC-2, AC-11, INV-2).
-  defp lapsed_flex_policy_stage?(%{lapsed?: true}), do: true
-  defp lapsed_flex_policy_stage?(_stage), do: false
+  # Why a staged assistant change can no longer be saved, or nil while it can.
+  # The stage is kept rather than dropped, so the page keeps routing this draft
+  # through the guarded writer and offers the explicit discard, but its guard
+  # cannot be trusted any more: `:source` means the policy source the review
+  # belonged to was replaced, `:baseline` means the guarded transaction found
+  # the saved service or its calendars moved. A save under either would persist
+  # rows nobody reviewed against what the page now holds (AC-2, AC-10, AC-11,
+  # INV-2).
+  defp flex_policy_lapse(%{lapsed: reason}), do: reason
+  defp flex_policy_lapse(_no_stage), do: nil
 
   defp write_page_now(socket, loaded) do
     attrs = page_attrs(socket.assigns.draft)
@@ -2107,13 +2115,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
       # The reviewed baseline moved under the guard: a calendar-only, area-only
       # or service-only commit landed after the review. The whole draft and the
-      # accepted source stay exactly where they are and the staged guard is
-      # dropped from the page's reach, because a guard that cannot prove its
-      # reviewed state must not be offered again (AC-10, AC-12).
+      # accepted source stay exactly where they are. The stage lapses instead of
+      # going away, so the rows stay behind a guard that refuses every later
+      # Save, including "Save both changes", until the editor reviews again or
+      # discards them (AC-10, AC-11, AC-12).
       {:error, :assistant_stale} ->
         socket
-        |> assign(:flex_policy_stage, nil)
-        |> assign(:flex_policy_stage_stale, false)
+        |> assign(
+          :flex_policy_stage,
+          lapse_flex_policy_stage(socket.assigns.flex_policy_stage, :baseline)
+        )
         |> save_error(@flex_policy_stale_baseline)
 
       {:error, :version_unavailable} ->
@@ -2376,7 +2387,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> assign(:flex_policy_refusal, nil)
         |> assign(:flex_policy_field_errors, %{})
         |> assign(:flex_policy_review, nil)
-        |> assign(:flex_policy_stage, lapse_flex_policy_stage(socket.assigns.flex_policy_stage))
+        |> assign(
+          :flex_policy_stage,
+          lapse_flex_policy_stage(socket.assigns.flex_policy_stage, :source)
+        )
         |> assign(:flex_policy_stage_stale, false)
         |> assign(:flex_policy_notice, nil)
         |> AgentPanel.set_context(context)
@@ -2594,7 +2608,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         |> assign(:flex_policy_stage, %{
           guard: guard,
           entry_id: review.entry_id,
-          lapsed?: false,
+          lapsed: nil,
           saved_rows: staged_saved_rows(socket, prepared, review.overlaps)
         })
         |> assign(:flex_policy_stage_stale, false)
@@ -2656,13 +2670,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> Map.new(&{&1, flex_policy_rows(socket.assigns.saved, &1)})
   end
 
-  # The staged rows survive the replaced source and lose their review: the
-  # stage keeps the guard, the entry and the saved rows the explicit discard
-  # restores, and `lapsed?: true` is what keeps the page's Save from writing
-  # them under a guard the replaced source froze (AC-2, INV-2).
-  defp lapse_flex_policy_stage(nil), do: nil
+  # The staged rows survive a guard that can no longer be trusted: the stage
+  # keeps the guard, the entry and the saved rows the explicit discard restores,
+  # and `lapsed` is what keeps the page's Save from writing them (AC-2, AC-11,
+  # INV-2).
+  defp lapse_flex_policy_stage(nil, _reason), do: nil
 
-  defp lapse_flex_policy_stage(stage), do: Map.put(stage, :lapsed?, true)
+  defp lapse_flex_policy_stage(stage, reason), do: Map.put(stage, :lapsed, reason)
 
   # The staged arrays go back to their saved rows and nothing else moves, so a
   # discarded assistant change leaves the editor's own unsaved work intact and

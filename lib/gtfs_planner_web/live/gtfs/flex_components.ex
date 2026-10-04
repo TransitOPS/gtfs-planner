@@ -1580,10 +1580,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   the draft already changed — the two explicit answers. With a `stage` and no
   review, it is the state of the staged draft: what was merged into the page,
   that nothing is saved until the page's own Save, and the one way to take the
-  staged rows back out. A `lapsed?` stage is the third state: the rows are
-  still staged, but the review that covered them belonged to a policy source
-  this page has replaced, so Save refuses until a fresh review stages them again
-  or they are discarded.
+  staged rows back out. A `lapsed` stage is the third state: the rows are
+  still staged, but their review no longer holds, either because the policy
+  source it belonged to was replaced (`:source`) or because the saved service or
+  its calendars moved under the guard (`:baseline`). Save refuses until a fresh
+  review stages them again or they are discarded.
 
   Nothing here writes. Both "Use these changes" and the overlap answers are
   server events on the page, and the one `Save changes` button in the save bar
@@ -1591,7 +1592,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   """
   attr :review, :any, required: true
   attr :stage, :any, required: true
-  attr :lapsed?, :boolean, required: true
+  attr :lapsed, :atom, required: true, values: [nil, :source, :baseline]
   attr :stale?, :boolean, required: true
   attr :notice, :string, default: nil
   attr :calendars, :map, required: true
@@ -1657,7 +1658,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
       <div :if={@stage != nil} class="mt-3">
         <.message
-          :if={@lapsed?}
+          :if={@lapsed == :source}
           id="flex-policy-stage-lapsed"
           kind="warning"
           title="The policy source changed after these rows were staged."
@@ -1668,7 +1669,18 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         </.message>
 
         <.message
-          :if={!@lapsed?}
+          :if={@lapsed == :baseline}
+          id="flex-policy-stage-lapsed"
+          kind="warning"
+          title="The saved service or its calendars changed after these rows were staged."
+        >
+          The review that covered these rows described the earlier saved state, so Save changes will
+          not write them. Review a prepared change again to stage a fresh comparison, or take the
+          staged rows back out.
+        </.message>
+
+        <.message
+          :if={!@lapsed}
           id="flex-policy-staged"
           kind="success"
           title="Staged into this page. Nothing is saved yet."
@@ -1945,8 +1957,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
 
   defp review_state_text(%{review: nil, stage: nil}), do: "No prepared change under review."
 
-  defp review_state_text(%{stage: %{lapsed?: true}}) do
+  defp review_state_text(%{stage: %{lapsed: :source}}) do
     "Staged into this page, but the policy source changed. Save changes will not write them."
+  end
+
+  defp review_state_text(%{stage: %{lapsed: :baseline}}) do
+    "Staged into this page, but the saved service or its calendars changed. Save changes will not write them."
   end
 
   defp review_state_text(%{stage: stage}) when is_map(stage),
