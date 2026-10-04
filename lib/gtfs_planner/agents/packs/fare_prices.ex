@@ -9,7 +9,11 @@ defmodule GtfsPlanner.Agents.Packs.FarePrices do
   what each one is (the fare's kind, the rider category, the payment medium and its
   type), the exact amount as a decimal string and the exact total. Nothing is
   inferred from a name, no tool writes, and none accepts an organization, a version,
-  a percentage or a rounding step.
+  a percentage or a rounding step. `prepare_price_changes` takes a currency and
+  explicit product, rider, medium and amount strings, previews them through
+  `Fares.preview_price_cells/4` and returns a prepared command with the exact
+  before and after rows; the native price review decides whether and when they are
+  saved.
   """
 
   @behaviour GtfsPlanner.Agents.Pack
@@ -17,10 +21,13 @@ defmodule GtfsPlanner.Agents.Packs.FarePrices do
   alias GtfsPlanner.Agents.Packs.FareEvidence
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Money
+  alias GtfsPlanner.Wording
 
   @source_ref "gtfs_fare_prices"
   @cell_limit 50
   @unavailable "This version is no longer available."
+  @summary_row_limit 10
   @unmanaged "This version's fares are not edited here yet. Set them up or convert them on the Prices tab first."
 
   @skill_path Path.expand("../../../../priv/agents/packs/fare_prices/SKILL.md", __DIR__)
@@ -74,6 +81,36 @@ defmodule GtfsPlanner.Agents.Packs.FarePrices do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "prepare_price_changes",
+        description:
+          "Prepare exact price changes for the person to review. currency is the ISO code the prices are in. Each change names one stored price by fare_product_id, rider_category_id and fare_media_id exactly as list_price_cells returned them (an empty string means none) and gives its new amount as a decimal string such as 1.75 or Free. No percentages and no rounding: ask for exact amounts. Nothing is saved; the person reviews the exact before and after on the Prices tab and saves there.",
+        activity: "Prepared price changes",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "currency" => %{"type" => "string", "minLength" => 1, "maxLength" => 8},
+            "changes" => %{
+              "type" => "array",
+              "minItems" => 1,
+              "maxItems" => @cell_limit,
+              "items" => %{
+                "type" => "object",
+                "properties" => %{
+                  "fare_product_id" => %{"type" => "string", "maxLength" => 200},
+                  "rider_category_id" => %{"type" => "string", "maxLength" => 200},
+                  "fare_media_id" => %{"type" => "string", "maxLength" => 200},
+                  "amount" => %{"type" => "string", "maxLength" => 20}
+                },
+                "required" => ["fare_product_id", "rider_category_id", "fare_media_id", "amount"],
+                "additionalProperties" => false
+              }
+            }
+          },
+          "required" => ["currency", "changes"],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -87,6 +124,7 @@ defmodule GtfsPlanner.Agents.Packs.FarePrices do
   end
 
   defp run("list_price_cells", args, scope), do: list_price_cells(args, scope)
+  defp run("prepare_price_changes", args, scope), do: prepare_price_changes(args, scope)
 
   # -- tools ------------------------------------------------------------------
 
@@ -127,6 +165,172 @@ defmodule GtfsPlanner.Agents.Packs.FarePrices do
       {:error, :unmanaged} ->
         {:error, @unmanaged}
     end
+  end
+
+  defp prepare_price_changes(args, %Scope{} = scope) do
+    with {:ok, currency, cells} <- parse_changes(args),
+         {:ok, %{rows: rows, unchanged: unchanged}} <-
+           preview(scope, currency, cells),
+         :ok <- require_rows(rows) do
+      prepared_changes(scope, currency, rows, unchanged)
+    end
+  end
+
+  defp parse_changes(%{"currency" => currency, "changes" => changes})
+       when is_binary(currency) and is_list(changes) do
+    cells = Enum.map(changes, &change_cell/1)
+
+    if currency != "" and Enum.all?(cells, &(&1 != :invalid)),
+      do: {:ok, currency, cells},
+      else:
+        {:error, "Give the currency and, for each change, the product, rider, medium and amount."}
+  end
+
+  defp parse_changes(_args),
+    do: {:error, "Give the currency and, for each change, the product, rider, medium and amount."}
+
+  defp change_cell(%{
+         "fare_product_id" => product,
+         "rider_category_id" => rider,
+         "fare_media_id" => medium,
+         "amount" => amount
+       })
+       when is_binary(product) and is_binary(rider) and is_binary(medium) and is_binary(amount) do
+    %{
+      fare_product_id: product,
+      rider_category_id: empty_to_nil(rider),
+      fare_media_id: empty_to_nil(medium),
+      amount: amount
+    }
+  end
+
+  defp change_cell(_change), do: :invalid
+
+  defp empty_to_nil(""), do: nil
+  defp empty_to_nil(value), do: value
+
+  defp preview(scope, currency, cells) do
+    case Fares.preview_price_cells(scope.organization_id, scope.gtfs_version_id, currency, cells) do
+      {:ok, preview} -> {:ok, preview}
+      {:error, reason} -> {:error, preview_error(reason, currency)}
+    end
+  end
+
+  defp preview_error(:unmanaged, _currency), do: @unmanaged
+  defp preview_error(:no_prices, _currency), do: "Give at least one price to change."
+  defp preview_error(:too_many, _currency), do: "Change at most #{@cell_limit} prices at a time."
+
+  defp preview_error(:invalid_price, currency),
+    do:
+      "Each amount must be an exact price like 1.75 or Free, with at most #{Money.minor_units(currency)} decimal places for #{currency}. Nothing is rounded."
+
+  defp preview_error(:duplicate_cell, _currency),
+    do: "The same price is listed twice. List each product, rider and medium once."
+
+  defp preview_error(:not_found, _currency),
+    do: "A fare product you named is not in this version. Use list_price_cells."
+
+  defp preview_error(:currency_mismatch, _currency),
+    do: "That currency is not the currency of those prices. Read it with list_price_cells."
+
+  defp preview_error({:missing_cell, {product, rider, medium}}, _currency),
+    do:
+      "There is no stored price for #{product}, rider #{rider || "none"}, medium #{medium || "none"}. Use list_price_cells to find the exact cells."
+
+  defp require_rows([]), do: {:error, "Every price already equals the amount you gave."}
+  defp require_rows(_rows), do: :ok
+
+  # Nothing is written here. The command carries the exact rows the native review
+  # recomputes and fences; `unchanged` carries each cell already at its amount so
+  # the host can re-verify it too.
+  defp prepared_changes(scope, currency, rows, unchanged) do
+    command_rows = Enum.map(rows, &command_row(&1, currency))
+    command_unchanged = Enum.map(unchanged, &unchanged_row(&1, currency))
+
+    prepared = %{
+      command:
+        {:price_cells, %{currency: currency, rows: command_rows, unchanged: command_unchanged}},
+      summary: %{
+        title: "Change #{Wording.count_noun(length(rows), "price")}",
+        detail: "Review the exact amounts in the Prices tab, then save.",
+        lines: summary_lines(rows, unchanged, currency)
+      }
+    }
+
+    result = %{
+      "prepared" => true,
+      "currency" => currency,
+      "rows" => Enum.map(command_rows, &json_cell/1),
+      "unchanged" => Enum.map(command_unchanged, &json_cell/1)
+    }
+
+    evidence =
+      FareEvidence.build(scope, %{
+        kind: "price_changes",
+        title: "Price changes",
+        total: length(rows),
+        total_label: "prices to change",
+        facts: [
+          %{label: "Currency", value: currency},
+          %{label: "Already at the amount", value: Integer.to_string(length(unchanged))}
+        ],
+        source_ref: @source_ref,
+        digest: FareEvidence.digest({:price_changes, 1, currency, command_rows})
+      })
+
+    {:prepared, prepared, result, evidence}
+  end
+
+  defp command_row(row, currency) do
+    %{
+      fare_product_id: row.fare_product_id,
+      rider_category_id: row.rider_category_id,
+      fare_media_id: row.fare_media_id,
+      now: FareEvidence.amount_string(row.now, currency),
+      new: FareEvidence.amount_string(row.new, currency)
+    }
+  end
+
+  defp unchanged_row(row, currency) do
+    %{
+      fare_product_id: row.fare_product_id,
+      rider_category_id: row.rider_category_id,
+      fare_media_id: row.fare_media_id,
+      amount: FareEvidence.amount_string(row.amount, currency)
+    }
+  end
+
+  defp json_cell(cell) do
+    Map.new(cell, fn {key, value} -> {Atom.to_string(key), value || ""} end)
+  end
+
+  defp summary_lines(rows, unchanged, currency) do
+    shown = Enum.take(rows, @summary_row_limit)
+    more = length(rows) - length(shown)
+
+    Enum.map(shown, fn row ->
+      "#{label(row)}: #{Money.format(row.now, currency)} → #{Money.format(row.new, currency)}"
+    end) ++
+      if(more > 0, do: ["and #{more} more"], else: []) ++
+      unchanged_line(unchanged)
+  end
+
+  defp unchanged_line([]), do: []
+
+  defp unchanged_line(unchanged) do
+    names = unchanged |> Enum.take(3) |> Enum.map_join(", ", &label/1)
+    more = length(unchanged) - 3
+    suffix = if more > 0, do: " and #{more} more", else: ""
+    ["Already at that price: #{names}#{suffix}"]
+  end
+
+  defp label(price) do
+    [
+      price.fare_name,
+      price.rider_name || price.rider_category_id || "any rider",
+      price.medium_name || price.fare_media_id || "any payment"
+    ]
+    |> Enum.join(" · ")
   end
 
   defp cell_row(cell) do

@@ -56,11 +56,16 @@ defmodule GtfsPlanner.Agents.Packs.FarePricesReadTest do
   defp list(scope, arguments \\ %{}),
     do: Dispatch.call(FarePrices, scope, "list_price_cells", Jason.encode!(arguments))
 
-  test "the registry names the pack and its one read tool", context do
+  test "the registry names the pack and its two tools", context do
     assert Agents.packs()["fare_prices"] == FarePrices
     assert FarePrices.id() == "fare_prices"
     assert FarePrices.title() == "Fare price helper"
-    assert Enum.map(FarePrices.tools(), & &1.name) == ["list_price_cells"]
+
+    assert Enum.map(FarePrices.tools(), & &1.name) == [
+             "list_price_cells",
+             "prepare_price_changes"
+           ]
+
     assert Enum.all?(FarePrices.tools(), &(&1.parameters["additionalProperties"] == false))
     assert FarePrices.skill() =~ "list_price_cells"
     assert {:ok, _pid, %{entries: []}} = Agents.open(context.scope)
