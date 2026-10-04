@@ -264,6 +264,37 @@ defmodule GtfsPlanner.Validations do
   end
 
   @doc """
+  Gets a scoped validation run: the row must belong to `organization_id` *and*
+  `gtfs_version_id`.
+
+  Every identity is checked in the query, so `result_json` is never read for a
+  run outside the caller's scope. A malformed identifier, an absent run and a
+  foreign one are all `{:error, :unavailable}`, which discloses nothing about
+  another organization (INV-1, AC-1).
+  """
+  @spec fetch_scoped_run(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, ValidationRun.t()} | {:error, :unavailable}
+  def fetch_scoped_run(organization_id, gtfs_version_id, run_id) do
+    with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, gtfs_version_id} <- Ecto.UUID.cast(gtfs_version_id),
+         {:ok, run_id} <- Ecto.UUID.cast(run_id) do
+      ValidationRun
+      |> where(
+        [run],
+        run.id == ^run_id and run.organization_id == ^organization_id and
+          run.gtfs_version_id == ^gtfs_version_id
+      )
+      |> Repo.one()
+      |> case do
+        %ValidationRun{} = run -> {:ok, run}
+        nil -> {:error, :unavailable}
+      end
+    else
+      _other -> {:error, :unavailable}
+    end
+  end
+
+  @doc """
   Gets a single validation run, raising if not found.
   """
   @spec get_validation_run!(Ecto.UUID.t()) :: ValidationRun.t()
@@ -400,6 +431,9 @@ defmodule GtfsPlanner.Validations do
   @doc """
   Completes the run the token owns and stores the validator result.
 
+  The result's optional provenance fields are persisted through the same lease
+  gate as the report: a run that captured no checked input keeps nil provenance.
+
   Returns `{:error, :lease_lost}` and writes nothing when the token is stale, the
   lease expired, the run is no longer `running`, or it does not exist in the
   organization. After the transaction commits, broadcasts
@@ -408,15 +442,34 @@ defmodule GtfsPlanner.Validations do
   @spec complete_run(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Result.t()) ::
           {:ok, ValidationRun.t()} | {:error, :lease_lost}
   def complete_run(organization_id, run_id, token, %Result{} = result) do
-    finish_owned_run(organization_id, run_id, token, :validation_completed, %{
-      status: "completed",
-      errors_count: result.summary.errors,
-      warnings_count: result.summary.warnings,
-      infos_count: result.summary.infos,
-      duration_ms: result.duration_ms,
-      result_json: %{"notices" => result.notices}
-    })
+    finish_owned_run(
+      organization_id,
+      run_id,
+      token,
+      :validation_completed,
+      %{
+        status: "completed",
+        errors_count: result.summary.errors,
+        warnings_count: result.summary.warnings,
+        infos_count: result.summary.infos,
+        duration_ms: result.duration_ms,
+        result_json: %{"notices" => result.notices}
+      }
+      |> Map.merge(provenance_attrs(result))
+    )
   end
+
+  # Provenance is server-owned and optional: absent fields stay nil so legacy
+  # callers and old rows persist unchanged.
+  defp provenance_attrs(%{
+         checked_zip_sha256: digest,
+         checked_export_profile: profile,
+         validator_version: version
+       }) do
+    %{checked_zip_sha256: digest, checked_export_profile: profile, validator_version: version}
+  end
+
+  defp provenance_attrs(_result), do: %{}
 
   @doc """
   Fails the run the token owns and stores the reason in `error_details`.
@@ -493,6 +546,9 @@ defmodule GtfsPlanner.Validations do
 
   @doc """
   Marks a validation run as completed and stores the validator result.
+
+  Accepts a `GtfsPlanner.Gtfs.Validator.Result` or an equivalent map, and persists
+  its optional provenance fields when present.
   """
   @spec mark_completed(ValidationRun.t(), %{
           summary: map(),
@@ -501,8 +557,7 @@ defmodule GtfsPlanner.Validations do
         }) ::
           {:ok, ValidationRun.t()} | {:error, Ecto.Changeset.t() | Ecto.StaleEntryError.t()}
   def mark_completed(run, result) do
-    run
-    |> ValidationRun.changeset(%{
+    attrs = %{
       status: "completed",
       errors_count: result.summary.errors,
       warnings_count: result.summary.warnings,
@@ -510,7 +565,10 @@ defmodule GtfsPlanner.Validations do
       duration_ms: result.duration_ms,
       result_json: %{"notices" => result.notices},
       completed_at: DateTime.utc_now()
-    })
+    }
+
+    run
+    |> ValidationRun.system_changeset(Map.merge(attrs, provenance_attrs(result)))
     |> Repo.update(stale_error_field: :id)
   end
 

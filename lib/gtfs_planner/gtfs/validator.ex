@@ -43,6 +43,10 @@ defmodule GtfsPlanner.Gtfs.Validator do
   # on the exit status and closing the port anyway.
   @kill_wait_ms 5_000
 
+  # Matches the ValidationRun validator_version bound, so a captured version
+  # always survives the same server-owned validation the lease write performs.
+  @max_validator_version_bytes 128
+
   @cancel_message :gtfs_validator_cancel
 
   @doc """
@@ -75,26 +79,26 @@ defmodule GtfsPlanner.Gtfs.Validator do
     try do
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
-      with {:ok, zip_path, temp_dir} <-
+      with {:ok, input} <-
              export_to_temp_file(
                organization_id,
                gtfs_version_id,
                export_profile(run.run_type)
              ) do
         # Store temp_dir for cleanup
-        Process.put(temp_dir_ref, temp_dir)
+        Process.put(temp_dir_ref, input.temp_dir)
 
         broadcast_progress(run.id, :exporting, 30, "Export complete")
         broadcast_progress(run.id, :validating, 50, "Running MobilityData validator...")
 
-        case run_validator_cli(zip_path, temp_dir) do
+        case run_validator_cli(input.zip_path, input.temp_dir) do
           {:ok, output_dir} ->
             broadcast_progress(run.id, :validating, 90, "Validation complete")
             broadcast_progress(run.id, :processing, 95, "Processing results...")
 
-            with {:ok, _validation_result} = parsed <- parse_report(output_dir, start_time) do
+            with {:ok, validation_result} <- parse_report(output_dir, start_time) do
               broadcast_progress(run.id, :processing, 100, "Done")
-              parsed
+              {:ok, record_checked_input(validation_result, input)}
             end
 
           {:error, reason} = error ->
@@ -223,24 +227,77 @@ defmodule GtfsPlanner.Gtfs.Validator do
     do: Application.get_env(:gtfs_planner, :gtfs_export_module, Export)
 
   @doc false
+  # Reads the estimate exactly once and carries that value, the profile it was
+  # exported under and the digest of the written bytes forward, so the run can
+  # record the input it was actually given without a second export or a second
+  # defaults read (INV-2).
   defp export_to_temp_file(organization_id, gtfs_version_id, export_profile) do
     unique_id = :erlang.unique_integer([:positive])
     temp_dir = System.tmp_dir!() |> Path.join("gtfs_validation_#{unique_id}")
+    estimate = estimate_option(organization_id)
 
     with :ok <- File.mkdir_p(temp_dir),
          {:ok, zip_binary} <-
            export_module().export_to_zip(organization_id, gtfs_version_id, export_profile,
-             estimate: estimate_option(organization_id)
+             estimate: estimate
            ) do
-      zip_path = Path.join(temp_dir, "gtfs.zip")
-
-      case File.write(zip_path, zip_binary) do
-        :ok -> {:ok, zip_path, temp_dir}
-        {:error, reason} -> {:error, {:file_write_failed, reason}}
-      end
+      write_checked_input(zip_binary, temp_dir, export_profile, estimate)
     else
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp write_checked_input(zip_binary, temp_dir, export_profile, estimate) do
+    zip_path = Path.join(temp_dir, "gtfs.zip")
+
+    case File.write(zip_path, zip_binary) do
+      :ok ->
+        {:ok,
+         %{
+           zip_path: zip_path,
+           temp_dir: temp_dir,
+           zip_sha256: sha256(zip_binary),
+           export_profile: checked_export_profile(export_profile, estimate)
+         }}
+
+      {:error, reason} ->
+        {:error, {:file_write_failed, reason}}
+    end
+  end
+
+  defp sha256(binary) do
+    :sha256 |> :crypto.hash(binary) |> Base.encode16(case: :lower)
+  end
+
+  # A `:flex` run checks the companion artifact of a full export; every other
+  # run checks the primary artifact, which never carries flex.
+  defp checked_export_profile(:flex, estimate) do
+    %{
+      schema_version: 1,
+      export_type: "full",
+      include_flex: true,
+      artifact_kind: "flex",
+      estimate_method: estimate && Atom.to_string(estimate)
+    }
+  end
+
+  defp checked_export_profile(_export_profile, estimate) do
+    %{
+      schema_version: 1,
+      export_type: "full",
+      include_flex: false,
+      artifact_kind: "primary",
+      estimate_method: estimate && Atom.to_string(estimate)
+    }
+  end
+
+  @doc false
+  # The returned result describes the exact input the validator read: the digest
+  # and profile come from the captured export, never from a fresh export or a
+  # fresh defaults read. The validator version was set by `parse_report/2` from
+  # the report's own metadata and is nil when the report carried none.
+  defp record_checked_input(%Result{} = result, %{zip_sha256: digest, export_profile: profile}) do
+    %{result | checked_zip_sha256: digest, checked_export_profile: profile}
   end
 
   # Validation estimates exactly what the current defaults say: unlike an
@@ -394,50 +451,143 @@ defmodule GtfsPlanner.Gtfs.Validator do
     with :ok <- check_report_size(report_path),
          {:ok, report_json} <- File.read(report_path),
          {:ok, report_data} <- Jason.decode(report_json),
-         {:ok, notices} <- report_notices(report_data) do
-      {:ok, build_result(notices, start_time)}
+         {:ok, groups} <- normalize_report(report_data) do
+      {:ok, build_result(groups, report_validator_version(report_data), start_time)}
     else
       {:error, :report_too_large} = error -> error
       {:error, reason} -> {:error, {:invalid_report, reason}}
     end
   end
 
-  defp build_result(notices, start_time) do
-    notices_by_code = group_notices(notices)
-
+  defp build_result(groups, validator_version, start_time) do
     %Result{
-      summary: summarize(notices_by_code),
-      notices: notices_by_code,
+      summary: summarize(groups),
+      notices: groups,
       duration_ms: System.monotonic_time(:millisecond) - start_time,
-      validated_at: DateTime.utc_now()
+      validated_at: DateTime.utc_now(),
+      validator_version: validator_version
     }
   end
 
-  # Group notices by code and severity
-  defp group_notices(notices) do
-    notices
-    |> Enum.group_by(& &1["code"])
-    |> Enum.reduce([], fn {code, code_notices}, acc ->
-      case code_notices do
-        [%{} = first | _] ->
-          # All notices with same code should have same severity
-          severity = first["severity"]
-
-          notice_group = %{
-            code: code,
-            severity: severity,
-            total_notices: length(code_notices),
-            notices: code_notices
-          }
-
-          [notice_group | acc]
-
-        _ ->
-          acc
+  # The validator emits one grouped `{code, severity, totalNotices,
+  # sampleNotices}` object per code and severity; retained reports and the flat
+  # adapter form emit one object per notice. Both are normalized to Result
+  # groups, and a report mixing the two forms is ambiguous rather than clean.
+  defp normalize_report(%{"notices" => notices}) when is_list(notices) do
+    if Enum.all?(notices, &is_map/1) do
+      with :ok <- single_notice_form(notices),
+           {:ok, entries} <- notice_entries(notices) do
+        {:ok, merge_entries(entries)}
       end
-    end)
-    |> Enum.reverse()
+    else
+      {:error, :malformed_notices}
+    end
   end
+
+  defp normalize_report(_report), do: {:error, :missing_notices}
+
+  defp single_notice_form([]), do: :ok
+
+  defp single_notice_form([%{} = first | rest]) do
+    if Enum.all?([first | rest], &(grouped_notice?(&1) == grouped_notice?(first))),
+      do: :ok,
+      else: {:error, :mixed_notice_forms}
+  end
+
+  defp grouped_notice?(notice) do
+    Map.has_key?(notice, "totalNotices") or Map.has_key?(notice, "sampleNotices")
+  end
+
+  defp notice_entries(notices) do
+    notices
+    |> Enum.map(&notice_entry/1)
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, entry}, {:ok, acc} -> {:cont, {:ok, [entry | acc]}}
+      {:error, _reason} = error, _acc -> {:halt, error}
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp notice_entry(notice) do
+    with {:ok, code} <- notice_code(notice),
+         {:ok, severity} <- notice_severity(notice) do
+      if grouped_notice?(notice) do
+        grouped_entry(notice, code, severity)
+      else
+        {:ok, %{code: code, severity: severity, total: 1, notices: [notice]}}
+      end
+    end
+  end
+
+  # A group keeps the upstream total and the retained samples as separate facts:
+  # the sample never replaces the count it was cut from.
+  defp grouped_entry(notice, code, severity) do
+    with {:ok, total} <- total_notices(notice),
+         {:ok, samples} <- sample_notices(notice) do
+      if total >= length(samples) do
+        {:ok, %{code: code, severity: severity, total: total, notices: samples}}
+      else
+        {:error, {:fewer_totals_than_samples, code, severity}}
+      end
+    end
+  end
+
+  defp notice_code(%{"code" => code}) when is_binary(code) and code != "", do: {:ok, code}
+  defp notice_code(_notice), do: {:error, :malformed_code}
+
+  defp notice_severity(%{"severity" => severity}) when is_binary(severity), do: {:ok, severity}
+  defp notice_severity(_notice), do: {:error, :malformed_severity}
+
+  defp total_notices(%{"totalNotices" => total}) when is_integer(total) and total >= 0,
+    do: {:ok, total}
+
+  defp total_notices(_notice), do: {:error, :malformed_total}
+
+  defp sample_notices(%{"sampleNotices" => samples}) when is_list(samples) do
+    if Enum.all?(samples, &is_map/1), do: {:ok, samples}, else: {:error, :malformed_samples}
+  end
+
+  defp sample_notices(_notice), do: {:error, :malformed_samples}
+
+  # Groups are keyed by code *and* severity, so one code reported at two
+  # severities stays two groups with their own totals.
+  defp merge_entries(entries) do
+    entries
+    |> Enum.reduce(%{}, fn entry, acc ->
+      Map.update(
+        acc,
+        {entry.code, entry.severity},
+        entry,
+        &%{&1 | total: &1.total + entry.total, notices: &1.notices ++ entry.notices}
+      )
+    end)
+    |> Enum.map(fn {{code, severity}, entry} ->
+      %{
+        code: code,
+        severity: severity,
+        total_notices: entry.total,
+        notices: entry.notices,
+        retained_notices: length(entry.notices),
+        sample_completeness: completeness(entry)
+      }
+    end)
+  end
+
+  defp completeness(%{total: total, notices: notices}) do
+    if length(notices) == total, do: :complete, else: :sampled
+  end
+
+  # Only metadata the report actually carried is recorded. An absent, blank,
+  # non-string or oversized value leaves the run's version metadata unknown
+  # rather than guessed.
+  defp report_validator_version(%{"summary" => %{"validatorVersion" => version}})
+       when is_binary(version) and byte_size(version) <= @max_validator_version_bytes,
+       do: if(String.trim(version) == "", do: nil, else: version)
+
+  defp report_validator_version(_report), do: nil
 
   # Calculate summary by severity
   defp summarize(notices_by_code) do
@@ -460,12 +610,4 @@ defmodule GtfsPlanner.Gtfs.Validator do
       {:error, _reason} = error -> error
     end
   end
-
-  # A report the validator wrote always has a `notices` list of objects; any
-  # other shape is a broken report, not a clean one.
-  defp report_notices(%{"notices" => notices}) when is_list(notices) do
-    if Enum.all?(notices, &is_map/1), do: {:ok, notices}, else: {:error, :malformed_notices}
-  end
-
-  defp report_notices(_report), do: {:error, :missing_notices}
 end

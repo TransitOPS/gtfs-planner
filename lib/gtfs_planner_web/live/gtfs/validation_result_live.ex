@@ -16,6 +16,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   (`expanded_codes`), so the disclosures survive a re-render.
   """
   use GtfsPlannerWeb, :live_view
+  alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Validations
+  alias GtfsPlanner.Validations.Evidence
+  alias GtfsPlannerWeb.AgentPanel
+
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
   import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
@@ -110,42 +116,93 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_failure_message, nil)
      |> assign(:pathways_failure_diagnostics, [])
-     |> assign(:pathways_case_results, [])}
+     |> assign(:pathways_case_results, [])
+     |> assign(:feed_quality_available?, false)
+     |> assign(:feed_quality, nil)
+     |> assign(:feed_quality_digest, nil)
+     |> assign(:feed_quality_samples, [])
+     |> assign(:requested_instance_ref, nil)
+     |> AgentPanel.mount("feed_quality")}
   end
 
   @impl Phoenix.LiveView
   def handle_params(%{"validation_id" => validation_id}, _uri, socket) do
-    run = Validations.get_validation_run!(validation_id)
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
-    # Verify authorization: ensure the run belongs to the current organization
-    if run.organization_id != organization_id or run.gtfs_version_id != gtfs_version_id do
-      {:noreply,
-       socket
-       |> put_flash(:error, "Unauthorized access to validation run")
-       |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
-    else
-      validation_runs_history =
-        Validations.list_validation_runs(organization_id, gtfs_version_id)
+    # The run is resolved inside this organization and version before any
+    # report JSON is read, so a foreign, absent or malformed id is the same
+    # redirect and never another organization's report (INV-1, AC-1).
+    case Validations.fetch_scoped_run(organization_id, gtfs_version_id, validation_id) do
+      {:error, :unavailable} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Unauthorized access to validation run")
+         |> push_navigate(to: ~p"/gtfs/#{gtfs_version_id}/export")}
 
-      {run, pathways_case_results} = load_pathways_render_data(run)
-      pathways_failure = pathways_failure(run)
-      pathways_failure_message = pathways_failure_message(run)
-      pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+      {:ok, run} ->
+        validation_runs_history =
+          Validations.list_validation_runs(organization_id, gtfs_version_id)
 
-      {:noreply,
-       socket
-       |> assign(:validation_id, validation_id)
-       |> assign(:run, run)
-       |> assign(:expanded_codes, default_expanded_codes(run))
-       |> assign(:pathways_failure, pathways_failure)
-       |> assign(:pathways_failure_message, pathways_failure_message)
-       |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
-       |> assign(:pathways_case_results, pathways_case_results)
-       |> stream(:validation_runs, validation_runs_history)}
+        {run, pathways_case_results} = load_pathways_render_data(run)
+        pathways_failure = pathways_failure(run)
+        pathways_failure_message = pathways_failure_message(run)
+        pathways_failure_diagnostics = pathways_failure_diagnostics(run)
+
+        socket =
+          socket
+          |> assign(:validation_id, validation_id)
+          |> assign(:run, run)
+          |> assign(:expanded_codes, default_expanded_codes(run))
+          |> assign(:pathways_failure, pathways_failure)
+          |> assign(:pathways_failure_message, pathways_failure_message)
+          |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
+          |> assign(:pathways_case_results, pathways_case_results)
+          |> stream(:validation_runs, validation_runs_history)
+
+        {:noreply, assign_feed_quality(socket)}
     end
   end
+
+  @impl Phoenix.LiveView
+  def handle_event("feed_quality_refresh", _params, socket) do
+    {:noreply, assign_feed_quality(socket)}
+  end
+
+  # The native Inspect target action is the only way a finding becomes approved
+  # for the helper: it resolves the reference server-side first, then pins it in
+  # the panel's own context. A model explanation can never approve an edit, and
+  # nothing is written or applied here.
+  @impl Phoenix.LiveView
+  def handle_event("feed_quality_inspect", %{"instance_ref" => instance_ref}, socket)
+      when is_binary(instance_ref) do
+    case Evidence.locate(feed_quality_scope(socket), socket.assigns.run.id, instance_ref) do
+      {:ok, %{targets: [_ | _]}} ->
+        socket = assign(socket, :requested_instance_ref, instance_ref)
+
+        socket =
+          AgentPanel.set_context(socket, feed_quality_context(socket))
+
+        {:noreply,
+         assign(
+           socket,
+           :agent_notice,
+           "This finding is approved for navigation. Ask the helper for its handoff."
+         )}
+
+      # A sample that names no single current record has nothing to navigate to,
+      # so it is never approved.
+      _unresolved ->
+        {:noreply,
+         assign(socket, :agent_notice, "That finding does not resolve to a current record.")}
+    end
+  end
+
+  def handle_event("feed_quality_inspect", _params, socket), do: {:noreply, socket}
+
+  # Review options is the Export page's control; the helper cannot prepare it
+  # here, so a prepared-change event on this page changes nothing.
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
@@ -231,39 +288,131 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
             <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
           </:subtitle>
           <:actions>
+            <.button
+              :if={@feed_quality_available?}
+              id="agent-helper-open"
+              type="button"
+              phx-click="agent_open"
+              aria-expanded={to_string(@agent_open?)}
+              aria-controls="agent-panel"
+              variant="quiet"
+              class="min-h-11"
+            >
+              Open helper
+            </.button>
             <.button id="open-history" variant="secondary" class="min-h-11" phx-click="open_history">
               <.icon name="hero-list-bullet" class="size-4" /> View history
             </.button>
           </:actions>
         </.header>
 
-        <%= cond do %>
-          <% @run.status == "failed" and @pathways_failure -> %>
-            <.pathways_failure_card
-              failure={@pathways_failure}
-              message={@pathways_failure_message}
-              diagnostics={@pathways_failure_diagnostics}
-              version={@current_gtfs_version}
+        <%!--
+        The panel's focus listener belongs to this persistent wrapper, not to the panel: the
+        closing panel cannot own a handler that runs after its own removal. The grid gives the
+        report the full width while the panel is closed and a fixed 24rem column while it is
+        open, and the report column is hidden at phone width so the panel replaces it. The
+        panel stays inside the design-system page, so it takes the page's colours and focus
+        rings. --%>
+        <div
+          id="validation-helper-focus"
+          phx-hook=".ValidationHelperFocus"
+          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+        >
+          <div class={["min-w-0", @agent_open? && "hidden lg:block"]}>
+            <section
+              :if={@feed_quality_available?}
+              id="feed-quality-evidence"
+              class="mt-2 rounded-card border border-control bg-white px-5 py-4"
+            >
+              <h2 class="text-sm font-bold text-strong">Feed quality</h2>
+              <p id="feed-quality-samples" class="mt-1 text-[13px] text-default tabular-nums">
+                {findings_label(@feed_quality)} · {@feed_quality.retained_instances} retained samples · {@feed_quality.completeness}
+              </p>
+              <p
+                :if={@feed_quality.limits != []}
+                id="feed-quality-limits"
+                class="mt-1 text-[13px] text-muted"
+              >
+                {Enum.join(@feed_quality.limits, " ")}
+              </p>
+              <p id="feed-quality-provenance" class="mt-1 text-[13px] text-muted">
+                Validator {validator_label(@feed_quality.validator_version)} · report digest {short_digest(
+                  @feed_quality_digest
+                )}
+              </p>
+              <p id="feed-quality-unmapped" class="mt-1 text-[13px] text-muted">
+                {unmapped_label(@feed_quality_samples)}
+              </p>
+              <div id="feed-quality-inspect-target" class="mt-2 flex flex-wrap items-center gap-2">
+                <%= for {sample, index} <- Enum.with_index(@feed_quality_samples), sample.resolved? do %>
+                  <button
+                    id={"feed-quality-inspect-#{index}"}
+                    type="button"
+                    phx-click="feed_quality_inspect"
+                    phx-value-instance_ref={sample.ref}
+                    class="rounded-control border border-control px-2 py-1 text-[13px] font-semibold text-action"
+                  >
+                    Inspect target {index + 1}
+                  </button>
+                <% end %>
+                <button
+                  id="feed-quality-refresh"
+                  type="button"
+                  phx-click="feed_quality_refresh"
+                  class="text-[13px] font-semibold text-action"
+                >
+                  Refresh findings
+                </button>
+              </div>
+            </section>
+
+            <%= cond do %>
+              <% @run.status == "failed" and @pathways_failure -> %>
+                <.pathways_failure_card
+                  failure={@pathways_failure}
+                  message={@pathways_failure_message}
+                  diagnostics={@pathways_failure_diagnostics}
+                  version={@current_gtfs_version}
+                />
+              <% @run.status == "failed" -> %>
+                <.validation_failure_card run={@run} version={@current_gtfs_version} />
+              <% @run.status in ["started", "running"] -> %>
+                <.checking_card status={@run.status} />
+              <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
+                <.walk_results
+                  run={@run}
+                  cases={@pathways_case_results}
+                  version={@current_gtfs_version}
+                />
+              <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
+                <.mobility_results
+                  run={@run}
+                  expanded_codes={@expanded_codes}
+                  version={@current_gtfs_version}
+                />
+              <% true -> %>
+                <.no_result_card version={@current_gtfs_version} />
+            <% end %>
+          </div>
+
+          <div
+            :if={@agent_open?}
+            class="flex min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+          >
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={"Validation · " <> @current_gtfs_version.name}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
             />
-          <% @run.status == "failed" -> %>
-            <.validation_failure_card run={@run} version={@current_gtfs_version} />
-          <% @run.status in ["started", "running"] -> %>
-            <.checking_card status={@run.status} />
-          <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
-            <.walk_results
-              run={@run}
-              cases={@pathways_case_results}
-              version={@current_gtfs_version}
-            />
-          <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
-            <.mobility_results
-              run={@run}
-              expanded_codes={@expanded_codes}
-              version={@current_gtfs_version}
-            />
-          <% true -> %>
-            <.no_result_card version={@current_gtfs_version} />
-        <% end %>
+          </div>
+        </div>
       </div>
 
       <.drawer
@@ -311,6 +460,14 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
           Shows the last 20 checks for this version.
         </p>
       </.drawer>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".ValidationHelperFocus">
+        export default {
+          mounted() {
+            this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
@@ -1180,6 +1337,192 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   # ── Presentation helpers ──
+
+  # -- Feed quality helper ----------------------------------------------------
+
+  # Only a supported completed MobilityData report has helper reads; every other
+  # engine or state keeps the native report and no helper button.
+  defp assign_feed_quality(socket) do
+    run = socket.assigns.run
+
+    if run.status == "completed" and run.run_type in ["mobility_data", "mobility_data_flex"] and
+         not is_nil(run.result_json) do
+      scope = feed_quality_scope(socket)
+
+      case Evidence.findings(scope, %{run_id: run.id, limit: 3}) do
+        {:ok, report} ->
+          socket =
+            socket
+            |> assign(:feed_quality_available?, true)
+            |> assign(:feed_quality_digest, report.digest)
+            |> assign(:feed_quality_samples, inspect_samples(scope, run, report))
+            |> assign(:feed_quality, feed_quality_summary(report, run))
+
+          AgentPanel.set_context(socket, feed_quality_context(socket))
+
+        {:error, _reason} ->
+          unavailable_feed_quality(socket)
+      end
+    else
+      unavailable_feed_quality(socket)
+    end
+  end
+
+  defp unavailable_feed_quality(socket) do
+    socket
+    |> assign(:feed_quality_available?, false)
+    |> assign(:feed_quality, nil)
+    |> assign(:feed_quality_digest, nil)
+    |> assign(:feed_quality_samples, [])
+    |> AgentPanel.set_context(Scope.context({:version, socket.assigns.current_gtfs_version.id}))
+  end
+
+  # A group page carries totals only; `limits` says in words what those totals
+  # leave out, and drops the page's own "more groups" disclosure, which is about
+  # the three groups this host asked for and not about the report.
+  defp feed_quality_summary(report, run) do
+    %{
+      total_instances: report.total_instances,
+      retained_instances: report.retained_instances,
+      completeness: report.completeness,
+      unknown_total?: Enum.any?(report.exclusions, &(&1.reason == "groups_without_stored_total")),
+      limits: Enum.flat_map(report.exclusions, &limit_sentence/1),
+      validator_version: run.validator_version
+    }
+  end
+
+  defp limit_sentence(%{reason: "sampled_instance_groups", count: count}),
+    do: ["Groups with only a sample of their findings: #{count}."]
+
+  defp limit_sentence(%{reason: "groups_without_stored_total", count: count}),
+    do: ["Groups with no stored total: #{count}."]
+
+  defp limit_sentence(%{reason: "unknown_severity_groups", count: count}),
+    do: ["Groups with a severity other than error, warning or info: #{count}."]
+
+  defp limit_sentence(_page_exclusion), do: []
+
+  defp count_label(1, noun), do: "1 #{noun}"
+  defp count_label(count, noun), do: "#{count} #{noun}s"
+
+  # At most three retained samples of the first group that kept any are offered
+  # as native Inspect targets, each checked against the current records now: the
+  # report's own disclosures stay in the page below, and a sample that names no
+  # single current record is reported rather than offered.
+  defp inspect_samples(scope, run, report) do
+    with %{code: code, severity: severity} <-
+           Enum.find(report.groups, &(&1.retained_instances > 0)),
+         {:ok, page} <-
+           Evidence.findings(scope, %{
+             run_id: run.id,
+             code: code,
+             severity: severity,
+             limit: 3
+           }) do
+      page.groups
+      |> Enum.flat_map(& &1.instances)
+      |> Enum.take(3)
+      |> Enum.map(&inspect_sample(scope, run, &1))
+    else
+      _none -> []
+    end
+  end
+
+  defp inspect_sample(scope, run, instance) do
+    case Evidence.locate(scope, run.id, instance.ref) do
+      {:ok, %{targets: [_ | _]}} ->
+        %{ref: instance.ref, resolved?: true, reasons: []}
+
+      {:ok, %{unresolved: unresolved}} ->
+        %{ref: instance.ref, resolved?: false, reasons: Enum.map(unresolved, & &1.reason)}
+
+      {:error, _reason} ->
+        %{ref: instance.ref, resolved?: false, reasons: ["not_readable"]}
+    end
+  end
+
+  # The host's own fingerprint of the section: run, report digest and the one
+  # approved instance reference. No report JSON, path, log or actor travels.
+  defp feed_quality_context(socket) do
+    run = socket.assigns.run
+
+    payload =
+      %{
+        "schema_version" => 1,
+        "section" => "validation",
+        "run_ref" => run.id,
+        "report_digest" => socket.assigns.feed_quality_digest || "none"
+      }
+      |> put_requested_instance(socket.assigns.requested_instance_ref)
+
+    case Scope.with_source_snapshot(
+           Scope.context({:version, socket.assigns.current_gtfs_version.id}),
+           %{kind: "feed_quality", payload: payload}
+         ) do
+      {:ok, context} -> context
+      {:error, _reason} -> Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    end
+  end
+
+  defp put_requested_instance(payload, ref) when is_binary(ref),
+    do: Map.put(payload, "requested_instance_ref", ref)
+
+  defp put_requested_instance(payload, _ref), do: payload
+
+  defp feed_quality_scope(socket) do
+    user = socket.assigns.current_user
+
+    %Scope{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      user_id: user.id,
+      user_email: user.email,
+      pack_id: "feed_quality",
+      version_name: socket.assigns.current_gtfs_version.name,
+      resource_context: socket.assigns.agent_context
+    }
+  end
+
+  defp validator_label(nil), do: "unknown"
+  defp validator_label(version), do: version
+
+  defp short_digest(nil), do: "unknown"
+  defp short_digest(digest) when byte_size(digest) >= 12, do: binary_part(digest, 0, 12) <> "…"
+  defp short_digest(digest), do: digest
+
+  # An unknown total is never a clean zero: with every total unknown the page
+  # says so, and with some unknown the counted ones are a lower bound.
+  defp findings_label(%{unknown_total?: false, total_instances: total}),
+    do: count_label(total, "finding")
+
+  defp findings_label(%{total_instances: 0}), do: "Total unknown"
+  defp findings_label(%{total_instances: total}), do: "At least #{count_label(total, "finding")}"
+
+  defp unmapped_label([]), do: "No retained sample to match to a current record."
+
+  defp unmapped_label(samples) do
+    unmapped = Enum.reject(samples, & &1.resolved?)
+
+    case unmapped do
+      [] ->
+        "Every sampled finding names a current record."
+
+      _some ->
+        "#{length(unmapped)} of #{length(samples)} sampled findings name no current record: " <>
+          (unmapped
+           |> Enum.flat_map(& &1.reasons)
+           |> Enum.uniq()
+           |> Enum.map_join(", ", &reason_label/1)) <>
+          "."
+    end
+  end
+
+  defp reason_label("no_current_record"), do: "no such record in this version"
+  defp reason_label("duplicate_current_records"), do: "several records share the key"
+  defp reason_label("row_number_is_not_a_record"), do: "only a file row"
+  defp reason_label("no_typed_destination_for_pathway"), do: "a pathway has no page here"
+  defp reason_label("trip_route_not_current"), do: "the trip's route is not current"
+  defp reason_label(_other), do: "not readable"
 
   defp validation_lede(%{run_type: "pathways_tests"}, version) do
     "Older results: whether riders could walk from each test address to a stop in #{version.name}."

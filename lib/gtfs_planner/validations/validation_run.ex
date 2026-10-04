@@ -43,9 +43,33 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     :artifact_pin_token
   ]
 
+  # Server-owned provenance of the exact checked input. Cast only by system_changeset/2;
+  # these stay nil for every run that did not capture them (all retained rows).
+  @provenance_fields [:checked_zip_sha256, :checked_export_profile, :validator_version]
+
+  @sha256_format ~r/^[0-9a-f]{64}$/
+  @max_validator_version_bytes 128
+  @profile_keys [:schema_version, :export_type, :include_flex, :artifact_kind, :estimate_method]
+  @profile_export_types ["full", "pathways", "operations"]
+  @profile_artifact_kinds ["primary", "flex"]
+  @profile_estimate_methods [nil, "distance", "even"]
+
   @type run_type :: String.t()
   @type status :: String.t()
   @type artifact_slot :: :main | :flex
+
+  @typedoc """
+  The checked export the run was validated against, written with atom keys and
+  read back from jsonb with the equivalent string keys. Unknown provenance is nil
+  rather than a guessed profile.
+  """
+  @type checked_export_profile :: %{
+          schema_version: 1,
+          export_type: String.t(),
+          include_flex: boolean(),
+          artifact_kind: String.t(),
+          estimate_method: String.t() | nil
+        }
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
@@ -69,6 +93,9 @@ defmodule GtfsPlanner.Validations.ValidationRun do
           artifact_slot: artifact_slot() | nil,
           artifact_export_run_id: Ecto.UUID.t() | nil,
           artifact_pin_token: Ecto.UUID.t() | nil,
+          checked_zip_sha256: String.t() | nil,
+          checked_export_profile: checked_export_profile() | nil,
+          validator_version: String.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -92,6 +119,9 @@ defmodule GtfsPlanner.Validations.ValidationRun do
     field :artifact_slot, Ecto.Enum, values: @artifact_slots
     field :artifact_export_run_id, Ecto.UUID
     field :artifact_pin_token, Ecto.UUID
+    field :checked_zip_sha256, :string
+    field :checked_export_profile, :map
+    field :validator_version, :string
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization
     belongs_to :gtfs_version, GtfsPlanner.Versions.GtfsVersion
@@ -114,17 +144,21 @@ defmodule GtfsPlanner.Validations.ValidationRun do
   @doc """
   Changeset for server-side lifecycle transitions.
 
-  Casts every field `changeset/2` casts plus `lease_token`, `lease_expires_at`
-  and the artifact binding. Pass only server-derived values; never pass request
-  params.
+  Casts every field `changeset/2` casts plus `lease_token`, `lease_expires_at`,
+  the artifact binding and the checked-input provenance fields. Pass only
+  server-derived values; never pass request params. Provenance is validated when
+  present: a lowercase 64-character hex SHA-256 digest, a validator version of at
+  most 128 UTF-8 bytes, and an export profile carrying exactly `schema_version`,
+  `export_type`, `include_flex`, `artifact_kind` and `estimate_method`.
   """
   @spec system_changeset(t() | Ecto.Changeset.t(), map()) :: Ecto.Changeset.t()
   def system_changeset(validation_run, attrs) do
     build_changeset(
       validation_run,
       attrs,
-      @changeset_fields ++ @lease_fields ++ @artifact_fields
+      @changeset_fields ++ @lease_fields ++ @artifact_fields ++ @provenance_fields
     )
+    |> validate_provenance()
   end
 
   @doc """
@@ -168,4 +202,50 @@ defmodule GtfsPlanner.Validations.ValidationRun do
       do: changeset,
       else: add_error(changeset, :artifact_sha256, "incomplete artifact binding")
   end
+
+  defp validate_provenance(changeset) do
+    changeset
+    |> validate_format(:checked_zip_sha256, @sha256_format,
+      message: "must be a lowercase 64-character hex SHA-256 digest"
+    )
+    |> validate_change(:validator_version, fn :validator_version, value ->
+      if byte_size(value) <= @max_validator_version_bytes,
+        do: [],
+        else: [validator_version: "must be at most 128 bytes"]
+    end)
+    |> validate_change(:checked_export_profile, fn :checked_export_profile, profile ->
+      profile_errors(profile)
+    end)
+  end
+
+  defp profile_errors(profile) when is_map(profile) and not is_struct(profile) do
+    cond do
+      Enum.sort(Map.keys(profile)) != Enum.sort(@profile_keys) ->
+        [
+          {:checked_export_profile,
+           "must contain exactly schema_version, export_type, include_flex, artifact_kind and estimate_method"}
+        ]
+
+      profile.schema_version != 1 ->
+        [{:checked_export_profile, "must record schema_version 1"}]
+
+      profile.export_type not in @profile_export_types ->
+        [{:checked_export_profile, "must record export_type full, pathways or operations"}]
+
+      not is_boolean(profile.include_flex) ->
+        [{:checked_export_profile, "must record include_flex as true or false"}]
+
+      profile.artifact_kind not in @profile_artifact_kinds ->
+        [{:checked_export_profile, "must record artifact_kind primary or flex"}]
+
+      profile.estimate_method not in @profile_estimate_methods ->
+        [{:checked_export_profile, "must record estimate_method nil, distance or even"}]
+
+      true ->
+        []
+    end
+  end
+
+  defp profile_errors(_profile),
+    do: [{:checked_export_profile, "must be a map of checked export settings"}]
 end

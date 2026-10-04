@@ -13,6 +13,11 @@
 #   big_output  write 200 KiB (25,600 lines of "%07d\n") and exit 3
 #   report      write a well-formed, empty report.json and exit 0
 #   error_report  write a report.json with two ERROR and three WARNING notice codes
+#   report_after_release
+#                copy the input ZIP to <path>, touch <path>.waiting, then wait
+#                for <path>.release before writing the report, so a test can
+#                change what the validator depends on after the export but
+#                before the run completes
 #   big_report  write a sparse report.json of 64 MiB + 1 byte and exit 0
 #   bad_report  write a truncated report.json and exit 0
 mode="$2"
@@ -26,9 +31,12 @@ if [ "$7" != "--skip_validator_update" ]; then
   exit 65
 fi
 
+copy=""
+
 case "$mode" in
   *@*)
-    cp "$zip" "${mode#*@}"
+    copy="${mode#*@}"
+    cp "$zip" "$copy"
     mode="${mode%%@*}"
     ;;
 esac
@@ -45,7 +53,21 @@ case "$mode" in
     printf '{"summary":{"validatorVersion":"fake"},"notices":[]}' > "$out/report.json"
     ;;
   error_report)
-    printf '{"summary":{"validatorVersion":"fake"},"notices":[{"code":"fake_error_1","severity":"ERROR","totalNotices":1},{"code":"fake_error_2","severity":"ERROR","totalNotices":1},{"code":"fake_warning_1","severity":"WARNING","totalNotices":1},{"code":"fake_warning_2","severity":"WARNING","totalNotices":1},{"code":"fake_warning_3","severity":"WARNING","totalNotices":1}]}' > "$out/report.json"
+    # The validator writes every group with both totalNotices and sampleNotices.
+    printf '{"summary":{"validatorVersion":"fake"},"notices":[{"code":"fake_error_1","severity":"ERROR","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_error_2","severity":"ERROR","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_1","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_2","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]},{"code":"fake_warning_3","severity":"WARNING","totalNotices":1,"sampleNotices":[{"filename":"stops.txt","csvRowNumber":2}]}]}' > "$out/report.json"
+    ;;
+  report_after_release)
+    : > "$copy.waiting"
+    waited=0
+    while [ ! -e "$copy.release" ]; do
+      if [ "$waited" -ge 600 ]; then
+        echo "never released" >&2
+        exit 66
+      fi
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    printf '{"summary":{"validatorVersion":"fake"},"notices":[]}' > "$out/report.json"
     ;;
   big_report)
     dd if=/dev/null of="$out/report.json" bs=1 seek=67108865 count=0 2>/dev/null

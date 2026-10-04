@@ -4,10 +4,27 @@ defmodule GtfsPlanner.Gtfs.Validator.Result do
 
   Contains summary statistics, detailed notices, timing information,
   and metadata about when the validation was performed.
+
+  The optional provenance fields describe the exact input the validator was given.
+  They default to nil, so existing callers and retained reports stay valid; only a
+  run that actually captured its input bytes and settings carries them.
+
+  Each notice group keeps the exact total the validator reported, the retained
+  instances and whether they are all of them (`:complete`) or a sample
+  (`:sampled`). Severity is the report's own value, including an unknown one,
+  which stays visible and out of the error/warning/info summary.
   """
 
   @enforce_keys [:summary, :notices, :duration_ms, :validated_at]
-  defstruct [:summary, :notices, :duration_ms, :validated_at]
+  defstruct [
+    :summary,
+    :notices,
+    :duration_ms,
+    :validated_at,
+    :checked_zip_sha256,
+    :checked_export_profile,
+    :validator_version
+  ]
 
   @type t :: %__MODULE__{
           summary: %{
@@ -20,10 +37,16 @@ defmodule GtfsPlanner.Gtfs.Validator.Result do
               code: String.t(),
               severity: String.t(),
               total_notices: non_neg_integer(),
-              notices: [map()]
+              notices: [map()],
+              retained_notices: non_neg_integer(),
+              sample_completeness: :complete | :sampled
             }
           ],
           duration_ms: non_neg_integer(),
-          validated_at: DateTime.t()
+          validated_at: DateTime.t(),
+          checked_zip_sha256: String.t() | nil,
+          checked_export_profile:
+            GtfsPlanner.Validations.ValidationRun.checked_export_profile() | nil,
+          validator_version: String.t() | nil
         }
 end

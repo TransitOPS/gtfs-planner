@@ -360,6 +360,97 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
     end
   end
 
+  describe "inspect_summary/3" do
+    test "counts every finding and retains at most five labelled examples", %{
+      organization: org,
+      version: version
+    } do
+      for index <- 1..6 do
+        stop_fixture(org.id, version.id, stop_id: "STOP_#{index}", stop_lat: nil, stop_lon: nil)
+      end
+
+      assert [summary] = Preflight.inspect_summary(org.id, version.id, :full)
+
+      assert summary.code == "stops_missing_coordinates"
+      assert summary.total == 6
+      assert summary.unit == :stations
+      assert summary.examples == ["STOP_1", "STOP_2", "STOP_3", "STOP_4", "STOP_5"]
+      assert summary.completeness == "sampled"
+
+      # The count is the check's own SQL, never a number read back out of the
+      # message it writes.
+      assert {:error, [%{code: "stops_missing_coordinates", message: message}]} =
+               Preflight.run(org.id, version.id, :full)
+
+      assert message == summary.message
+      assert message =~ "6 stops, stations or entrances have no latitude/longitude"
+    end
+
+    test "keeps run/3's code and message shape for every check", %{
+      organization: org,
+      version: version
+    } do
+      arrange_every_violation(org.id, version.id)
+
+      summaries = Preflight.inspect_summary(org.id, version.id, :full)
+      assert {:error, issues} = Preflight.run(org.id, version.id, :full)
+
+      assert Enum.map(issues, & &1.code) == Enum.map(summaries, & &1.code)
+      assert Enum.map(issues, & &1.message) == Enum.map(summaries, & &1.message)
+      assert Enum.all?(issues, &(Map.keys(&1) |> Enum.sort() == [:code, :message]))
+    end
+
+    test "names the entity each count is about and never calls transfers complete", %{
+      organization: org,
+      version: version
+    } do
+      arrange_every_violation(org.id, version.id)
+
+      assert [station, stops, gate, timezones, transfers, trips] =
+               Preflight.inspect_summary(org.id, version.id, :full)
+
+      assert {station.unit, station.total} == {:stations, 1}
+      assert {stops.unit, stops.total} == {:stations, 1}
+      assert {gate.unit, gate.total} == {:pathways, 1}
+      assert {timezones.unit, timezones.total} == {:timezones, 2}
+      assert {transfers.unit, transfers.total} == {:transfers, 1}
+      assert {trips.unit, trips.total} == {:trips, 1}
+
+      assert station.completeness == "complete"
+      assert gate.completeness == "complete"
+
+      # A transfer's example names the reference it is missing, so its example
+      # list is a sample whatever its length.
+      assert transfers.completeness == "sampled"
+      assert transfers.examples == ["GHOST_STOP"]
+    end
+
+    test "runs the pathway checks only for a pathways export", %{
+      organization: org,
+      version: version
+    } do
+      arrange_every_violation(org.id, version.id)
+
+      assert [station, stops, gate] = Preflight.inspect_summary(org.id, version.id, :pathways)
+
+      assert Enum.map([station, stops, gate], & &1.code) == [
+               "station_with_parent",
+               "stops_missing_coordinates",
+               "bidirectional_exit_gate"
+             ]
+    end
+
+    test "returns no finding for a version without violations", %{
+      organization: org,
+      version: version
+    } do
+      arrange_clean_feed(org.id, version.id)
+
+      assert Preflight.inspect_summary(org.id, version.id, :full) == []
+      assert Preflight.run(org.id, version.id, :full) == :ok
+    end
+  end
+
   defp arrange_clean_feed(organization_id, version_id) do
     agency_fixture(organization_id, version_id, agency_timezone: "America/New_York")
     stop_fixture(organization_id, version_id, stop_id: "A")
