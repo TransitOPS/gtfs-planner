@@ -321,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     end)
   end
 
-  defp non_narrowed_disclosure() do
+  defp non_narrowed_disclosure do
     %{
       entity: :unknowns,
       reason: :not_narrowed_by_scope,

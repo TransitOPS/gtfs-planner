@@ -1054,9 +1054,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   end
 
   defp reasons_sentence(reasons) when is_list(reasons) do
-    reasons
-    |> Enum.map(&reason_words/1)
-    |> Enum.join(" ")
+    Enum.map_join(reasons, " ", &reason_words/1)
   end
 
   defp reasons_sentence(_reasons), do: ""

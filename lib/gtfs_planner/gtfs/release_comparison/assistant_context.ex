@@ -85,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext do
 
   def freeze(context, %{comparison: comparison} = result, selection)
       when is_map(context) and is_map(comparison) and (selection == :all or is_map(selection)) do
-    with true <- delivered?(result) do
+    if delivered?(result) do
       case selection do
         :all ->
           admitted(context, result, comparison)
@@ -94,7 +94,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext do
           narrowed(context, result, narrowing)
       end
     else
-      _not_delivered -> {:error, :invalid_scope}
+      {:error, :invalid_scope}
     end
   end
 

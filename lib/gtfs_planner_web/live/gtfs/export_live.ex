@@ -554,7 +554,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         %{"collection" => collection, "row" => row} = params,
         socket
       ) do
-    if (stream = comparison_stream(collection)) && is_binary(row) do
+    stream = comparison_stream(collection)
+
+    if not is_nil(stream) and is_binary(row) do
       detail =
         socket.assigns.comparison_view
         |> inspected_row(stream, row)
