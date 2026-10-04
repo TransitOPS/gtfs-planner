@@ -515,6 +515,111 @@ defmodule GtfsPlanner.Gtfs.Fares do
     end)
   end
 
+  @price_cell_limit 50
+
+  @typedoc "One stored price, named by the three values that key it and described by recorded structure."
+  @type price_cell :: %{
+          fare_product_id: String.t(),
+          fare_name: String.t(),
+          kind: String.t(),
+          rider_category_id: String.t() | nil,
+          rider_name: String.t() | nil,
+          fare_media_id: String.t() | nil,
+          medium_name: String.t() | nil,
+          medium_type: integer() | nil,
+          amount: Decimal.t() | nil,
+          currency: String.t()
+        }
+
+  @doc """
+  The stored prices of a managed version, each with the structure that says what
+  it is: the fare's name and recorded kind, the rider category and the payment
+  medium with its recorded type. Nothing is inferred from a name, so a product
+  called "Cash single ride" sold on an app medium is listed with the app's type.
+
+  Options: `:search` keeps the cells whose product ID, fare name, rider name or
+  medium name contains the text (case-insensitive), `:kind` keeps one recorded
+  kind (`"single"`, `"pass"`, `"transfer_fee"`) and `:limit` bounds the list to
+  1..#{@price_cell_limit} cells (the default and the maximum). `total` is the
+  number of cells the filters match, so a bounded list never reads as complete.
+  Cells are ordered by fare name, product ID, rider and medium.
+
+  The read is scoped by organization and version together. A version that is not
+  managed answers `{:error, :unmanaged}`: its prices are imported files the
+  editor does not write.
+  """
+  @spec list_price_cells(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, %{currency: String.t(), total: non_neg_integer(), cells: [price_cell()]}}
+          | {:error, :unmanaged}
+  def list_price_cells(organization_id, gtfs_version_id, opts \\ [])
+      when is_binary(organization_id) and is_binary(gtfs_version_id) and is_list(opts) do
+    if managed?(organization_id, gtfs_version_id) do
+      products = version_products(organization_id, gtfs_version_id)
+      details = detail_index(organization_id, gtfs_version_id)
+      media = FareMedia |> scoped(organization_id, gtfs_version_id) |> Repo.all()
+      riders = RiderCategory |> scoped(organization_id, gtfs_version_id) |> Repo.all()
+      media = Map.new(media, &{&1.fare_media_id, &1})
+      riders = Map.new(riders, &{&1.rider_category_id, &1})
+
+      kinds =
+        products
+        |> Enum.group_by(&fare_name/1)
+        |> Map.new(fn {name, group} ->
+          detail = group |> Enum.map(&Map.get(details, &1.fare_product_id)) |> Enum.find(& &1)
+          {name, kind(detail, group)}
+        end)
+
+      code = currency(products)
+
+      cells =
+        products
+        |> Enum.map(&price_cell(&1, kinds, media, riders, code))
+        |> Enum.filter(&price_cell_matches?(&1, opts[:search], opts[:kind]))
+        |> Enum.sort_by(
+          &{&1.fare_name, &1.fare_product_id, &1.rider_category_id || "", &1.fare_media_id || ""}
+        )
+
+      limit = opts |> Keyword.get(:limit, @price_cell_limit) |> max(1) |> min(@price_cell_limit)
+
+      {:ok, %{currency: code, total: length(cells), cells: Enum.take(cells, limit)}}
+    else
+      {:error, :unmanaged}
+    end
+  end
+
+  defp price_cell(product, kinds, media, riders, code) do
+    name = fare_name(product)
+    medium = Map.get(media, product.fare_media_id)
+    rider = Map.get(riders, product.rider_category_id)
+
+    %{
+      fare_product_id: product.fare_product_id,
+      fare_name: name,
+      kind: Map.fetch!(kinds, name),
+      rider_category_id: product.rider_category_id,
+      rider_name: rider && rider.rider_category_name,
+      fare_media_id: product.fare_media_id,
+      medium_name: medium && medium.fare_media_name,
+      medium_type: medium && medium.fare_media_type,
+      amount: product.amount,
+      currency: product.currency || code
+    }
+  end
+
+  defp price_cell_matches?(cell, search, kind) do
+    (is_nil(kind) or cell.kind == kind) and
+      (is_nil(search) or search == "" or
+         Enum.any?(
+           [cell.fare_product_id, cell.fare_name, cell.rider_name, cell.medium_name],
+           &price_cell_contains?(&1, search)
+         ))
+  end
+
+  defp price_cell_contains?(nil, _search), do: false
+
+  defp price_cell_contains?(value, search),
+    do: String.contains?(String.downcase(value), String.downcase(search))
+
   @doc """
   The price changes a Change prices dialog is showing, computed and not written
   (AC-15).

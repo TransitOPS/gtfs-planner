@@ -9,7 +9,9 @@ defmodule GtfsPlanner.FaresFixtures do
   `public/*` are trimmed excerpts of published agency feeds.
   """
 
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Fares
+  alias GtfsPlanner.Gtfs.Fares.Conversion
   alias GtfsPlanner.Gtfs.Import.Failure
   alias GtfsPlanner.Gtfs.Import.Result
   alias GtfsPlanner.Support.StagedImport
@@ -52,6 +54,33 @@ defmodule GtfsPlanner.FaresFixtures do
         raise "fare fixture #{fixture_dir} did not import: #{failure.reason_code}" <>
                 " in #{failure.failed_file}#{row(failure)}"
     end
+  end
+
+  @doc "The scope the fare writers take: the version pair and the editor's audit context."
+  def writer_scope(organization, version, actor) do
+    %{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      audit: %AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        station_stop_id: nil,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+    }
+  end
+
+  @doc """
+  Imports `north_coast_v2` into `version` and converts it to managed fares through
+  the production conversion, as the browser seed does. Returns the writer scope.
+  """
+  def managed!(organization, version, actor) do
+    import!(organization, version, "north_coast_v2")
+    scope = writer_scope(organization, version, actor)
+    {:ok, plan} = Conversion.preview(organization.id, version.id)
+    {:ok, _converted} = Conversion.apply(scope, plan.fingerprint, [])
+    scope
   end
 
   def save_fare(scope, params),
