@@ -108,6 +108,15 @@ defmodule GtfsPlanner.Agents.PackTurn do
     end)
   end
 
+  @doc "Queues one provider failure with `status`, so the turn settles as failed."
+  def expect_failure(status \\ 500) do
+    Req.Test.expect(@owner, 1, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(status, Jason.encode!(%{"error" => "provider unavailable"}))
+    end)
+  end
+
   @doc "A provider response that finishes the turn with `content`."
   def text_reply(content) do
     %{
