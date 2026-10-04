@@ -34,6 +34,14 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
   `source: :unknown`, listed in `unknown_travel`, so a planner sees the gap
   instead of a leg that silently costs nothing.
 
+  Every segment names the place it happens at, in `from`/`to`: a travel leg its
+  two ends, a report the place its own piece starts, a break the place the piece
+  before it ended, and the sign-off the garage a closing travel returned to, or
+  the place the last piece ended when there was no travel. The TODS export writes
+  a location for every event, and `run_events.txt` marks both location fields
+  required, so a report or a sign-off with no place would be a row no consumer
+  could accept.
+
   ## Where a break sits
 
   A break is the idle time between two pieces, measured from the end of the
@@ -329,15 +337,15 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
 
   defp segments(pieces, reports, travels, breaks, last_index, sign_off_allowance) do
     {body, _last} =
-      Enum.reduce(pieces, {[], nil}, fn {piece, index}, {acc, _previous} ->
+      Enum.reduce(pieces, {[], nil}, fn {piece, index}, {acc, previous} ->
         acc =
           acc
           |> push_travel(travel_for_leg(travels, :travel_in, index))
-          |> push_break(Enum.find(breaks, &(&1.to_piece == index)))
+          |> push_break(Enum.find(breaks, &(&1.to_piece == index)), previous, piece)
           |> push_travels(
             Enum.filter(travels, &(&1.kind == :between and &1.piece_index == index))
           )
-          |> push_report(report(index, reports))
+          |> push_report(report(index, reports), piece)
           |> push_piece(piece, index)
 
         {acc, piece}
@@ -346,6 +354,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
     out = travel_for_leg(travels, :travel_out, last_index)
     {last, _} = List.last(pieces)
     sign_off_start = last.end_secs + travel_for(travels, :travel_out, last_index)
+    sign_off_ref = sign_off_ref(out, last)
 
     body
     |> push_travel(out)
@@ -354,14 +363,20 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
         kind: :sign_off,
         start_secs: sign_off_start,
         end_secs: sign_off_start + sign_off_allowance,
-        from: nil,
-        to: nil,
+        from: sign_off_ref,
+        to: sign_off_ref,
         source: nil,
         piece_index: last_index,
         paid?: true
       }
     ])
   end
+
+  # The sign-off happens where the run leaves the operator: the garage a travel
+  # out returned to, or the place the last piece ended when no travel was
+  # charged.
+  defp sign_off_ref(%{to: to}, _last), do: to
+  defp sign_off_ref(nil, last), do: last.end_ref
 
   defp travel_for_leg(travels, kind, piece_index) do
     Enum.find(travels, &(&1.kind == kind and &1.piece_index == piece_index))
@@ -372,17 +387,19 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
 
   defp push_travels(acc, legs), do: Enum.reduce(legs, acc, &push_travel(&2, &1))
 
-  defp push_report(acc, nil), do: acc
+  defp push_report(acc, nil, _piece), do: acc
 
-  defp push_report(acc, entry) do
+  # A report ends exactly where its piece starts, so that place is also where the
+  # operator reported.
+  defp push_report(acc, entry, piece) do
     acc ++
       [
         %{
           kind: :report,
           start_secs: entry.start_secs,
           end_secs: entry.end_secs,
-          from: nil,
-          to: nil,
+          from: piece.start_ref,
+          to: piece.start_ref,
           source: nil,
           piece_index: entry.piece_index,
           paid?: true
@@ -406,9 +423,11 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
       ]
   end
 
-  defp push_break(acc, nil), do: acc
+  defp push_break(acc, nil, _previous, _piece), do: acc
 
-  defp push_break(acc, entry) do
+  defp push_break(acc, entry, previous, piece) do
+    ref = break_ref(previous, piece)
+
     acc ++
       [
         %{
@@ -418,14 +437,20 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
           # misreport the day.
           start_secs: entry.start_secs,
           end_secs: entry.end_secs,
-          from: nil,
-          to: nil,
+          from: ref,
+          to: ref,
           source: nil,
           piece_index: entry.to_piece,
           paid?: entry.paid?
         }
       ]
   end
+
+  # A break is idle time where the previous piece left the operator; the travel
+  # between the pieces is charged after it. The first piece of a run has nothing
+  # before it, so it falls back to where it starts.
+  defp break_ref(nil, piece), do: piece.start_ref
+  defp break_ref(previous, _piece), do: previous.end_ref
 
   defp to_segment(leg) do
     %{
