@@ -109,12 +109,16 @@ async function openPattern(page, versionId, routeId, patternId, task) {
 
 let versionId;
 
-test.beforeEach(async ({ page }) => {
+// The headsign cases sign in as the pattern editor of the Browser E2E version; the
+// stop cases sign in as the stops-map editor of its own version. Each case signs in
+// for itself, because one browser context cannot hold both users.
+async function signInHeadsignEditor(page) {
   await logInAs(page, EDITOR_USER);
   versionId = await versionIdFor(page);
-});
+}
 
 test("headsigns panel", async ({ page }) => {
+  await signInHeadsignEditor(page);
   test.setTimeout(90_000);
 
   for (const [label, viewport] of [
@@ -212,6 +216,7 @@ async function prepareAndReview(page) {
 }
 
 test("headsigns journey: prepare, review, save and undo", async ({ page }) => {
+  await signInHeadsignEditor(page);
   test.setTimeout(120_000);
   await page.setViewportSize(DESKTOP);
 
@@ -261,6 +266,7 @@ test("headsigns journey: prepare, review, save and undo", async ({ page }) => {
 });
 
 test("headsigns journey: an edited selection leaves the card unconfirmed", async ({ page }) => {
+  await signInHeadsignEditor(page);
   test.setTimeout(120_000);
   await page.setViewportSize(DESKTOP);
 
@@ -289,6 +295,7 @@ test("headsigns journey: an edited selection leaves the card unconfirmed", async
 test("headsigns journey: the keyboard reaches the handoff and focus returns to the card", async ({
   page,
 }) => {
+  await signInHeadsignEditor(page);
   test.setTimeout(120_000);
   await page.setViewportSize(DESKTOP);
 
@@ -310,4 +317,82 @@ test("headsigns journey: the keyboard reaches the handoff and focus returns to t
   await openPattern(page, versionId, ...HS6, "details");
   await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
   await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
+});
+
+// -- stop helpers ---------------------------------------------------------------
+
+const STOPS_EDITOR = {
+  email: "stops-map@gtfs-planner.test",
+  password: "StopsMapBrowser1",
+};
+
+const STOPS_VERSION = "Browser Stops Map Version";
+
+// A 1x1 transparent PNG, so the map never depends on a tile plan or the network.
+const BLANK_TILE = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+let stopsVersionId;
+
+async function signInStopsEditor(page) {
+  await page.route("**/map/tiles/**", (route) =>
+    route.fulfill({ status: 200, contentType: "image/png", body: BLANK_TILE }),
+  );
+  await logInAs(page, STOPS_EDITOR);
+  stopsVersionId = await versionIdFor(page, STOPS_VERSION);
+}
+
+async function openStopsMap(page, query = "") {
+  await page.goto(`/gtfs/${stopsVersionId}/stops/map${query}`);
+  await waitForLiveView(page);
+  await expect(page.locator("#stops-map-page")).toBeAttached();
+}
+
+test("stop impact panel", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signInStopsEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+
+    // No stop is open, so there is no context and no helper.
+    await openStopsMap(page);
+    await expect(page.locator("#stops-map-panel")).toBeAttached();
+    await expect(page.locator("#agent-helper-open")).toHaveCount(0);
+
+    // An open stop offers the helper, closed.
+    await openStopsMap(page, "?stop=1434");
+    await expect(page.locator("#stops-map-edit-panel")).toBeAttached();
+    const open = page.locator("#agent-helper-open");
+    await expect(open).toBeVisible();
+    await expect(open).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    expect(await fitsViewport(page)).toBe(true);
+    await capture(page, "stop-impact-panel", `closed-${label}`);
+
+    // Opening shows first-use copy and puts focus in the composer.
+    await open.click();
+    const panel = page.locator("#agent-panel");
+    await expect(panel).toBeVisible();
+    await expect(open).toHaveAttribute("aria-expanded", "true");
+    await expect(panel).toContainText("Stop impact helper");
+    await expect(panel).toContainText("Stop 1434");
+    await expect(panel.locator("#agent-example-1")).toBeVisible();
+    expect(await focusedId(page)).toBe("agent-composer-input");
+    expect(await fitsViewport(page)).toBe(true);
+
+    // The native edit form is still usable with the helper open.
+    await expect(page.locator("#stops-map-edit-name")).toBeEnabled();
+    await capture(page, "stop-impact-panel", `open-${label}`);
+
+    // Closing returns focus to the button that opened it.
+    await page.locator("#agent-panel-close").click();
+    await expect(panel).toHaveCount(0);
+    expect(await focusedId(page)).toBe("agent-helper-open");
+  }
 });
