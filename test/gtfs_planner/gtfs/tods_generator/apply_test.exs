@@ -39,13 +39,13 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
 
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Blocking
-  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.BlockAttribute
+  alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.ReliefPoint
   alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
+  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TodsGeneration
   alias GtfsPlanner.Gtfs.Trip

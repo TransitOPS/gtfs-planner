@@ -737,19 +737,23 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
   defp proposed_context(context, blocks) do
     attributes =
       Enum.reduce(blocks, context.attributes, fn block, attributes ->
-        if is_nil(Context.resolve_block(context, block.block_id, block.trips).conflict) do
-          Enum.reduce(block.trips, attributes, fn trip, attributes ->
-            Map.put(attributes, {trip.service_id, block.block_id}, %{
-              garage_id: block.garage_id,
-              vehicle_type_id: block.vehicle_type_id
-            })
-          end)
-        else
-          attributes
-        end
+        proposed_block_attributes(context, block, attributes)
       end)
 
     %{context | attributes: attributes}
+  end
+
+  defp proposed_block_attributes(context, block, attributes) do
+    if is_nil(Context.resolve_block(context, block.block_id, block.trips).conflict) do
+      Enum.reduce(block.trips, attributes, fn trip, attributes ->
+        Map.put(attributes, {trip.service_id, block.block_id}, %{
+          garage_id: block.garage_id,
+          vehicle_type_id: block.vehicle_type_id
+        })
+      end)
+    else
+      attributes
+    end
   end
 
   # One existing block as the day load would build it: its sequence, its
