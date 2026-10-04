@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Model
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.FareZones
   alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
   alias GtfsPlanner.Agents.Packs.StopImpact
@@ -466,6 +467,75 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted fare zone replies" do
+    @user_zone "Put unzoned Route 1 stops in the Coast zone except Newport Transit Center"
+    @zone_selection %{"route_ids" => ["1"], "only_unzoned" => true, "exclude_stop_ids" => ["NTC"]}
+
+    test "the unzoned Route 1 request asks for the scripted selection" do
+      body = post([system(FareZones.skill()), user(@user_zone)])
+
+      assert {arguments, "query_zone_targets"} = tool_call(body)
+      assert Jason.decode!(arguments) == @zone_selection
+    end
+
+    test "the query result prepares the same selection for zone CST" do
+      body = post(zone_conversation(["query_zone_targets"]))
+
+      assert {arguments, "prepare_zone_assignment"} = tool_call(body)
+      assert Jason.decode!(arguments) == Map.put(@zone_selection, "zone_id", "CST")
+    end
+
+    test "the prepare result gets the prepared sentence, and a refusal says nothing was prepared" do
+      prepared =
+        final_text(post(zone_conversation(["query_zone_targets", "prepare_zone_assignment"])))
+
+      assert prepared =~ "I prepared the zone assignment."
+      refute prepared =~ ~r/was saved|I saved/
+
+      refused =
+        zone_conversation(["query_zone_targets", "prepare_zone_assignment"])
+        |> List.replace_at(
+          -1,
+          tool_result("call_prepare_zone_assignment", %{"error" => "No stops match."})
+        )
+        |> post()
+        |> final_text()
+
+      assert refused =~ "I could not prepare that assignment."
+    end
+
+    test "a Beach request searches for Beach and then asks which stop" do
+      messages = [system(FareZones.skill()), user("Which zone is Beach in?")]
+
+      assert {arguments, "find_stops"} = tool_call(post(messages))
+      assert Jason.decode!(arguments) == %{"query" => "Beach"}
+
+      answered =
+        messages ++
+          [
+            assistant_tool_call("call_find_stops", "find_stops", %{"query" => "Beach"}),
+            tool_result("call_find_stops", %{"stops" => [], "total" => 2})
+          ]
+
+      assert final_text(post(answered)) =~ "Which one do you mean?"
+    end
+
+    test "other fare zone messages get the helper's sentence and other scripts are unchanged" do
+      assert final_text(post([system(FareZones.skill()), user("Hello")])) =~
+               "I can find stops by route"
+
+      # The same words under the Calendars skill still get its out-of-scope sentence.
+      assert final_text(post([system(Calendars.skill()), user(@user_zone)])) =~
+               "That isn't available in Calendars"
+    end
+
+    test "the fare zone marker is the pack's own heading" do
+      assert FareZones.skill() =~ "# Fare zone helper"
+      refute Alerts.skill() =~ "Fare zone helper"
+      refute Calendars.skill() =~ "Fare zone helper"
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -613,6 +683,26 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
       assistant_tool_call("call_get_export_comparison", "get_export_comparison", %{}),
       tool_result("call_get_export_comparison", result)
     ]
+  end
+
+  # The messages the fare zone turn loop has sent after each answered tool.
+  defp zone_conversation(answered_tools) do
+    selection = %{"route_ids" => ["1"], "only_unzoned" => true, "exclude_stop_ids" => ["NTC"]}
+
+    calls =
+      Enum.flat_map(answered_tools, fn name ->
+        arguments =
+          if name == "query_zone_targets",
+            do: selection,
+            else: Map.put(selection, "zone_id", "CST")
+
+        [
+          assistant_tool_call("call_#{name}", name, arguments),
+          tool_result("call_#{name}", %{"selected_count" => 2})
+        ]
+      end)
+
+    [system(FareZones.skill()), user(@user_zone)] ++ calls
   end
 
   defp assistant_tool_call(id, name, arguments) do

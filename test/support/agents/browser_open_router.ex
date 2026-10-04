@@ -194,6 +194,21 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       a sentence that says nothing was prepared;
     * any other message gets the generic stop impact sentence.
 
+  The Fare zone script drives the zones journey on the "Browser Fare Assistance
+  Version" (`test/support/browser_seed.exs`), where the unzoned Route 1 stops are
+  DEPOE, AGATE and NTC:
+
+    * a `"user"` message mentioning Route 1 gets a `query_zone_targets` call for
+      the unzoned stops of route `1` except `NTC`;
+    * the `query_zone_targets` result gets `prepare_zone_assignment` with the same
+      selection and `zone_id` `CST`;
+    * the `prepare_zone_assignment` result gets the prepared sentence, which says
+      "prepared" and never that anything was saved, unless the result is a tool error, which gets
+      a sentence that says nothing was prepared;
+    * a `"user"` message mentioning Beach gets a `find_stops` call for `Beach`,
+      and its result gets the question of which of the two stops is meant;
+    * any other message gets the helper's generic sentence.
+
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
 
@@ -348,6 +363,15 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @comparison_marker "Comparison helper"
   @comparison_generic "I can explain the comparison shown on this page."
 
+  # The Fare zone skill's own heading, and the sentences the fare zone script
+  # answers with. The prepared sentence keeps to the skill's "prepared, never
+  # saved" rule.
+  @fare_zones_marker "Fare zone helper"
+  @fare_zones_prepared "I prepared the zone assignment. Nothing is saved yet. Review the stops in the zone review."
+  @fare_zones_not_prepared "I could not prepare that assignment. Tell me which routes, stops and zone you mean."
+  @fare_zones_which_stop "Two stops match Beach: Nye Beach and Agate Beach. Which one do you mean?"
+  @fare_zones_generic "I can find stops by route, show their fare zones and prepare a zone assignment for you to review."
+
   @impl Plug
   def init(opts), do: opts
 
@@ -369,6 +393,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     cond do
       system_marked?(messages, @in_seat_marker) -> in_seat_reply(messages)
       system_marked?(messages, @alerts_marker) -> alerts_reply(messages)
+      system_marked?(messages, @fare_zones_marker) -> fare_zones_reply(messages)
       system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
       system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
       system_marked?(messages, @stop_text_marker) -> stop_text_reply(messages)
@@ -1285,6 +1310,57 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
       Map.new(fields, fn {_stop_id, field, value} -> {field, value} end)
       |> Map.put("stop_id", stop_id)
     end)
+  end
+
+  defp fare_zones_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        fare_zones_user_reply(content)
+
+      %{"role" => "tool"} = tool_message ->
+        fare_zones_tool_reply(messages, tool_message)
+
+      _other ->
+        text_reply(@fare_zones_generic)
+    end
+  end
+
+  defp fare_zones_user_reply(content) do
+    cond do
+      content =~ ~r/beach/i -> tool_calls_reply("find_stops", %{"query" => "Beach"})
+      content =~ ~r/route\s*1\b/i -> tool_calls_reply("query_zone_targets", zone_selection())
+      true -> text_reply(@fare_zones_generic)
+    end
+  end
+
+  defp fare_zones_tool_reply(messages, %{"tool_call_id" => tool_call_id} = tool_message) do
+    case answered_tool(messages, tool_call_id) do
+      "query_zone_targets" ->
+        if tool_error?(tool_message),
+          do: text_reply(@fare_zones_not_prepared),
+          else:
+            tool_calls_reply(
+              "prepare_zone_assignment",
+              Map.put(zone_selection(), "zone_id", "CST")
+            )
+
+      "prepare_zone_assignment" ->
+        if tool_error?(tool_message),
+          do: text_reply(@fare_zones_not_prepared),
+          else: text_reply(@fare_zones_prepared)
+
+      "find_stops" ->
+        text_reply(@fare_zones_which_stop)
+
+      _other ->
+        text_reply(@fare_zones_generic)
+    end
+  end
+
+  # The unzoned Route 1 stops except Newport Transit Center. Route 1 serves DEPOE,
+  # AGATE, NTC and LCTC; LCTC is already in CST, so the selection is DEPOE and AGATE.
+  defp zone_selection do
+    %{"route_ids" => ["1"], "only_unzoned" => true, "exclude_stop_ids" => ["NTC"]}
   end
 
   defp alerts_reply(messages) do
