@@ -419,6 +419,224 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   defp impact_reference(item, kind),
     do: %{key: item.key, label: item.label, kind: kind, count: item.count}
 
+  # The four text fields a batch may change, and the batch ceiling. Both are
+  # engineering bounds of the helper that prepares batches, not editor limits.
+  @metadata_fields ~w(stop_name stop_code stop_desc stop_url)
+  @max_batch_rows 100
+  @warning_others 3
+
+  @doc """
+  Reviews a batch of stop text changes without writing or locking anything.
+
+  `rows` is a list of `%{stop_uuid: uuid, changes: %{field => value}}` where `field`
+  is one of `stop_name`, `stop_code`, `stop_desc` and `stop_url` and `value` is a
+  nonblank string. Each row is built through `Stop.editor_changeset/2`, so the native
+  trimming and rules apply: a blank name on a located stop, a missing coordinate pair
+  and a `stop_url` that is not `http` or `https` are the row's `errors`, and the batch
+  is `valid?: false`. Nothing else about a stop can be named: IDs, coordinates,
+  accessibility, parent and zone are refused as `:invalid_input`, as are an empty
+  batch, a duplicate or malformed UUID, an empty `changes` and a blank or non-string
+  value. More than 100 rows is `:too_many`. A UUID outside the audit's organization and
+  version is `:not_found` for the whole call.
+
+  Answers `{:ok, review}`:
+
+      %{rows: [%{stop_uuid, stop_id, location_type, old: map, new: map, changed_fields:,
+                 errors: %{field => [message]}, status: :changed | :unchanged | :invalid}],
+        warnings: [%{kind: :duplicate_name, stop_uuid, name, others: [stop_id]}],
+        valid?: boolean, changed: integer, unchanged: integer, fingerprint: String.t()}
+
+  Rows are sorted by `stop_id`. `fingerprint` covers each stop's UUID, `updated_at`,
+  type, current and proposed values, so a rename inside the same second as the review
+  still changes it; `apply_metadata_batch/3` recomputes it under row locks.
+  """
+  @spec review_metadata_batch([map()], AuditContext.t()) ::
+          {:ok, map()} | {:error, :forbidden | :invalid_input | :too_many | :not_found}
+  def review_metadata_batch(rows, %AuditContext{} = audit) do
+    with {:ok, rows} <- checked_metadata_rows(rows),
+         :ok <- impact_authorization(audit),
+         {:ok, stops} <- scoped_metadata_stops(rows, audit) do
+      {:ok, build_metadata_review(rows, stops, audit)}
+    end
+  end
+
+  # Input is validated before anything is read, so a malformed batch costs no query.
+  defp checked_metadata_rows([]), do: {:error, :invalid_input}
+
+  defp checked_metadata_rows(rows) when is_list(rows) and length(rows) > @max_batch_rows,
+    do: {:error, :too_many}
+
+  defp checked_metadata_rows(rows) when is_list(rows) do
+    checked = Enum.map(rows, &checked_metadata_row/1)
+
+    with false <- Enum.any?(checked, &(&1 == :error)),
+         rows = Enum.map(checked, fn {:ok, row} -> row end),
+         true <- distinct?(Enum.map(rows, & &1.stop_uuid)) do
+      {:ok, rows}
+    else
+      _invalid -> {:error, :invalid_input}
+    end
+  end
+
+  defp checked_metadata_rows(_rows), do: {:error, :invalid_input}
+
+  defp checked_metadata_row(%{stop_uuid: uuid, changes: changes}) when is_binary(uuid) do
+    with {:ok, uuid} <- Ecto.UUID.cast(uuid),
+         true <- is_map(changes) and map_size(changes) > 0,
+         true <- Enum.all?(changes, &metadata_change?/1) do
+      {:ok, %{stop_uuid: uuid, changes: changes}}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp checked_metadata_row(_row), do: :error
+
+  defp metadata_change?({field, value}),
+    do: field in @metadata_fields and is_binary(value) and String.trim(value) != ""
+
+  defp distinct?(values), do: length(values) == length(Enum.uniq(values))
+
+  defp scoped_metadata_stops(rows, audit) do
+    uuids = Enum.map(rows, & &1.stop_uuid)
+
+    stops =
+      Repo.all(
+        from(stop in Stop,
+          where:
+            stop.id in ^uuids and stop.organization_id == ^audit.organization_id and
+              stop.gtfs_version_id == ^audit.gtfs_version_id
+        )
+      )
+
+    if length(stops) == length(uuids), do: {:ok, stops}, else: {:error, :not_found}
+  end
+
+  # The one place a batch's rows are computed, so the review the editor sees and the
+  # recomputation `apply_metadata_batch/3` makes under locks cannot disagree.
+  defp build_metadata_review(rows, stops, audit) do
+    stops_by_uuid = Map.new(stops, &{&1.id, &1})
+
+    built =
+      rows
+      |> Enum.map(&metadata_row(&1, Map.fetch!(stops_by_uuid, &1.stop_uuid)))
+      |> Enum.sort_by(& &1.stop_id)
+
+    %{
+      rows: Enum.map(built, &Map.drop(&1, [:changeset, :requested, :updated_at])),
+      warnings: duplicate_name_warnings(built, audit),
+      valid?: Enum.all?(built, &(&1.status != :invalid)),
+      changed: Enum.count(built, &(&1.status == :changed)),
+      unchanged: Enum.count(built, &(&1.status == :unchanged)),
+      fingerprint: metadata_fingerprint(built, audit)
+    }
+  end
+
+  defp metadata_row(%{stop_uuid: uuid, changes: changes}, stop) do
+    changeset = Stop.editor_changeset(stop, changes)
+    new = metadata_values(Ecto.Changeset.apply_changes(changeset))
+    old = metadata_values(stop)
+
+    changed_fields =
+      for field <- @metadata_fields,
+          Map.has_key?(changes, field),
+          new[field] != old[field],
+          do: field
+
+    %{
+      stop_uuid: uuid,
+      stop_id: stop.stop_id,
+      location_type: stop.location_type,
+      old: old,
+      new: new,
+      changed_fields: changed_fields,
+      errors: changeset_messages(changeset),
+      status: metadata_status(changeset.valid?, changed_fields),
+      changeset: changeset,
+      requested: Map.keys(changes),
+      updated_at: stop.updated_at
+    }
+  end
+
+  defp metadata_values(stop),
+    do: Map.new(@metadata_fields, &{&1, Map.fetch!(stop, String.to_existing_atom(&1))})
+
+  defp metadata_status(false, _changed_fields), do: :invalid
+  defp metadata_status(true, []), do: :unchanged
+  defp metadata_status(true, _changed_fields), do: :changed
+
+  # The command's own messages keyed by field name, as the single-stop editor shows them.
+  defp changeset_messages(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, opts} ->
+      Regex.replace(~r"%{(\w+)}", message, fn _whole, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Map.new(fn {field, messages} -> {Atom.to_string(field), messages} end)
+  end
+
+  # A changed name equal (trimmed, ignoring case) to another stop's name in the
+  # version, or to another reviewed row's name, is a warning and never a merge. A
+  # reviewed stop's own stored name is not "another stop's": a swap must not warn.
+  defp duplicate_name_warnings(rows, audit) do
+    renamed = Enum.filter(rows, &(&1.status == :changed and "stop_name" in &1.changed_fields))
+
+    if renamed == [] do
+      []
+    else
+      reviewed = Enum.map(rows, & &1.stop_uuid)
+      names = renamed |> Enum.map(&name_key(&1.new["stop_name"])) |> Enum.uniq()
+
+      elsewhere =
+        from(stop in Stop,
+          where:
+            stop.organization_id == ^audit.organization_id and
+              stop.gtfs_version_id == ^audit.gtfs_version_id and stop.id not in ^reviewed and
+              fragment("lower(btrim(?))", stop.stop_name) in ^names,
+          select: {stop.stop_id, fragment("lower(btrim(?))", stop.stop_name)}
+        )
+        |> Repo.all()
+        |> Enum.map(fn {stop_id, name} -> {stop_id, name} end)
+
+      siblings = Enum.map(rows, &{&1.stop_id, name_key(&1.new["stop_name"])})
+
+      for row <- renamed,
+          key = name_key(row.new["stop_name"]),
+          others =
+            (elsewhere ++ siblings)
+            |> Enum.filter(fn {stop_id, name} -> name == key and stop_id != row.stop_id end)
+            |> Enum.map(&elem(&1, 0))
+            |> Enum.uniq()
+            |> Enum.sort(),
+          others != [] do
+        %{
+          kind: :duplicate_name,
+          stop_uuid: row.stop_uuid,
+          name: row.new["stop_name"],
+          others: Enum.take(others, @warning_others)
+        }
+      end
+    end
+  end
+
+  defp name_key(name), do: name |> String.trim() |> String.downcase()
+
+  # Hashes content next to the whole-second `updated_at`, as the move and delete
+  # fingerprints do: two saves inside one second are not told apart by the stamp.
+  defp metadata_fingerprint(rows, audit) do
+    digest({
+      audit.organization_id,
+      audit.gtfs_version_id,
+      rows
+      |> Enum.map(fn row ->
+        {row.stop_uuid, row.updated_at, row.location_type, row.old,
+         Map.take(row.new, row.requested)}
+      end)
+      |> Enum.sort()
+    })
+  end
+
   defp build_review(stop, new_point, audit) do
     usage = StopReferences.usage(audit.organization_id, audit.gtfs_version_id, stop)
     distance = StopPlacement.distance(point_of(stop), new_point)
