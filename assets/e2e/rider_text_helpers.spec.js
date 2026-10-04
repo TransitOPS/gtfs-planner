@@ -396,3 +396,111 @@ test("stop impact panel", async ({ page }) => {
     expect(await focusedId(page)).toBe("agent-helper-open");
   }
 });
+
+// -- stop set approval -----------------------------------------------------------
+
+// The approval section sits above a 74-row catalog, so a full-page capture buries it;
+// this captures the section the case is about.
+async function captureSection(page, folder, name) {
+  const dir = resolve(CAPTURE_DIR, folder);
+  mkdirSync(dir, { recursive: true });
+  await page
+    .locator("#stop-set-section")
+    .screenshot({ path: resolve(dir, `${name}.png`), animations: "disabled" });
+}
+
+/** Activates a control the way a keyboard user does: focus it, then press a key. */
+async function activate(locator, key = "Enter") {
+  await locator.focus();
+  await locator.page().keyboard.press(key);
+}
+
+// Reads BROWSER_TXT_A1..A4 on the Browser E2E version and approves a set from them,
+// by keyboard. Nothing is saved: the approval lives in the page.
+test("stop set approval", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signInHeadsignEditor(page);
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/gtfs/${versionId}/stops`);
+    await waitForLiveView(page);
+
+    // Empty: the section is a single closed row and nothing is approved.
+    const toggle = page.locator("#stop-set-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#stop-set-summary")).toContainText("No stops approved");
+    await expect(page.locator("#stop-set-form")).toHaveCount(0);
+    expect(await fitsViewport(page)).toBe(true);
+    await captureSection(page, "stop-set-approval", `empty-${label}`);
+
+    await activate(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#stop-set-refs")).toBeVisible();
+    expect(await fitsViewport(page)).toBe(true);
+    await captureSection(page, "stop-set-approval", `form-${label}`);
+
+    // Too many lines: an inline error, the text kept, focus on the field.
+    const refs = page.locator("#stop-set-refs");
+    const tooMany = Array.from({ length: 101 }, (_, i) => `NOPE${i + 1}`).join("\n");
+    await refs.fill(tooMany);
+    await activate(page.locator("#stop-set-find"));
+    await expect(refs).toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#stop-set-form")).toContainText("Enter up to 100 lines");
+    await expect(refs).toHaveValue(tooMany);
+    await expect.poll(() => focusedId(page)).toBe("stop-set-refs");
+    expect(await fitsViewport(page)).toBe(true);
+    await captureSection(page, "stop-set-approval", `too-many-${label}`);
+
+    // Resolved: a stop ID and a code, one ambiguous name and one unmatched line.
+    await refs.fill("BROWSER_TXT_A4\nTXT-77\nTxt Main St @ Elm\nNo such stop");
+    await activate(page.locator("#stop-set-find"));
+    const resolution = page.locator("#stop-set-resolution");
+    await expect(resolution).toBeVisible();
+    await expect(page.locator("#stop-set-resolution-heading")).toContainText(
+      "2 stops found, 1 line needs a choice, 1 line not found",
+    );
+    await expect(page.locator("#stop-set-resolved li")).toHaveCount(2);
+    await expect(page.locator("#stop-set-resolved")).toContainText("Matched by stop ID");
+    await expect(page.locator("#stop-set-resolved")).toContainText("Matched by code");
+    await expect(page.locator("#stop-set-ambiguity-0 input[type=radio]")).toHaveCount(3);
+    await expect(page.locator("#stop-set-unmatched")).toContainText("No such stop");
+    await expect(page.locator("#stop-set-approve")).toBeDisabled();
+    await expect(page.locator("#stop-set-approve-reason")).toContainText(
+      "Choose a stop or skip 1 line first.",
+    );
+    await expect.poll(() => focusedId(page)).toBe("stop-set-resolution-heading");
+    expect(await fitsViewport(page)).toBe(true);
+    await captureSection(page, "stop-set-approval", `resolved-${label}`);
+
+    // Choosing a candidate by keyboard enables approval.
+    const candidate = page.locator("#stop-set-choice-0-BROWSER_TXT_A3");
+    await candidate.focus();
+    await page.keyboard.press("Space");
+    await expect(candidate).toBeChecked();
+    await expect(page.locator("#stop-set-approve")).toBeEnabled();
+
+    // Approved: three stops in stop ID order, focus on the summary.
+    await activate(page.locator("#stop-set-approve"));
+    await expect(page.locator("#stop-set-summary")).toContainText("3 stops approved");
+    await expect(page.locator("#stop-set-resolution")).toHaveCount(0);
+    expect(
+      await page
+        .locator("#stop-set-list li")
+        .evaluateAll((items) => items.map((item) => item.dataset.stopId)),
+    ).toEqual(["BROWSER_TXT_A1", "BROWSER_TXT_A3", "BROWSER_TXT_A4"]);
+    await expect.poll(() => focusedId(page)).toBe("stop-set-summary");
+    expect(await fitsViewport(page)).toBe(true);
+    await captureSection(page, "stop-set-approval", `approved-${label}`);
+
+    // Clear stops empties the set and returns focus to the section's toggle.
+    await activate(page.locator("#stop-set-clear"));
+    await expect(page.locator("#stop-set-summary")).toContainText("No stops approved");
+    await expect(page.locator("#stop-set-list")).toHaveCount(0);
+    await expect.poll(() => focusedId(page)).toBe("stop-set-toggle");
+  }
+});

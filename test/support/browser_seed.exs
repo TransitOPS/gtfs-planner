@@ -2652,6 +2652,38 @@ case Accounts.register_first_admin(%{
       "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS6 plus BROWSER_HEADSIGNS_20 continuations)"
     )
 
+    # ── Stop text helper approval fixtures ──
+    #
+    # Four stops in the Browser E2E version for the stops catalog's approval form
+    # (rider_text_helpers.spec.js, `stop set approval`). The case only reads them:
+    #   * BROWSER_TXT_A1 "Txt Pine Plaza" carries the unique code TXT-77
+    #   * BROWSER_TXT_A2 and A3 are both named "Txt Main St @ Elm", so that name is
+    #     an ambiguity the editor must settle
+    #   * BROWSER_TXT_A4 "Txt Oak Court" has neither a code nor a duplicate name
+    # The names start with "Txt" so the existing catalog assertions on this version
+    # are not reordered, and the insert fixture does not cast `stop_code`, so the
+    # code is written the way an import writes it.
+    for {stop_id, name} <- [
+          {"BROWSER_TXT_A1", "Txt Pine Plaza"},
+          {"BROWSER_TXT_A2", "Txt Main St @ Elm"},
+          {"BROWSER_TXT_A3", "Txt Main St @ Elm"},
+          {"BROWSER_TXT_A4", "Txt Oak Court"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      if stop_id == "BROWSER_TXT_A1" do
+        {1, _} =
+          from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+          |> Repo.update_all(set: [stop_code: "TXT-77"])
+      end
+    end
+
+    IO.puts("Browser seed: stop text approval stops (BROWSER_TXT_A1..A4)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

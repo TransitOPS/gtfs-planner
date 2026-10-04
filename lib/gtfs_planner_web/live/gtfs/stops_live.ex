@@ -10,15 +10,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopSelection
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.Components.RouteIdentity
+  alias GtfsPlannerWeb.Gtfs.StopTextHelperComponents
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # Constraints a chip can dismiss, by query param.
   @filter_keys ~w(search route_id direction_id wheelchair_boarding)
+
+  # The approved stop set the text helper works inside (spec AC-14); the same
+  # ceiling `StopSelection` puts on the lines of one Find.
+  @max_stop_set 100
 
   @impl true
   def mount(_params, _session, socket) do
@@ -47,6 +53,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:direction_id, nil)
      |> assign(:canonical_patch_identity, nil)
      |> assign(:skeleton_widths, [46, 38, 52, 34, 44, 40, 46, 38, 52])
+     |> assign(:stop_set_open?, false)
+     |> assign(:stop_set_form, stop_set_form(""))
+     |> assign(:stop_set_error, nil)
+     |> assign(:stop_set_notice, nil)
+     |> assign(:stop_set_resolution, nil)
+     |> assign(:stop_set, nil)
      |> stream(:stops, [])
      |> stream(:stops_mobile, [])}
   end
@@ -137,6 +149,139 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("stop_set_toggle", _params, socket) do
+    {:noreply, update(socket, :stop_set_open?, &(not &1))}
+  end
+
+  # Editing the text drops the resolution (it describes other text) but never the
+  # approved set. A change event that leaves the text as it was changes nothing.
+  @impl true
+  def handle_event("stop_set_change", %{"stop_set" => %{"refs" => text}}, socket)
+      when is_binary(text) do
+    if text == socket.assigns.stop_set_form.params["refs"] do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:stop_set_form, stop_set_form(text))
+       |> assign(:stop_set_error, nil)
+       |> assign(:stop_set_notice, nil)
+       |> assign(:stop_set_resolution, nil)}
+    end
+  end
+
+  def handle_event("stop_set_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_set_find", %{"stop_set" => %{"refs" => text}}, socket)
+      when is_binary(text) do
+    lines = String.split(text, ~r/\R/)
+
+    socket =
+      socket
+      |> assign(:stop_set_open?, true)
+      |> assign(:stop_set_form, stop_set_form(text))
+      |> assign(:stop_set_notice, nil)
+
+    result =
+      if Enum.all?(lines, &(String.trim(&1) == "")),
+        do: {:error, :empty},
+        else:
+          StopSelection.resolve(
+            socket.assigns.current_organization.id,
+            socket.assigns.current_gtfs_version.id,
+            lines
+          )
+
+    case result do
+      {:ok, resolution} ->
+        {:noreply,
+         socket
+         |> assign(:stop_set_error, nil)
+         |> assign(:stop_set_resolution, Map.put(resolution, :choices, %{}))
+         |> push_event("focus_scoped_target", %{id: "stop-set-resolution-heading"})}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:stop_set_error, stop_set_error_text(reason))
+         |> assign(:stop_set_resolution, nil)
+         |> push_event("focus_form_error", %{form_id: "stop-set-form"})}
+    end
+  end
+
+  def handle_event("stop_set_find", _params, socket), do: {:noreply, socket}
+
+  # A choice names a candidate by its GTFS stop ID and an ambiguity by its position;
+  # both are checked against the resolution this view holds, so a forged value
+  # selects nothing.
+  @impl true
+  def handle_event("stop_set_choose", %{"ref" => index, "stop" => stop_id}, socket)
+      when is_binary(index) and is_binary(stop_id) do
+    case ambiguity_at(socket.assigns.stop_set_resolution, index) do
+      %{ref: ref, candidates: candidates} ->
+        if Enum.any?(candidates, &(&1.stop_id == stop_id)),
+          do: {:noreply, put_stop_set_choice(socket, ref, stop_id)},
+          else: {:noreply, socket}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("stop_set_choose", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_set_skip", %{"ref" => index}, socket) when is_binary(index) do
+    case ambiguity_at(socket.assigns.stop_set_resolution, index) do
+      %{ref: ref} -> {:noreply, put_stop_set_choice(socket, ref, :skip)}
+      nil -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("stop_set_skip", _params, socket), do: {:noreply, socket}
+
+  # The set is built from the held resolution only, then each stop is read again in
+  # this organization and version, so a stop deleted since the Find is refused.
+  @impl true
+  def handle_event("stop_set_approve", _params, %{assigns: %{stop_set_resolution: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("stop_set_approve", _params, socket) do
+    resolution = socket.assigns.stop_set_resolution
+    undecided = Enum.count(resolution.ambiguous, &(not Map.has_key?(resolution.choices, &1.ref)))
+    selected = selected_stops(resolution)
+
+    cond do
+      undecided > 0 ->
+        {:noreply,
+         refuse_stop_set(
+           socket,
+           "Choose a stop or skip #{Wording.count_noun(undecided, "line")} first."
+         )}
+
+      selected == [] ->
+        {:noreply, refuse_stop_set(socket, "No stop is selected.")}
+
+      length(selected) > @max_stop_set ->
+        {:noreply, refuse_stop_set(socket, "Approve up to #{@max_stop_set} stops at a time.")}
+
+      true ->
+        approve_stop_set(socket, selected)
+    end
+  end
+
+  @impl true
+  def handle_event("stop_set_clear", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:stop_set, nil)
+     |> assign(:stop_set_resolution, nil)
+     |> assign(:stop_set_notice, nil)
+     |> push_event("focus_scoped_target", %{id: "stop-set-toggle"})}
   end
 
   @impl true
@@ -322,6 +467,75 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      )}
   end
 
+  defp stop_set_form(text), do: to_form(%{"refs" => text}, as: :stop_set)
+
+  defp stop_set_error_text(:empty), do: "Enter at least one stop ID, code or name."
+  defp stop_set_error_text(:too_many), do: "Enter up to #{@max_stop_set} lines, one stop each."
+  defp stop_set_error_text(:invalid_input), do: "Keep each line to 200 characters or fewer."
+
+  defp ambiguity_at(%{ambiguous: ambiguous}, index) do
+    case Integer.parse(index) do
+      {position, ""} when position >= 0 -> Enum.at(ambiguous, position)
+      _other -> nil
+    end
+  end
+
+  defp ambiguity_at(nil, _index), do: nil
+
+  defp put_stop_set_choice(socket, ref, choice) do
+    update(socket, :stop_set_resolution, fn resolution ->
+      %{resolution | choices: Map.put(resolution.choices, ref, choice)}
+    end)
+  end
+
+  # Resolved matches plus the chosen candidates, each stop once, in stop ID order.
+  defp selected_stops(%{resolved: resolved, ambiguous: ambiguous, choices: choices}) do
+    chosen =
+      Enum.flat_map(ambiguous, fn %{ref: ref, candidates: candidates} ->
+        case Map.get(choices, ref) do
+          stop_id when is_binary(stop_id) -> Enum.filter(candidates, &(&1.stop_id == stop_id))
+          _skipped_or_open -> []
+        end
+      end)
+
+    (Enum.map(resolved, & &1.stop) ++ chosen)
+    |> Enum.uniq_by(& &1.uuid)
+    |> Enum.sort_by(& &1.stop_id)
+  end
+
+  defp approve_stop_set(socket, selected) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    # Up to 100 point reads on a rare action; one `IN` query is the upgrade path.
+    current = Enum.map(selected, &Gtfs.get_stop_by_id(organization_id, gtfs_version_id, &1.uuid))
+
+    if Enum.any?(current, &is_nil/1) do
+      {:noreply,
+       socket
+       |> assign(:stop_set_resolution, nil)
+       |> refuse_stop_set("A selected stop no longer exists. Find stops again.")}
+    else
+      stops =
+        current
+        |> Enum.map(&%{uuid: &1.id, stop_id: &1.stop_id, stop_name: &1.stop_name})
+        |> Enum.sort_by(& &1.stop_id)
+
+      {:noreply,
+       socket
+       |> assign(:stop_set, stops)
+       |> assign(:stop_set_resolution, nil)
+       |> assign(:stop_set_notice, nil)
+       |> push_event("focus_scoped_target", %{id: "stop-set-summary"})}
+    end
+  end
+
+  defp refuse_stop_set(socket, message) do
+    socket
+    |> assign(:stop_set_notice, message)
+    |> push_event("focus_scoped_target", %{id: "stop-set-notice"})
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -381,6 +595,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           Add stop opens the map, because a stop's place on the street is the first thing to get
           right.
         </p>
+
+        <StopTextHelperComponents.stop_set_section
+          :if={not first_use_empty?(assigns)}
+          open?={@stop_set_open?}
+          form={@stop_set_form}
+          error={@stop_set_error}
+          notice={@stop_set_notice}
+          resolution={@stop_set_resolution}
+          stop_set={@stop_set}
+        />
 
         <%!-- Route lookup failed: the stops still load, so the warning sits above
                the card and names what is off. --%>
