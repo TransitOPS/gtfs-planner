@@ -26,7 +26,7 @@ defmodule GtfsPlanner.Agents do
   cap) and `GtfsPlanner.Agents.TurnSupervisor`, which bounds the eight active
   turns of AC-30. Session ids are
   `{user_id, organization_id, gtfs_version_id, pack_id, identity,
-  `approved_digest, subject_id}`, so a second tab on the same route shares the
+  approved_digest, subject_id}`, so a second tab on the same route shares the
   conversation while the same user on another route never does (INV-1).
   `subject_id` is `nil` for a pack with no subject record. The key also carries
   the context digest, which covers the approved extension and any admitted source
