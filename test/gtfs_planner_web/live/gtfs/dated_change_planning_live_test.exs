@@ -7,7 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
   rendered controls by their ids: `#trip-select-*` for the selection,
   `#dated-change-form` and `#dated-change-accept` for the intent,
   `#dated-change-analyze` and `#dated-change-refresh` for the native read,
-  `#schedule-helper-mode` for the host's own helper switch. No assign is
+  `#schedule-helper-mode-*` for the host's own helper switch. No assign is
   injected and no private function is called, so the only path exercised is
   `live/2` -> `handle_event/3` -> the supervised task -> `DatedChangePlan.prepare/2`
   and `load/2` -> the real `Repo` snapshot -> the report the page renders. A
@@ -362,14 +362,12 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
       await_plan(view)
       assert has_element?(view, "#dated-change-totals")
 
-      # The panel is the surface that carries a refusal, so it is open to read
-      # one; the forged id is then posted the way a tampered client would.
-      view |> element("#agent-helper-open") |> render_click()
-      render_click(view, "helper_pack", %{"pack" => "connections"})
+      # The page offers only the helpers in its own table, so an id outside it
+      # is ignored the way a tampered client would post one.
+      render_click(view, "schedule_helper_mode", %{"mode" => "transfers"})
 
-      # The panel refused it, and nothing this page owns changed: the report, the
-      # draft and the selection are exactly as they were.
-      assert has_element?(view, "#agent-notice")
+      # Nothing this page owns changed: the report, the draft and the selection
+      # are exactly as they were.
       assert has_element?(view, "#dated-change-totals")
       assert date_rows(view) == @window_dates
     end
@@ -377,9 +375,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
     test "only the helpers this host declares are offered", context do
       view = schedules_view(context)
 
-      assert has_element?(view, "#schedule-helper-mode input[value=service_queries]")
-      assert has_element?(view, "#schedule-helper-mode input[value=dated_changes]")
-      refute has_element?(view, "#schedule-helper-mode input[value=connections]")
+      assert has_element?(view, "#schedule-helper-mode-service_queries")
+      assert has_element?(view, "#schedule-helper-mode-connections")
+      assert has_element?(view, "#schedule-helper-mode-dated_changes")
+      refute has_element?(view, "#schedule-helper-mode-transfers")
     end
 
     test "a second tab sharing the conversation keeps its own session", context do
@@ -500,10 +499,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangePlanningLiveTest do
     view |> element("#trip-select-#{trip.trip_id}") |> render_click()
   end
 
-  # The helper switch is a `phx-change` form of radio inputs, so it is driven
-  # the way a browser drives it: the form posts the chosen value.
+  # The helper switch is one button per helper, driven the way a browser drives
+  # it: a click on the helper's own control.
   defp switch_helper(view, pack_id) do
-    view |> form("#schedule-helper-mode-form", %{"pack" => pack_id}) |> render_change()
+    view |> element("#schedule-helper-mode-#{pack_id}") |> render_click()
   end
 
   defp intent_params(overrides) do

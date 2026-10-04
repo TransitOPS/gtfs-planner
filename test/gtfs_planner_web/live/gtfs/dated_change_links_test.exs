@@ -451,10 +451,10 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeLinksTest do
     view
   end
 
-  # The helper switch is a `phx-change` form of radio inputs, so it is driven
-  # the way a browser drives it: the form posts the chosen value.
+  # The helper switch is one button per helper, driven the way a browser drives
+  # it: a click on the helper's own control.
   defp switch_helper(view, pack_id) do
-    view |> form("#schedule-helper-mode-form", %{"pack" => pack_id}) |> render_change()
+    view |> element("#schedule-helper-mode-#{pack_id}") |> render_click()
   end
 
   # `#dated-change-kind` is a segmented control inside a `phx-change` form, so its

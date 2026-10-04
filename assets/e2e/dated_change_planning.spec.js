@@ -406,9 +406,7 @@ for (const viewport of VIEWPORTS) {
 
       // Switching to the dated-change helper drops the acceptance with the
       // conversation it belonged to, and keeps the typed draft.
-      await page
-        .locator('label[for="schedule-helper-mode-option-dated_changes"]')
-        .click();
+      await page.locator("#schedule-helper-mode-dated_changes").click();
       await expect(page.locator("#dated-change-accepted")).toHaveCount(0);
       await expect(page.locator("#dated-change-plan")).toContainText(
         "No plan yet.",
@@ -416,9 +414,7 @@ for (const viewport of VIEWPORTS) {
       await expect(page.locator("#dated-change-first-date")).toHaveValue(
         INTEND.firstDate,
       );
-      await page
-        .locator('label[for="schedule-helper-mode-option-service_queries"]')
-        .click();
+      await page.locator("#schedule-helper-mode-service_queries").click();
 
       // The unselected trip sharing the calendar is still selectable, so the
       // plan's "other trips on these calendars" count describes a real row.

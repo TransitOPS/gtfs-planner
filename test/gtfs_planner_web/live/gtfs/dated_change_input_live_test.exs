@@ -389,9 +389,13 @@ defmodule GtfsPlannerWeb.Gtfs.DatedChangeInputLiveTest do
 
   ## Helpers
 
+  # The accepted source is the dated helper's input, so the page is opened with
+  # that helper selected: every other helper reads the plain route context.
   defp schedules_view(context) do
     assert {:ok, view, _html} =
              live(context.conn, "/gtfs/#{context.scope.version.id}/routes/#{@route_id}/schedules")
+
+    view |> element("#schedule-helper-mode-dated_changes") |> render_click()
 
     view
   end
