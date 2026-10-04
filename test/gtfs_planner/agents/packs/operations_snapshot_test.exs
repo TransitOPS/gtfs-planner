@@ -670,6 +670,20 @@ defmodule GtfsPlanner.Agents.Packs.OperationsSnapshotTest do
       assert OperationsAssistance.plan(:blocks, native) == {:error, :unavailable}
       assert OperationsAssistance.with_plan(payload, :blocks, native) == {:error, :unavailable}
     end
+
+    test "the two scopes of an unchanged day are two receipts", context do
+      replace_all = suggest_runs!(context)
+      uncovered_only = suggest_runs!(context, :uncovered_only)
+
+      assert replace_all.fingerprint == uncovered_only.fingerprint
+
+      assert {:ok, all_copy} = OperationsAssistance.plan(:runs, replace_all)
+      assert {:ok, uncovered_copy} = OperationsAssistance.plan(:runs, uncovered_only)
+
+      refute all_copy["plan_ref"] == uncovered_copy["plan_ref"]
+      assert {:ok, again} = OperationsAssistance.plan(:runs, replace_all)
+      assert again["plan_ref"] == all_copy["plan_ref"]
+    end
   end
 
   describe "freezing a runs plan that carries an unmeasured leg" do

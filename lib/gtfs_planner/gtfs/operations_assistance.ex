@@ -1173,8 +1173,8 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   day before opening the native drawer.
 
   The refs inside the copy are derived from the section, the day key and the
-  plan's own fingerprint, so two plans of one day type are two receipts and a
-  snapshot can only resolve the plan it actually carries.
+  plan's own fingerprint (and, for runs, its scope), so two plans of one day type
+  are two receipts and a snapshot can only resolve the plan it actually carries.
   """
   @spec plan(:blocks | :runs, map()) :: {:ok, map()} | {:error, :unavailable}
   def plan(kind, native_plan) when kind in [:blocks, :runs] and is_map(native_plan) do
@@ -1201,15 +1201,18 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   defp plan_day_key(_native_plan), do: :error
 
   defp plan_identity(kind, day_key, native_plan) do
-    fingerprint = native_plan.fingerprint
-
     %{
-      "plan_ref" => ref(key_digest(day_key, section(kind)), "plan", fingerprint),
+      "plan_ref" => ref(key_digest(day_key, section(kind)), "plan", plan_key(kind, native_plan)),
       "section" => section(kind),
       "day_key" => day_key,
-      "native_fingerprint" => fingerprint
+      "native_fingerprint" => native_plan.fingerprint
     }
   end
+
+  # `Runs.Plan.fingerprint` is the day's own, so the two scopes of an unchanged
+  # day share it; the scope joins the key so they are still two receipts.
+  defp plan_key(:runs, %{fingerprint: fingerprint, scope: scope}), do: "#{fingerprint}|#{scope}"
+  defp plan_key(:blocks, %{fingerprint: fingerprint}), do: fingerprint
 
   defp section(:blocks), do: @section_blocks
   defp section(:runs), do: @section_runs
