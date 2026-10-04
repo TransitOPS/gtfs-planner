@@ -18,6 +18,10 @@ defmodule GtfsPlanner.Gtfs.FareZones.SelectionFenceConcurrencyTest do
   exclusivity and is not separately observed. The writers that take the version row
   are listed in the inspection recorded with this evidence, not asserted here.
 
+  A third case holds the version row exclusively, as a fare-zone assignment does,
+  and shows that the two editor-provenance derivation writers (the only writers of
+  route_pattern_stops and trip linkage that read the version row) wait for it.
+
   The test is deliberately not `async: true`. It commits a uniquely aliased
   organization and removes every row it committed on exit.
   """
@@ -30,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.SelectionFenceConcurrencyTest do
   alias GtfsPlanner.FareSelectionFixtures
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.OrganizationsFixtures
@@ -96,6 +101,65 @@ defmodule GtfsPlanner.Gtfs.FareZones.SelectionFenceConcurrencyTest do
 
     assert applied == fixture.changes
     assert committed_zones(fixture, ["A1", "A3"]) == %{"A1" => "B", "A3" => "B"}
+  end
+
+  test "editor route derivation waits for a writer holding the version row" do
+    supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor})
+    fixture = committed_fixture("derive")
+    on_exit(fn -> cleanup(fixture) end)
+
+    # A route with no trips: derivation has nothing to do, so without the version
+    # lock it would return at once rather than merely slowly.
+    unboxed(fn ->
+      GtfsPlanner.GtfsFixtures.route_fixture(fixture.organization.id, fixture.version.id, %{
+        route_id: "RX"
+      })
+    end)
+
+    parent = self()
+
+    holder =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          Repo.transaction(fn ->
+            Versions.lock_for_exclusive_write!(fixture.organization.id, fixture.version.id)
+            send(parent, :version_locked)
+
+            receive do
+              :release -> :released
+            end
+          end)
+        end)
+      end)
+
+    assert_receive :version_locked, 5_000
+
+    derivation =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn ->
+          Derivation.derive_route(
+            fixture.organization.id,
+            fixture.version.id,
+            "RX",
+            {:editor, fixture.audit}
+          )
+        end)
+      end)
+
+    grouping =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        unboxed(fn -> Derivation.group_left_out("RX", [], "stale-fingerprint", fixture.audit) end)
+      end)
+
+    assert Task.yield(derivation, 200) == nil
+    assert Task.yield(grouping, 200) == nil
+
+    send(holder.pid, :release)
+    assert Task.await(holder, 10_000) == {:ok, :released}
+
+    # Released, both proceed: the derivation runs and the stale review is refused.
+    assert {:ok, %{}} = Task.await(derivation, 10_000)
+    assert {:error, :stale} = Task.await(grouping, 10_000)
   end
 
   defp put_u1_on_t6(fixture) do

@@ -44,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
 
   # A bounded page keeps every read/write batch constant in size for a feed of
@@ -333,6 +334,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
          audit
        ) do
     Authorization.lock_editor!(audit)
+    # The version row `FOR SHARE` before the route, the order every schedule writer
+    # takes: a writer holding the version row exclusively, such as a fare-zone
+    # assignment, serializes with this one.
+    Versions.lock_for_input_write!(organization_id, version_id)
 
     route = lock_route!(organization_id, version_id, route_id, {:editor, audit})
     review = left_out_review(route)
@@ -1052,6 +1057,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
                  audit_context.gtfs_version_id == version_id do
           Repo.rollback(:not_found)
         end
+
+        # Membership, then the version row `FOR SHARE`, then the route: the lock order
+        # of every schedule writer. The importer owns its unpublished version and
+        # takes no version lock here.
+        Versions.lock_for_input_write!(organization_id, version_id)
 
       {:import, nil} ->
         :ok
