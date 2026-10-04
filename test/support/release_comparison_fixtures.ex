@@ -32,9 +32,12 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
 
   @oversized_routes 60
 
+  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
+
+  import Ecto.Query, only: [from: 2]
   alias GtfsPlanner.Versions
 
   @agency "agency_id,agency_name,agency_url,agency_timezone\nA,Metro,http://a.example,UTC"
@@ -184,7 +187,12 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
           {"Large network B", many_routes_zip(@oversized_routes)},
           {"Expiring export", simple_zip()}
         ] do
-      publish_run!(organization, backdated_version!(organization, name), bytes, actor)
+      run = publish_run!(organization, backdated_version!(organization, name), bytes, actor)
+
+      # The exporter records no version name, so the chooser would list every run
+      # as "Full feed export". The journey names each one, which is the label it
+      # looks for in the real chooser.
+      Repo.update_all(from(r in Export.Run, where: r.id == ^run.id), set: [version_name: name])
     end
 
     host

@@ -1064,6 +1064,12 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp reason_words("incomplete_counts"),
     do: "A route states frequency windows rather than exact departures."
 
+  defp reason_words("left_evaluation_incomplete"),
+    do: "The earlier file has rows that could not be read."
+
+  defp reason_words("right_evaluation_incomplete"),
+    do: "The candidate file has rows that could not be read."
+
   defp reason_words("unmapped_route"),
     do: "A route in one file has no proven match in the other."
 
