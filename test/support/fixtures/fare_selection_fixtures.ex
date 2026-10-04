@@ -6,7 +6,7 @@ defmodule GtfsPlanner.FareSelectionFixtures do
   version, so a test builds the network twice (a twin organization, a second
   version) and a missing scope predicate shows up as extra or foreign rows.
 
-  Routes: `R6` (short name "6") and `R9` ("9").
+  Routes: `R6` (short name "6", long name "Route Six") and `R9` ("9", "Route Nine").
 
   Boardable stops (`location_type` 0): `A1` "Alder" (no zone, R6), `A2` "Birch"
   (zone "B", R6), `A3` "Cedar" (no zone, R6 and R9), `AIR1` "Airport Gate" (no
@@ -48,13 +48,13 @@ defmodule GtfsPlanner.FareSelectionFixtures do
     route_fixture(org_id, version_id, %{
       route_id: "R6",
       route_short_name: "6",
-      route_long_name: "Six"
+      route_long_name: "Route Six"
     })
 
     route_fixture(org_id, version_id, %{
       route_id: "R9",
       route_short_name: "9",
-      route_long_name: "Nine"
+      route_long_name: "Route Nine"
     })
 
     stops = insert_stops!(organization, version, @stops)

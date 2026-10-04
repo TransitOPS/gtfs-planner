@@ -41,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.FareZones.RouteSelectionTest do
              selection(organization, version, ["R6"], only_unzoned?: true, exclude: ["AIR1"])
 
     assert selection.routes == [
-             %{route_id: "R6", route_short_name: "6", route_long_name: "Six"}
+             %{route_id: "R6", route_short_name: "6", route_long_name: "Route Six"}
            ]
 
     assert selection.served_count == 4
