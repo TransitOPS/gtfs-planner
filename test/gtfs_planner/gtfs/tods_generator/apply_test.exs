@@ -39,6 +39,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
 
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.ReliefPoint
@@ -55,6 +57,45 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
   @moduletag timeout: 120_000
 
   describe "applying a reviewed preview" do
+    test "a selected fallback garage has the same depot travel before and after save" do
+      world = world()
+      settings = Blocking.get_settings(world.organization.id, world.version.id)
+
+      assert {:ok, _} =
+               Blocking.update_settings(world.audit, Map.put(settings, :default_garage_id, nil))
+
+      assert {:ok, preview} = roster_preview(world)
+      assert [block] = preview.blocks
+      assert block.garage_id == world.garage.id
+      assert preview.save_available?
+
+      run =
+        preview.run_days[world.weekday_day_type].runs
+        |> Enum.find(fn run ->
+          Enum.any?(run.pieces, fn piece ->
+            Enum.any?(piece.trips, &(&1.id == trip_uuid(world, "gen-a")))
+          end)
+        end)
+
+      assert Enum.all?(run.pieces, &(&1.garage_id == world.garage.id))
+      assert hd(run.pieces).start_secs < 4 * 3600
+
+      # The trip is 04:00–04:30 away from the garage, so pulls extend both ends.
+      assert run.work.sign_on_secs < 4 * 3600
+      assert run.work.sign_off_secs > 4 * 3600 + 30 * 60
+      assert Enum.any?(preview.roster_lines, &(&1.run_id == run.run_id))
+      assert {:ok, receipt} = apply_preview(world, preview, Ecto.UUID.generate())
+      assert receipt.created_ids["slot_ids"] != []
+
+      assert {:ok, persisted} =
+               Runs.load_runs(world.organization.id, world.version.id, world.weekday_day_type)
+
+      saved = Enum.find(persisted.derived.runs, &(&1.run_id == run.run_id))
+      assert saved.work.sign_on_secs == run.work.sign_on_secs
+      assert saved.work.sign_off_secs == run.work.sign_off_secs
+      assert attribute_rows(world) == [block_attribute(block)]
+    end
+
     test "writes the promised rows once and records one receipt", %{} do
       world = world()
       holiday_week = Date.to_iso8601(Date.add(roster_monday(world), 14))

@@ -395,7 +395,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
     {runs, frozen} = generate_each_day(source)
     memberships = memberships(source, frozen)
     touched = MapSet.new(Map.values(frozen))
-    refused = refused_blocks(memberships, touched, source.context)
+    proposed_blocks = new_blocks(memberships, frozen, source, normalized_input)
+    context = proposed_context(source.context, proposed_blocks)
+    refused = refused_blocks(memberships, touched, context)
 
     assignments = reject(frozen, refused)
 
@@ -708,12 +710,14 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
           Enum.map(candidate.blocks, fn block -> block.block_id end)
       )
 
+    context = proposed_context(source.context, candidate.blocks)
+
     Map.new(source.day_types, fn day_type ->
-      {day_type.key, candidate_day(day_type.key, candidate, source, admitted)}
+      {day_type.key, candidate_day(day_type.key, candidate, source, admitted, context)}
     end)
   end
 
-  defp candidate_day(key, candidate, source, admitted) do
+  defp candidate_day(key, candidate, source, admitted, context) do
     blocks =
       source.rows_by_day_type
       |> Map.fetch!(key)
@@ -721,9 +725,30 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.Plan do
       |> Enum.reject(fn {block_id, _rows} -> is_nil(block_id) end)
       |> Enum.filter(fn {block_id, _rows} -> MapSet.member?(admitted, block_id) end)
       |> Enum.sort_by(fn {block_id, _rows} -> Summary.natural_key(block_id) end)
-      |> Enum.map(fn {block_id, rows} -> candidate_block(block_id, rows, source.context) end)
+      |> Enum.map(fn {block_id, rows} -> candidate_block(block_id, rows, context) end)
 
     %{blocks: blocks, assignments: stored_assignments(key, blocks, source)}
+  end
+
+  # Preview the per-service attributes the block writer will store, without
+  # changing the source context used by the fingerprint. In particular, the
+  # selected fallback garage must contribute its pulls to block and crew checks.
+  defp proposed_context(context, blocks) do
+    attributes =
+      Enum.reduce(blocks, context.attributes, fn block, attributes ->
+        if is_nil(Context.resolve_block(context, block.block_id, block.trips).conflict) do
+          Enum.reduce(block.trips, attributes, fn trip, attributes ->
+            Map.put(attributes, {trip.service_id, block.block_id}, %{
+              garage_id: block.garage_id,
+              vehicle_type_id: block.vehicle_type_id
+            })
+          end)
+        else
+          attributes
+        end
+      end)
+
+    %{context | attributes: attributes}
   end
 
   # One existing block as the day load would build it: its sequence, its
