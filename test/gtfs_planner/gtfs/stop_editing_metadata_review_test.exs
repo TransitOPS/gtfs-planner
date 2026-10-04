@@ -41,23 +41,30 @@ defmodule GtfsPlanner.Gtfs.StopEditingMetadataReviewTest do
       actor_email: actor.email
     }
 
+    # The insert fixture's changeset does not cast `stop_code` or `stop_url`, so they
+    # are written after it the way an import's bulk insert stores them.
     stop = fn id, name, extra ->
-      stop_fixture(
-        organization.id,
-        version.id,
-        Map.merge(
-          %{
-            stop_id: id,
-            stop_name: name,
-            stop_code: String.trim_leading(id, "S"),
-            stop_desc: "Stored description of #{id}",
-            stop_url: "https://example.org/#{id}",
-            stop_lat: Decimal.from_float(44.62),
-            stop_lon: Decimal.from_float(-124.05)
-          },
-          extra
+      stop =
+        stop_fixture(
+          organization.id,
+          version.id,
+          Map.merge(
+            %{
+              stop_id: id,
+              stop_name: name,
+              stop_desc: "Stored description of #{id}",
+              stop_lat: Decimal.from_float(44.62),
+              stop_lon: Decimal.from_float(-124.05)
+            },
+            extra
+          )
         )
+
+      Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
+        set: [stop_code: String.trim_leading(id, "S"), stop_url: "https://example.org/#{id}"]
       )
+
+      Repo.reload!(stop)
     end
 
     stops = %{

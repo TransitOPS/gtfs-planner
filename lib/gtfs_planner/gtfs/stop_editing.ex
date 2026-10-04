@@ -515,13 +515,18 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
   # The one place a batch's rows are computed, so the review the editor sees and the
   # recomputation `apply_metadata_batch/3` makes under locks cannot disagree.
   defp build_metadata_review(rows, stops, audit) do
+    rows |> metadata_rows(stops) |> metadata_review(audit)
+  end
+
+  defp metadata_rows(rows, stops) do
     stops_by_uuid = Map.new(stops, &{&1.id, &1})
 
-    built =
-      rows
-      |> Enum.map(&metadata_row(&1, Map.fetch!(stops_by_uuid, &1.stop_uuid)))
-      |> Enum.sort_by(& &1.stop_id)
+    rows
+    |> Enum.map(&metadata_row(&1, Map.fetch!(stops_by_uuid, &1.stop_uuid)))
+    |> Enum.sort_by(& &1.stop_id)
+  end
 
+  defp metadata_review(built, audit) do
     %{
       rows: Enum.map(built, &Map.drop(&1, [:changeset, :requested, :updated_at])),
       warnings: duplicate_name_warnings(built, audit),
@@ -617,6 +622,85 @@ defmodule GtfsPlanner.Gtfs.StopEditing do
           others: Enum.take(others, @warning_others)
         }
       end
+    end
+  end
+
+  @doc """
+  Applies a reviewed batch of stop text changes: every changed row is saved, or none.
+
+  `fingerprint` is the review's. The batch runs in one `run_command_transaction/1`
+  attempt that takes the editor membership lock, then the published-version lock,
+  then every stop `FOR UPDATE` in ascending `id` order, and only then recomputes the
+  review from the locked rows and compares fingerprints. A stop that changed since the
+  review (even inside the same second), a row that is invalid, a stop that is gone or a
+  member who is no longer an editor writes nothing. Only the four text fields are
+  written, one audit entry per changed stop with the actor; an unchanged row writes
+  neither a row nor an audit entry.
+
+  Answers `{:ok, %{stops: [Stop.t()], unchanged: integer}}` or
+  `{:error, :stale_review | :invalid_rows | :forbidden | :not_found | :busy | :failed_audit |
+  :invalid_input | :too_many}`. Input errors are answered before any transaction opens.
+  """
+  @spec apply_metadata_batch([map()], String.t(), AuditContext.t()) ::
+          {:ok, %{stops: [Stop.t()], unchanged: non_neg_integer()}}
+          | {:error,
+             :stale_review
+             | :invalid_rows
+             | :forbidden
+             | :not_found
+             | :busy
+             | :failed_audit
+             | :invalid_input
+             | :too_many}
+  def apply_metadata_batch(rows, fingerprint, %AuditContext{} = audit) do
+    with {:ok, rows} <- checked_metadata_rows(rows) do
+      run_command_transaction(fn -> commit_metadata_batch(rows, fingerprint, audit) end)
+    end
+  end
+
+  defp commit_metadata_batch(rows, fingerprint, audit) do
+    Authorization.lock_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    built = rows |> lock_metadata_stops!(audit) |> then(&metadata_rows(rows, &1))
+    review = metadata_review(built, audit)
+
+    unless matches_fingerprint?(fingerprint, review.fingerprint), do: Repo.rollback(:stale_review)
+    unless review.valid?, do: Repo.rollback(:invalid_rows)
+
+    stops =
+      for %{status: :changed, changeset: changeset} <- built do
+        updated = update_metadata_row!(changeset)
+        audit!(changeset.data, audit, "updated", written_attrs(changeset))
+        updated
+      end
+
+    %{stops: stops, unchanged: review.unchanged}
+  end
+
+  # Ascending `id` is the order every concurrent batch locks in, so two batches over
+  # overlapping stops wait for each other instead of deadlocking.
+  defp lock_metadata_stops!(rows, audit) do
+    uuids = Enum.map(rows, & &1.stop_uuid)
+
+    stops =
+      Repo.all(
+        from(stop in Stop,
+          where:
+            stop.id in ^uuids and stop.organization_id == ^audit.organization_id and
+              stop.gtfs_version_id == ^audit.gtfs_version_id,
+          order_by: stop.id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    if length(stops) == length(uuids), do: stops, else: Repo.rollback(:not_found)
+  end
+
+  defp update_metadata_row!(changeset) do
+    case Repo.update(changeset) do
+      {:ok, updated} -> updated
+      {:error, %Ecto.Changeset{}} -> Repo.rollback(:invalid_rows)
     end
   end
 
