@@ -203,7 +203,7 @@ defmodule GtfsPlannerWeb.Gtfs.HeadsignsHelperLiveTest do
   end
 
   describe "the prepared card" do
-    test "renders Review headsigns and the stub refuses without raising", context do
+    test "renders a Review headsigns button and saves nothing by itself", context do
       {:ok, view, _html} = live(context.conn, pattern_path(context, "?task=details"))
       view |> element("#agent-helper-open") |> render_click()
 
@@ -223,9 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.HeadsignsHelperLiveTest do
 
       assert has_element?(view, "[id^='agent-review-prepared-']", "Review headsigns")
 
-      view |> element("[id^='agent-review-prepared-']") |> render_click()
-
-      assert has_element?(view, "#agent-notice", "Review is not ready on this page yet.")
+      # Preparing wrote nothing; the handoff itself is covered by the handoff tests.
       assert Repo.get!(RoutePattern, context.a01.pattern.id).headsign == "Downtown Terminal"
     end
   end

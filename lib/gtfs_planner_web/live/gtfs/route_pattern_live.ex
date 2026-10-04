@@ -19,6 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
@@ -194,6 +195,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:dirty?, false)
      |> assign(:headsign_usage, nil)
      |> assign(:headsign_selection, nil)
+     |> assign(:headsign_origin, nil)
      |> assign(:headsign_undo, nil)
      |> assign(:headsign_review, nil)
      |> assign(:headsign_siblings, [])
@@ -403,12 +405,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> load_screen()}
   end
 
-  # A prepared card's button. The handoff into the native headsign staging is not
-  # wired yet, so the card says so instead of crashing the page.
+  # A prepared card's button. The helper only seeds the page's own headsign staging
+  # and opens the existing change drawer; saving stays the editor's native Save
+  # (CR-4). An entry that is not an integer is not this panel's and does nothing.
   @impl true
-  def handle_event("agent_review_prepared", _params, socket) do
-    {:noreply, assign(socket, :agent_notice, "Review is not ready on this page yet.")}
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_headsigns(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
   end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("build_patterns", _params, socket) do
@@ -620,26 +628,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # followers group cannot leak into it.
   @impl true
   def handle_event("open_headsign_review", %{"mode" => "change"}, socket) do
-    case socket.assigns do
-      %{headsign_usage: %{} = usage, headsign_selection: %{ids: ids, update?: update?}} ->
-        {:noreply,
-         assign(socket, :headsign_review, %{
-           mode: :change,
-           state: :ready,
-           scope: usage.scope,
-           opener_id: headsign_change_opener_id(socket),
-           usage: usage,
-           selected: if(update?, do: ids, else: MapSet.new()),
-           open_groups: [],
-           change: %{from: usage.default, to: staged_headsign_to(socket)},
-           reviewed: nil,
-           undo: nil,
-           done: nil
-         })}
-
-      _ ->
-        {:noreply, socket}
-    end
+    {:noreply, open_headsign_change(socket, headsign_change_opener_id(socket))}
   end
 
   @impl true
@@ -1405,6 +1394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
      |> assign(:headsign_selection, nil)
+     |> assign(:headsign_origin, nil)
      |> assign(:error_message, nil)
      |> assign(:timing_blank_note, nil)
      |> clear_fill()
@@ -2906,22 +2896,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # scope the same way. `from` splits the scope's followers out, so the box
   # knows which trips the new value reaches; a reload after a save or undo also
   # resets a selection staged against a different stored default.
-  defp load_headsign_usage(
-         %{assigns: %{task: :details, pattern: %RoutePattern{} = pattern}} = socket
-       ) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
-    usage =
-      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, :pattern,
-             from: Headsigns.normalize(pattern.headsign)
-           ) do
-        {:ok, usage} -> usage
-        {:error, _not_found} -> nil
-      end
-
+  defp load_headsign_usage(%{assigns: %{task: :details, pattern: %RoutePattern{}}} = socket) do
     socket
-    |> assign(:headsign_usage, usage)
+    |> assign(:headsign_usage, read_headsign_usage(socket))
     |> reset_headsign_selection()
   end
 
@@ -2929,24 +2906,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          %{
            assigns: %{
              task: :timings,
-             pattern: %RoutePattern{} = pattern,
-             selected_timing: %TimedPattern{} = timing
+             pattern: %RoutePattern{},
+             selected_timing: %TimedPattern{}
            }
          } = socket
        ) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
-    usage =
-      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, {:timing, timing.id},
-             from: Headsigns.effective_default(timing.headsign, pattern.headsign)
-           ) do
-        {:ok, usage} -> usage
-        {:error, _not_found} -> nil
-      end
-
     socket
-    |> assign(:headsign_usage, usage)
+    |> assign(:headsign_usage, read_headsign_usage(socket))
     |> reset_headsign_selection()
   end
 
@@ -2954,6 +2920,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # staged selection survives a tab switch and is re-checked against the
   # stored default when the Details or Running-times task loads again.
   defp load_headsign_usage(socket), do: assign(socket, :headsign_usage, nil)
+
+  # The current scope's usage read, split on its stored default, or nil when the
+  # scope is gone. Reading assigns nothing, so a refused handoff can check a fresh
+  # read without touching the page.
+  defp read_headsign_usage(%{assigns: %{task: :details, pattern: pattern}} = socket) do
+    usage_or_nil(
+      Gtfs.headsign_usage(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        pattern.id,
+        :pattern,
+        from: Headsigns.normalize(pattern.headsign)
+      )
+    )
+  end
+
+  defp read_headsign_usage(
+         %{assigns: %{task: :timings, pattern: pattern, selected_timing: timing}} = socket
+       ) do
+    usage_or_nil(
+      Gtfs.headsign_usage(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        pattern.id,
+        {:timing, timing.id},
+        from: Headsigns.effective_default(timing.headsign, pattern.headsign)
+      )
+    )
+  end
+
+  defp read_headsign_usage(_socket), do: nil
+
+  defp usage_or_nil({:ok, usage}), do: usage
+  defp usage_or_nil({:error, _not_found}), do: nil
 
   # A selection staged against another scope or stored default is stale; the
   # current one is rebuilt from the fresh followers on the next dirty draft.
@@ -2966,7 +2966,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     if is_map(selection) and selection.key == key do
       socket
     else
-      assign(socket, :headsign_selection, nil)
+      socket |> assign(:headsign_selection, nil) |> assign(:headsign_origin, nil)
     end
   end
 
@@ -3271,6 +3271,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:applying?, false)
     |> clear_fill()
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> put_timing_rows()
   end
 
@@ -3290,6 +3291,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:review, nil)
     |> assign(:applying?, false)
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> put_timing_rows()
   end
 
@@ -3323,6 +3325,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:pattern_delete_dialog, nil)
     |> assign(:applying?, false)
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> assign(:headsign_undo, nil)
     |> assign(:headsign_review, nil)
     |> assign(:stop_search_options, [])
@@ -3480,6 +3483,190 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> assign(:error_message, reasons_message(reason))
          |> mark_editor_refusal(reason)}
     end
+  end
+
+  # The change drawer, opened by the box's review link or by a prepared card;
+  # `opener_id` is where focus returns when it closes.
+  defp open_headsign_change(
+         %{
+           assigns: %{
+             headsign_usage: %{} = usage,
+             headsign_selection: %{ids: ids, update?: update?}
+           }
+         } =
+           socket,
+         opener_id
+       ) do
+    assign(socket, :headsign_review, %{
+      mode: :change,
+      state: :ready,
+      scope: usage.scope,
+      opener_id: opener_id,
+      usage: usage,
+      selected: if(update?, do: ids, else: MapSet.new()),
+      open_groups: [],
+      change: %{from: usage.default, to: staged_headsign_to(socket)},
+      reviewed: nil,
+      undo: nil,
+      done: nil
+    })
+  end
+
+  defp open_headsign_change(socket, _opener_id), do: socket
+
+  # --- prepared headsign change (helper handoff) -------------------------------------------------
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_headsigns(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: {:headsign_change, command}}} ->
+        hand_off_headsigns(socket, entry_id, command)
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  # The card was made for one pattern, scope, default and trip set. Every refusal
+  # leaves the page exactly as it was; only a request that still matches seeds the
+  # staging the editor's own typing would have written.
+  defp hand_off_headsigns(socket, entry_id, command) do
+    assigns = socket.assigns
+    reopen? = prepared_staged?(assigns, entry_id, command)
+
+    with :ok <- prepared_target(assigns, command),
+         :ok <- prepared_unobstructed(assigns, reopen?),
+         {:ok, usage} <- prepared_usage(socket, command, reopen?) do
+      socket
+      |> seed_prepared_headsigns(usage, entry_id, command, reopen?)
+      |> assign(:agent_notice, nil)
+      |> open_headsign_change("agent-prepared-#{entry_id}")
+    else
+      {:error, notice} -> assign(socket, :agent_notice, notice)
+    end
+  end
+
+  defp prepared_target(%{pattern: %RoutePattern{id: id}} = assigns, command)
+       when id == command.pattern_id do
+    if prepared_scope(assigns) == command.scope,
+      do: :ok,
+      else: {:error, "This request was prepared for another timing or task. Ask again here."}
+  end
+
+  defp prepared_target(_assigns, _command),
+    do: {:error, "This request was prepared for another pattern. Ask again on this one."}
+
+  defp prepared_scope(%{task: :details}), do: :pattern
+
+  defp prepared_scope(%{task: :timings, selected_timing: %TimedPattern{id: id}}),
+    do: {:timing, id}
+
+  defp prepared_scope(_assigns), do: nil
+
+  # Unsaved native edits and open reviews are the editor's; the helper never
+  # overwrites them. The card's own staging is the one exception: pressing its
+  # button again reopens the drawer over the staging it made.
+  defp prepared_unobstructed(assigns, reopen?) do
+    cond do
+      assigns.impact_dialog != nil or assigns.review != nil or assigns.headsign_review != nil ->
+        {:error, "Finish the review that is open on this page first."}
+
+      assigns.dirty? and not reopen? ->
+        {:error, "Save or discard your edits on this page first, then review the headsigns."}
+
+      true ->
+        :ok
+    end
+  end
+
+  # The page's own usage read can predate another editor's change, so the default
+  # and every listed trip are checked against a fresh one, which is assigned only
+  # once the request is accepted.
+  defp prepared_usage(_socket, _command, true), do: {:ok, nil}
+
+  defp prepared_usage(socket, command, false) do
+    with %{default: default, groups: groups} = usage <- read_headsign_usage(socket),
+         true <- default == command.from,
+         followers = for(%{kind: :follows, trips: trips} <- groups, trip <- trips, do: trip.id),
+         true <- Enum.all?(command.trip_ids, &(&1 in followers)) do
+      {:ok, usage}
+    else
+      _changed ->
+        {:error, "The headsigns changed since this request was prepared. Ask again."}
+    end
+  end
+
+  defp prepared_staged?(assigns, entry_id, command) do
+    case assigns.headsign_origin do
+      %{
+        entry_id: ^entry_id,
+        conversation_id: conversation_id,
+        command: {:headsign_change, ^command}
+      } ->
+        conversation_id == assigns.agent_conversation_id and
+          staged_prepared_values?(assigns, command)
+
+      _other ->
+        false
+    end
+  end
+
+  defp staged_prepared_values?(assigns, command) do
+    field =
+      case command.scope do
+        :pattern -> assigns.details_params["headsign"]
+        {:timing, id} -> Map.get(assigns.timing_headsign_edits, id)
+      end
+
+    ids = MapSet.new(command.trip_ids)
+    field == command.to and match?(%{update?: true, ids: ^ids}, assigns.headsign_selection)
+  end
+
+  defp seed_prepared_headsigns(socket, _usage, _entry_id, _command, true), do: socket
+
+  defp seed_prepared_headsigns(socket, usage, entry_id, command, false) do
+    socket
+    |> assign(:headsign_usage, usage)
+    |> stage_prepared_headsign(command)
+    |> assign(:headsign_selection, %{
+      key: {usage.scope, usage.default},
+      update?: true,
+      ids: MapSet.new(command.trip_ids)
+    })
+    |> assign(:headsign_origin, %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: entry_id,
+      command: {:headsign_change, command}
+    })
+    |> assign_dirty()
+  end
+
+  # The Details field, or the Running-times draft with its disclosure open, as if
+  # the editor had typed the prepared wording.
+  defp stage_prepared_headsign(%{assigns: %{task: :details}} = socket, command) do
+    params = Map.put(socket.assigns.details_params, "headsign", command.to)
+
+    socket
+    |> assign(:details_params, params)
+    |> assign(:details_form, details_form(params, []))
+  end
+
+  defp stage_prepared_headsign(socket, command) do
+    timing_id = socket.assigns.selected_timing_id
+
+    socket
+    |> assign(
+      :timing_headsign_edits,
+      Map.put(socket.assigns.timing_headsign_edits, timing_id, command.to)
+    )
+    |> assign(:timing_headsign, command.to)
+    |> assign(:timing_headsign_open?, true)
   end
 
   # --- headsign selection staging -------------------------------------------------------------
