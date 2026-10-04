@@ -1930,6 +1930,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp completeness_reason(:right_evaluation_incomplete),
     do: "The candidate file has rows that could not be read."
 
+  defp completeness_reason(:unpaired_trips),
+    do: "Some trips on the same route and date could not be paired between the two files."
+
   defp completeness_reason(reason),
     do: "This comparison is incomplete for another reason: #{reason}."
 

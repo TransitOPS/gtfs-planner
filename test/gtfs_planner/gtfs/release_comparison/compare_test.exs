@@ -774,6 +774,54 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       assert :right_evaluation_incomplete in result.completeness.reasons
     end
 
+    test "unpaired trips on both sides with equal counts are not a complete no-difference" do
+      left =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      # Another identifier at another time on the same route, pattern and dates:
+      # the trip may be the same service retimed, so nothing proves it unchanged.
+      right =
+        project(
+          trips: [{"R1", "WEEK", "T9", "0"}],
+          stop_times: [{"T9", "08:30:00", "08:30:00", "S1", "1"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      assert result.effective_changes == []
+      assert result.totals.exact_count_delta == 0
+      assert Enum.map(result.unresolved, & &1.reason) == [:no_candidate, :no_candidate]
+      assert result.completeness == %{status: :incomplete, reasons: [:unpaired_trips]}
+    end
+
+    test "a trip added with nothing unpaired on the other side stays a complete count change" do
+      left =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      right =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}, {"R1", "WEEK", "T2", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T2", "09:00:00", "09:00:00", "S1", "1"}
+          ]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      # One departure becomes two on each of five dates, and every one of them is
+      # accounted for by the new trip.
+      assert result.totals.exact_count_delta == 5
+      assert length(result.effective_changes) == 5
+      assert result.completeness == %{status: :complete, reasons: []}
+    end
+
     test "an unmapped route keeps every count and suppresses the totals" do
       # Both artifacts name an agency that `agency.txt` does not define, so
       # neither route can be renamed onto the other and no mapping is proven -

@@ -74,6 +74,8 @@ defmodule GtfsPlanner.Agents.Packs.ReleaseComparison do
     "no_service_groups" => "neither file states service for these routes and dates",
     "unmeasured_units" => "at least one route and date could not be compared on both sides",
     "unresolved_entity_matches" => "some entities could not be paired with confidence",
+    "unpaired_trips" =>
+      "some trips on the same route and date could not be paired between the two files",
     "stop_meaning_changed" =>
       "a stop moved or changed type, so its trips were not compared for timing",
     "left_evaluation_incomplete" => "the earlier file has rows that could not be read",

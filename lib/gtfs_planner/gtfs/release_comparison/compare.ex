@@ -57,10 +57,12 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
 
   `completeness` is `%{status: :complete | :incomplete, reasons: [...]}`. It is
   `:complete` only when every supported semantic dimension was evaluated: both
-  evaluations complete, at least one service group, every unit measured, no
-  unresolved entity correspondence and no stop whose correspondence changed
-  meaning. A no-difference verdict is therefore only ever *complete* when the
-  bytes actually described the whole service.
+  evaluations complete (so neither projection dropped a row it could not read),
+  at least one service group, every unit measured, no unresolved entity
+  correspondence, no stop whose correspondence changed meaning, and no route,
+  direction and date whose trips went unpaired on both sides. A no-difference
+  verdict is therefore only ever *complete* when the bytes actually described
+  the whole service.
 
   `exclusions` always discloses the entities this comparison does not evaluate at
   all - fares, pathways and Flex - because the admitted members are the service
@@ -393,7 +395,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
       unresolved: sort_unresolved(matches.unresolved ++ trips.unresolved),
       unknowns: unknowns(left_projection, right_projection, left, right),
       totals: totals(units, left, right),
-      completeness: completeness(units, left, right, matches, trips),
+      completeness: completeness(units, left, right, matches, trips, routes),
       exclusions: exclusions()
     }
 
@@ -980,13 +982,17 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   # Every supported dimension must have been evaluated before a no-difference
   # verdict is called complete. The unsupported dimensions are disclosed in
   # `:exclusions` instead, because they are not this comparison's to evaluate.
-  defp completeness(units, left, right, matches, trips) do
+  defp completeness(units, left, right, matches, trips, routes) do
     reasons =
       []
       |> add_unless(Map.get(left, :complete?, false), :left_evaluation_incomplete)
       |> add_unless(Map.get(right, :complete?, false), :right_evaluation_incomplete)
       |> add_unless(units != [], :no_service_groups)
       |> add_unless(Enum.all?(units, & &1.comparable?), :unmeasured_units)
+      |> add_unless(
+        not unpaired_on_both_sides?(trips.unresolved, left, right, routes),
+        :unpaired_trips
+      )
       |> add_unless(
         coverage_resolved?(matches.unresolved ++ trips.unresolved),
         :unresolved_entity_matches
@@ -1004,6 +1010,31 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   # unproven dependency - is a limit on what could be concluded, so it keeps the
   # result incomplete.
   defp coverage_resolved?(entries), do: Enum.all?(entries, &(&1.reason == :no_candidate))
+
+  # A trip with no counterpart is an addition or a removal, and the counts say so.
+  # Unpaired trips on both sides of one mapped route, direction and date may be
+  # the same service retimed, which equal counts cannot show, so such a unit is
+  # not a proven no-difference.
+  defp unpaired_on_both_sides?(unresolved, left, right, routes) do
+    unpaired = Enum.filter(unresolved, &(&1.entity == :trip and &1.reason == :no_candidate))
+
+    not MapSet.disjoint?(
+      unpaired_units(unpaired, :left_ref, left, routes),
+      unpaired_units(unpaired, :right_ref, right, routes)
+    )
+  end
+
+  defp unpaired_units(unpaired, ref_key, evaluation, routes) do
+    index = index_by(Map.get(evaluation, :evaluated_trips, []))
+
+    for entry <- unpaired,
+        ref = Map.fetch!(entry, ref_key),
+        trip = Map.get(index, ref.id),
+        canonical_id = canonical(trip.route_id, routes),
+        date <- trip.service_dates,
+        into: MapSet.new(),
+        do: {canonical_id, trip.direction_id, date}
+  end
 
   defp add_unless(reasons, true, _reason), do: reasons
   defp add_unless(reasons, false, reason), do: reasons ++ [reason]
