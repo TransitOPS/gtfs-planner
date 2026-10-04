@@ -465,6 +465,120 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.CompareTest do
       assert result.completeness == %{status: :incomplete, reasons: [:stop_meaning_changed]}
     end
 
+    test "a same-identifier trip that now serves a different stop is not given an aligned delta" do
+      # Every stop exists in both files and pairs by identifier, so no stop is
+      # unresolved. Only the trip changed: it served S2 second and now serves S3.
+      stops = [
+        {"S1", "First", "40.1", "-74.1"},
+        {"S2", "Second", "40.2", "-74.2"},
+        {"S3", "Third", "40.3", "-74.3"}
+      ]
+
+      left =
+        project(
+          stops: stops,
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T1", "08:10:00", "08:10:00", "S2", "2"}
+          ]
+        )
+
+      right =
+        project(
+          stops: stops,
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T1", "08:25:00", "08:25:00", "S3", "2"}
+          ]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      # The second occurrence is 08:10 at one stop and 08:25 at another, so a
+      # +900 second delta would compare two different rides.
+      assert [change] = Enum.filter(result.effective_changes, &(&1.kind == :timing_changed))
+      assert change.reason == :trip_meaning_changed
+      assert change.timing == nil
+
+      assert change.delta == %{
+               scheduled_count: nil,
+               exact_count: nil,
+               first_secs: nil,
+               last_secs: nil
+             }
+
+      # The stop pattern change itself is disclosed as the structural change.
+      assert Enum.any?(
+               result.structural_changes,
+               &(&1.entity == :trip and &1.change == :stop_pattern and &1.meaning_changed)
+             )
+    end
+
+    test "a timing difference that cannot be read says so instead of blaming a timezone" do
+      left =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "08:00:00", "08:00:00", "S1", "1"}]
+        )
+
+      # The same trip and stop, but the candidate leaves the times blank.
+      right =
+        project(
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [{"T1", "", "", "S1", "1"}]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      assert [change] = Enum.filter(result.effective_changes, &(&1.kind == :timing_changed))
+      assert change.reason == :unreadable_times
+      assert change.timing == nil
+    end
+
+    test "a span with an unreadable first time is not diffed against a known one" do
+      stops = [
+        {"S1", "First", "40.1", "-74.1"},
+        {"S2", "Second", "40.2", "-74.2"},
+        {"S3", "Third", "40.3", "-74.3"}
+      ]
+
+      left =
+        project(
+          stops: stops,
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [
+            {"T1", "", "", "S1", "1"},
+            {"T1", "08:10:00", "08:10:00", "S2", "2"},
+            {"T1", "08:20:00", "08:20:00", "S3", "3"}
+          ]
+        )
+
+      right =
+        project(
+          stops: stops,
+          trips: [{"R1", "WEEK", "T1", "0"}],
+          stop_times: [
+            {"T1", "08:00:00", "08:00:00", "S1", "1"},
+            {"T1", "08:10:00", "08:10:00", "S2", "2"},
+            {"T1", "08:20:00", "08:20:00", "S3", "3"}
+          ]
+        )
+
+      assert {:ok, result} = Compare.run(left, right, @window)
+
+      # The earlier file's first time is unknown. Its readable extremes start at
+      # 08:10, so a -600 second first-time delta would compare 08:10 with 08:00.
+      assert length(result.groups) == 5
+      assert Enum.all?(result.groups, &(&1.delta.first_secs == nil))
+      assert Enum.all?(result.groups, &(&1.delta.last_secs == nil))
+
+      # The counts are still compared, and still equal.
+      assert Enum.all?(result.groups, &(&1.delta.exact_count == 0))
+      assert result.completeness.status == :incomplete
+    end
+
     test "twin stops in the candidate file are unresolved and keep their patterns unpaired" do
       # One stop in the earlier file; two identical stops in the candidate. Either
       # twin could be the earlier stop, so no pair is proven and no pattern through

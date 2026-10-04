@@ -35,6 +35,11 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     * `:stop_meaning_changed`, `:stop_ambiguous`, `:stop_unresolved` - a pattern
       whose stops moved, cannot be told apart, or have no proven correspondence
       cannot be paired by pattern, so only its route/date counts are compared.
+    * `:trip_meaning_changed`, `:time_vectors_differ_in_length`,
+      `:unreadable_times` - a same-identifier trip whose route or stop pattern
+      changed, whose two time lists differ in length, or whose times cannot be
+      read, has no aligned timing difference, so the change is listed without
+      one.
 
   A renamed identifier alone is never a loss. Two artifacts running the same
   service under different route or trip identifiers have equal counts, so the only
@@ -522,13 +527,14 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   defp unit_delta(_left, _right, _reason), do: empty_delta()
 
   defp span_delta(left, right) do
-    case span_reason(left, right) do
-      nil ->
-        {difference_of(left.side.first_secs, right.side.first_secs),
-         difference_of(left.side.last_secs, right.side.last_secs)}
-
-      _reason ->
-        {nil, nil}
+    # A side whose span is incomplete states only the extremes it could read, so
+    # a delta against it would compare an unknown time with a known one.
+    if is_nil(span_reason(left, right)) and left.side.span_complete? and
+         right.side.span_complete? do
+      {difference_of(left.side.first_secs, right.side.first_secs),
+       difference_of(left.side.last_secs, right.side.last_secs)}
+    else
+      {nil, nil}
     end
   end
 
@@ -637,16 +643,9 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
   defp timing_change(pair, left_trip, right_trip, projects, routes, stops) do
     dates = common_dates(left_trip, right_trip)
 
-    case occurrence_deltas(left_trip, right_trip, stops) do
-      nil ->
-        suppressed(
-          pair,
-          left_trip,
-          right_trip,
-          routes,
-          dates,
-          stop_reason_of_trip(left_trip, stops)
-        )
+    case occurrence_deltas(pair, left_trip, right_trip, stops) do
+      {:suppressed, reason} ->
+        suppressed(pair, left_trip, right_trip, routes, dates, reason)
 
       [] ->
         nil
@@ -682,10 +681,10 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
     new_change(pair, left_trip, right_trip, :timing_changed, routes, dates, empty_delta(), %{
       timing: nil
     })
-    |> Map.put(:reason, reason || :unknown_timezone)
+    |> Map.put(:reason, reason)
   end
 
-  defp occurrence_deltas(left_trip, right_trip, stops) do
+  defp occurrence_deltas(pair, left_trip, right_trip, stops) do
     left = left_trip.time_vector
     right = right_trip.time_vector
 
@@ -695,20 +694,22 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison.Compare do
       left == right ->
         []
 
-      not is_nil(stop_reason_of_trip(left_trip, stops)) ->
-        nil
+      # The pair kept its identifier but its route or resolved stop pattern did
+      # not, so index `n` of each vector is no longer the same stop.
+      pair.meaning_changed ->
+        {:suppressed, :trip_meaning_changed}
 
-      not is_nil(stop_reason_of_trip(right_trip, stops)) ->
-        nil
+      reason = stop_reason_of_trip(left_trip, stops) ->
+        {:suppressed, reason}
+
+      reason = stop_reason_of_trip(right_trip, stops) ->
+        {:suppressed, reason}
 
       left == [] or length(left) != length(right) ->
-        nil
+        {:suppressed, :time_vectors_differ_in_length}
 
       not Enum.all?(left ++ right, &readable_time?/1) ->
-        nil
-
-      left == right ->
-        []
+        {:suppressed, :unreadable_times}
 
       true ->
         [left, right]
