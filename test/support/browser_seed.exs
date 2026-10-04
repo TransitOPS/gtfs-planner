@@ -13734,6 +13734,49 @@ case Accounts.register_first_admin(%{
         "(id=#{tods_empty_org.id}), version #{tods_empty_version.name} (id=#{tods_empty_version.id})"
     )
 
+    # ── TODS generator saved generation (spec 37, step 9) ──
+    #
+    # The preview/save journey needs a version the generator can actually build
+    # from: a published version with a small schedule, one garage and one unblocked
+    # trip, so a generation adds block "103" beside the schedule's own 101 and 102,
+    # the runs cut from those blocks and one single-slot roster line and fictional
+    # operator per run-day. The ordinary Blocks, Runs and Rosters screens then show
+    # what the save stored, and the organization's Operators drawer lists the
+    # fictional operators beside its real ones.
+    #
+    # `TodsGeneratorFixtures.tods_world_fixture/1` composes the same world the
+    # generator's own domain cases read — the real `RunsFixtures`/`BlockingFixtures`
+    # schedule, its relief and default-garage rules and its own weekday calendars —
+    # so the journey proves the page against the production composition rather than
+    # a fixture shaped like the page. The service window is the fixture's own; the
+    # journey reads its dates from the page's defaults rather than assuming them.
+    tods_saved_world =
+      GtfsPlanner.TodsGeneratorFixtures.tods_world_fixture(
+        extra_trips: [{"gen-a", "WK", "RIV", "RIV", "04:00:00", "04:30:00"}]
+      )
+
+    {:ok, tods_saved_editor} =
+      Accounts.register_user(%{
+        email: "tods-save@gtfs-planner.test",
+        password: "TodsGenerator123!"
+      })
+
+    Repo.update!(User.confirm_changeset(tods_saved_editor))
+
+    {:ok, _tods_saved_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: tods_saved_editor.id,
+        organization_id: tods_saved_world.organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    IO.puts(
+      "Browser seed: TODS save editor #{tods_saved_editor.email} in " <>
+        "#{tods_saved_world.organization.name} (id=#{tods_saved_world.organization.id}), " <>
+        "version #{tods_saved_world.version.name} (id=#{tods_saved_world.version.id}) " <>
+        "with garage #{tods_saved_world.garage.name} and one unblocked trip"
+    )
+
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row
     # per table and nests its joins, so the Stops page's routes-serving-stations
