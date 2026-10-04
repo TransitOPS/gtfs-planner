@@ -152,6 +152,18 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
     * any other `"user"` message gets the interview's first question, and any
       other tool result gets the alerts generic sentence.
 
+  The Headsign script is the headsigns skill's own flow on the seeded
+  `BROWSER-HS6` pattern:
+
+    * a `"user"` message mentioning a headsign gets a `summarize_headsigns` call;
+    * the `summarize_headsigns` result gets a `prepare_headsign_change` call from
+      `Lincoln City` to `Central Station` with no exclusions, so the native
+      follower rule alone decides which trips change;
+    * the `prepare_headsign_change` result gets the prepared sentence, which says
+      "prepared" and never "saved", unless the result is a tool error, which gets
+      a sentence that says nothing was prepared;
+    * any other message gets the generic headsign sentence.
+
   The date in the prepared timing is the agency-local date the turn's own
   system message states, read out of that message rather than from a clock.
 
@@ -261,6 +273,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   @prepared_in_seat "I prepared the in-seat setting. Review it before applying."
 
   @alerts_marker "Alerts helper"
+  @headsigns_marker "Headsign helper"
+  @headsigns_prepared "I prepared the rename to Central Station. Review it on this page before anything changes."
+  @headsigns_refused "I could not prepare that rename. Tell me the exact headsign and the new wording."
+  @headsigns_generic "I can help with the headsigns on this pattern."
   @alerts_question "Now or planned: are riders affected right now, or on planned dates?"
   @alerts_prepared "I prepared a detour on Route 12. The answers are filled in on the form. Check the preview."
   @alerts_not_prepared "I could not prepare that change. Tell me which route and dates you mean."
@@ -311,29 +327,22 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
 
   defp reply(messages) do
     cond do
-      in_seat?(messages) -> in_seat_reply(messages)
-      alerts?(messages) -> alerts_reply(messages)
-      comparison?(messages) -> comparison_reply(messages)
+      system_marked?(messages, @in_seat_marker) -> in_seat_reply(messages)
+      system_marked?(messages, @alerts_marker) -> alerts_reply(messages)
+      system_marked?(messages, @headsigns_marker) -> headsigns_reply(messages)
+      system_marked?(messages, @comparison_marker) -> comparison_reply(messages)
       true -> calendars_reply(messages)
     end
   end
-
-  defp comparison?(messages), do: Enum.any?(messages, &system_contains?(&1, @comparison_marker))
-
-  defp system_contains?(%{"role" => "system", "content" => content}, marker)
-       when is_binary(content),
-       do: String.contains?(content, marker)
-
-  defp system_contains?(_message, _marker), do: false
 
   # The turn's system message is the pack's own skill body, so the script is
   # chosen from what the turn says it can do rather than from the tools it
   # carries, and a pack this stand-in does not script falls through to the
   # Calendars script exactly as it did before the alerts one existed.
-  defp alerts?(messages) do
+  defp system_marked?(messages, marker) do
     Enum.any?(messages, fn
       %{"role" => "system", "content" => content} when is_binary(content) ->
-        String.contains?(content, @alerts_marker)
+        String.contains?(content, marker)
 
       _other ->
         false
@@ -343,16 +352,6 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   # The Blocks page's in-seat pack, whose skill body names the selection this
   # script prepares. Its tools carry no pair, no block and no date, so the
   # scripted call can only ever act on the source the page admitted.
-  defp in_seat?(messages) do
-    Enum.any?(messages, fn
-      %{"role" => "system", "content" => content} when is_binary(content) ->
-        String.contains?(content, @in_seat_marker)
-
-      _other ->
-        false
-    end)
-  end
-
   defp in_seat_reply(messages) do
     case List.last(messages) do
       %{"role" => "user", "content" => content} when is_binary(content) ->
@@ -1091,6 +1090,41 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouter do
   defp signed(delta), do: Integer.to_string(delta)
 
   defp weekday(iso), do: iso |> Date.from_iso8601!() |> Calendar.strftime("%a %b %-d, %Y")
+
+  # The Headsign helper's script is the skill's own flow on the seeded
+  # `BROWSER-HS6` pattern: a message about the headsign summarizes it, the summary
+  # prepares the `Lincoln City` to `Central Station` rename with no exclusions, and
+  # the prepared result gets a sentence that says prepared and never saved.
+  defp headsigns_reply(messages) do
+    case List.last(messages) do
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        if content =~ ~r/headsign/i,
+          do: tool_calls_reply("summarize_headsigns", %{}),
+          else: text_reply(@headsigns_generic)
+
+      %{"role" => "tool", "tool_call_id" => id, "content" => content} ->
+        headsigns_tool_reply(answered_tool(messages, id), content)
+
+      _other ->
+        text_reply(@headsigns_generic)
+    end
+  end
+
+  defp headsigns_tool_reply("summarize_headsigns", _content) do
+    tool_calls_reply("prepare_headsign_change", %{
+      "current_text" => "Lincoln City",
+      "new_text" => "Central Station"
+    })
+  end
+
+  defp headsigns_tool_reply("prepare_headsign_change", content) do
+    case Jason.decode(content) do
+      {:ok, %{"error" => _message}} -> text_reply(@headsigns_refused)
+      _prepared -> text_reply(@headsigns_prepared)
+    end
+  end
+
+  defp headsigns_tool_reply(_other, _content), do: text_reply(@headsigns_generic)
 
   defp alerts_reply(messages) do
     case List.last(messages) do

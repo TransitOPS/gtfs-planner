@@ -5,6 +5,7 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Model
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
 
   @user_school "No school service next Monday and Tuesday"
@@ -281,6 +282,59 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted headsign replies" do
+    test "a headsign request summarizes the headsigns first" do
+      body = post([system(Headsigns.skill()), user("Rename the Lincoln City headsign")])
+
+      assert {"{}", "summarize_headsigns"} = tool_call(body)
+    end
+
+    test "the summary prepares the Lincoln City rename with no exclusions" do
+      body = post(headsign_conversation() ++ headsign_summary())
+
+      assert {arguments, "prepare_headsign_change"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "current_text" => "Lincoln City",
+               "new_text" => "Central Station"
+             }
+    end
+
+    test "the prepared result says prepared and never saved" do
+      messages =
+        headsign_conversation() ++
+          headsign_summary() ++
+          [
+            assistant_tool_call("call_prepare_headsign_change", "prepare_headsign_change", %{}),
+            tool_result("call_prepare_headsign_change", %{"prepared" => true})
+          ]
+
+      content = final_text(post(messages))
+
+      assert content =~ "I prepared the rename"
+      refute content =~ ~r/saved|changed|done/i
+    end
+
+    test "a refused rename says nothing was prepared" do
+      messages =
+        headsign_conversation() ++
+          headsign_summary() ++
+          [
+            assistant_tool_call("call_prepare_headsign_change", "prepare_headsign_change", %{}),
+            tool_result("call_prepare_headsign_change", %{
+              "error" => "current_text is not this page's current default."
+            })
+          ]
+
+      assert final_text(post(messages)) =~ "I could not prepare that rename"
+    end
+
+    test "the headsign marker is the headsigns skill's own heading" do
+      assert Headsigns.skill() =~ "Headsign helper"
+      refute Calendars.skill() =~ "Headsign helper"
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -451,6 +505,16 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   # The messages the alerts turn loop has sent by the time it answers each
   # call: the user's request, the get_draft call and its result, then the
   # search_routes call and its result.
+  defp headsign_conversation,
+    do: [system(Headsigns.skill()), user("Rename the Lincoln City headsign")]
+
+  defp headsign_summary do
+    [
+      assistant_tool_call("call_summarize_headsigns", "summarize_headsigns", %{}),
+      tool_result("call_summarize_headsigns", %{"default" => "Lincoln City"})
+    ]
+  end
+
   defp alerts_conversation do
     [system(Alerts.skill())] ++ [user(@user_route_12)] ++ draft_call() ++ search_call()
   end

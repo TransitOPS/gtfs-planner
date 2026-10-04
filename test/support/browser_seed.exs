@@ -2478,7 +2478,7 @@ case Accounts.register_first_admin(%{
 
     # ── Headsign propagation fixtures ──
     #
-    # One route with a pattern per browser journey (BROWSER-HS1…HS5) and a
+    # One route with a pattern per browser journey (BROWSER-HS1…HS6) and a
     # continuation route for their interlined trips, all inside the existing
     # Browser E2E version: a newer published_at would become the default
     # version. Every pattern carries the same shape so each journey starts
@@ -2614,10 +2614,11 @@ case Accounts.register_first_admin(%{
       2 => "Browser Headsign Two",
       3 => "Browser Headsign Three",
       4 => "Browser Headsign Four",
-      5 => "Browser Headsign Five"
+      5 => "Browser Headsign Five",
+      6 => "Browser Headsign Six"
     }
 
-    Enum.each(1..5, fn n ->
+    Enum.each(1..6, fn n ->
       pattern = headsign_pattern.("BROWSER-HS#{n}", Map.fetch!(pattern_names, n), headsign_route)
       timing = headsign_timing.(pattern, nil)
 
@@ -2648,7 +2649,7 @@ case Accounts.register_first_admin(%{
     end)
 
     IO.puts(
-      "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS5 plus BROWSER_HEADSIGNS_20 continuations)"
+      "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS6 plus BROWSER_HEADSIGNS_20 continuations)"
     )
 
     # ── Auth fixtures for authentication.spec.js (Package 10) ──

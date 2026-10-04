@@ -14,7 +14,9 @@ import { resolve } from "node:path";
  * ones. Captures land in the canonical spec evidence folder; override with
  * `AI02_CAPTURE_DIR`.
  *
- * The `headsigns panel` case is read-only on BROWSER-HS1.
+ * The `headsigns panel` case is read-only on BROWSER-HS1. The `headsigns journey`
+ * cases own BROWSER-HS6: the first saves and undoes, the second ends with the native
+ * Undo so the pattern is restored, and the third saves nothing.
  */
 
 const EDITOR_USER = {
@@ -33,6 +35,28 @@ async function capture(page, folder, name) {
   const dir = resolve(CAPTURE_DIR, folder);
   mkdirSync(dir, { recursive: true });
   await page.screenshot({ path: resolve(dir, `${name}.png`), fullPage: true });
+}
+
+// A drawer is a top-layer dialog anchored to the viewport, so a full-page shot
+// leaves it half outside the frame; this captures what a person sees.
+async function captureViewport(page, folder, name) {
+  const dir = resolve(CAPTURE_DIR, folder);
+  mkdirSync(dir, { recursive: true });
+  await page.screenshot({ path: resolve(dir, `${name}.png`), animations: "disabled" });
+}
+
+// The drawer slides in over 300ms, so a capture or a coordinate taken at open
+// time freezes it mid-flight; wait for it to sit at the viewport's right edge.
+async function waitDrawerSettled(page, panelId = "headsign-review-drawer") {
+  await expect
+    .poll(() =>
+      page.evaluate((id) => {
+        const panel = document.querySelector(`#${id}`);
+        const aside = panel && panel.closest("aside");
+        return aside ? aside.getBoundingClientRect().right - window.innerWidth : Number.NaN;
+      }, panelId),
+    )
+    .toBeLessThanOrEqual(1);
 }
 
 async function waitForLiveView(page) {
@@ -139,4 +163,151 @@ test("headsigns panel", async ({ page }) => {
 
   await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS1", "stops");
   await expect(page.locator("#agent-helper-open")).toHaveCount(0);
+});
+
+// -- headsigns journey ----------------------------------------------------------
+
+const HS6 = ["BROWSER_HEADSIGNS", "BROWSER-HS6"];
+const RENAME_REQUEST = "Rename the Lincoln City headsign to Central Station.";
+
+/** Opens the panel on the pattern's Details task and starts an empty conversation. */
+async function startConversation(page) {
+  if ((await page.locator("#agent-panel").count()) === 0) {
+    await page.locator("#agent-helper-open").click();
+  }
+
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  await page.locator("#agent-new-conversation").click();
+  await expect(page.locator("#agent-composer-input")).toBeVisible();
+}
+
+async function ask(page, message) {
+  await page.locator("#agent-composer-input").fill(message);
+  await page.locator("#agent-send").click();
+}
+
+/** The prepared card of the current conversation, once the turn has settled. */
+async function preparedCard(page) {
+  const card = page.locator('section[id^="agent-prepared-"]');
+  await expect(card).toBeVisible({ timeout: 20000 });
+  return card;
+}
+
+// Prepares the rename on Details and presses the card's Review headsigns button.
+async function prepareAndReview(page) {
+  await openPattern(page, versionId, ...HS6, "details");
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+  await startConversation(page);
+  await ask(page, RENAME_REQUEST);
+
+  const card = await preparedCard(page);
+  await expect(card).toContainText("3 trips change");
+  await expect(card).toContainText("2 trips keep their own text");
+
+  // Preparing wrote nothing: the field and the usage line are as stored.
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+
+  return card;
+}
+
+test("headsigns journey: prepare, review, save and undo", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize(DESKTOP);
+
+  const card = await prepareAndReview(page);
+  await expect(card).toContainText("Stop-level headsigns are not changed");
+  await expect(card).not.toContainText(/saved/i);
+  await capture(page, "headsigns", "prepared-1440");
+
+  await page.setViewportSize(PHONE);
+  await expect(card).toBeVisible();
+  expect(await fitsViewport(page)).toBe(true);
+  await capture(page, "headsigns", "prepared-390");
+  await page.setViewportSize(DESKTOP);
+
+  // The handoff seeds the native field and opens the native drawer, nothing saved.
+  await card.getByRole("button", { name: "Review headsigns" }).click();
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Central Station");
+  const drawer = page.locator("#headsign-review-drawer");
+  await expect(drawer).toBeVisible();
+  await expect(page.locator("#headsign-review-drawer-status")).toContainText("3 trips selected");
+  await waitDrawerSettled(page);
+  await captureViewport(page, "headsigns", "drawer-1440");
+
+  await page.setViewportSize(PHONE);
+  await waitDrawerSettled(page);
+  expect(await fitsViewport(page)).toBe(true);
+  await captureViewport(page, "headsigns", "drawer-390");
+  await page.setViewportSize(DESKTOP);
+
+  // The editor's own Use selection and Save write exactly the prepared set.
+  await page.locator("#headsign-review-drawer-use").click();
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator("#headsign-update-box")).toContainText("Also update 3 trips");
+  await page.locator("#pattern-details-submit").click();
+
+  await expect(page.locator("#headsign-result")).toContainText("Headsign saved · 3 trips updated");
+  await expect(card).toContainText("Applied");
+  await expect(card.getByRole("button", { name: "Review headsigns" })).toHaveCount(0);
+  await expect(page.locator("#agent-notice")).toHaveCount(0);
+  await capture(page, "headsigns", "applied-1440");
+
+  // Native Undo restores the original text on all three trips.
+  await page.locator("#headsign-undo").click();
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
+});
+
+test("headsigns journey: an edited selection leaves the card unconfirmed", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize(DESKTOP);
+
+  const card = await prepareAndReview(page);
+  await card.getByRole("button", { name: "Review headsigns" }).click();
+  await expect(page.locator("#headsign-review-drawer-status")).toContainText("3 trips selected");
+
+  // The editor adds the likely-typo trip before saving.
+  await page.locator("#headsign-review-drawer-select-typos").click();
+  await expect(page.locator("#headsign-review-drawer-status")).toContainText("4 trips selected");
+  await page.locator("#headsign-review-drawer-use").click();
+  await page.locator("#pattern-details-submit").click();
+
+  await expect(page.locator("#headsign-result")).toContainText("Headsign saved · 4 trips updated");
+  await expect(page.locator("#agent-notice")).toContainText("You changed the request before saving");
+  await expect(card.getByRole("button", { name: "Review headsigns" })).toBeVisible();
+  await expect(card).not.toContainText("Applied");
+  await capture(page, "headsigns", "unconfirmed-1440");
+
+  // Restore BROWSER-HS6 with the native Undo.
+  await page.locator("#headsign-undo").click();
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
+});
+
+test("headsigns journey: the keyboard reaches the handoff and focus returns to the card", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize(DESKTOP);
+
+  const card = await prepareAndReview(page);
+  const cardId = await card.getAttribute("id");
+
+  // Activate the card's button with Enter, then close the drawer with Escape.
+  await card.getByRole("button", { name: "Review headsigns" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#headsign-review-drawer")).toBeVisible();
+  await waitDrawerSettled(page);
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#headsign-review-drawer")).toHaveCount(0);
+  await expect.poll(() => focusedId(page)).toBe(cardId);
+
+  // Nothing was saved: the staged field is a draft and the stored usage is unchanged.
+  await expect(page.locator("#headsign-usage, #headsign-update-box").first()).toBeVisible();
+  await openPattern(page, versionId, ...HS6, "details");
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
 });
