@@ -896,6 +896,11 @@ defmodule GtfsPlanner.Gtfs.TimetableComparisonSnapshotTest do
       Repo.delete_all(from(r in Route, where: r.organization_id in ^organization_ids))
       Repo.delete_all(from(a in Agency, where: a.organization_id in ^organization_ids))
 
+      # The active schedule's key refuses a delete of the active version alone.
+      Repo.update_all(from(o in Organization, where: o.id in ^organization_ids),
+        set: [active_gtfs_version_id: nil]
+      )
+
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id in ^organization_ids))
 
       Repo.delete_all(
