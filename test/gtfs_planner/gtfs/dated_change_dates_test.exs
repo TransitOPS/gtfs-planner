@@ -103,9 +103,10 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDatesTest do
       assert partition.temporary_dates |> List.first() == ~D[2026-11-02]
       assert partition.temporary_dates |> List.last() == ~D[2026-11-13]
 
-      # T and N are disjoint and their union is exactly D.
+      # T and N are disjoint and their union is exactly D. D is ascending, and
+      # T then N is not, so the union is compared as the set it is.
       assert disjoint?(partition)
-      assert union(partition) == partition.original_dates
+      assert MapSet.new(union(partition)) == MapSet.new(partition.original_dates)
       assert length(partition.normal_dates) == @weekday_dates - 9
       assert sorted?(partition.original_dates)
       assert sorted?(partition.temporary_dates)
@@ -177,7 +178,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDatesTest do
       assert ~D[2027-03-06] in multiyear.normal_dates
       assert ~D[2027-07-04] in multiyear.normal_dates
       assert disjoint?(multiyear)
-      assert union(multiyear) == multiyear.original_dates
+      assert MapSet.new(union(multiyear)) == MapSet.new(multiyear.original_dates)
 
       # Exception-only service: D is exactly the two additions, one inside the
       # interval and one a year outside it, with no weekly range at all.
@@ -279,7 +280,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDatesTest do
   # production snapshot boundary; each case removes exactly its organizations.
   defp harbor_scope(supervisor) do
     harbor = in_task(supervisor, fn -> build_harbor_scope() end)
-    commit_cleanup(supervisor, harbor.organization_ids)
+    commit_cleanup(harbor.organization_ids)
     harbor
   end
 
@@ -361,7 +362,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDatesTest do
   # without weakening the span the cap is counting.
   defp cap_scope(supervisor, cells) do
     scope = in_task(supervisor, fn -> build_cap_scope(cells) end)
-    commit_cleanup(supervisor, scope.organization_ids)
+    commit_cleanup(scope.organization_ids)
     scope
   end
 
@@ -540,9 +541,12 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDatesTest do
     |> Task.await(30_000)
   end
 
-  defp commit_cleanup(supervisor, organization_ids) do
+  # `on_exit` runs after the test process has exited, so a `start_supervised!/1`
+  # supervisor is already dead here; the cleanup owns its own unboxed
+  # connection, as `stations/stop_levels_test.exs` does.
+  defp commit_cleanup(organization_ids) do
     on_exit(fn ->
-      in_task(supervisor, fn ->
+      ConcurrencyHelpers.unboxed(fn ->
         ConcurrencyHelpers.delete_committed_members!(organization_ids)
         ConcurrencyHelpers.delete_committed_scope!(organization_ids)
       end)

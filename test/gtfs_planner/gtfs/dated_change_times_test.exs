@@ -451,7 +451,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeTimesTest do
   # snapshot boundary; each case removes exactly its organization.
   defp times_scope(supervisor) do
     times = in_task(supervisor, fn -> build_times_scope() end)
-    commit_cleanup(supervisor, times.organization_ids)
+    commit_cleanup(times.organization_ids)
     times
   end
 
@@ -562,17 +562,23 @@ defmodule GtfsPlanner.Gtfs.DatedChangeTimesTest do
   # default. `GtfsTime` requires two-digit minutes and seconds, so a one-digit
   # minute such as "6:0:00" is a corrupt-but-well-shaped value it will not read.
   defp update_stop_time(organization, trip_id, stop_sequence, arrival_time, departure_time) do
-    {1, _result} =
-      Repo.update_all(
-        from(t in StopTime,
-          where:
-            t.organization_id == ^organization.id and t.trip_id == ^trip_id and
-              t.stop_sequence == ^stop_sequence
-        ),
-        set: [arrival_time: arrival_time, departure_time: departure_time]
-      )
+    # Committed from its own autocommit connection: a write made in the test
+    # process would stay in the sandbox transaction until ExUnit rolls it back,
+    # which is after `on_exit` runs, so it would hold row locks the
+    # committed-fixture cleanup needs.
+    unboxed(fn ->
+      {1, _result} =
+        Repo.update_all(
+          from(t in StopTime,
+            where:
+              t.organization_id == ^organization.id and t.trip_id == ^trip_id and
+                t.stop_sequence == ^stop_sequence
+          ),
+          set: [arrival_time: arrival_time, departure_time: departure_time]
+        )
 
-    :ok
+      :ok
+    end)
   end
 
   defp weekday(service_id) do
@@ -661,15 +667,20 @@ defmodule GtfsPlanner.Gtfs.DatedChangeTimesTest do
     )
   end
 
+  defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
+
   defp in_task(supervisor, fun) do
     supervisor
     |> Task.Supervisor.async_nolink(fn -> Sandbox.unboxed_run(Repo, fun) end)
     |> Task.await(30_000)
   end
 
-  defp commit_cleanup(supervisor, organization_ids) do
+  # `on_exit` runs after the test process has exited, so a `start_supervised!/1`
+  # supervisor is already dead here; the cleanup owns its own unboxed
+  # connection, as `stations/stop_levels_test.exs` does.
+  defp commit_cleanup(organization_ids) do
     on_exit(fn ->
-      in_task(supervisor, fn ->
+      ConcurrencyHelpers.unboxed(fn ->
         ConcurrencyHelpers.delete_committed_members!(organization_ids)
         ConcurrencyHelpers.delete_committed_scope!(organization_ids)
       end)

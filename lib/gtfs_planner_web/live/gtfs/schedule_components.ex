@@ -507,6 +507,10 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   `dated-change-accept` and `dated-change-input-errors`, plus
   `dated-change-helper-unavailable` for the visible refusal the host renders when
   the accepted source does not fit the helper's whole-context byte ceiling.
+
+  Both controls are secondary: the Schedule page's single primary action belongs
+  to the timetable (Add trips, or Shift times while a selection is held), and
+  these plan a change rather than perform the page's primary work.
   """
   attr :form, :map, required: true, doc: "the intent form built with `to_form/2`"
   attr :errors, :map, default: %{}, doc: "field-keyed messages from the domain's refusal"
@@ -633,12 +637,16 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         />
 
         <div class="flex flex-wrap items-center gap-3">
-          <.button id="dated-change-accept" type="submit" class="min-h-11">
+          <%!-- The Schedule page keeps its one magenta for the page's primary
+                action (Add trips, or Shift times while a selection is held), so
+                both planning controls are secondary. --%>
+          <.button id="dated-change-accept" type="submit" variant="secondary" class="min-h-11">
             Review inputs
           </.button>
           <.button
             id="dated-change-analyze"
             type="button"
+            variant="secondary"
             phx-click="dated_change_analyze"
             disabled={!@can_analyze? or @analyzing?}
             aria-describedby="dated-change-analyze-hint"

@@ -516,7 +516,7 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
   # production snapshot boundary; each case removes exactly its organization.
   defp harbor_scope(supervisor) do
     harbor = in_task(supervisor, fn -> build_harbor_scope() end)
-    commit_cleanup(supervisor, harbor.organization_ids)
+    commit_cleanup(harbor.organization_ids)
     harbor
   end
 
@@ -941,9 +941,12 @@ defmodule GtfsPlanner.Gtfs.DatedChangeDependenciesTest do
     |> Task.await(@task_timeout)
   end
 
-  defp commit_cleanup(supervisor, organization_ids) do
+  # `on_exit` runs after the test process has exited, so a `start_supervised!/1`
+  # supervisor is already dead here; the cleanup owns its own unboxed
+  # connection, as `stations/stop_levels_test.exs` does.
+  defp commit_cleanup(organization_ids) do
     on_exit(fn ->
-      in_task(supervisor, fn ->
+      ConcurrencyHelpers.unboxed(fn ->
         ConcurrencyHelpers.delete_committed_members!(organization_ids)
         ConcurrencyHelpers.delete_committed_scope!(organization_ids)
       end)
