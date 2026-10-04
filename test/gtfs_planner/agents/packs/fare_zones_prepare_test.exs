@@ -129,8 +129,17 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesPrepareTest do
     assert result["moved_count"] == 1
     assert prepared.summary.title == "Assign 4 stops to Zone C"
 
-    assert "3 gain a zone, 1 move from another zone, 0 already in Zone C" in prepared.summary.lines
+    assert "3 gain a zone, 1 moves from another zone, 0 already in Zone C" in prepared.summary.lines
     assert "Includes stops already in another zone" in prepared.summary.lines
+  end
+
+  test "a single stop reads as one stop in the title and the counts", context do
+    assert {:prepared, prepared, _result, _evidence} =
+             prepare(context.scope, "B", exclude: ["AIR1", "A3"])
+
+    assert prepared.summary.title == "Assign 1 stop to Zone B"
+
+    assert "1 gains a zone, 0 move from another zone, 0 already in Zone B" in prepared.summary.lines
   end
 
   describe "refusals" do

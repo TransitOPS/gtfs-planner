@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.FareZones
+  alias GtfsPlanner.Wording
 
   @source_ref "gtfs_fare_zones"
   @zone_limit 50
@@ -394,7 +395,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
            fingerprint: selection.fingerprint
          }},
       summary: %{
-        title: "Assign #{length(stop_ids)} stops to #{zone_name}",
+        title: "Assign #{Wording.count_noun(length(stop_ids), "stop")} to #{zone_name}",
         detail:
           "Review the stops, shared routes and export effect, then save in the zone review.",
         lines: summary_lines(scope, predicate, selection, review, zone_name)
@@ -451,7 +452,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
         do: "Stops with no zone only",
         else: "Includes stops already in another zone"
       ),
-      "#{review.added_count} gain a zone, #{review.moved_count} move from another zone, #{review.unchanged_count} already in #{zone_name}",
+      "#{review.added_count} #{Wording.noun(review.added_count, "gains", "gain")} a zone, #{review.moved_count} #{Wording.noun(review.moved_count, "moves", "move")} from another zone, #{review.unchanged_count} already in #{zone_name}",
       exclusion_line(selection),
       shared_route_line(selection, predicate),
       export_line(scope)
