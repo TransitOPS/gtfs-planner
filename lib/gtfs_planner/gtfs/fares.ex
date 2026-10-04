@@ -556,10 +556,7 @@ defmodule GtfsPlanner.Gtfs.Fares do
     if managed?(organization_id, gtfs_version_id) do
       products = version_products(organization_id, gtfs_version_id)
       details = detail_index(organization_id, gtfs_version_id)
-      media = FareMedia |> scoped(organization_id, gtfs_version_id) |> Repo.all()
-      riders = RiderCategory |> scoped(organization_id, gtfs_version_id) |> Repo.all()
-      media = Map.new(media, &{&1.fare_media_id, &1})
-      riders = Map.new(riders, &{&1.rider_category_id, &1})
+      {media, riders} = price_names(organization_id, gtfs_version_id)
 
       kinds =
         products
@@ -585,6 +582,15 @@ defmodule GtfsPlanner.Gtfs.Fares do
     else
       {:error, :unmanaged}
     end
+  end
+
+  # The version's payment media and rider categories by their natural IDs, which
+  # name and classify a price cell.
+  defp price_names(organization_id, gtfs_version_id) do
+    media = FareMedia |> scoped(organization_id, gtfs_version_id) |> Repo.all()
+    riders = RiderCategory |> scoped(organization_id, gtfs_version_id) |> Repo.all()
+
+    {Map.new(media, &{&1.fare_media_id, &1}), Map.new(riders, &{&1.rider_category_id, &1})}
   end
 
   defp price_cell(product, kinds, media, riders, code) do
@@ -619,6 +625,150 @@ defmodule GtfsPlanner.Gtfs.Fares do
 
   defp price_cell_contains?(value, search),
     do: String.contains?(String.downcase(value), String.downcase(search))
+
+  @typedoc "One explicit price: the cell's key and the amount as the editor wrote it."
+  @type price_cell_input :: %{
+          fare_product_id: String.t(),
+          rider_category_id: String.t() | nil,
+          fare_media_id: String.t() | nil,
+          amount: String.t()
+        }
+
+  @doc """
+  The exact before and after of an explicit list of price cells, computed and not
+  written.
+
+  Each input names one stored price by `{fare_product_id, rider_category_id,
+  fare_media_id}` with the amount to set, read by `Fares.Money.parse/1` (so `$1.75`
+  and `Free` are prices). Nothing is ever rounded, created or deleted: the call
+  refuses instead.
+
+  Refusals, each writing nothing: `:unmanaged`, `:no_prices` for an empty list,
+  `:too_many` above #{@price_cell_limit} cells, `:duplicate_cell` for a repeated
+  key, `:not_found` for a product this version does not hold (another
+  organization's product included), `{:missing_cell, key}` for a key with no
+  stored row (saving it would create a price), `:currency_mismatch` when
+  `currency` is not the product's own, and `:invalid_price` for a blank, negative
+  or unreadable amount and for one the currency cannot hold exactly (more
+  fractional digits than its minor units; `150.50` in a zero-decimal currency is
+  refused, never stored as `151`).
+
+  `rows` are the cells whose amount changes, in input order, with the amount
+  stored now (`now`), the amount to set (`new`) and the names a review shows;
+  `unchanged` are the cells already at their amount. Both feed `save_prices/2`
+  directly, each row's `now` as the amount reviewed.
+  """
+  @spec preview_price_cells(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), [price_cell_input()]) ::
+          {:ok, %{rows: [map()], unchanged: [map()]}}
+          | {:error,
+             :unmanaged
+             | :no_prices
+             | :too_many
+             | :duplicate_cell
+             | :invalid_price
+             | :not_found
+             | :currency_mismatch
+             | {:missing_cell, {String.t(), String.t() | nil, String.t() | nil}}}
+  def preview_price_cells(organization_id, gtfs_version_id, currency, cells)
+      when is_binary(organization_id) and is_binary(gtfs_version_id) and is_binary(currency) and
+             is_list(cells) do
+    cond do
+      not managed?(organization_id, gtfs_version_id) -> {:error, :unmanaged}
+      cells == [] -> {:error, :no_prices}
+      length(cells) > @price_cell_limit -> {:error, :too_many}
+      duplicate_cells?(cells) -> {:error, :duplicate_cell}
+      true -> preview_cells(organization_id, gtfs_version_id, currency, cells)
+    end
+  end
+
+  defp duplicate_cells?(cells) do
+    keys = Enum.map(cells, &cell_key/1)
+    length(keys) != length(Enum.uniq(keys))
+  end
+
+  defp preview_cells(organization_id, gtfs_version_id, currency, cells) do
+    products = version_products(organization_id, gtfs_version_id)
+    {media, riders} = price_names(organization_id, gtfs_version_id)
+    version_currency = currency(products)
+
+    cells
+    |> Enum.reduce_while({:ok, []}, fn cell, {:ok, previewed} ->
+      with {:ok, product} <- stored_price(products, cell_key(cell)),
+           :ok <- price_currency(product, version_currency, currency),
+           {:ok, new} <- exact_amount(cell[:amount], currency) do
+        {:cont, {:ok, [price_preview(product, new, media, riders) | previewed]}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, previewed} ->
+        {changed, unchanged} =
+          previewed |> Enum.reverse() |> Enum.split_with(&(not same_amount?(&1.now, &1.new)))
+
+        {:ok,
+         %{
+           rows: Enum.map(changed, &Map.delete(&1, :amount)),
+           unchanged: Enum.map(unchanged, &unchanged_price/1)
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The stored row a cell names. A product of another organization or version is
+  # absent here, so it is `:not_found` exactly like a made-up one; a product this
+  # version holds with no row at that rider and medium would be created by a
+  # save, which a preview never offers.
+  defp stored_price(products, {product_id, _rider_id, _media_id} = key) do
+    case Enum.find(products, &(product_key(&1) == key)) do
+      %FareProduct{} = product ->
+        {:ok, product}
+
+      nil ->
+        if Enum.any?(products, &(&1.fare_product_id == product_id)),
+          do: {:error, {:missing_cell, key}},
+          else: {:error, :not_found}
+    end
+  end
+
+  defp price_currency(product, version_currency, currency) do
+    if (product.currency || version_currency) == currency,
+      do: :ok,
+      else: {:error, :currency_mismatch}
+  end
+
+  # An amount is a price exactly as written: blank, negative and unreadable text
+  # are refused, and so is a price the currency cannot hold without rounding.
+  defp exact_amount(input, currency) do
+    case Money.parse(input) do
+      {:ok, %Decimal{} = amount} ->
+        if Decimal.equal?(Decimal.round(amount, Money.minor_units(currency)), amount),
+          do: {:ok, amount},
+          else: {:error, :invalid_price}
+
+      _blank_or_invalid ->
+        {:error, :invalid_price}
+    end
+  end
+
+  defp price_preview(product, new, media, riders) do
+    %{
+      fare_product_id: product.fare_product_id,
+      rider_category_id: product.rider_category_id,
+      fare_media_id: product.fare_media_id,
+      now: product.amount,
+      new: new,
+      fare_name: fare_name(product),
+      rider_name:
+        riders |> Map.get(product.rider_category_id) |> then(&(&1 && &1.rider_category_name)),
+      medium_name: media |> Map.get(product.fare_media_id) |> then(&(&1 && &1.fare_media_name)),
+      amount: new
+    }
+  end
+
+  defp unchanged_price(price), do: price |> Map.delete(:now) |> Map.delete(:new)
 
   @doc """
   The price changes a Change prices dialog is showing, computed and not written
