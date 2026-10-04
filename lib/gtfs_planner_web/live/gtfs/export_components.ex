@@ -1977,6 +1977,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp change_kind(:identifier), do: "Renamed"
   defp change_kind(reason), do: humanize(reason)
 
+  # A structural change is a rename, a presence change, or a field of an entity that
+  # kept its identifier (its service dates, stop times, frequency windows, name and
+  # so on). The last kind is neither new nor missing, so it says which field moved.
+  defp structural_title(change) when change in [:identifier, :added, :removed],
+    do: change_kind(change)
+
+  defp structural_title(_field), do: "Changed"
+
+  defp structural_note(:identifier),
+    do: "Renamed; the service it carries was compared under both identifiers."
+
+  defp structural_note(:removed), do: "This entity is missing from the candidate file."
+  defp structural_note(:added), do: "This entity is new in the candidate file."
+
+  defp structural_note(field),
+    do: "Same identifier, but its #{structural_field(field)} changed between the two files."
+
+  defp structural_field(:service_dates), do: "service dates"
+  defp structural_field(:time_vector), do: "stop times"
+  defp structural_field(:stop_pattern), do: "stops"
+  defp structural_field(:frequencies), do: "frequency windows"
+  defp structural_field(field), do: field |> to_string() |> String.replace("_", " ")
+
   defp unresolved_reason(:no_candidate), do: "no candidate on the other side"
   defp unresolved_reason(:ambiguous_signature), do: "several entities share its signature"
   defp unresolved_reason(:missing_field), do: "a field it needs was absent"
@@ -2026,12 +2049,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp signed(value) when value > 0, do: "+#{value}"
   defp signed(value), do: "#{value}"
 
+  # An entity of the earlier file is matched against candidates from the candidate
+  # file and the other way round, so each candidate is named for the file it is in.
   defp unresolved_refs(%{left_ref: left, right_ref: right, candidates: candidates}) do
+    candidate_file = if left, do: "candidate", else: "earlier"
+
     parts =
       ([
          left && "earlier #{left.id} (#{left.file} row #{left.row})",
          right && "candidate #{right.id} (#{right.file} row #{right.row})"
-       ] ++ Enum.map(candidates, &"candidate &1.id (#{&1.file} row #{&1.row})"))
+       ] ++
+         Enum.map(candidates, &"#{candidate_file} #{&1.id} (#{&1.file} row #{&1.row})"))
       |> Enum.reject(&is_nil/1)
 
     case parts do
@@ -2468,15 +2496,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     >
       <div class="min-w-0">
         <p class="text-sm font-semibold text-strong">
-          {change_kind(@change.change)} {@change.entity}
+          {structural_title(@change.change)} {@change.entity}
           <span class="font-mono text-[13px]">{@change.id}</span>
         </p>
         <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
-          <%= if @change.change == :identifier do %>
-            Renamed; the service it carries was compared under both identifiers.
-          <% else %>
-            This entity is {if @change.change == :removed, do: "missing from", else: "new in"} the candidate file.
-          <% end %>
+          {structural_note(@change.change)}
           {if @change.meaning_changed,
             do: " Its meaning changed, so aligned timing was not claimed."}
         </p>

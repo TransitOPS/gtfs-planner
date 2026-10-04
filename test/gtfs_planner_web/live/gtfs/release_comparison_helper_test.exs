@@ -293,6 +293,42 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert has_element?(view, "#agent-helper-open")
     end
 
+    test "a trip that kept its identifier but lost a service date is a change, not a new entity",
+         context do
+      view = view(context) |> compare!(context.left, context.right)
+
+      # T2 moved to a service the calendar removes on the 26th: same identifier,
+      # one fewer date. It is not new in the candidate file and not missing from it.
+      assert has_element?(view, "#comparison-structural", "Changed trip")
+      assert has_element?(view, "#comparison-structural", "T2")
+
+      assert has_element?(
+               view,
+               "#comparison-structural",
+               "Same identifier, but its service dates changed between the two files."
+             )
+
+      refute has_element?(view, "#comparison-structural", "new in the candidate file")
+      refute has_element?(view, "#comparison-structural", "missing from the candidate file")
+
+      # The renamed route and trip are still renames.
+      assert has_element?(view, "#comparison-structural", "Renamed route")
+      assert has_element?(view, "#comparison-structural", "Renamed trip")
+    end
+
+    test "twin stops are listed by identifier, each candidate named for its own file",
+         context do
+      view = view(context) |> compare!(context.left, context.right)
+
+      # The earlier stop S3 has two candidates in the candidate file, and each
+      # candidate twin points back at the earlier stop: three rows, no placeholder.
+      assert has_element?(view, "#comparison-unresolved-rows", "earlier S3 (stops.txt row 4)")
+      assert has_element?(view, "#comparison-unresolved-rows", "candidate S3A (stops.txt row 4)")
+      assert has_element?(view, "#comparison-unresolved-rows", "candidate S3B (stops.txt row 5)")
+      assert has_element?(view, "#comparison-unresolved-rows", "earlier S3 (stops.txt row 4)")
+      refute has_element?(view, "#comparison-unresolved-rows", "&1")
+    end
+
     test "two identical files are a complete comparison with nothing to report", context do
       first = publish_run!(context.organization, context.left_version, simple_zip())
       second = publish_run!(context.organization, context.right_version, simple_zip())
