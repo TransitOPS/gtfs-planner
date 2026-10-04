@@ -67,8 +67,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
       checks_disclosure: 1
     ]
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Packs.StopImpact
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareZones
@@ -78,6 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   alias GtfsPlanner.Gtfs.StopPlacement
   alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.StopsMap
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.StopsMapComponents
   require Logger
 
@@ -182,7 +187,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign(:requested_action, nil)
      |> assign_edit_state()
      |> assign_add_state()
-     |> assign_search("", [], [], false)}
+     |> assign_search("", [], [], false)
+     |> AgentPanel.mount("stop_impact")}
   end
 
   # Everything the edit panel owns, in one place, so every way into it — the
@@ -269,6 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     # put back, so the panel never describes a move that is not on the map.
     |> assign(:edit_move, nil)
     |> assign(:move_review, nil)
+    |> assign(:move_return_focus, nil)
     |> assign(:move_loading?, false)
     |> assign(:move_lines, :redraw)
     |> assign(:move_answer, nil)
@@ -1332,6 +1339,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_usage, nil)
     |> assign_edit_state()
     |> assign_station_state()
+    |> bind_agent_context()
   end
 
   # The station panel is a panel of its own rather than a state of the edit
@@ -1426,6 +1434,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     socket
     |> assign(:edit_move, edit_move(socket.assigns))
     |> push_map_mode()
+    |> bind_agent_context()
   end
 
   defp edit_move(%{edit_baseline: baseline, edit_draft: draft, edit_stop: stop})
@@ -1434,8 +1443,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
            parse_point(%{"lat" => draft["stop_lat"], "lon" => draft["stop_lon"]}),
          {:ok, {base_lat, base_lon}} <-
            parse_point(%{"lat" => baseline["stop_lat"], "lon" => baseline["stop_lon"]}),
-         distance when distance > 0.5 <-
-           StopPlacement.distance({base_lon, base_lat}, {lon, lat}) do
+         distance = StopPlacement.distance({base_lon, base_lat}, {lon, lat}),
+         true <- StopPlacement.moved?(distance) do
       %{
         distance_m: distance,
         band: StopPlacement.move_band(distance, stop.routes != []),
@@ -1462,6 +1471,15 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   # The review is read in the LiveView process rather than in the command's
   # transaction, because `move_review/3` asks Geoapify for street geometry and
   # an external call does not belong inside a transaction that is holding locks.
+  # A review the helper's card started returns focus to that card, as the card's own
+  # drawer does on the other pages; a review the editor started has no card to return to.
+  defp return_focus_to_prepared_card(%{assigns: %{move_return_focus: id}} = socket)
+       when is_binary(id) do
+    socket |> assign(:move_return_focus, nil) |> push_event("agent:focus", %{id: id})
+  end
+
+  defp return_focus_to_prepared_card(socket), do: socket
+
   defp start_move_review(socket) do
     case {socket.assigns.edit_stop, draft_point(socket.assigns)} do
       {%{uuid: uuid}, point} when not is_nil(point) ->
@@ -1474,6 +1492,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
           |> assign(:move_outcome, :none)
           |> assign(:move_errors, [])
           |> assign(:move_review, nil)
+          |> assign(:move_return_focus, nil)
           |> assign(:move_answer, nil)
 
         start_async(socket, {:move_review, socket.assigns.edit_token}, fn ->
@@ -1576,6 +1595,21 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
   end
 
   @impl true
+  # A prepared card's button. The helper only starts the native move review for the
+  # same stop and point; the review keeps its own street-routing request and band
+  # choices, and the editor's own Apply is the only write (CR-4). No receipt is
+  # recorded: a pin change replaces the conversation and the native apply rebinds
+  # the helper with no pin, so no card remains that could claim an unapplied move.
+  # An entry that is not an integer is not this panel's and does nothing.
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_move(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
   def handle_event("stop_map_ready", _params, socket) do
     {:noreply, socket |> assign(:map_state, :ready) |> then(&push_scene/1)}
   end
@@ -1679,7 +1713,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
      |> assign_replace_state()
      |> assign_station_state()
      |> leave_station_panel()
-     |> push_map_mode()}
+     |> push_map_mode()
+     |> return_focus_to_prepared_card()}
   end
 
   # Asking what deleting would remove goes through the same guard as every other
@@ -2230,6 +2265,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:selected_stop_id, stop.stop_id)
     |> assign(:edit_stop, edit_stop_row(stop, socket.assigns))
     |> assign(:edit_loaded_updated_at, stop.updated_at)
+    # The baseline is the draft again, so a pending move measured from the old
+    # baseline (a correction that has just been saved) is over.
+    |> assign(:edit_move, nil)
     |> assign(:edit_baseline, draft)
     |> assign(:edit_errors, %{})
     |> assign(:edit_outcome, :none)
@@ -2237,7 +2275,130 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     |> assign(:edit_more_open?, false)
     |> assign_edit_draft(draft)
     |> assign(:edit_dirty?, false)
+    |> bind_agent_context()
   end
+
+  # The stop impact helper's conversation belongs to the stop the edit panel has
+  # open and the pin the draft holds. The page binds both from its own assigns, so the
+  # model never names them, and a different stop, a moved pin or typed coordinates is
+  # a new context and therefore a new conversation (INV-2, INV-3). Without an open
+  # stop the bare version context is bound, which the pack refuses, and the helper
+  # closes with the panel it belongs to.
+  defp bind_agent_context(socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+    previous = focus(socket.assigns.agent_context)
+
+    context =
+      with %{uuid: uuid} <- socket.assigns.edit_stop,
+           {:ok, bound} <-
+             Scope.with_source_snapshot(Scope.context({:version, version_id}), %{
+               kind: "stop_focus",
+               payload: %{
+                 "schema_version" => 1,
+                 "stop_uuid" => uuid,
+                 "candidate" => candidate(socket.assigns.edit_move)
+               }
+             }) do
+        bound
+      else
+        _unbound -> Scope.context({:version, version_id})
+      end
+
+    socket = if focus(context), do: socket, else: assign(socket, :agent_open?, false)
+    left_session = socket.assigns.agent_session
+    socket = AgentPanel.set_context(socket, context)
+
+    # Every pin is its own context, so a nudged pin would otherwise leave one idle
+    # session behind per position until its half-hour expiry, against the 200-session cap.
+    # A session nobody talked to has nothing to keep; the panel has already let go of it.
+    if socket.assigns.agent_session != left_session, do: Agents.discard_unused(left_session)
+
+    # `set_context/2` clears the notice, so the pin notice is set after it, and only
+    # for the same stop under an open panel: another stop is simply another stop.
+    case {previous, focus(context)} do
+      {{uuid, old_pin}, {uuid, new_pin}} when old_pin != new_pin ->
+        if socket.assigns.agent_open?,
+          do:
+            assign(
+              socket,
+              :agent_notice,
+              "The pin moved, so the helper started a new conversation."
+            ),
+          else: socket
+
+      _other ->
+        socket
+    end
+  end
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_move(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: {:stop_move, command}}} ->
+        hand_off_move(socket, entry_id, command)
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  # The card was made for one stop and one pin. Every refusal changes nothing but the
+  # notice; a request that still matches starts the native move review.
+  defp hand_off_move(socket, entry_id, command) do
+    assigns = socket.assigns
+
+    cond do
+      not same_stop?(assigns.edit_stop, command) ->
+        refuse_move(socket, "This request was prepared for another stop. Ask again here.")
+
+      not same_pin?(draft_point(assigns), command) ->
+        refuse_move(socket, "The pin moved since this request was prepared. Ask again.")
+
+      other_panel_open?(assigns) ->
+        refuse_move(socket, "Another panel is open. Close it first.")
+
+      assigns.move_loading? or assigns.move_saving? or assigns.move_review != nil ->
+        refuse_move(socket, "A move review is already open. Finish or close it first.")
+
+      true ->
+        socket
+        |> assign(:agent_notice, nil)
+        |> start_move_review()
+        |> assign(:move_return_focus, "agent-prepared-#{entry_id}")
+    end
+  end
+
+  # The replace, delete and station panels take the place of the move review, so a
+  # review started behind one would spend a routing request and show nothing.
+  defp other_panel_open?(assigns) do
+    assigns.panel != :edit or assigns.replace_candidates != [] or assigns.delete_review != nil or
+      assigns.delete_loading? or assigns.delete_outcome == :failed
+  end
+
+  defp same_stop?(%{uuid: uuid}, %{stop_uuid: uuid}), do: true
+  defp same_stop?(_edit_stop, _command), do: false
+
+  defp same_pin?({lon, lat}, %{lat: lat_text, lon: lon_text}),
+    do:
+      StopImpact.coordinate_text(lat) == lat_text and StopImpact.coordinate_text(lon) == lon_text
+
+  defp same_pin?(_no_point, _command), do: false
+
+  defp refuse_move(socket, notice), do: assign(socket, :agent_notice, notice)
+
+  defp candidate(%{lat: lat, lon: lon}), do: %{"lat" => lat, "lon" => lon}
+  defp candidate(_no_move), do: nil
+
+  # The stop and pin a context names, or nil for the bare version context.
+  defp focus(%{source_snapshot: %{kind: "stop_focus", payload: payload}}),
+    do: {payload["stop_uuid"], payload["candidate"]}
+
+  defp focus(_context), do: nil
 
   # The draft is the stop's own values as strings. The baseline is the same map,
   # and the two being compared field by field is what "Unsaved changes" means —
@@ -2459,6 +2620,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
     # The edit panel's tasks belong to the stop being left, so a save that lands
     # after this cannot take the editor back out of the add panel.
     |> assign(:edit_token, make_ref())
+    # The helper belongs to the stop and pin being left, so it is unbound and closed
+    # with them rather than left over the add panel.
+    |> assign(:edit_stop, nil)
+    |> assign(:edit_move, nil)
+    |> bind_agent_context()
     |> assign(:panel, :add)
     |> assign(:placement, nil)
     |> assign(:add_kind, kind)
@@ -3263,7 +3429,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
 
         <div
           id="stops-map-workspace"
-          class="grid min-h-0 lg:h-[calc(100vh-13rem)] lg:grid-cols-[minmax(0,1fr)_408px]"
+          class="relative grid min-h-0 lg:h-[calc(100vh-13rem)] lg:grid-cols-[minmax(0,1fr)_408px]"
         >
           <.map_stage
             id="stops-map-stage"
@@ -3436,10 +3602,83 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLive do
               <% end %>
             <% end %>
           <% end %>
+
+          <%!--
+          The stop impact helper sits over the map's upper left on wide screens, so the
+          map canvas and the edit panel keep their size, and below the panel on narrow
+          ones. It is offered only while a stop is open, because that stop is its context.
+          Its focus listener belongs to this wrapper, which survives the conditional
+          panel. --%>
+          <div
+            :if={@edit_stop}
+            id="stops-map-helper"
+            phx-hook=".StopsMapHelperFocus"
+            class={
+              [
+                "flex flex-col gap-2 border-t border-subtle bg-white p-3 lg:absolute lg:left-4 lg:z-10 lg:w-[24rem] lg:border-0 lg:bg-transparent lg:p-0",
+                # The map's own caption ("The stop has moved") sits at the same corner, so
+                # the helper starts below it while one is showing.
+                if(map_caption(assigns),
+                  do: "lg:top-32 lg:max-h-[calc(100%-9rem)]",
+                  else: "lg:top-4 lg:max-h-[calc(100%-2rem)]"
+                )
+              ]
+            }
+          >
+            <div class="flex justify-end lg:justify-start">
+              <.button
+                id="agent-helper-open"
+                type="button"
+                phx-click="agent_open"
+                aria-expanded={to_string(@agent_open?)}
+                aria-controls="agent-panel"
+                variant="secondary"
+                class="min-h-11 lg:shadow-card"
+              >
+                Open helper
+              </.button>
+            </div>
+
+            <%!-- A column, so the panel shrinks to the overlay's height and its transcript
+                   scrolls instead of the composer being clipped. --%>
+            <div
+              :if={@agent_open?}
+              class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-box shadow-card [&>aside]:min-h-0"
+            >
+              <.agent_panel
+                id="agent-panel"
+                title={@agent_title}
+                intro={@agent_intro}
+                examples={@agent_examples}
+                scope_line={helper_scope_line(assigns)}
+                status={@agent_status}
+                entries={@streams.agent_entries}
+                form={@agent_form}
+                notice={@agent_notice}
+                entries_empty?={@agent_entries_empty?}
+                review_label={fn _prepared -> "Review move" end}
+              />
+            </div>
+
+            <script :type={Phoenix.LiveView.ColocatedHook} name=".StopsMapHelperFocus">
+              export default {
+                mounted() {
+                  this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+                }
+              }
+            </script>
+          </div>
         </div>
       </div>
     </Layouts.app>
     """
+  end
+
+  # The panel names the stop it is bound to and whether a pin is placed, from the
+  # page's own assigns, so the line always agrees with the panel beside it.
+  defp helper_scope_line(%{edit_stop: stop, edit_move: move} = assigns) do
+    pin = if move, do: " · pin placed", else: ""
+    "Stop #{stop.stop_id} · #{assigns.current_gtfs_version.name}#{pin}"
   end
 
   # The read runs in the LiveView process so the panel and the map never wait on

@@ -19,6 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
@@ -32,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
@@ -41,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -191,6 +195,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:dirty?, false)
      |> assign(:headsign_usage, nil)
      |> assign(:headsign_selection, nil)
+     |> assign(:headsign_origin, nil)
      |> assign(:headsign_undo, nil)
      |> assign(:headsign_review, nil)
      |> assign(:headsign_siblings, [])
@@ -213,6 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:label_remove, nil)
      |> assign(:label_focus_id, nil)
      |> stream(:patterns, [])
+     |> AgentPanel.mount("headsigns")
      |> attach_hook(:editor_ui_gate, :handle_event, &editor_ui_gate/3)}
   end
 
@@ -278,10 +284,63 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     socket = stage_requested_stop(socket, params["add_stop"])
 
     case RoutePatternAlignmentEvents.ensure_loaded(socket) do
-      {:ok, socket} -> {:noreply, socket}
-      {:error, :not_found} -> {:noreply, not_found(socket)}
+      {:ok, socket} -> {:noreply, bind_agent_context(socket)}
+      {:error, :not_found} -> {:noreply, socket |> not_found() |> bind_agent_context()}
     end
   end
+
+  # The Headsign helper's conversation belongs to the pattern this page shows and,
+  # on Running times, the timing it shows. The page binds that target from its own
+  # assigns, so the model never names it, and a change of pattern, timing or task
+  # is a new context and therefore a new conversation (INV-2, INV-3). Anywhere the
+  # helper cannot serve, the bare version context is bound and the pack refuses it
+  # with the one unavailable result. An unchanged context is a no-op.
+  defp bind_agent_context(socket) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    context =
+      with true <- headsign_helper?(socket.assigns),
+           {:ok, bound} <-
+             Scope.with_source_snapshot(Scope.context({:route, socket.assigns.route.id}), %{
+               kind: "headsign_scope",
+               payload: headsign_scope_payload(socket.assigns)
+             }) do
+        bound
+      else
+        _unbound -> Scope.context({:version, version_id})
+      end
+
+    AgentPanel.set_context(socket, context)
+  end
+
+  # Offered only for a loaded pattern's Details task and for Running times with a
+  # selected timing: the two tasks the pack can read a headsign target for.
+  defp headsign_helper?(
+         %{live_action: :show, route: %{id: _}, pattern: %RoutePattern{}} = assigns
+       ) do
+    case assigns do
+      %{task: :details} -> true
+      %{task: :timings, selected_timing: %TimedPattern{}} -> true
+      _other -> false
+    end
+  end
+
+  defp headsign_helper?(_assigns), do: false
+
+  defp headsign_scope_payload(%{task: task, pattern: pattern, selected_timing: timing}) do
+    %{
+      "schema_version" => 1,
+      "pattern_id" => pattern.id,
+      "timing_id" => if(task == :timings, do: timing.id)
+    }
+  end
+
+  # `pattern_label/1` reads the pattern from a socket's assigns.
+  defp helper_scope_line(%{task: :details} = assigns),
+    do: "Pattern #{pattern_label(%{assigns: assigns})} · Details"
+
+  defp helper_scope_line(%{selected_timing: timing} = assigns),
+    do: "Pattern #{pattern_label(%{assigns: assigns})} · Running times · #{timing.name}"
 
   # `?review=group` is the Patterns tab with the grouping review open. The preview
   # is read once per patch rather than once per screen load: leaving the review and
@@ -345,6 +404,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:editor_revoked?, not editor_access?(socket))
      |> load_screen()}
   end
+
+  # A prepared card's button. The helper only seeds the page's own headsign staging
+  # and opens the existing change drawer; saving stays the editor's native Save
+  # (CR-4). An entry that is not an integer is not this panel's and does nothing.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_headsigns(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("build_patterns", _params, socket) do
@@ -556,26 +628,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # followers group cannot leak into it.
   @impl true
   def handle_event("open_headsign_review", %{"mode" => "change"}, socket) do
-    case socket.assigns do
-      %{headsign_usage: %{} = usage, headsign_selection: %{ids: ids, update?: update?}} ->
-        {:noreply,
-         assign(socket, :headsign_review, %{
-           mode: :change,
-           state: :ready,
-           scope: usage.scope,
-           opener_id: headsign_change_opener_id(socket),
-           usage: usage,
-           selected: if(update?, do: ids, else: MapSet.new()),
-           open_groups: [],
-           change: %{from: usage.default, to: staged_headsign_to(socket)},
-           reviewed: nil,
-           undo: nil,
-           done: nil
-         })}
-
-      _ ->
-        {:noreply, socket}
-    end
+    {:noreply, open_headsign_change(socket, headsign_change_opener_id(socket))}
   end
 
   @impl true
@@ -1341,6 +1394,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
      |> assign(:headsign_selection, nil)
+     |> assign(:headsign_origin, nil)
      |> assign(:error_message, nil)
      |> assign(:timing_blank_note, nil)
      |> clear_fill()
@@ -2136,6 +2190,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:headsign_view, headsign_view(assigns))
       |> assign(:timing_headsign_view, timing_headsign_view(assigns))
       |> assign(:headsign_result, headsign_result_view(assigns))
+      |> assign(:headsign_helper?, headsign_helper?(assigns))
 
     ~H"""
     <Layouts.app
@@ -2384,104 +2439,160 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </.message>
                 </div>
 
-                <div class="mt-5">
-                  <%= cond do %>
-                    <% @task == :details -> %>
-                      <RoutePatternComponents.details_task
-                        form={@details_form}
-                        submit_event={
-                          if(@live_action == :new, do: "create_pattern", else: "save_details")
-                        }
-                        pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
-                        dirty?={@dirty?}
-                        headsign_usage={@headsign_view.usage}
-                        headsign_changed?={@headsign_view.changed?}
-                        headsign_box={@headsign_view.box}
-                        headsign_warnings={@headsign_view.warnings}
-                      />
-                    <% @task == :stops -> %>
-                      <RoutePatternComponents.stops_task
-                        creating={@live_action == :new}
-                        stop_rows={stop_rows(assigns)}
-                        ring_color={ring_color(@route)}
-                        custom_trip_count={detail_custom_trip_count(assigns)}
-                        trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
-                        timing_count={max(length(@timings), 1)}
-                        reorderable?={reorderable?(assigns)}
-                        dirty?={@stops_dirty? or (@live_action == :new and @staged_occurrences != [])}
-                        search_form={@stop_search_form}
-                        search_options={@stop_search_options}
-                        search_status={@stop_search_status}
-                        search_truncated?={@stop_search_truncated?}
-                        insert_form={@insert_form}
-                        busy?={@applying? or @offline?}
-                      />
-                    <% @task == :alignment -> %>
-                      <%= if @alignment do %>
-                        <RoutePatternAlignmentComponents.alignment_task
-                          alignment={@alignment}
+                <div
+                  id="pattern-helper-layout"
+                  phx-hook=".PatternHelperFocus"
+                  class={[
+                    "mt-5",
+                    @headsign_helper? && "flex flex-col lg:grid lg:gap-6",
+                    @headsign_helper? && @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+                  ]}
+                >
+                  <div class="min-w-0">
+                    <div :if={@headsign_helper?} id="pattern-helper-actions" class="flex justify-end">
+                      <.button
+                        id="agent-helper-open"
+                        type="button"
+                        phx-click="agent_open"
+                        aria-expanded={to_string(@agent_open?)}
+                        aria-controls="agent-panel"
+                        variant="quiet"
+                        class="min-h-11"
+                      >
+                        Open helper
+                      </.button>
+                    </div>
+
+                    <%= cond do %>
+                      <% @task == :details -> %>
+                        <RoutePatternComponents.details_task
+                          form={@details_form}
+                          submit_event={
+                            if(@live_action == :new, do: "create_pattern", else: "save_details")
+                          }
+                          pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
+                          dirty?={@dirty?}
+                          headsign_usage={@headsign_view.usage}
+                          headsign_changed?={@headsign_view.changed?}
+                          headsign_box={@headsign_view.box}
+                          headsign_warnings={@headsign_view.warnings}
+                        />
+                      <% @task == :stops -> %>
+                        <RoutePatternComponents.stops_task
+                          creating={@live_action == :new}
+                          stop_rows={stop_rows(assigns)}
+                          ring_color={ring_color(@route)}
+                          custom_trip_count={detail_custom_trip_count(assigns)}
+                          trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
+                          timing_count={max(length(@timings), 1)}
+                          reorderable?={reorderable?(assigns)}
+                          dirty?={
+                            @stops_dirty? or (@live_action == :new and @staged_occurrences != [])
+                          }
+                          search_form={@stop_search_form}
+                          search_options={@stop_search_options}
+                          search_status={@stop_search_status}
+                          search_truncated?={@stop_search_truncated?}
+                          insert_form={@insert_form}
+                          busy?={@applying? or @offline?}
+                        />
+                      <% @task == :alignment -> %>
+                        <%= if @alignment do %>
+                          <RoutePatternAlignmentComponents.alignment_task
+                            alignment={@alignment}
+                            version_id={@current_gtfs_version.id}
+                            state={@alignment_state}
+                            notice={@alignment_notice}
+                            dialog_open={@alignment_dialog == :help}
+                            editable?={@alignment_editable}
+                            offline?={@offline?}
+                            applying?={@applying?}
+                            pending={@alignment_pending}
+                            save_notice={@alignment_save_notice}
+                            version_name={@current_gtfs_version.name}
+                            organization_name={@current_organization.name}
+                            delete_dialog={@alignment_delete_dialog}
+                            discard_dialog={@alignment_discard_dialog}
+                            simplify_dialog={@alignment_simplify_dialog}
+                            import_card={@alignment_import_card}
+                            generation={@alignment_generation}
+                            generate_dialog={@alignment_generate_dialog}
+                            generate_notice={@alignment_generate_notice}
+                            file_import={@map_line_file}
+                            file_fit={@file_fit}
+                            map_line_upload={@uploads.map_line_file}
+                          />
+                        <% else %>
+                          <.skeleton
+                            id="alignment-loading"
+                            label="Loading map line"
+                            rows={3}
+                            aria-busy="true"
+                          />
+                        <% end %>
+                      <% true -> %>
+                        <RoutePatternComponents.timings_task
+                          timings={@timings}
+                          selected_timing={@selected_timing}
+                          timing_rows={@timing_rows}
+                          timing_form={@timing_form}
+                          timing_options={@timing_options}
+                          preview_time={@preview_time}
+                          timing_headsign={@timing_headsign}
+                          headsign_summary={@timing_headsign_view.summary}
+                          headsign_open?={@timing_headsign_open?}
+                          headsign_usage={@timing_headsign_view.usage}
+                          headsign_changed?={@timing_headsign_view.changed?}
+                          headsign_box={@timing_headsign_view.box}
+                          headsign_warnings={@timing_headsign_view.warnings}
+                          timing_error={@timing_error}
+                          timing_blank_note={@timing_blank_note}
+                          blank_count={@blank_count}
                           version_id={@current_gtfs_version.id}
-                          state={@alignment_state}
-                          notice={@alignment_notice}
-                          dialog_open={@alignment_dialog == :help}
-                          editable?={@alignment_editable}
+                          fill={@fill}
+                          fill_preview={@fill_preview}
+                          fill_distances={@fill_distances}
+                          fill_coords={@fill_coords}
+                          fill_sections={@fill_sections}
+                          retime={@retime}
                           offline?={@offline?}
-                          applying?={@applying?}
-                          pending={@alignment_pending}
-                          save_notice={@alignment_save_notice}
-                          version_name={@current_gtfs_version.name}
-                          organization_name={@current_organization.name}
-                          delete_dialog={@alignment_delete_dialog}
-                          discard_dialog={@alignment_discard_dialog}
-                          simplify_dialog={@alignment_simplify_dialog}
-                          import_card={@alignment_import_card}
-                          generation={@alignment_generation}
-                          generate_dialog={@alignment_generate_dialog}
-                          generate_notice={@alignment_generate_notice}
-                          file_import={@map_line_file}
-                          file_fit={@file_fit}
-                          map_line_upload={@uploads.map_line_file}
+                          custom_trip_count={@detail_custom_trip_count}
+                          dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
+                          busy?={@applying? or @offline?}
+                          filling?={@fill != nil}
                         />
-                      <% else %>
-                        <.skeleton
-                          id="alignment-loading"
-                          label="Loading map line"
-                          rows={3}
-                          aria-busy="true"
-                        />
-                      <% end %>
-                    <% true -> %>
-                      <RoutePatternComponents.timings_task
-                        timings={@timings}
-                        selected_timing={@selected_timing}
-                        timing_rows={@timing_rows}
-                        timing_form={@timing_form}
-                        timing_options={@timing_options}
-                        preview_time={@preview_time}
-                        timing_headsign={@timing_headsign}
-                        headsign_summary={@timing_headsign_view.summary}
-                        headsign_open?={@timing_headsign_open?}
-                        headsign_usage={@timing_headsign_view.usage}
-                        headsign_changed?={@timing_headsign_view.changed?}
-                        headsign_box={@timing_headsign_view.box}
-                        headsign_warnings={@timing_headsign_view.warnings}
-                        timing_error={@timing_error}
-                        timing_blank_note={@timing_blank_note}
-                        blank_count={@blank_count}
-                        version_id={@current_gtfs_version.id}
-                        fill={@fill}
-                        fill_preview={@fill_preview}
-                        fill_distances={@fill_distances}
-                        fill_coords={@fill_coords}
-                        fill_sections={@fill_sections}
-                        retime={@retime}
-                        offline?={@offline?}
-                        custom_trip_count={@detail_custom_trip_count}
-                        dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
-                        busy?={@applying? or @offline?}
-                        filling?={@fill != nil}
-                      />
-                  <% end %>
+                    <% end %>
+                  </div>
+
+                  <div
+                    :if={@headsign_helper? and @agent_open?}
+                    class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
+                  >
+                    <.agent_panel
+                      id="agent-panel"
+                      title={@agent_title}
+                      intro={@agent_intro}
+                      examples={@agent_examples}
+                      scope_line={helper_scope_line(assigns)}
+                      status={@agent_status}
+                      entries={@streams.agent_entries}
+                      form={@agent_form}
+                      notice={@agent_notice}
+                      entries_empty?={@agent_entries_empty?}
+                      review_label={fn _prepared -> "Review headsigns" end}
+                    />
+                  </div>
+
+                  <%!--
+                  The panel's focus listener belongs to this wrapper, which survives the conditional panel;
+                  the hook only moves focus and never decides it for the server. --%>
+                  <script :type={Phoenix.LiveView.ColocatedHook} name=".PatternHelperFocus">
+                    export default {
+                      mounted() {
+                        this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+                      }
+                    }
+                  </script>
                 </div>
 
                 <RoutePatternComponents.save_bar
@@ -2785,22 +2896,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # scope the same way. `from` splits the scope's followers out, so the box
   # knows which trips the new value reaches; a reload after a save or undo also
   # resets a selection staged against a different stored default.
-  defp load_headsign_usage(
-         %{assigns: %{task: :details, pattern: %RoutePattern{} = pattern}} = socket
-       ) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
-    usage =
-      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, :pattern,
-             from: Headsigns.normalize(pattern.headsign)
-           ) do
-        {:ok, usage} -> usage
-        {:error, _not_found} -> nil
-      end
-
+  defp load_headsign_usage(%{assigns: %{task: :details, pattern: %RoutePattern{}}} = socket) do
     socket
-    |> assign(:headsign_usage, usage)
+    |> assign(:headsign_usage, read_headsign_usage(socket))
     |> reset_headsign_selection()
   end
 
@@ -2808,24 +2906,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          %{
            assigns: %{
              task: :timings,
-             pattern: %RoutePattern{} = pattern,
-             selected_timing: %TimedPattern{} = timing
+             pattern: %RoutePattern{},
+             selected_timing: %TimedPattern{}
            }
          } = socket
        ) do
-    organization_id = socket.assigns.current_organization.id
-    version_id = socket.assigns.current_gtfs_version.id
-
-    usage =
-      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, {:timing, timing.id},
-             from: Headsigns.effective_default(timing.headsign, pattern.headsign)
-           ) do
-        {:ok, usage} -> usage
-        {:error, _not_found} -> nil
-      end
-
     socket
-    |> assign(:headsign_usage, usage)
+    |> assign(:headsign_usage, read_headsign_usage(socket))
     |> reset_headsign_selection()
   end
 
@@ -2833,6 +2920,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # staged selection survives a tab switch and is re-checked against the
   # stored default when the Details or Running-times task loads again.
   defp load_headsign_usage(socket), do: assign(socket, :headsign_usage, nil)
+
+  # The current scope's usage read, split on its stored default, or nil when the
+  # scope is gone. Reading assigns nothing, so a refused handoff can check a fresh
+  # read without touching the page.
+  defp read_headsign_usage(%{assigns: %{task: :details, pattern: pattern}} = socket) do
+    usage_or_nil(
+      Gtfs.headsign_usage(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        pattern.id,
+        :pattern,
+        from: Headsigns.normalize(pattern.headsign)
+      )
+    )
+  end
+
+  defp read_headsign_usage(
+         %{assigns: %{task: :timings, pattern: pattern, selected_timing: timing}} = socket
+       ) do
+    usage_or_nil(
+      Gtfs.headsign_usage(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        pattern.id,
+        {:timing, timing.id},
+        from: Headsigns.effective_default(timing.headsign, pattern.headsign)
+      )
+    )
+  end
+
+  defp read_headsign_usage(_socket), do: nil
+
+  defp usage_or_nil({:ok, usage}), do: usage
+  defp usage_or_nil({:error, _not_found}), do: nil
 
   # A selection staged against another scope or stored default is stale; the
   # current one is rebuilt from the fresh followers on the next dirty draft.
@@ -2845,7 +2966,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     if is_map(selection) and selection.key == key do
       socket
     else
-      assign(socket, :headsign_selection, nil)
+      socket |> assign(:headsign_selection, nil) |> assign(:headsign_origin, nil)
     end
   end
 
@@ -2992,7 +3113,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
-    assign_dirty(socket)
+    socket |> assign_dirty() |> bind_agent_context()
   end
 
   # The label groups the drawer reads, keyed by the owner's natural ID — the ID
@@ -3150,6 +3271,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:applying?, false)
     |> clear_fill()
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> put_timing_rows()
   end
 
@@ -3169,6 +3291,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:review, nil)
     |> assign(:applying?, false)
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> put_timing_rows()
   end
 
@@ -3202,6 +3325,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:pattern_delete_dialog, nil)
     |> assign(:applying?, false)
     |> assign(:headsign_selection, nil)
+    |> assign(:headsign_origin, nil)
     |> assign(:headsign_undo, nil)
     |> assign(:headsign_review, nil)
     |> assign(:stop_search_options, [])
@@ -3349,6 +3473,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         {:noreply,
          socket
+         |> record_headsign_receipt(operation)
          |> saved(message, :details)
          |> assign(:headsign_undo, headsign_undo_state(undo, :pattern))}
 
@@ -3360,6 +3485,254 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> mark_editor_refusal(reason)}
     end
   end
+
+  # The change drawer, opened by the box's review link or by a prepared card;
+  # `opener_id` is where focus returns when it closes.
+  defp open_headsign_change(
+         %{
+           assigns: %{
+             headsign_usage: %{} = usage,
+             headsign_selection: %{ids: ids, update?: update?}
+           }
+         } =
+           socket,
+         opener_id
+       ) do
+    assign(socket, :headsign_review, %{
+      mode: :change,
+      state: :ready,
+      scope: usage.scope,
+      opener_id: opener_id,
+      usage: usage,
+      selected: if(update?, do: ids, else: MapSet.new()),
+      open_groups: [],
+      change: %{from: usage.default, to: staged_headsign_to(socket)},
+      reviewed: nil,
+      undo: nil,
+      done: nil
+    })
+  end
+
+  defp open_headsign_change(socket, _opener_id), do: socket
+
+  # --- prepared headsign change (helper handoff) -------------------------------------------------
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_headsigns(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: {:headsign_change, command}}} ->
+        hand_off_headsigns(socket, entry_id, command)
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  # The card was made for one pattern, scope, default and trip set. Every refusal
+  # leaves the page exactly as it was; only a request that still matches seeds the
+  # staging the editor's own typing would have written.
+  defp hand_off_headsigns(socket, entry_id, command) do
+    assigns = socket.assigns
+    reopen? = prepared_staged?(assigns, entry_id, command)
+
+    with :ok <- prepared_target(assigns, command),
+         :ok <- prepared_unobstructed(assigns, reopen?),
+         {:ok, usage} <- prepared_usage(socket, command, reopen?) do
+      socket
+      |> seed_prepared_headsigns(usage, entry_id, command, reopen?)
+      |> assign(:agent_notice, nil)
+      |> open_headsign_change("agent-prepared-#{entry_id}")
+    else
+      {:error, notice} -> assign(socket, :agent_notice, notice)
+    end
+  end
+
+  defp prepared_target(%{pattern: %RoutePattern{id: id}} = assigns, command)
+       when id == command.pattern_id do
+    if prepared_scope(assigns) == command.scope,
+      do: :ok,
+      else: {:error, "This request was prepared for another timing or task. Ask again here."}
+  end
+
+  defp prepared_target(_assigns, _command),
+    do: {:error, "This request was prepared for another pattern. Ask again on this one."}
+
+  defp prepared_scope(%{task: :details}), do: :pattern
+
+  defp prepared_scope(%{task: :timings, selected_timing: %TimedPattern{id: id}}),
+    do: {:timing, id}
+
+  defp prepared_scope(_assigns), do: nil
+
+  # Unsaved native edits and open reviews are the editor's; the helper never
+  # overwrites them. The card's own staging is the one exception: pressing its
+  # button again reopens the drawer over the staging it made.
+  defp prepared_unobstructed(assigns, reopen?) do
+    cond do
+      assigns.impact_dialog != nil or assigns.review != nil or assigns.headsign_review != nil ->
+        {:error, "Finish the review that is open on this page first."}
+
+      assigns.dirty? and not reopen? ->
+        {:error, "Save or discard your edits on this page first, then review the headsigns."}
+
+      true ->
+        :ok
+    end
+  end
+
+  # The page's own usage read can predate another editor's change, so the default
+  # and every listed trip are checked against a fresh one, which is assigned only
+  # once the request is accepted.
+  defp prepared_usage(_socket, _command, true), do: {:ok, nil}
+
+  defp prepared_usage(socket, command, false) do
+    with %{default: default, groups: groups} = usage <- read_headsign_usage(socket),
+         true <- default == command.from,
+         followers = for(%{kind: :follows, trips: trips} <- groups, trip <- trips, do: trip.id),
+         true <- Enum.all?(command.trip_ids, &(&1 in followers)) do
+      {:ok, usage}
+    else
+      _changed ->
+        {:error, "The headsigns changed since this request was prepared. Ask again."}
+    end
+  end
+
+  defp prepared_staged?(assigns, entry_id, command) do
+    case assigns.headsign_origin do
+      %{
+        entry_id: ^entry_id,
+        conversation_id: conversation_id,
+        command: {:headsign_change, ^command}
+      } ->
+        conversation_id == assigns.agent_conversation_id and
+          staged_prepared_values?(assigns, command)
+
+      _other ->
+        false
+    end
+  end
+
+  defp staged_prepared_values?(assigns, command) do
+    field =
+      case command.scope do
+        :pattern -> assigns.details_params["headsign"]
+        {:timing, id} -> Map.get(assigns.timing_headsign_edits, id)
+      end
+
+    ids = MapSet.new(command.trip_ids)
+    field == command.to and match?(%{update?: true, ids: ^ids}, assigns.headsign_selection)
+  end
+
+  defp seed_prepared_headsigns(socket, _usage, _entry_id, _command, true), do: socket
+
+  defp seed_prepared_headsigns(socket, usage, entry_id, command, false) do
+    socket
+    |> assign(:headsign_usage, usage)
+    |> stage_prepared_headsign(command)
+    |> assign(:headsign_selection, %{
+      key: {usage.scope, usage.default},
+      update?: true,
+      ids: MapSet.new(command.trip_ids)
+    })
+    |> assign(:headsign_origin, %{
+      session_pid: socket.assigns.agent_session,
+      conversation_id: socket.assigns.agent_conversation_id,
+      entry_id: entry_id,
+      command: {:headsign_change, command}
+    })
+    |> assign_dirty()
+  end
+
+  # The Details field, or the Running-times draft with its disclosure open, as if
+  # the editor had typed the prepared wording.
+  defp stage_prepared_headsign(%{assigns: %{task: :details}} = socket, command) do
+    params = Map.put(socket.assigns.details_params, "headsign", command.to)
+
+    socket
+    |> assign(:details_params, params)
+    |> assign(:details_form, details_form(params, []))
+  end
+
+  defp stage_prepared_headsign(socket, command) do
+    timing_id = socket.assigns.selected_timing_id
+
+    socket
+    |> assign(
+      :timing_headsign_edits,
+      Map.put(socket.assigns.timing_headsign_edits, timing_id, command.to)
+    )
+    |> assign(:timing_headsign, command.to)
+    |> assign(:timing_headsign_open?, true)
+  end
+
+  # --- prepared headsign receipt ----------------------------------------------------------------
+
+  @receipt_changed_notice "You changed the request before saving, so the original card stays unconfirmed. Your saved change is in the history."
+
+  # After a native save that came from a prepared card, the card is marked applied
+  # only if the saved operation is the prepared command: `Session.record_applied/4`
+  # compares the two for equality, so a different trip set or an extra edited field
+  # leaves it unconfirmed. This runs before `saved/3`, which drops the staging.
+  defp record_headsign_receipt(%{assigns: %{headsign_origin: nil}} = socket, _operation),
+    do: socket
+
+  defp record_headsign_receipt(%{assigns: %{headsign_origin: origin}} = socket, operation) do
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           applied_headsign_command(socket.assigns, operation)
+         ) do
+      :ok ->
+        assign(socket, :headsign_origin, nil)
+
+      {:error, :command_changed} ->
+        socket |> assign(:agent_notice, @receipt_changed_notice) |> assign(:headsign_origin, nil)
+
+      # The card's conversation was replaced or ended; there is nothing to confirm.
+      {:error, _stale_or_ended} ->
+        socket
+    end
+  end
+
+  # The same canonical shape the pack prepared: the scope, the default read before
+  # the save, the normalized new text and the sorted trip UUIDs. Any other edited
+  # attribute, or a save with no staged trips, can never equal a prepared command.
+  defp applied_headsign_command(assigns, operation) do
+    case headsign_only_operation(operation) do
+      {scope, attrs, selection} ->
+        {:headsign_change,
+         %{
+           pattern_id: assigns.pattern.id,
+           scope: scope,
+           from: assigns.headsign_usage && assigns.headsign_usage.default,
+           to: Headsigns.normalize(attrs.headsign),
+           trip_ids: Enum.sort(selection.headsign_trip_ids)
+         }}
+
+      nil ->
+        {:headsign_change, :other}
+    end
+  end
+
+  defp headsign_only_operation(
+         {:details, %{headsign: _} = attrs, %{headsign_trip_ids: _} = selection}
+       )
+       when map_size(attrs) == 1,
+       do: {:pattern, attrs, selection}
+
+  defp headsign_only_operation(
+         {:timing, id, %{headsign: _} = attrs, %{headsign_trip_ids: _} = selection}
+       )
+       when map_size(attrs) == 1,
+       do: {{:timing, id}, attrs, selection}
+
+  defp headsign_only_operation(_operation), do: nil
 
   # --- headsign selection staging -------------------------------------------------------------
 
@@ -5351,6 +5724,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         {:noreply,
          socket
+         |> record_headsign_receipt(operation)
          |> saved(message, timing_scope(operation))
          |> assign(:headsign_undo, headsign_undo_state(undo, timing_scope(operation)))}
 

@@ -418,6 +418,13 @@ defmodule GtfsPlanner.Gtfs.StopPlacementTest do
     end
   end
 
+  describe "moved?/1" do
+    test "a pin is a move only when it is more than half a metre from the saved position" do
+      assert {StopPlacement.moved?(0.0), StopPlacement.moved?(0.5), StopPlacement.moved?(0.51)} ==
+               {false, false, true}
+    end
+  end
+
   describe "move_band/2" do
     test "8.0 m on a served stop is a coordinate correction" do
       assert StopPlacement.move_band(8.0, true) == :correction

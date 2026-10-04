@@ -5,7 +5,10 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   alias GtfsPlanner.Agents.Model
   alias GtfsPlanner.Agents.Packs.Alerts
   alias GtfsPlanner.Agents.Packs.Calendars
+  alias GtfsPlanner.Agents.Packs.Headsigns
   alias GtfsPlanner.Agents.Packs.ReleaseComparison
+  alias GtfsPlanner.Agents.Packs.StopImpact
+  alias GtfsPlanner.Agents.Packs.StopText
 
   @user_school "No school service next Monday and Tuesday"
   @prepared_sentence "I prepared the change. Review it before applying."
@@ -281,6 +284,188 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
     end
   end
 
+  describe "scripted headsign replies" do
+    test "a headsign request summarizes the headsigns first" do
+      body = post([system(Headsigns.skill()), user("Rename the Lincoln City headsign")])
+
+      assert {"{}", "summarize_headsigns"} = tool_call(body)
+    end
+
+    test "the summary prepares the Lincoln City rename with no exclusions" do
+      body = post(headsign_conversation() ++ headsign_summary())
+
+      assert {arguments, "prepare_headsign_change"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "current_text" => "Lincoln City",
+               "new_text" => "Central Station"
+             }
+    end
+
+    test "the prepared result says prepared and never saved" do
+      messages =
+        headsign_conversation() ++
+          headsign_summary() ++
+          [
+            assistant_tool_call("call_prepare_headsign_change", "prepare_headsign_change", %{}),
+            tool_result("call_prepare_headsign_change", %{"prepared" => true})
+          ]
+
+      content = final_text(post(messages))
+
+      assert content =~ "I prepared the rename"
+      refute content =~ ~r/saved|changed|done/i
+    end
+
+    test "a refused rename says nothing was prepared" do
+      messages =
+        headsign_conversation() ++
+          headsign_summary() ++
+          [
+            assistant_tool_call("call_prepare_headsign_change", "prepare_headsign_change", %{}),
+            tool_result("call_prepare_headsign_change", %{
+              "error" => "current_text is not this page's current default."
+            })
+          ]
+
+      assert final_text(post(messages)) =~ "I could not prepare that rename"
+    end
+
+    test "the headsign marker is the headsigns skill's own heading" do
+      assert Headsigns.skill() =~ "Headsign helper"
+      refute Calendars.skill() =~ "Headsign helper"
+    end
+  end
+
+  describe "scripted stop text replies" do
+    @stop_request "Prepare stop changes: S410 stop_name=Txt Elm @ 3rd; S410 stop_code=E-2; S411 stop_name=Txt Pine"
+
+    test "a stop change request reads the approved list first" do
+      body = post([system(StopText.skill()), user(@stop_request)])
+
+      assert {"{}", "read_stop_set"} = tool_call(body)
+    end
+
+    test "the list prepares the rows the message named, one per stop in order" do
+      body = post(stop_text_conversation())
+
+      assert {arguments, "prepare_stop_metadata_changes"} = tool_call(body)
+
+      assert Jason.decode!(arguments) == %{
+               "rows" => [
+                 %{"stop_id" => "S410", "stop_name" => "Txt Elm @ 3rd", "stop_code" => "E-2"},
+                 %{"stop_id" => "S411", "stop_name" => "Txt Pine"}
+               ],
+               "basis" => @stop_request
+             }
+    end
+
+    test "the prepared result says prepared and never saved; a refusal says nothing was prepared" do
+      call = assistant_tool_call("call_prepare", "prepare_stop_metadata_changes", %{})
+
+      prepared =
+        final_text(
+          post(
+            stop_text_conversation() ++ [call, tool_result("call_prepare", %{"prepared" => true})]
+          )
+        )
+
+      assert prepared =~ "I prepared the stop changes"
+      refute prepared =~ ~r/saved|changed|done/i
+
+      refused =
+        final_text(
+          post(
+            stop_text_conversation() ++ [call, tool_result("call_prepare", %{"error" => "no"})]
+          )
+        )
+
+      assert refused =~ "I could not prepare those changes"
+    end
+
+    test "any other message gets the generic sentence and the marker is the skill's heading" do
+      assert final_text(post([system(StopText.skill()), user("Hello")])) =~
+               "I can help with the stops you approved"
+
+      assert StopText.skill() =~ "Stop text helper"
+      refute Calendars.skill() =~ "Stop text helper"
+    end
+  end
+
+  describe "scripted stop impact replies" do
+    test "a question reads the dependencies, then previews the pin" do
+      question = [system(StopImpact.skill()), user("What would moving this stop affect?")]
+
+      assert {"{}", "get_stop_dependencies"} = tool_call(post(question))
+
+      read = [
+        assistant_tool_call("call_dependencies", "get_stop_dependencies", %{}),
+        tool_result("call_dependencies", %{"count" => 1})
+      ]
+
+      assert {"{}", "preview_stop_move"} = tool_call(post(question ++ read))
+
+      previewed = [
+        assistant_tool_call("call_preview", "preview_stop_move", %{}),
+        tool_result("call_preview", %{
+          "distance_m" => 13.7,
+          "band" => "review",
+          "patterns" => [%{"label" => "Route 1 toward Lincoln City", "weekday_trips" => 12}],
+          "transfers" => [%{"label" => "Bay B", "before_m" => 40.0, "after_m" => 52.5}],
+          "relief_points" => ["Relief point R1"],
+          "unchecked" => ["The street path is decided by the native move review, not here."]
+        })
+      ]
+
+      sentence = final_text(post(question ++ read ++ previewed))
+
+      assert sentence ==
+               "Moving this stop 13.7 m is a review move. " <>
+                 "Patterns: Route 1 toward Lincoln City (12 weekday trips). " <>
+                 "Transfers: Bay B 40.0 m before and 52.5 m after. " <>
+                 "Relief points: Relief point R1. " <>
+                 "The street path is decided by the native move review, not here."
+
+      refused =
+        final_text(
+          post(
+            question ++
+              read ++
+              [
+                assistant_tool_call("call_preview", "preview_stop_move", %{}),
+                tool_result("call_preview", %{"error" => "No pin is placed."})
+              ]
+          )
+        )
+
+      assert refused =~ "I could not read the move"
+    end
+
+    test "only an explicit request prepares the move; the result says prepared, never saved" do
+      request = [system(StopImpact.skill()), user("Keep the stop's ID and prepare the move.")]
+
+      assert {"{}", "prepare_stop_move"} = tool_call(post(request))
+
+      call = assistant_tool_call("call_prepare", "prepare_stop_move", %{})
+
+      prepared =
+        final_text(post(request ++ [call, tool_result("call_prepare", %{"pointer" => true})]))
+
+      assert prepared =~ "I prepared the move"
+      refute prepared =~ ~r/saved|changed|done/i
+
+      refused =
+        final_text(post(request ++ [call, tool_result("call_prepare", %{"error" => "no pin"})]))
+
+      assert refused =~ "I could not prepare that move"
+    end
+
+    test "the marker is the skill's own heading" do
+      assert StopImpact.skill() =~ "Stop impact helper"
+      refute Calendars.skill() =~ "Stop impact helper"
+    end
+  end
+
   describe "the production model client" do
     test "normalizes the scripted list_calendars reply" do
       stub_plug()
@@ -451,6 +636,25 @@ defmodule GtfsPlanner.Agents.BrowserOpenRouterTest do
   # The messages the alerts turn loop has sent by the time it answers each
   # call: the user's request, the get_draft call and its result, then the
   # search_routes call and its result.
+  defp headsign_conversation,
+    do: [system(Headsigns.skill()), user("Rename the Lincoln City headsign")]
+
+  defp headsign_summary do
+    [
+      assistant_tool_call("call_summarize_headsigns", "summarize_headsigns", %{}),
+      tool_result("call_summarize_headsigns", %{"default" => "Lincoln City"})
+    ]
+  end
+
+  defp stop_text_conversation do
+    [
+      system(StopText.skill()),
+      user(@stop_request),
+      assistant_tool_call("call_read_stop_set", "read_stop_set", %{}),
+      tool_result("call_read_stop_set", %{"total" => 2})
+    ]
+  end
+
   defp alerts_conversation do
     [system(Alerts.skill())] ++ [user(@user_route_12)] ++ draft_call() ++ search_call()
   end

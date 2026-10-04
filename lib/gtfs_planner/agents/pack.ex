@@ -134,6 +134,29 @@ defmodule GtfsPlanner.Agents.Pack do
   @optional_callbacks authorize_context: 1
 
   @doc """
+  The `scope` an evidence card records: the organization, version and the
+  `"route:<uuid>"` or `"version:<uuid>"` identity label `AgentPanel` compares.
+  """
+  @spec evidence_scope(Scope.t()) :: %{
+          organization_id: String.t(),
+          gtfs_version_id: String.t(),
+          identity: String.t() | nil
+        }
+  def evidence_scope(%Scope{} = scope) do
+    identity =
+      case Scope.identity(scope) do
+        {kind, id} -> "#{kind}:#{id}"
+        nil -> nil
+      end
+
+    %{
+      organization_id: scope.organization_id,
+      gtfs_version_id: scope.gtfs_version_id,
+      identity: identity
+    }
+  end
+
+  @doc """
   Runs `pack`'s optional `authorize_context/1` callback, or `:ok` for a pack
   without one.
   """

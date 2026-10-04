@@ -265,6 +265,9 @@ defmodule GtfsPlanner.Gtfs.StopReferencesUsageTest do
       assert item(usage, :stop_areas).count == 1
       assert item(usage, :deadhead_from).count == 1
 
+      # The label is the fare area's ID, a string a person and a JSON encoder can read.
+      assert [%{label: "zone_a", detail: %{area_id: "zone_a"}}] = item(usage, :stop_areas).details
+
       [detail] = item(usage, :deadhead_from).details
       assert detail.detail.minutes == 12
       assert detail.label =~ "1434"

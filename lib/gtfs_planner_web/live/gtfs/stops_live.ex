@@ -5,20 +5,36 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
+
   import GtfsPlannerWeb.PlannerComponents,
     only: [constraint_chip: 1, first_use: 1, message: 1, sort_header: 1]
 
+  alias GtfsPlanner.Agents
+  alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopEditing
+  alias GtfsPlanner.Gtfs.StopSelection
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Values
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Components.RouteIdentity
+  alias GtfsPlannerWeb.Gtfs.StopTextHelperComponents
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # Constraints a chip can dismiss, by query param.
   @filter_keys ~w(search route_id direction_id wheelchair_boarding)
+
+  # The approved stop set the text helper works inside (spec AC-14); the same
+  # ceiling `StopSelection` puts on the lines of one Find.
+  @max_stop_set 100
+
+  @stop_batch_not_found "One of these stops is no longer in this service version. Approve the stops again."
+  @receipt_changed_notice "The saved changes differ from the prepared request, so the card stays unconfirmed."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -47,8 +63,16 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      |> assign(:direction_id, nil)
      |> assign(:canonical_patch_identity, nil)
      |> assign(:skeleton_widths, [46, 38, 52, 34, 44, 40, 46, 38, 52])
+     |> assign(:stop_set_open?, false)
+     |> assign(:stop_set_form, stop_set_form(""))
+     |> assign(:stop_set_error, nil)
+     |> assign(:stop_set_notice, nil)
+     |> assign(:stop_set_resolution, nil)
+     |> assign(:stop_set, nil)
+     |> assign(:stop_review, nil)
      |> stream(:stops, [])
-     |> stream(:stops_mobile, [])}
+     |> stream(:stops_mobile, [])
+     |> AgentPanel.mount("stop_text")}
   end
 
   @impl true
@@ -138,6 +162,191 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       {:noreply, socket}
     end
   end
+
+  @impl true
+  def handle_event("stop_set_toggle", _params, socket) do
+    {:noreply, update(socket, :stop_set_open?, &(not &1))}
+  end
+
+  # Editing the text drops the resolution (it describes other text) but never the
+  # approved set. A change event that leaves the text as it was changes nothing.
+  @impl true
+  def handle_event("stop_set_change", %{"stop_set" => %{"refs" => text}}, socket)
+      when is_binary(text) do
+    if text == socket.assigns.stop_set_form.params["refs"] do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:stop_set_form, stop_set_form(text))
+       |> assign(:stop_set_error, nil)
+       |> assign(:stop_set_notice, nil)
+       |> assign(:stop_set_resolution, nil)}
+    end
+  end
+
+  def handle_event("stop_set_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_set_find", %{"stop_set" => %{"refs" => text}}, socket)
+      when is_binary(text) do
+    lines = String.split(text, ~r/\R/)
+
+    socket =
+      socket
+      |> assign(:stop_set_open?, true)
+      |> assign(:stop_set_form, stop_set_form(text))
+      |> assign(:stop_set_notice, nil)
+
+    result =
+      if Enum.all?(lines, &(String.trim(&1) == "")),
+        do: {:error, :empty},
+        else:
+          StopSelection.resolve(
+            socket.assigns.current_organization.id,
+            socket.assigns.current_gtfs_version.id,
+            lines
+          )
+
+    case result do
+      {:ok, resolution} ->
+        {:noreply,
+         socket
+         |> assign(:stop_set_error, nil)
+         |> assign(:stop_set_resolution, Map.put(resolution, :choices, %{}))
+         |> push_event("focus_scoped_target", %{id: "stop-set-resolution-heading"})}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:stop_set_error, stop_set_error_text(reason))
+         |> assign(:stop_set_resolution, nil)
+         |> push_event("focus_form_error", %{form_id: "stop-set-form"})}
+    end
+  end
+
+  def handle_event("stop_set_find", _params, socket), do: {:noreply, socket}
+
+  # A choice names a candidate by its GTFS stop ID and an ambiguity by its position;
+  # both are checked against the resolution this view holds, so a forged value
+  # selects nothing.
+  @impl true
+  def handle_event("stop_set_choose", %{"ref" => index, "stop" => stop_id}, socket)
+      when is_binary(index) and is_binary(stop_id) do
+    case ambiguity_at(socket.assigns.stop_set_resolution, index) do
+      %{ref: ref, candidates: candidates} ->
+        if Enum.any?(candidates, &(&1.stop_id == stop_id)),
+          do: {:noreply, put_stop_set_choice(socket, ref, stop_id)},
+          else: {:noreply, socket}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("stop_set_choose", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_set_skip", %{"ref" => index}, socket) when is_binary(index) do
+    case ambiguity_at(socket.assigns.stop_set_resolution, index) do
+      %{ref: ref} -> {:noreply, put_stop_set_choice(socket, ref, :skip)}
+      nil -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("stop_set_skip", _params, socket), do: {:noreply, socket}
+
+  # The set is built from the held resolution only, then each stop is read again in
+  # this organization and version, so a stop deleted since the Find is refused.
+  @impl true
+  def handle_event("stop_set_approve", _params, %{assigns: %{stop_set_resolution: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("stop_set_approve", _params, socket) do
+    resolution = socket.assigns.stop_set_resolution
+    undecided = Enum.count(resolution.ambiguous, &(not Map.has_key?(resolution.choices, &1.ref)))
+    selected = selected_stops(resolution)
+
+    cond do
+      undecided > 0 ->
+        {:noreply,
+         refuse_stop_set(
+           socket,
+           "Choose a stop or skip #{Wording.count_noun(undecided, "line")} first."
+         )}
+
+      selected == [] ->
+        {:noreply, refuse_stop_set(socket, "No stop is selected.")}
+
+      length(selected) > @max_stop_set ->
+        {:noreply, refuse_stop_set(socket, "Approve up to #{@max_stop_set} stops at a time.")}
+
+      true ->
+        approve_stop_set(socket, selected)
+    end
+  end
+
+  @impl true
+  def handle_event("stop_set_clear", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:stop_set, nil)
+     |> assign(:stop_set_resolution, nil)
+     |> assign(:stop_set_notice, nil)
+     |> push_event("focus_scoped_target", %{id: "stop-set-toggle"})
+     |> bind_agent_context()}
+  end
+
+  # A prepared card's button: the batch is read again from the database and shown in
+  # the review drawer. Nothing is written here.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) when is_binary(id) do
+    case Integer.parse(id) do
+      {entry_id, ""} -> {:noreply, review_prepared_batch(socket, entry_id)}
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("stop_review_close", _params, socket),
+    do: {:noreply, assign(socket, :stop_review, nil)}
+
+  # Save runs only for a valid review the page holds, with the prepared command's own
+  # rows and the review's own fingerprint. The review is cleared before the write, so a
+  # second click arrives with nothing to save; a refusal that keeps the review puts it
+  # back.
+  @impl true
+  def handle_event(
+        "stop_review_save",
+        _params,
+        %{assigns: %{stop_review: %{review: %{valid?: true, changed: changed}} = held}} = socket
+      )
+      when changed > 0 do
+    socket = assign(socket, :stop_review, nil)
+    audit = AuditContext.from_assigns(socket.assigns)
+
+    case StopEditing.apply_metadata_batch(
+           held.origin.rows,
+           held.review.fingerprint,
+           audit
+         ) do
+      {:ok, %{stops: stops}} ->
+        {:noreply, saved_stop_batch(socket, held, stops)}
+
+      {:error, reason} when reason in [:stale_review, :invalid_rows] ->
+        {:noreply, refresh_stop_review(socket, held, reason, audit)}
+
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :agent_notice, @stop_batch_not_found)}
+
+      {:error, reason} ->
+        {:noreply, keep_stop_review(socket, held, reason)}
+    end
+  end
+
+  def handle_event("stop_review_save", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("filter", params, socket) do
@@ -322,6 +531,264 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
      )}
   end
 
+  defp stop_set_form(text), do: to_form(%{"refs" => text}, as: :stop_set)
+
+  defp stop_set_error_text(:empty), do: "Enter at least one stop ID, code or name."
+  defp stop_set_error_text(:too_many), do: "Enter up to #{@max_stop_set} lines, one stop each."
+  defp stop_set_error_text(:invalid_input), do: "Keep each line to 200 characters or fewer."
+
+  defp ambiguity_at(%{ambiguous: ambiguous}, index) do
+    case Integer.parse(index) do
+      {position, ""} when position >= 0 -> Enum.at(ambiguous, position)
+      _other -> nil
+    end
+  end
+
+  defp ambiguity_at(nil, _index), do: nil
+
+  defp put_stop_set_choice(socket, ref, choice) do
+    update(socket, :stop_set_resolution, fn resolution ->
+      %{resolution | choices: Map.put(resolution.choices, ref, choice)}
+    end)
+  end
+
+  # Resolved matches plus the chosen candidates, each stop once, in stop ID order.
+  defp selected_stops(%{resolved: resolved, ambiguous: ambiguous, choices: choices}) do
+    chosen =
+      Enum.flat_map(ambiguous, fn %{ref: ref, candidates: candidates} ->
+        case Map.get(choices, ref) do
+          stop_id when is_binary(stop_id) -> Enum.filter(candidates, &(&1.stop_id == stop_id))
+          _skipped_or_open -> []
+        end
+      end)
+
+    (Enum.map(resolved, & &1.stop) ++ chosen)
+    |> Enum.uniq_by(& &1.uuid)
+    |> Enum.sort_by(& &1.stop_id)
+  end
+
+  defp approve_stop_set(socket, selected) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    # Up to 100 point reads on a rare action; one `IN` query is the upgrade path.
+    current = Enum.map(selected, &Gtfs.get_stop_by_id(organization_id, gtfs_version_id, &1.uuid))
+
+    if Enum.any?(current, &is_nil/1) do
+      {:noreply,
+       socket
+       |> assign(:stop_set_resolution, nil)
+       |> refuse_stop_set("A selected stop no longer exists. Find stops again.")}
+    else
+      stops =
+        current
+        |> Enum.map(&%{uuid: &1.id, stop_id: &1.stop_id, stop_name: &1.stop_name})
+        |> Enum.sort_by(& &1.stop_id)
+
+      {:noreply,
+       socket
+       |> assign(:stop_set, stops)
+       |> assign(:stop_set_resolution, nil)
+       |> assign(:stop_set_notice, nil)
+       |> push_event("focus_scoped_target", %{id: "stop-set-summary"})
+       |> bind_agent_context()}
+    end
+  end
+
+  # The helper's conversation belongs to the approved set: the page binds the sorted
+  # stop UUIDs from its own assigns, so the model never names them, and a different
+  # set is a new context and therefore a new conversation (INV-2, INV-3). Without a
+  # set the bare version context is bound, which the pack refuses, and the helper
+  # closes with the section that offers it. A version switch remounts the page, so
+  # it starts from the bare context too.
+  defp bind_agent_context(socket) do
+    bare = Scope.context({:version, socket.assigns.current_gtfs_version.id})
+    previous = socket.assigns.agent_context
+
+    context =
+      with stops when is_list(stops) <- socket.assigns.stop_set,
+           {:ok, bound} <-
+             Scope.with_source_snapshot(bare, %{
+               kind: "stop_set",
+               payload: %{
+                 "schema_version" => 1,
+                 "stop_uuids" => stops |> Enum.map(& &1.uuid) |> Enum.sort()
+               }
+             }) do
+        bound
+      else
+        _unbound -> bare
+      end
+
+    socket = if context == bare, do: assign(socket, :agent_open?, false), else: socket
+    socket = AgentPanel.set_context(socket, context)
+
+    # A review belongs to the conversation that prepared it.
+    socket = if context == previous, do: socket, else: assign(socket, :stop_review, nil)
+
+    # `set_context/2` clears the notice, so this one is set after it, and only when
+    # an open panel moved from one approved set to another without a refusal of its own.
+    if context != previous and previous != bare and context != bare and socket.assigns.agent_open? and
+         is_nil(socket.assigns.agent_notice),
+       do:
+         assign(
+           socket,
+           :agent_notice,
+           "The stop list changed, so the helper started a new conversation."
+         ),
+       else: socket
+  end
+
+  @prepared_stale_notice "That request is no longer current. Ask again."
+
+  defp review_prepared_batch(socket, entry_id) do
+    session = socket.assigns.agent_session
+    conversation_id = socket.assigns.agent_conversation_id
+
+    case Agents.prepared(session, conversation_id, entry_id) do
+      {:ok, %{command: {:stop_metadata, %{rows: rows}}}} ->
+        review_batch(socket, rows, %{
+          session_pid: session,
+          conversation_id: conversation_id,
+          entry_id: entry_id,
+          rows: rows
+        })
+
+      _other ->
+        assign(socket, :agent_notice, @prepared_stale_notice)
+    end
+  end
+
+  defp review_batch(socket, rows, origin) do
+    case StopEditing.review_metadata_batch(rows, AuditContext.from_assigns(socket.assigns)) do
+      {:ok, review} ->
+        socket
+        |> assign(:agent_notice, nil)
+        |> assign(:stop_review, %{origin: origin, review: review, notice: nil})
+
+      {:error, :not_found} ->
+        assign(socket, :agent_notice, @stop_batch_not_found)
+
+      {:error, :forbidden} ->
+        assign(socket, :agent_notice, "Your access changed.")
+
+      {:error, _other} ->
+        assign(socket, :agent_notice, "That batch could not be reviewed. Ask again.")
+    end
+  end
+
+  # The batch is saved: the drawer is already closed, the catalog shows the new names
+  # and the approved list keeps its stops' current names.
+  defp saved_stop_batch(socket, held, stops) do
+    names = Map.new(stops, &{&1.id, &1.stop_name})
+
+    socket
+    |> update(:stop_set, fn
+      nil -> nil
+      set -> Enum.map(set, &%{&1 | stop_name: Map.get(names, &1.uuid, &1.stop_name)})
+    end)
+    |> put_flash(:info, "Saved #{Wording.count_noun(length(stops), "stop")}")
+    |> reload_catalog()
+    |> record_stop_receipt(held)
+  end
+
+  # A stale or invalid review is read again over the same rows, so the drawer shows
+  # the values the database holds now and the fingerprint the next save must carry.
+  defp refresh_stop_review(socket, held, reason, audit) do
+    case StopEditing.review_metadata_batch(held.origin.rows, audit) do
+      {:ok, review} ->
+        assign(socket, :stop_review, %{held | review: review, notice: stop_review_notice(reason)})
+
+      {:error, :not_found} ->
+        assign(socket, :agent_notice, @stop_batch_not_found)
+
+      {:error, _other} ->
+        keep_stop_review(socket, held, :failed)
+    end
+  end
+
+  defp keep_stop_review(socket, held, reason),
+    do: assign(socket, :stop_review, %{held | notice: stop_review_notice(reason)})
+
+  defp stop_review_notice(:stale_review),
+    do: %{
+      kind: "warning",
+      text:
+        "These stops changed since you reviewed them. Check the current values, then save again."
+    }
+
+  defp stop_review_notice(:invalid_rows),
+    do: %{kind: "error", text: "Some stops cannot be saved. Fix them, or ask the helper again."}
+
+  defp stop_review_notice(:forbidden), do: %{kind: "error", text: "Your access changed."}
+
+  defp stop_review_notice(:busy),
+    do: %{kind: "warning", text: "Another change is in progress. Try again."}
+
+  defp stop_review_notice(_failed),
+    do: %{kind: "error", text: "Those stops could not be saved. Nothing changed. Try again."}
+
+  # The card is confirmed only for the change that was saved: the same shape the pack
+  # prepared (changed fields only, sorted by stop UUID), so any other batch leaves it
+  # unconfirmed.
+  defp record_stop_receipt(socket, %{origin: origin, review: review}) do
+    actual =
+      {:stop_metadata,
+       %{
+         rows:
+           review.rows
+           |> Enum.filter(&(&1.status == :changed))
+           |> Enum.map(
+             &%{
+               stop_uuid: &1.stop_uuid,
+               changes: Map.new(&1.changed_fields, fn f -> {f, &1.new[f]} end)
+             }
+           )
+           |> Enum.sort_by(& &1.stop_uuid)
+       }}
+
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           actual
+         ) do
+      :ok -> socket
+      {:error, :command_changed} -> assign(socket, :agent_notice, @receipt_changed_notice)
+      # The card's conversation was replaced or ended; there is nothing to confirm.
+      {:error, _stale_or_ended} -> socket
+    end
+  end
+
+  # The current catalog page again, with the filters, sort and page the editor has.
+  defp reload_catalog(socket) do
+    params = socket.assigns.filter_form.params
+
+    opts = [
+      wheelchair_boarding: parse_wheelchair(params["wheelchair_boarding"]),
+      route_id: params["route_id"] || "",
+      direction_id: parse_direction(params["direction_id"]),
+      search: socket.assigns.search,
+      sort_by: socket.assigns.sort_by,
+      sort_dir: socket.assigns.sort_dir,
+      page: socket.assigns.page,
+      per_page: socket.assigns.per_page
+    ]
+
+    {:noreply, socket} =
+      socket.assigns.current_organization.id
+      |> Gtfs.load_stop_catalog(socket.assigns.current_gtfs_version.id, opts)
+      |> apply_catalog_result(socket, opts)
+
+    socket
+  end
+
+  defp refuse_stop_set(socket, message) do
+    socket
+    |> assign(:stop_set_notice, message)
+    |> push_event("focus_scoped_target", %{id: "stop-set-notice"})
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -382,433 +849,504 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
           right.
         </p>
 
-        <%!-- Route lookup failed: the stops still load, so the warning sits above
-               the card and names what is off. --%>
         <div
-          :if={@stops_state == :route_enrichment_unavailable or @route_options_state == :unavailable}
-          id="stops-enrichment-warning"
-          class="mb-6"
+          id="stops-helper-layout"
+          phx-hook=".StopsHelperFocus"
+          class={
+            [
+              # The panel leads at phone width, stacked above the catalog it belongs to;
+              # `lg:grid` drops the flex ordering so source order puts the catalog left.
+              "flex flex-col lg:grid lg:gap-6",
+              @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+            ]
+          }
         >
-          <.message kind="warning" title="Route information is unavailable">
-            <%= if @stops_state == :route_enrichment_unavailable do %>
-              Stops are listed without their routes, and the route filter is off. Search and the other
-              filters still work.
-            <% else %>
-              The route filter is off. Search and the other filters still work.
-            <% end %>
-            <:action>
-              <.button
-                id="stops-enrichment-retry"
-                type="button"
-                variant="secondary"
-                class="min-h-11"
-                phx-click="retry"
-                phx-disable-with="Reloading…"
-              >
-                <.icon name="hero-arrow-path" class="size-4" /> Reload routes
-              </.button>
-            </:action>
-          </.message>
-        </div>
+          <div class="min-w-0">
+            <StopTextHelperComponents.stop_set_section
+              :if={not first_use_empty?(assigns)}
+              open?={@stop_set_open?}
+              form={@stop_set_form}
+              error={@stop_set_error}
+              notice={@stop_set_notice}
+              resolution={@stop_set_resolution}
+              stop_set={@stop_set}
+              helper_open?={@agent_open?}
+            />
 
-        <%!-- Nothing in the version, nothing searched: the toolbar would have
-               nothing to act on, so the next step replaces the card. --%>
-        <.first_use
-          :if={first_use_empty?(assigns)}
-          id="stops-first-use-empty"
-          title="No stops in this version yet"
-        >
-          Stops appear here after you import a GTFS feed into {@current_gtfs_version.name}.
-          <:action>
-            <%!-- One primary per view: Add stop is the filled button and Import
-                   feed sits under it, outlined. --%>
-            <div class="flex flex-col items-center gap-3">
-              <.button
-                id="stops-first-use-add-stop"
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?add=1"}
-                class="min-h-11"
-              >
-                <.icon name="hero-plus" class="size-4" /> Add stop
-              </.button>
-              <.button
-                id="stops-first-use-import"
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
-                variant="secondary"
-                class="min-h-11"
-              >
-                <.icon name="hero-arrow-up-tray" class="size-4" /> Import feed
-              </.button>
+            <%!-- Route lookup failed: the stops still load, so the warning sits above
+               the card and names what is off. --%>
+            <div
+              :if={
+                @stops_state == :route_enrichment_unavailable or @route_options_state == :unavailable
+              }
+              id="stops-enrichment-warning"
+              class="mb-6"
+            >
+              <.message kind="warning" title="Route information is unavailable">
+                <%= if @stops_state == :route_enrichment_unavailable do %>
+                  Stops are listed without their routes, and the route filter is off. Search and the other
+                  filters still work.
+                <% else %>
+                  The route filter is off. Search and the other filters still work.
+                <% end %>
+                <:action>
+                  <.button
+                    id="stops-enrichment-retry"
+                    type="button"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="retry"
+                    phx-disable-with="Reloading…"
+                  >
+                    <.icon name="hero-arrow-path" class="size-4" /> Reload routes
+                  </.button>
+                </:action>
+              </.message>
             </div>
-          </:action>
-        </.first_use>
 
-        <section
-          :if={not first_use_empty?(assigns)}
-          id="stops-workbench"
-          aria-label="Stops and stations"
-          class="overflow-clip rounded-card border border-subtle bg-white"
-        >
-          <%!-- Search is used on almost every visit, so it takes the width; the
+            <%!-- Nothing in the version, nothing searched: the toolbar would have
+               nothing to act on, so the next step replaces the card. --%>
+            <.first_use
+              :if={first_use_empty?(assigns)}
+              id="stops-first-use-empty"
+              title="No stops in this version yet"
+            >
+              Stops appear here after you import a GTFS feed into {@current_gtfs_version.name}.
+              <:action>
+                <%!-- One primary per view: Add stop is the filled button and Import
+                   feed sits under it, outlined. --%>
+                <div class="flex flex-col items-center gap-3">
+                  <.button
+                    id="stops-first-use-add-stop"
+                    navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/map?add=1"}
+                    class="min-h-11"
+                  >
+                    <.icon name="hero-plus" class="size-4" /> Add stop
+                  </.button>
+                  <.button
+                    id="stops-first-use-import"
+                    navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
+                    variant="secondary"
+                    class="min-h-11"
+                  >
+                    <.icon name="hero-arrow-up-tray" class="size-4" /> Import feed
+                  </.button>
+                </div>
+              </:action>
+            </.first_use>
+
+            <section
+              :if={not first_use_empty?(assigns)}
+              id="stops-workbench"
+              aria-label="Stops and stations"
+              class="overflow-clip rounded-card border border-subtle bg-white"
+            >
+              <%!-- Search is used on almost every visit, so it takes the width; the
                  selects less often. The two server forms keep the IDs the tests
                  reach for. --%>
-          <div
-            id="stops-toolbar"
-            role="search"
-            class="flex flex-wrap items-end gap-3 border-b border-subtle px-4 py-4 md:px-5"
-          >
-            <div class="min-w-0 flex-1 basis-[190px] md:basis-[280px]">
-              <.form for={@search_form} id="stop-search-form" phx-change="search">
-                <.input
-                  field={@search_form[:search]}
-                  type="search"
-                  label="Search stops and stations"
-                  placeholder="Stop name or ID"
-                  autocomplete="off"
-                  phx-debounce="300"
-                  disabled={@stops_state == :loading}
-                />
-              </.form>
-            </div>
-
-            <.form
-              for={@filter_form}
-              id="stop-filter-form"
-              phx-change="filter"
-              class="flex w-full flex-wrap items-end gap-3 max-md:order-last md:w-auto"
-            >
-              <div class="min-w-0 flex-1 basis-[140px] md:w-[200px] md:flex-none">
-                <.input
-                  field={@filter_form[:route_id]}
-                  type="select"
-                  label="Route"
-                  prompt="All routes"
-                  disabled={route_filter_disabled?(assigns)}
-                  options={route_options(@available_routes, @route_id)}
-                />
-              </div>
               <div
-                :if={@route_id not in [nil, ""]}
-                class="min-w-0 flex-1 basis-[140px] md:w-[168px] md:flex-none"
+                id="stops-toolbar"
+                role="search"
+                class="flex flex-wrap items-end gap-3 border-b border-subtle px-4 py-4 md:px-5"
               >
-                <.input
-                  field={@filter_form[:direction_id]}
-                  type="select"
-                  label="Direction"
-                  prompt="All directions"
-                  disabled={@stops_state == :loading}
-                  options={[{Trip.direction_label(0), 0}, {Trip.direction_label(1), 1}]}
-                />
-              </div>
-              <div class="min-w-0 flex-1 basis-[140px] md:w-[184px] md:flex-none">
-                <.input
-                  field={@filter_form[:wheelchair_boarding]}
-                  type="select"
-                  label="Wheelchair access"
-                  prompt="All stops"
-                  disabled={@stops_state == :loading}
-                  options={[{"Accessible", 1}, {"Not accessible", 2}, {"Not recorded", 0}]}
-                />
-              </div>
-            </.form>
-          </div>
+                <div class="min-w-0 flex-1 basis-[190px] md:basis-[280px]">
+                  <.form for={@search_form} id="stop-search-form" phx-change="search">
+                    <.input
+                      field={@search_form[:search]}
+                      type="search"
+                      label="Search stops and stations"
+                      placeholder="Stop name or ID"
+                      autocomplete="off"
+                      phx-debounce="300"
+                      disabled={@stops_state == :loading}
+                    />
+                  </.form>
+                </div>
 
-          <%!-- The catalog read failed: the toolbar stays so the search and filters
-                 are visibly kept, and only the results give way to the error. --%>
-          <div :if={@stops_state == :unavailable} id="stops-unavailable" class="p-4 md:p-5">
-            <.message kind="error" title="Stops could not load">
-              The stop catalog did not respond. Your search and filters are kept. Reload to try again.
-              <:action>
-                <.button
-                  id="stops-retry"
-                  type="button"
-                  variant="secondary"
-                  class="min-h-11"
-                  phx-click="retry"
-                  phx-disable-with="Reloading…"
+                <.form
+                  for={@filter_form}
+                  id="stop-filter-form"
+                  phx-change="filter"
+                  class="flex w-full flex-wrap items-end gap-3 max-md:order-last md:w-auto"
                 >
-                  <.icon name="hero-arrow-path" class="size-4" /> Reload stops
-                </.button>
-              </:action>
-            </.message>
-          </div>
-
-          <%!-- Result count and active constraints; each constraint can be removed
-                 on its own. --%>
-          <div
-            :if={@stops_state != :unavailable}
-            id="stops-summary"
-            class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
-          >
-            <p
-              :if={@stops_state == :loading}
-              id="stops-loading"
-              role="status"
-              aria-live="polite"
-              aria-busy="true"
-              class="font-[650] text-strong"
-            >
-              Loading stops…
-            </p>
-            <p
-              :if={@stops_state != :loading}
-              id="stops-count"
-              role="status"
-              class="font-[650] tabular-nums text-strong"
-            >
-              {case has_active_constraints?(assigns) do
-                true ->
-                  Wording.count_noun(
-                    @total_count,
-                    "stop or station matches",
-                    "stops and stations match"
-                  )
-
-                false ->
-                  Wording.count_noun(@total_count, "stop or station", "stops and stations")
-              end}
-            </p>
-
-            <div id="stops-chips" class="flex flex-wrap items-center gap-2">
-              <.constraint_chip
-                :for={filter <- active_filters(assigns)}
-                id={"stops-chip-#{filter.key}"}
-                key={filter.key}
-                kind={filter.kind}
-                label={filter.value}
-                disabled={@stops_state == :loading}
-              />
-            </div>
-
-            <button
-              :if={
-                @stops_state != :loading and has_active_constraints?(assigns) and not @stops_empty?
-              }
-              id="stops-clear-filters"
-              type="button"
-              phx-click="clear_filters"
-              class="ml-auto inline-flex min-h-11 items-center font-[650] text-action hover:underline"
-            >
-              {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
-            </button>
-          </div>
-
-          <div :if={@stops_state != :unavailable} id="stops-results">
-            <%!-- Desktop and tablet: semantic table. Loading keeps the finished
-                   layout, with placeholder rows where the stops will be. --%>
-            <div :if={results_visible?(assigns)} id="stops-container" class="max-md:hidden">
-              <table class="workbench-table ds-stack-table w-full table-fixed">
-                <caption class="sr-only">
-                  Stops and stations in {@current_gtfs_version.name}
-                </caption>
-                <thead>
-                  <tr>
-                    <.sort_header
-                      label="Name"
-                      sort_key="stop_name"
-                      sort_by={@sort_by}
-                      sort_dir={@sort_dir}
-                      disabled={@stops_state == :loading}
+                  <div class="min-w-0 flex-1 basis-[140px] md:w-[200px] md:flex-none">
+                    <.input
+                      field={@filter_form[:route_id]}
+                      type="select"
+                      label="Route"
+                      prompt="All routes"
+                      disabled={route_filter_disabled?(assigns)}
+                      options={route_options(@available_routes, @route_id)}
                     />
-                    <.sort_header
-                      label="Stop ID"
-                      sort_key="stop_id"
-                      sort_by={@sort_by}
-                      sort_dir={@sort_dir}
-                      disabled={@stops_state == :loading}
-                      class="w-[128px]"
-                    />
-                    <.sort_header
-                      label="Type"
-                      sort_key="location_type"
-                      sort_by={@sort_by}
-                      sort_dir={@sort_dir}
-                      disabled={@stops_state == :loading}
-                      class="hidden w-[148px] lg:table-cell"
-                    />
-                    <th
-                      scope="col"
-                      class="sticky top-0 z-10 w-[200px] border-b border-subtle bg-canvas text-[13px] font-[650] text-default"
-                    >
-                      Routes
-                    </th>
-                    <th
-                      scope="col"
-                      class="sticky top-0 z-10 w-[176px] border-b border-subtle bg-canvas text-[13px] font-[650] text-default"
-                    >
-                      Wheelchair access
-                    </th>
-                  </tr>
-                </thead>
-                <tbody id="stops" phx-update="stream">
-                  <tr
-                    :for={{id, stop} <- @streams.stops}
-                    id={id}
-                    class="relative cursor-pointer hover:bg-canvas/70"
-                  >
-                    <th scope="row">
-                      <.stop_link stop={stop} version_id={@current_gtfs_version.id} />
-                    </th>
-                    <td class="truncate font-mono text-[13px] tabular-nums text-default">
-                      {stop.stop_id}
-                    </td>
-                    <td class="hidden truncate text-default lg:table-cell">
-                      {Stop.location_type_label(stop.location_type)}
-                    </td>
-                    <td>
-                      <.stop_routes routes={stop.routes} state={@stops_state} />
-                    </td>
-                    <td>
-                      <.wheelchair_access status={accessibility_status(stop)} />
-                    </td>
-                  </tr>
-                </tbody>
-                <tbody :if={@stops_state == :loading} id="stops-skeleton" aria-hidden="true">
-                  <tr :for={width <- @skeleton_widths}>
-                    <td class="h-[52px]">
-                      <span
-                        class="block h-3.5 rounded-badge bg-navy-100/60 motion-safe:animate-pulse"
-                        style={"width: #{width}%"}
-                      >
-                      </span>
-                    </td>
-                    <td>
-                      <span class="block h-3.5 w-14 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                      </span>
-                    </td>
-                    <td class="hidden lg:table-cell">
-                      <span class="block h-3.5 w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                      </span>
-                    </td>
-                    <td>
-                      <span class="block h-[26px] w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                      </span>
-                    </td>
-                    <td>
-                      <span class="block h-3.5 w-24 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <%!-- Phones: one list item per stop, and the whole item is the link. --%>
-            <ul
-              :if={results_visible?(assigns)}
-              id="stops-list"
-              phx-update="stream"
-              class="workbench-list md:hidden"
-            >
-              <li :for={{id, stop} <- @streams.stops_mobile} id={id}>
-                <.link
-                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
-                  class="block min-h-11 px-4 py-3 hover:bg-canvas"
-                >
-                  <span class="block truncate text-[15px] font-[650] text-strong">
-                    {stop_display_name(stop)}
-                  </span>
-                  <span class="block truncate text-[13px] text-muted">{stop_meta(stop)}</span>
-                  <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
-                    <.stop_routes routes={stop.routes} state={@stops_state} />
-                    <.wheelchair_access status={accessibility_status(stop)} />
                   </div>
-                </.link>
-              </li>
-            </ul>
-
-            <div
-              :if={@stops_state == :loading}
-              id="stops-skeleton-list"
-              aria-hidden="true"
-              class="workbench-list md:hidden"
-            >
-              <div :for={width <- @skeleton_widths} class="px-4 py-3">
-                <span
-                  class="block h-4 rounded-badge bg-navy-100/60 motion-safe:animate-pulse"
-                  style={"width: #{width}%"}
-                >
-                </span>
-                <span class="mt-2 block h-3.5 w-24 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                </span>
-                <span class="mt-3 block h-[26px] w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
-                </span>
+                  <div
+                    :if={@route_id not in [nil, ""]}
+                    class="min-w-0 flex-1 basis-[140px] md:w-[168px] md:flex-none"
+                  >
+                    <.input
+                      field={@filter_form[:direction_id]}
+                      type="select"
+                      label="Direction"
+                      prompt="All directions"
+                      disabled={@stops_state == :loading}
+                      options={[{Trip.direction_label(0), 0}, {Trip.direction_label(1), 1}]}
+                    />
+                  </div>
+                  <div class="min-w-0 flex-1 basis-[140px] md:w-[184px] md:flex-none">
+                    <.input
+                      field={@filter_form[:wheelchair_boarding]}
+                      type="select"
+                      label="Wheelchair access"
+                      prompt="All stops"
+                      disabled={@stops_state == :loading}
+                      options={[{"Accessible", 1}, {"Not accessible", 2}, {"Not recorded", 0}]}
+                    />
+                  </div>
+                </.form>
               </div>
-            </div>
 
-            <%!-- Search or filters exclude every stop. --%>
-            <div
-              :if={constrained_empty?(assigns)}
-              id="stops-constrained-empty"
-              class="px-5 py-12 text-center"
-            >
-              <h2 class="font-sans text-base font-bold tracking-normal text-strong">
-                {no_match_title(assigns)}
-              </h2>
-              <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
-                {no_match_hint(assigns)}
-              </p>
-              <button
-                id="stops-clear-filters"
-                type="button"
-                phx-click="clear_filters"
-                class="mt-5 inline-flex min-h-11 items-center justify-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+              <%!-- The catalog read failed: the toolbar stays so the search and filters
+                 are visibly kept, and only the results give way to the error. --%>
+              <div :if={@stops_state == :unavailable} id="stops-unavailable" class="p-4 md:p-5">
+                <.message kind="error" title="Stops could not load">
+                  The stop catalog did not respond. Your search and filters are kept. Reload to try again.
+                  <:action>
+                    <.button
+                      id="stops-retry"
+                      type="button"
+                      variant="secondary"
+                      class="min-h-11"
+                      phx-click="retry"
+                      phx-disable-with="Reloading…"
+                    >
+                      <.icon name="hero-arrow-path" class="size-4" /> Reload stops
+                    </.button>
+                  </:action>
+                </.message>
+              </div>
+
+              <%!-- Result count and active constraints; each constraint can be removed
+                 on its own. --%>
+              <div
+                :if={@stops_state != :unavailable}
+                id="stops-summary"
+                class="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
               >
-                {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
-              </button>
-            </div>
+                <p
+                  :if={@stops_state == :loading}
+                  id="stops-loading"
+                  role="status"
+                  aria-live="polite"
+                  aria-busy="true"
+                  class="font-[650] text-strong"
+                >
+                  Loading stops…
+                </p>
+                <p
+                  :if={@stops_state != :loading}
+                  id="stops-count"
+                  role="status"
+                  class="font-[650] tabular-nums text-strong"
+                >
+                  {case has_active_constraints?(assigns) do
+                    true ->
+                      Wording.count_noun(
+                        @total_count,
+                        "stop or station matches",
+                        "stops and stations match"
+                      )
+
+                    false ->
+                      Wording.count_noun(@total_count, "stop or station", "stops and stations")
+                  end}
+                </p>
+
+                <div id="stops-chips" class="flex flex-wrap items-center gap-2">
+                  <.constraint_chip
+                    :for={filter <- active_filters(assigns)}
+                    id={"stops-chip-#{filter.key}"}
+                    key={filter.key}
+                    kind={filter.kind}
+                    label={filter.value}
+                    disabled={@stops_state == :loading}
+                  />
+                </div>
+
+                <button
+                  :if={
+                    @stops_state != :loading and has_active_constraints?(assigns) and
+                      not @stops_empty?
+                  }
+                  id="stops-clear-filters"
+                  type="button"
+                  phx-click="clear_filters"
+                  class="ml-auto inline-flex min-h-11 items-center font-[650] text-action hover:underline"
+                >
+                  {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
+                </button>
+              </div>
+
+              <div :if={@stops_state != :unavailable} id="stops-results">
+                <%!-- Desktop and tablet: semantic table. Loading keeps the finished
+                   layout, with placeholder rows where the stops will be. --%>
+                <div :if={results_visible?(assigns)} id="stops-container" class="max-md:hidden">
+                  <table class="workbench-table ds-stack-table w-full table-fixed">
+                    <caption class="sr-only">
+                      Stops and stations in {@current_gtfs_version.name}
+                    </caption>
+                    <thead>
+                      <tr>
+                        <.sort_header
+                          label="Name"
+                          sort_key="stop_name"
+                          sort_by={@sort_by}
+                          sort_dir={@sort_dir}
+                          disabled={@stops_state == :loading}
+                        />
+                        <.sort_header
+                          label="Stop ID"
+                          sort_key="stop_id"
+                          sort_by={@sort_by}
+                          sort_dir={@sort_dir}
+                          disabled={@stops_state == :loading}
+                          class="w-[128px]"
+                        />
+                        <.sort_header
+                          label="Type"
+                          sort_key="location_type"
+                          sort_by={@sort_by}
+                          sort_dir={@sort_dir}
+                          disabled={@stops_state == :loading}
+                          class="hidden w-[148px] lg:table-cell"
+                        />
+                        <th
+                          scope="col"
+                          class="sticky top-0 z-10 w-[200px] border-b border-subtle bg-canvas text-[13px] font-[650] text-default"
+                        >
+                          Routes
+                        </th>
+                        <th
+                          scope="col"
+                          class="sticky top-0 z-10 w-[176px] border-b border-subtle bg-canvas text-[13px] font-[650] text-default"
+                        >
+                          Wheelchair access
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody id="stops" phx-update="stream">
+                      <tr
+                        :for={{id, stop} <- @streams.stops}
+                        id={id}
+                        class="relative cursor-pointer hover:bg-canvas/70"
+                      >
+                        <th scope="row">
+                          <.stop_link stop={stop} version_id={@current_gtfs_version.id} />
+                        </th>
+                        <td class="truncate font-mono text-[13px] tabular-nums text-default">
+                          {stop.stop_id}
+                        </td>
+                        <td class="hidden truncate text-default lg:table-cell">
+                          {Stop.location_type_label(stop.location_type)}
+                        </td>
+                        <td>
+                          <.stop_routes routes={stop.routes} state={@stops_state} />
+                        </td>
+                        <td>
+                          <.wheelchair_access status={accessibility_status(stop)} />
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tbody :if={@stops_state == :loading} id="stops-skeleton" aria-hidden="true">
+                      <tr :for={width <- @skeleton_widths}>
+                        <td class="h-[52px]">
+                          <span
+                            class="block h-3.5 rounded-badge bg-navy-100/60 motion-safe:animate-pulse"
+                            style={"width: #{width}%"}
+                          >
+                          </span>
+                        </td>
+                        <td>
+                          <span class="block h-3.5 w-14 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                          </span>
+                        </td>
+                        <td class="hidden lg:table-cell">
+                          <span class="block h-3.5 w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                          </span>
+                        </td>
+                        <td>
+                          <span class="block h-[26px] w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                          </span>
+                        </td>
+                        <td>
+                          <span class="block h-3.5 w-24 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <%!-- Phones: one list item per stop, and the whole item is the link. --%>
+                <ul
+                  :if={results_visible?(assigns)}
+                  id="stops-list"
+                  phx-update="stream"
+                  class="workbench-list md:hidden"
+                >
+                  <li :for={{id, stop} <- @streams.stops_mobile} id={id}>
+                    <.link
+                      navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
+                      class="block min-h-11 px-4 py-3 hover:bg-canvas"
+                    >
+                      <span class="block truncate text-[15px] font-[650] text-strong">
+                        {stop_display_name(stop)}
+                      </span>
+                      <span class="block truncate text-[13px] text-muted">{stop_meta(stop)}</span>
+                      <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
+                        <.stop_routes routes={stop.routes} state={@stops_state} />
+                        <.wheelchair_access status={accessibility_status(stop)} />
+                      </div>
+                    </.link>
+                  </li>
+                </ul>
+
+                <div
+                  :if={@stops_state == :loading}
+                  id="stops-skeleton-list"
+                  aria-hidden="true"
+                  class="workbench-list md:hidden"
+                >
+                  <div :for={width <- @skeleton_widths} class="px-4 py-3">
+                    <span
+                      class="block h-4 rounded-badge bg-navy-100/60 motion-safe:animate-pulse"
+                      style={"width: #{width}%"}
+                    >
+                    </span>
+                    <span class="mt-2 block h-3.5 w-24 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                    </span>
+                    <span class="mt-3 block h-[26px] w-16 rounded-badge bg-navy-100/60 motion-safe:animate-pulse">
+                    </span>
+                  </div>
+                </div>
+
+                <%!-- Search or filters exclude every stop. --%>
+                <div
+                  :if={constrained_empty?(assigns)}
+                  id="stops-constrained-empty"
+                  class="px-5 py-12 text-center"
+                >
+                  <h2 class="font-sans text-base font-bold tracking-normal text-strong">
+                    {no_match_title(assigns)}
+                  </h2>
+                  <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
+                    {no_match_hint(assigns)}
+                  </p>
+                  <button
+                    id="stops-clear-filters"
+                    type="button"
+                    phx-click="clear_filters"
+                    class="mt-5 inline-flex min-h-11 items-center justify-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                  >
+                    {if only_search_active?(assigns), do: "Clear search", else: "Clear filters"}
+                  </button>
+                </div>
+              </div>
+
+              <div
+                :if={@stops_state != :unavailable and (@stops_state == :loading or @total_count > 0)}
+                class="border-t border-subtle px-4 md:px-5"
+              >
+                <.pagination
+                  page={@page}
+                  per_page={@per_page}
+                  total={@total_count}
+                  entity="stops & stations"
+                  disabled={@stops_state == :loading}
+                />
+              </div>
+            </section>
+
+            <%!-- For anyone who exports the feed or troubleshoots it: how the words on
+               this page map to the GTFS fields. --%>
+            <details
+              id="stops-technical-details"
+              class="group mt-6 rounded-card border border-subtle bg-white"
+            >
+              <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
+                <.icon
+                  name="hero-chevron-right"
+                  class="size-4 text-muted transition-transform group-open:rotate-90"
+                /> Technical details for exports and troubleshooting
+              </summary>
+              <div class="grid gap-x-8 gap-y-2 border-t border-subtle px-4 py-4 text-[13px] text-muted md:grid-cols-2 md:px-5">
+                <p>
+                  This list shows every stop and station that has no parent station (GTFS <code class="font-mono text-default">stops.txt</code>).
+                </p>
+                <p>
+                  <strong class="font-[650] text-default">Type</strong>
+                  is <code class="font-mono text-default">location_type</code>: Stop/Platform is 0, Station is 1.
+                  <strong class="font-[650] text-default">Wheelchair access</strong>
+                  is <code class="font-mono text-default">wheelchair_boarding</code>: 1 accessible, 2 not accessible, 0 or blank not recorded.
+                </p>
+                <p>
+                  <strong class="font-[650] text-default">Direction</strong>
+                  is <code class="font-mono text-default">direction_id</code>
+                  on trips: outbound is 0 and inbound is 1.
+                </p>
+                <p>
+                  <strong class="font-[650] text-default">Stop ID</strong>
+                  is <code class="font-mono text-default">stop_id</code>, the value other systems use to match a stop. Search finds names and IDs.
+                </p>
+              </div>
+            </details>
           </div>
 
           <div
-            :if={@stops_state != :unavailable and (@stops_state == :loading or @total_count > 0)}
-            class="border-t border-subtle px-4 md:px-5"
+            :if={@agent_open? and @stop_set}
+            class="order-first mb-5 min-w-0 lg:order-last lg:mb-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]"
           >
-            <.pagination
-              page={@page}
-              per_page={@per_page}
-              total={@total_count}
-              entity="stops & stations"
-              disabled={@stops_state == :loading}
+            <.agent_panel
+              id="agent-panel"
+              title={@agent_title}
+              intro={@agent_intro}
+              examples={@agent_examples}
+              scope_line={helper_scope_line(assigns)}
+              status={@agent_status}
+              entries={@streams.agent_entries}
+              form={@agent_form}
+              notice={@agent_notice}
+              entries_empty?={@agent_entries_empty?}
+              review_label={fn _prepared -> "Review stop changes" end}
             />
           </div>
-        </section>
+        </div>
 
-        <%!-- For anyone who exports the feed or troubleshoots it: how the words on
-               this page map to the GTFS fields. --%>
-        <details
-          id="stops-technical-details"
-          class="group mt-6 rounded-card border border-subtle bg-white"
-        >
-          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 text-sm font-[650] text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
-            <.icon
-              name="hero-chevron-right"
-              class="size-4 text-muted transition-transform group-open:rotate-90"
-            /> Technical details for exports and troubleshooting
-          </summary>
-          <div class="grid gap-x-8 gap-y-2 border-t border-subtle px-4 py-4 text-[13px] text-muted md:grid-cols-2 md:px-5">
-            <p>
-              This list shows every stop and station that has no parent station (GTFS <code class="font-mono text-default">stops.txt</code>).
-            </p>
-            <p>
-              <strong class="font-[650] text-default">Type</strong>
-              is <code class="font-mono text-default">location_type</code>: Stop/Platform is 0, Station is 1.
-              <strong class="font-[650] text-default">Wheelchair access</strong>
-              is <code class="font-mono text-default">wheelchair_boarding</code>: 1 accessible, 2 not accessible, 0 or blank not recorded.
-            </p>
-            <p>
-              <strong class="font-[650] text-default">Direction</strong>
-              is <code class="font-mono text-default">direction_id</code>
-              on trips: outbound is 0 and inbound is 1.
-            </p>
-            <p>
-              <strong class="font-[650] text-default">Stop ID</strong>
-              is <code class="font-mono text-default">stop_id</code>, the value other systems use to match a stop. Search finds names and IDs.
-            </p>
-          </div>
-        </details>
+        <%!-- The panel's focus listener belongs to the wrapper above, which survives the
+               conditional panel. This hook only moves focus; the server decides where. --%>
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".StopsHelperFocus">
+          export default {
+            mounted() {
+              this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
+            }
+          }
+        </script>
+
+        <StopTextHelperComponents.review_drawer
+          :if={@stop_review}
+          review={@stop_review.review}
+          notice={@stop_review.notice}
+          return_focus_id={"agent-prepared-#{@stop_review.origin.entry_id}"}
+        />
       </div>
     </Layouts.app>
     """
   end
+
+  # The panel names the approved set it is bound to, from the page's own assign, so
+  # the line always agrees with the section above it.
+  defp helper_scope_line(%{stop_set: stops} = assigns),
+    do:
+      "#{Wording.count_noun(length(stops), "approved stop")} · #{assigns.current_gtfs_version.name}"
 
   # ── Workbench pieces ────────────────────────────────────────────────────────
   #

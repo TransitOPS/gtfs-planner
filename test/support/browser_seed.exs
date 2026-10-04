@@ -2478,7 +2478,7 @@ case Accounts.register_first_admin(%{
 
     # ── Headsign propagation fixtures ──
     #
-    # One route with a pattern per browser journey (BROWSER-HS1…HS5) and a
+    # One route with a pattern per browser journey (BROWSER-HS1…HS6) and a
     # continuation route for their interlined trips, all inside the existing
     # Browser E2E version: a newer published_at would become the default
     # version. Every pattern carries the same shape so each journey starts
@@ -2614,10 +2614,11 @@ case Accounts.register_first_admin(%{
       2 => "Browser Headsign Two",
       3 => "Browser Headsign Three",
       4 => "Browser Headsign Four",
-      5 => "Browser Headsign Five"
+      5 => "Browser Headsign Five",
+      6 => "Browser Headsign Six"
     }
 
-    Enum.each(1..5, fn n ->
+    Enum.each(1..6, fn n ->
       pattern = headsign_pattern.("BROWSER-HS#{n}", Map.fetch!(pattern_names, n), headsign_route)
       timing = headsign_timing.(pattern, nil)
 
@@ -2648,8 +2649,103 @@ case Accounts.register_first_admin(%{
     end)
 
     IO.puts(
-      "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS5 plus BROWSER_HEADSIGNS_20 continuations)"
+      "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS6 plus BROWSER_HEADSIGNS_20 continuations)"
     )
+
+    # ── Stop text helper approval fixtures ──
+    #
+    # Four stops in the Browser E2E version for the stops catalog's approval form
+    # (rider_text_helpers.spec.js, `stop set approval`). The case only reads them:
+    #   * BROWSER_TXT_A1 "Txt Pine Plaza" carries the unique code TXT-77
+    #   * BROWSER_TXT_A2 and A3 are both named "Txt Main St @ Elm", so that name is
+    #     an ambiguity the editor must settle
+    #   * BROWSER_TXT_A4 "Txt Oak Court" has neither a code nor a duplicate name
+    # The names start with "Txt" so the existing catalog assertions on this version
+    # are not reordered, and the insert fixture does not cast `stop_code`, so the
+    # code is written the way an import writes it.
+    for {stop_id, name} <- [
+          {"BROWSER_TXT_A1", "Txt Pine Plaza"},
+          {"BROWSER_TXT_A2", "Txt Main St @ Elm"},
+          {"BROWSER_TXT_A3", "Txt Main St @ Elm"},
+          {"BROWSER_TXT_A4", "Txt Oak Court"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      if stop_id == "BROWSER_TXT_A1" do
+        {1, _} =
+          from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+          |> Repo.update_all(set: [stop_code: "TXT-77"])
+      end
+    end
+
+    IO.puts("Browser seed: stop text approval stops (BROWSER_TXT_A1..A4)")
+
+    # Three stops for the stop review table (`stop review table`, read-only): B1 and B2
+    # take a name and a code change, and B3 is renamed to "Txt Oak Court", the name
+    # BROWSER_TXT_A4 already has, so the review's duplicate-name warning renders.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_B1", "Txt Rail Depot", "TXT-B1"},
+          {"BROWSER_TXT_B2", "Txt Garden Gate", "TXT-B2"},
+          {"BROWSER_TXT_B3", "Txt Mill Lane", "TXT-B3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop review stops (BROWSER_TXT_B1..B3)")
+
+    # Three stops the `stop review save` case writes: it renames them through the helper's
+    # review and renames one more through the native map editor to stage a stale review.
+    # No other case reads them, and none of them is served by a route.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_C1", "Txt Harbor Gate", "TXT-C1"},
+          {"BROWSER_TXT_C2", "Txt Quarry Road", "TXT-C2"},
+          {"BROWSER_TXT_C3", "Txt Fern Lane", "TXT-C3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop review save stops (BROWSER_TXT_C1..C3)")
+
+    # Three stops for the stop text journey (`stops journey: text`), which approves them
+    # and saves a naming convention to them: two directional twins that abbreviate
+    # "Street", and one stop the approval finds by its code.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_D1", "Txt Main St @ Elm EB", "TXT-D1"},
+          {"BROWSER_TXT_D2", "Txt Main St @ Elm WB", "TXT-D2"},
+          {"BROWSER_TXT_D3", "Txt Cedar Ave", "TXT-D3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop text journey stops (BROWSER_TXT_D1..D3)")
 
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #

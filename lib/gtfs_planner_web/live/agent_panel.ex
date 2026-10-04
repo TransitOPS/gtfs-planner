@@ -153,7 +153,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   @forbidden_notice "Your access changed."
   @unavailable_notice "The helper is unavailable right now."
   @unavailable_pack_notice "This helper is not available on this page."
-  @unavailable_context_notice "This route or calendar is no longer available, so the helper stopped."
+  @unavailable_context_notice "What this helper was working on is no longer available, so it stopped."
   @busy_notice "The helper is still working on your last request."
   @capacity_notice "The helper is busy. Try again shortly."
   @too_long_error "Keep messages under 2,000 characters."
