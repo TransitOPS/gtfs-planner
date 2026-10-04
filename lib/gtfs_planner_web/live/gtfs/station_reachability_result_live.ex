@@ -69,7 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
      |> assign(:trips, %{})
      |> assign(:graph, nil)
      |> assign(:station_helper_notice, nil)
-     |> AgentPanel.mount("station_results")}
+     |> AgentPanel.mount("station_results", open_button: "station-helper-open")}
   end
 
   @impl Phoenix.LiveView

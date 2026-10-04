@@ -279,6 +279,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationObservationMappingTest do
       refute encoded =~ ctx.user.email
     end
 
+    test "opening the helper focuses its composer and closing it returns focus to the station button",
+         ctx do
+      view = computed_import_view(ctx)
+      choose_station(view, "STATION_A")
+
+      view |> element("#station-helper-open") |> render_click()
+      assert_push_event(view, "agent:focus", %{id: "agent-composer-input"})
+
+      view |> element("#agent-panel-close") |> render_click()
+      refute has_element?(view, "#agent-panel")
+      assert_push_event(view, "agent:focus", %{id: "station-helper-open"})
+    end
+
     test "a journal note edited after capture is reported, not re-read at its new revision",
          ctx do
       view = computed_import_view(ctx)

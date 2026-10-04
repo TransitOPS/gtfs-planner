@@ -226,7 +226,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> stream(:import_recovery_runs, recoverable_runs,
        dom_id: fn run -> "import-run-#{run.id}" end
      )
-     |> AgentPanel.mount("station_imports")
+     |> AgentPanel.mount("station_imports", open_button: "station-helper-open")
      |> refresh_change_review()}
   end
 
@@ -2298,7 +2298,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
          using a colocated hook (no embedded script) so keyboard and screen-reader
          users land on the fixable control. The same hook carries focus back to the
          helper card a prepared review was opened from, and to the review's own
-         controls when it opens, closes or is refused. --%>
+         controls when it opens, closes or is refused, and carries the helper panel's
+         own open and close focus. --%>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".ImportErrorFocus">
       export default {
         mounted() {
@@ -2313,6 +2314,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           this.handleEvent("focus_station_target", ({id}) => {
             focusLater(this.el.querySelector(`#${CSS.escape(id)}`))
           })
+          // The helper panel's own open and close focus. The panel is a sibling of
+          // the review, so the target is found on the page rather than under this
+          // element, as every other host does.
+          this.handleEvent("agent:focus", ({id}) => document.getElementById(id)?.focus())
           this.handleEvent("focus_gtfs_import_files", () => {
             const el = this.el.querySelector("#gtfs-import-upload-input input")
             if (el) el.focus()

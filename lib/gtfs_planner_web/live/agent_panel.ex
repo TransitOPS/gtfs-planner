@@ -144,7 +144,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
 
   @entries :agent_entries
   @composer "agent-composer-input"
-  @open_button "agent-helper-open"
+  @default_open_button "agent-helper-open"
 
   @forbidden_notice "Your access changed."
   @unavailable_notice "The helper is unavailable right now."
@@ -175,6 +175,10 @@ defmodule GtfsPlannerWeb.AgentPanel do
     * `:schedule_token` - the active-schedule selection token this conversation is
       opened under, carried into the session `Scope` as `alert_schedule_token`.
       Only the Alerts pack reads it; every other host leaves it `nil`.
+    * `:open_button` - the DOM id of the host's own control that opens the panel,
+      which receives focus when the panel closes. Defaults to
+      `"agent-helper-open"`; a host whose control has another id names it here, or
+      closing the panel leaves focus on a button that no longer exists.
     * `:organization_scoped` - bind no service version to this conversation,
       because the record named by `:subject_id` belongs to the organization
       rather than to a version. Defaults to false, which is the whole-version
@@ -220,6 +224,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     |> assign(:agent_auto_apply?, Keyword.get(opts, :auto_apply, false) == true)
     |> assign(:agent_subject_id, Keyword.get(opts, :subject_id))
     |> assign(:agent_schedule_token, Keyword.get(opts, :schedule_token))
+    |> assign(:agent_open_button, Keyword.get(opts, :open_button, @default_open_button))
     |> assign(:agent_forwarded, MapSet.new())
     |> assign(:agent_open?, false)
     |> assign(:agent_session, nil)
@@ -457,7 +462,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
     {:halt,
      socket
      |> assign(:agent_open?, false)
-     |> push_event("agent:focus", %{id: @open_button})}
+     |> push_event("agent:focus", %{id: socket.assigns.agent_open_button})}
   end
 
   defp handle_event("agent_send", %{"agent" => %{"message" => text}}, socket) do

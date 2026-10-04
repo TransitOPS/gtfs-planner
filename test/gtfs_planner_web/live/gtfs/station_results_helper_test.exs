@@ -121,6 +121,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
       assert Enum.map(runs_offered(view), & &1) == [run.id]
     end
 
+    test "opening the helper focuses its composer and closing it returns focus to the station button",
+         ctx do
+      view = report_view(ctx, ctx.station)
+
+      view |> element("#station-helper-open") |> render_click()
+      assert_push_event(view, "agent:focus", %{id: "agent-composer-input"})
+
+      view |> element("#agent-panel-close") |> render_click()
+      refute has_element?(view, "#agent-panel")
+      assert_push_event(view, "agent:focus", %{id: "station-helper-open"})
+    end
+
     test "a selected recorded check becomes a new conversation with its own snapshot", ctx do
       run = recorded_run(ctx)
       view = report_view(ctx, ctx.station)
@@ -319,6 +331,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationResultsHelperTest do
                "station_stop_id" => "STATION_A",
                "run_id" => run.id
              }
+    end
+
+    test "closing the helper returns focus to the result page's own button", ctx do
+      view = result_view(ctx, recorded_run(ctx))
+
+      view |> element("#station-helper-open") |> render_click()
+      assert_push_event(view, "agent:focus", %{id: "agent-composer-input"})
+
+      view |> element("#agent-panel-close") |> render_click()
+      assert_push_event(view, "agent:focus", %{id: "station-helper-open"})
     end
 
     test "explains the result on screen and starts no check", ctx do

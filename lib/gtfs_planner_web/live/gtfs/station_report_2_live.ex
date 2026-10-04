@@ -78,7 +78,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:selected_result_run, nil)
      |> assign(:station_helper_notice, nil)
      |> assign(:station_run_form, to_form(%{"run_id" => nil}))
-     |> AgentPanel.mount("station_results")}
+     |> AgentPanel.mount("station_results", open_button: "station-helper-open")}
   end
 
   @impl true

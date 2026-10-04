@@ -125,6 +125,15 @@ async function openPanel(page) {
   await expect(page.locator("#agent-panel")).toBeVisible();
   await page.locator("#agent-new-conversation").click();
   await expect(page.locator("#agent-composer-input")).toBeVisible();
+  // A new conversation hands focus to the composer on every host.
+  await expect(page.locator("#agent-composer-input")).toBeFocused();
+}
+
+/** Closing the panel hands focus back to the station page's own open button. */
+async function closePanel(page) {
+  await page.locator("#agent-panel-close").click();
+  await expect(page.locator("#agent-panel")).toHaveCount(0);
+  await expect(page.locator("#station-helper-open")).toBeFocused();
 }
 
 async function ask(page, message) {
@@ -247,6 +256,8 @@ test.describe("station report result helper", () => {
       const overflow = await bodyFitsViewport(page);
       expect(overflow, "the report page must not scroll sideways").toBe(true);
 
+      await closePanel(page);
+
       const pending = await readPendingStates(page);
       expect(pending, "no LiveView request may still be in flight").toEqual([]);
     });
@@ -292,6 +303,8 @@ test.describe("recorded reachability result helper", () => {
       pairCards.and(page.locator('[data-evidence-kind="recorded_result_pairs"]')),
     ).toHaveCount(1);
     await expect(page.locator('[id^="agent-prepared-"]')).toHaveCount(0);
+
+    await closePanel(page);
   });
 });
 
@@ -371,6 +384,8 @@ test.describe("import station measurements", () => {
 
     const overflow = await bodyFitsViewport(page);
     expect(overflow, "the import page must not scroll sideways at 320").toBe(true);
+
+    await closePanel(page);
   });
 
   test("maps, reviews, confirms and applies one measured width beside native approvals", async ({
