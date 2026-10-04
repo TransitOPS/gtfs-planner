@@ -34,6 +34,7 @@ defmodule GtfsPlanner.AgentsTest do
   alias GtfsPlanner.Agents.Packs.DatedChanges
   alias GtfsPlanner.Agents.Packs.FlexPolicy
   alias GtfsPlanner.Agents.Packs.InSeat
+  alias GtfsPlanner.Agents.Packs.ReleaseComparison
   alias GtfsPlanner.Agents.Packs.Runs
   alias GtfsPlanner.Agents.Packs.ServiceQueries
   alias GtfsPlanner.Agents.Packs.StationImports
@@ -68,6 +69,7 @@ defmodule GtfsPlanner.AgentsTest do
                "feed_quality" => GtfsPlanner.Agents.Packs.FeedQuality,
                "flex_policy" => FlexPolicy,
                "in_seat" => InSeat,
+               "release_comparison" => ReleaseComparison,
                "runs" => Runs,
                "service_queries" => ServiceQueries,
                "station_imports" => StationImports,
