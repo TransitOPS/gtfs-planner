@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopMetadataReviewLiveTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlannerWeb.HeadsignHelperLiveHelpers, only: [assigns: 1, eventually: 1]
+  import GtfsPlannerWeb.StopTextHelperLiveHelpers
   import Phoenix.LiveViewTest
 
   alias GtfsPlanner.Accounts
@@ -237,9 +238,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopMetadataReviewLiveTest do
 
   # -- helpers ----------------------------------------------------------------
 
-  defp set_stop(stop, changes),
-    do: Repo.update_all(from(s in Stop, where: s.id == ^stop.id), set: changes)
-
   # Every stop's text, stamps and lock, plus the audit log: what a review must not touch.
   defp stamps do
     {Repo.all(
@@ -248,46 +246,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopMetadataReviewLiveTest do
          select: {s.id, s.stop_name, s.stop_code, s.updated_at, s.lock_version}
        )
      ), Repo.aggregate(ChangeLog, :count)}
-  end
-
-  # The approved set S410, S411 and S412, the helper open, and the batch prepared by the
-  # session; returns the view and the card's entry ID.
-  defp prepared_view(context, rows) do
-    {:ok, view, _html} = live(context.conn, ~p"/gtfs/#{context.version.id}/stops")
-    view |> element("#stop-set-toggle") |> render_click()
-    approve(view, "S410\nS411\nS412")
-    view |> element("#agent-helper-open") |> render_click()
-
-    ScriptedProvider.expect_tool_turn(
-      "prepare_stop_metadata_changes",
-      Jason.encode!(%{"rows" => rows}),
-      "I prepared the changes."
-    )
-
-    view
-    |> element("#agent-composer")
-    |> render_submit(%{"agent" => %{"message" => "Rename these stops."}})
-
-    {view, await_entry(view)}
-  end
-
-  defp approve(view, text) do
-    view |> form("#stop-set-form", stop_set: %{refs: text}) |> render_submit()
-    view |> element("#stop-set-approve") |> render_click()
-  end
-
-  defp await_entry(view, attempts \\ 100) do
-    case Regex.run(~r/id="agent-review-prepared-(\d+)"/, render(view)) do
-      [_match, id] ->
-        String.to_integer(id)
-
-      nil when attempts > 0 ->
-        Process.sleep(50)
-        await_entry(view, attempts - 1)
-
-      nil ->
-        flunk("the prepared card never appeared")
-    end
   end
 
   # The drawer's rows for one stop as {stop cell, field, current, new}, in table order.

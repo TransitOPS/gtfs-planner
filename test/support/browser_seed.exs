@@ -2705,6 +2705,27 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: stop review stops (BROWSER_TXT_B1..B3)")
 
+    # Three stops the `stop review save` case writes: it renames them through the helper's
+    # review and renames one more through the native map editor to stage a stale review.
+    # No other case reads them, and none of them is served by a route.
+    for {stop_id, name, code} <- [
+          {"BROWSER_TXT_C1", "Txt Harbor Gate", "TXT-C1"},
+          {"BROWSER_TXT_C2", "Txt Quarry Road", "TXT-C2"},
+          {"BROWSER_TXT_C3", "Txt Fern Lane", "TXT-C3"}
+        ] do
+      stop =
+        GtfsPlanner.GtfsFixtures.stop_fixture(org.id, diagram_version.id, %{
+          stop_id: stop_id,
+          stop_name: name
+        })
+
+      {1, _} =
+        from(s in GtfsPlanner.Gtfs.Stop, where: s.id == ^stop.id)
+        |> Repo.update_all(set: [stop_code: code])
+    end
+
+    IO.puts("Browser seed: stop review save stops (BROWSER_TXT_C1..C3)")
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed

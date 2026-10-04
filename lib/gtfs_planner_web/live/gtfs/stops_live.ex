@@ -33,6 +33,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   # ceiling `StopSelection` puts on the lines of one Find.
   @max_stop_set 100
 
+  @stop_batch_not_found "One of these stops is no longer in this service version. Approve the stops again."
+  @receipt_changed_notice "The saved changes differ from the prepared request, so the card stays unconfirmed."
+
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -309,6 +312,41 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   @impl true
   def handle_event("stop_review_close", _params, socket),
     do: {:noreply, assign(socket, :stop_review, nil)}
+
+  # Save runs only for a valid review the page holds, with the prepared command's own
+  # rows and the review's own fingerprint. The review is cleared before the write, so a
+  # second click arrives with nothing to save; a refusal that keeps the review puts it
+  # back.
+  @impl true
+  def handle_event(
+        "stop_review_save",
+        _params,
+        %{assigns: %{stop_review: %{review: %{valid?: true, changed: changed}} = held}} = socket
+      )
+      when changed > 0 do
+    socket = assign(socket, :stop_review, nil)
+    audit = AuditContext.from_assigns(socket.assigns)
+
+    case StopEditing.apply_metadata_batch(
+           held.origin.rows,
+           held.review.fingerprint,
+           audit
+         ) do
+      {:ok, %{stops: stops}} ->
+        {:noreply, saved_stop_batch(socket, held, stops)}
+
+      {:error, reason} when reason in [:stale_review, :invalid_rows] ->
+        {:noreply, refresh_stop_review(socket, held, reason, audit)}
+
+      {:error, :not_found} ->
+        {:noreply, assign(socket, :agent_notice, @stop_batch_not_found)}
+
+      {:error, reason} ->
+        {:noreply, keep_stop_review(socket, held, reason)}
+    end
+  end
+
+  def handle_event("stop_review_save", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("filter", params, socket) do
@@ -608,12 +646,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     conversation_id = socket.assigns.agent_conversation_id
 
     case Agents.prepared(session, conversation_id, entry_id) do
-      {:ok, %{command: {:stop_metadata, %{rows: rows}} = command}} ->
+      {:ok, %{command: {:stop_metadata, %{rows: rows}}}} ->
         review_batch(socket, rows, %{
           session_pid: session,
           conversation_id: conversation_id,
           entry_id: entry_id,
-          command: command
+          rows: rows
         })
 
       _other ->
@@ -626,14 +664,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       {:ok, review} ->
         socket
         |> assign(:agent_notice, nil)
-        |> assign(:stop_review, %{origin: origin, review: review})
+        |> assign(:stop_review, %{origin: origin, review: review, notice: nil})
 
       {:error, :not_found} ->
-        assign(
-          socket,
-          :agent_notice,
-          "One of these stops is no longer in this service version. Approve the stops again."
-        )
+        assign(socket, :agent_notice, @stop_batch_not_found)
 
       {:error, :forbidden} ->
         assign(socket, :agent_notice, "Your access changed.")
@@ -641,6 +675,112 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
       {:error, _other} ->
         assign(socket, :agent_notice, "That batch could not be reviewed. Ask again.")
     end
+  end
+
+  # The batch is saved: the drawer is already closed, the catalog shows the new names
+  # and the approved list keeps its stops' current names.
+  defp saved_stop_batch(socket, held, stops) do
+    names = Map.new(stops, &{&1.id, &1.stop_name})
+
+    socket
+    |> update(:stop_set, fn
+      nil -> nil
+      set -> Enum.map(set, &%{&1 | stop_name: Map.get(names, &1.uuid, &1.stop_name)})
+    end)
+    |> put_flash(:info, "Saved #{Wording.count_noun(length(stops), "stop")}")
+    |> reload_catalog()
+    |> record_stop_receipt(held)
+  end
+
+  # A stale or invalid review is read again over the same rows, so the drawer shows
+  # the values the database holds now and the fingerprint the next save must carry.
+  defp refresh_stop_review(socket, held, reason, audit) do
+    case StopEditing.review_metadata_batch(held.origin.rows, audit) do
+      {:ok, review} ->
+        assign(socket, :stop_review, %{held | review: review, notice: stop_review_notice(reason)})
+
+      {:error, :not_found} ->
+        assign(socket, :agent_notice, @stop_batch_not_found)
+
+      {:error, _other} ->
+        keep_stop_review(socket, held, :failed)
+    end
+  end
+
+  defp keep_stop_review(socket, held, reason),
+    do: assign(socket, :stop_review, %{held | notice: stop_review_notice(reason)})
+
+  defp stop_review_notice(:stale_review),
+    do: %{
+      kind: "warning",
+      text:
+        "These stops changed since you reviewed them. Check the current values, then save again."
+    }
+
+  defp stop_review_notice(:invalid_rows),
+    do: %{kind: "error", text: "Some stops cannot be saved. Fix them, or ask the helper again."}
+
+  defp stop_review_notice(:forbidden), do: %{kind: "error", text: "Your access changed."}
+
+  defp stop_review_notice(:busy),
+    do: %{kind: "warning", text: "Another change is in progress. Try again."}
+
+  defp stop_review_notice(_failed),
+    do: %{kind: "error", text: "Those stops could not be saved. Nothing changed. Try again."}
+
+  # The card is confirmed only for the change that was saved: the same shape the pack
+  # prepared (changed fields only, sorted by stop UUID), so any other batch leaves it
+  # unconfirmed.
+  defp record_stop_receipt(socket, %{origin: origin, review: review}) do
+    actual =
+      {:stop_metadata,
+       %{
+         rows:
+           review.rows
+           |> Enum.filter(&(&1.status == :changed))
+           |> Enum.map(
+             &%{
+               stop_uuid: &1.stop_uuid,
+               changes: Map.new(&1.changed_fields, fn f -> {f, &1.new[f]} end)
+             }
+           )
+           |> Enum.sort_by(& &1.stop_uuid)
+       }}
+
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           actual
+         ) do
+      :ok -> socket
+      {:error, :command_changed} -> assign(socket, :agent_notice, @receipt_changed_notice)
+      # The card's conversation was replaced or ended; there is nothing to confirm.
+      {:error, _stale_or_ended} -> socket
+    end
+  end
+
+  # The current catalog page again, with the filters, sort and page the editor has.
+  defp reload_catalog(socket) do
+    params = socket.assigns.filter_form.params
+
+    opts = [
+      wheelchair_boarding: parse_wheelchair(params["wheelchair_boarding"]),
+      route_id: params["route_id"] || "",
+      direction_id: parse_direction(params["direction_id"]),
+      search: socket.assigns.search,
+      sort_by: socket.assigns.sort_by,
+      sort_dir: socket.assigns.sort_dir,
+      page: socket.assigns.page,
+      per_page: socket.assigns.per_page
+    ]
+
+    {:noreply, socket} =
+      socket.assigns.current_organization.id
+      |> Gtfs.load_stop_catalog(socket.assigns.current_gtfs_version.id, opts)
+      |> apply_catalog_result(socket, opts)
+
+    socket
   end
 
   defp refuse_stop_set(socket, message) do
@@ -1194,6 +1334,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
         <StopTextHelperComponents.review_drawer
           :if={@stop_review}
           review={@stop_review.review}
+          notice={@stop_review.notice}
           return_focus_id={"agent-prepared-#{@stop_review.origin.entry_id}"}
         />
       </div>

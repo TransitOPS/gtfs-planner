@@ -13,7 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [drawer_scroll: 1, message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, drawer_scroll: 1, message: 1]
 
   alias GtfsPlanner.Wording
 
@@ -298,6 +298,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
   database holds and not what the model read earlier.
   """
   attr :review, :map, required: true
+  attr :notice, :map, default: nil, doc: "%{kind, text} from the last refused save"
   attr :return_focus_id, :string, required: true
 
   def review_drawer(assigns) do
@@ -308,6 +309,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
       |> assign(:listed, Enum.filter(review.rows, &(&1.status in [:changed, :invalid])))
       |> assign(:invalid, Enum.count(review.rows, &(&1.status == :invalid)))
       |> assign(:stop_ids, Map.new(review.rows, &{&1.stop_uuid, &1.stop_id}))
+      |> assign(:save_reason, save_reason(review))
 
     ~H"""
     <.drawer
@@ -326,6 +328,8 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
         </span>
       </:lede>
       <.drawer_scroll>
+        <.message :if={@notice} id="stop-review-notice" kind={@notice.kind} title={@notice.text} />
+
         <.message
           :if={@invalid > 0}
           id="stop-review-invalid"
@@ -413,6 +417,35 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
           {unchanged_text(@review.unchanged)}
         </p>
       </.drawer_scroll>
+      <.drawer_footer>
+        <p
+          :if={@save_reason}
+          id="stop-review-save-reason"
+          class="min-w-0 flex-1 basis-[220px] text-[13px] text-muted"
+        >
+          {@save_reason}
+        </p>
+        <.button
+          id="stop-review-cancel"
+          type="button"
+          variant="secondary"
+          phx-click="stop_review_close"
+          class="min-h-11"
+        >
+          Cancel
+        </.button>
+        <.button
+          id="stop-review-save"
+          type="button"
+          phx-click="stop_review_save"
+          phx-disable-with="Saving…"
+          disabled={@save_reason != nil}
+          aria-describedby={if(@save_reason, do: "stop-review-save-reason")}
+          class="min-h-11"
+        >
+          Save stop changes
+        </.button>
+      </.drawer_footer>
     </.drawer>
     """
   end
@@ -428,6 +461,11 @@ defmodule GtfsPlannerWeb.Gtfs.StopTextHelperComponents do
     <% end %>
     """
   end
+
+  # Why Save is unavailable, or nil when it is available.
+  defp save_reason(%{valid?: false}), do: "Fix the stops with errors before saving."
+  defp save_reason(%{changed: 0}), do: "Nothing would change."
+  defp save_reason(_review), do: nil
 
   defp field_label(field), do: Map.fetch!(@field_labels, field)
 

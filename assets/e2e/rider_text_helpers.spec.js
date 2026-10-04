@@ -653,3 +653,83 @@ test("stop review table", async ({ page }) => {
     await expect.poll(() => focusedId(page)).toBe(cardId);
   }
 });
+
+// -- stop review save ------------------------------------------------------------
+
+// Saves reviewed batches of BROWSER_TXT_C1..C3, the only stops any case writes. The
+// 1440 pass first stages a stale review: a second page renames C2 through the native
+// map editor after the review opened, so the first Save is refused, the drawer shows
+// that stop's current name, and the second Save writes.
+test("stop review save", async ({ page }) => {
+  test.setTimeout(180_000);
+  await signInHeadsignEditor(page);
+  await page.route("**/map/tiles/**", (route) =>
+    route.fulfill({ status: 200, contentType: "image/png", body: BLANK_TILE }),
+  );
+
+  for (const [label, viewport] of [
+    ["1440", DESKTOP],
+    ["390", PHONE],
+  ]) {
+    await page.setViewportSize(viewport);
+    await approveStops(page, ["BROWSER_TXT_C1", "BROWSER_TXT_C2", "BROWSER_TXT_C3"]);
+
+    const changes =
+      label === "1440"
+        ? `BROWSER_TXT_C1 stop_name=Txt Harbor Gate ${label}; BROWSER_TXT_C2 stop_name=Txt Quarry Road ${label}`
+        : `BROWSER_TXT_C1 stop_name=Txt Harbor Gate ${label}; BROWSER_TXT_C3 stop_code=TXT-C3-${label}`;
+    const review = await prepareStopChanges(page, `Prepare stop changes: ${changes}`);
+    const card = page.locator('section[id^="agent-prepared-"]');
+    await activate(review);
+    await expect(page.locator("#stop-review")).toBeVisible();
+    await waitDrawerSettled(page, "stop-review");
+
+    const save = page.locator("#stop-review-save");
+    await expect(save).toHaveText("Save stop changes");
+    await expect(save).toBeEnabled();
+    await expect(save).toHaveAttribute("phx-disable-with", "Saving…");
+    expect(await fitsViewport(page)).toBe(true);
+
+    if (label === "1440") {
+      // Another session renames C2 after the review opened.
+      const other = await page.context().newPage();
+      await other.route("**/map/tiles/**", (route) =>
+        route.fulfill({ status: 200, contentType: "image/png", body: BLANK_TILE }),
+      );
+      await other.goto(`/gtfs/${versionId}/stops/map?stop=BROWSER_TXT_C2`);
+      await waitForLiveView(other);
+      await expect(other.locator("#stops-map-edit-panel")).toBeAttached();
+      await other.locator("#stops-map-edit-name").fill("Txt Quarry Rd");
+      await other.locator("#stops-map-edit-save").click();
+      await expect(other.locator("#stops-map-edit-status")).toHaveText("No changes yet");
+      await other.close();
+
+      await activate(save);
+      await expect(page.locator("#stop-review-notice")).toContainText(
+        "changed since you reviewed them",
+      );
+      await expect(page.locator("#stop-review-table")).toContainText("Txt Quarry Rd");
+      await expect(page.locator("#stop-review")).toBeVisible();
+      expect(await fitsViewport(page)).toBe(true);
+      await captureViewport(page, "stop-review-save", `stale-${label}`);
+    } else {
+      await captureViewport(page, "stop-review-save", `review-${label}`);
+    }
+
+    await activate(save);
+    await expect(page.locator("#stop-review")).toHaveCount(0);
+    await expect(page.locator("#flash-info")).toContainText(/Saved \d stops?/);
+    await expect(card).toContainText("Applied");
+    await expect(page.locator("#agent-notice")).toHaveCount(0);
+
+    // The catalog and the approved list show the saved names.
+    await expect(page.locator(`#stop-set-list li[data-stop-id="BROWSER_TXT_C1"]`)).toContainText(
+      `Txt Harbor Gate ${label}`,
+    );
+    await page.locator("#stop-search-form input").fill(`Txt Harbor Gate ${label}`);
+    await expect(page.locator("#stops-count")).toContainText("1 stop or station matches");
+    expect(await fitsViewport(page)).toBe(true);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await captureViewport(page, "stop-review-save", `saved-${label}`);
+  }
+});
