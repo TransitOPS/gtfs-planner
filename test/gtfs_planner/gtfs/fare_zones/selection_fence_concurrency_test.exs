@@ -180,10 +180,11 @@ defmodule GtfsPlanner.Gtfs.FareZones.SelectionFenceConcurrencyTest do
 
   defp committed_fixture(suffix) do
     unboxed(fn ->
-      # config/test.exs only connects to a `gtfs_planner_exunit*` database; check the
-      # connection itself before this test commits anything.
+      # config/test.exs only connects to `test` (a pg_tmp server's database) or a
+      # `gtfs_planner_exunit*` database; check the connection itself before this test
+      # commits anything.
       %Postgrex.Result{rows: [[database]]} = Repo.query!("SELECT current_database()")
-      assert String.starts_with?(database, "gtfs_planner_exunit")
+      assert database == "test" or String.starts_with?(database, "gtfs_planner_exunit")
 
       organization =
         OrganizationsFixtures.organization_fixture(%{
