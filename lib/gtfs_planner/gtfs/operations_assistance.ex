@@ -723,8 +723,10 @@ defmodule GtfsPlanner.Gtfs.OperationsAssistance do
   # block with its resolved garage, type and platform span, and one per trip with
   # its service, route, exact parsed seconds and its block.
   defp entities(day, scope, refs) do
-    blocks = Enum.filter(day.blocks, &(&1.summary.block_id in scope.blocks))
-    trips = Enum.filter(all_trips(day), &(&1.id in scope.trip_ids))
+    block_ids = MapSet.new(scope.blocks)
+    trip_ids = MapSet.new(scope.trip_ids)
+    blocks = Enum.filter(day.blocks, &MapSet.member?(block_ids, &1.summary.block_id))
+    trips = Enum.filter(all_trips(day), &MapSet.member?(trip_ids, &1.id))
 
     %{
       "blocks" => Enum.map(blocks, &block_entity(&1, refs)),
