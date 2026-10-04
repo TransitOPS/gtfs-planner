@@ -723,9 +723,14 @@ execution separately. Bare `Code.format_file!/1` does not load the dependency/pl
 settings in [`.formatter.exs`](../.formatter.exs). A successful startup or syntax check
 does not pass runtime assertions. Record unavailable checks and their actual capability
 failure as pending. Follow [test selection and execution](../AGENTS.md#test-selection-and-execution)
-for focused feedback, final-check ownership, and documentation-only verification. When
-`mix precommit` is required, do not replace it with a static check or bypass an execution
-restriction. The alias in [`mix.exs`](../mix.exs) also executes database-backed tests.
+for useful focused feedback, CI-owned broad checks, and documentation-only verification. Push
+coherent checkpoints and open a draft PR early within authorized publication scope so CI can run
+while work continues. Required relevant checks must pass on the final pushed revision before
+merge readiness. Pending, failed, cancelled, unavailable or unexpectedly skipped checks are not
+passes; intentional path-filter skips establish no runtime coverage. `mix precommit` remains an
+optional local reproduction and includes database-backed tests. Use the shared
+`~/.agents/rules/verification-and-review.md` for scheduling and Jev verification/review triage;
+advice does not replace passing evidence or acceptance obligations.
 
 ### Test Philosophy
 
