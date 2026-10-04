@@ -56,6 +56,9 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesReadTest do
   defp find_result(scope, tool, query),
     do: Dispatch.call(FareZones, scope, tool, Jason.encode!(%{"query" => query}))
 
+  defp list_zones(scope, query),
+    do: Dispatch.call(FareZones, scope, "list_zones", Jason.encode!(%{"query" => query}))
+
   defp pad(number), do: number |> Integer.to_string() |> String.pad_leading(2, "0")
 
   describe "registration" do
@@ -262,6 +265,52 @@ defmodule GtfsPlanner.Agents.Packs.FareZonesReadTest do
       assert evidence.total == 51
       assert evidence.completeness == :incomplete
       assert evidence.completeness_reason == "Showing 50 of 51 zones."
+    end
+
+    test "a query finds a zone past the fifty listed, by ID or by name ignoring case", context do
+      for number <- 1..60 do
+        FareSelectionFixtures.declare_zone!(
+          context.organization,
+          context.version,
+          "Z#{pad(number)}"
+        )
+      end
+
+      assert {:ok, result, evidence} = list_zones(context.scope, "z60")
+
+      assert [%{"zone_id" => "Z60", "stop_count" => 0, "rule_count" => 0}] = result["zones"]
+      assert result["total"] == 1
+      assert result["completeness"] == "complete"
+      assert evidence.total == 1
+      assert evidence.total_label == "matching zones"
+
+      assert {:ok, %{"zones" => [%{"zone_id" => "C", "name" => "Zone C"}]}, _evidence} =
+               list_zones(context.scope, "ZONE c")
+
+      assert {:ok, %{"zones" => [], "total" => 0, "completeness" => "complete"}, _evidence} =
+               list_zones(context.scope, "nowhere")
+    end
+
+    test "a query that matches more than fifty zones still returns fifty and says so", context do
+      for number <- 1..60 do
+        FareSelectionFixtures.declare_zone!(
+          context.organization,
+          context.version,
+          "Z#{pad(number)}"
+        )
+      end
+
+      assert {:ok, result, evidence} = list_zones(context.scope, "z")
+
+      assert length(result["zones"]) == 50
+      assert result["total"] == 61
+      assert result["completeness"] == "incomplete"
+      assert result["reason"] == "Showing 50 of 61 matching zones."
+      assert evidence.completeness_reason == "Showing 50 of 61 matching zones."
+    end
+
+    test "a blank query is refused instead of listing everything", context do
+      assert {:tool_error, "Give a name or ID to search for."} = list_zones(context.scope, "  ")
     end
 
     test "a scope that is not bound to this version reads nothing", context do

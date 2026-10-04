@@ -6,8 +6,9 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
   Every tool takes its organization and version from the scope, never from an
   argument, so a tool can only read the version the person is looking at (INV-1).
   `list_zones` lists the version's inventory zones with their exact stop and rule
-  counts. `find_routes` and `find_stops` return at most 20 candidates by name or
-  ID, with the exact total and an incomplete marker, so an ambiguous name produces
+  counts, or only the zones whose ID or name contains an optional query.
+  `find_routes` and `find_stops` return at most 20 candidates by name or ID,
+  with the exact total and an incomplete marker, so an ambiguous name produces
   candidates for the person to choose from and never a guess. `query_zone_targets`
   resolves a route selection through `FareZones.route_selection/3`, the one owner of
   what such a selection means, into exact counts, a bounded sample with the other
@@ -76,11 +77,13 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
       %{
         name: "list_zones",
         description:
-          "List the fare zones of this version with their zone ID, name, stop count and rule count. At most #{@zone_limit} zones are returned with the exact total.",
+          "List the fare zones of this version with their zone ID, name, stop count and rule count. At most #{@zone_limit} zones are returned with the exact total. Pass the optional query, part of a zone ID or name, to find one zone when the version has more zones than are returned.",
         activity: "Listed fare zones",
         parameters: %{
           "type" => "object",
-          "properties" => %{},
+          "properties" => %{
+            "query" => %{"type" => "string", "minLength" => 1, "maxLength" => 100}
+          },
           "required" => [],
           "additionalProperties" => false
         }
@@ -170,7 +173,10 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
     end
   end
 
-  defp run("list_zones", _args, scope), do: list_zones(scope)
+  defp run("list_zones", args, scope) do
+    with {:ok, query} <- parse_zone_query(args), do: list_zones(query, scope)
+  end
+
   defp run("find_routes", args, scope), do: find_routes(args, scope)
   defp run("find_stops", args, scope), do: find_stops(args, scope)
   defp run("query_zone_targets", args, scope), do: query_zone_targets(args, scope)
@@ -178,12 +184,13 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
 
   # -- tools ------------------------------------------------------------------
 
-  defp list_zones(%Scope{} = scope) do
+  defp list_zones(query, %Scope{} = scope) do
     inventory = FareZones.inventory(scope.organization_id, scope.gtfs_version_id)
-    total = length(inventory.zones)
+    matches = Enum.filter(inventory.zones, &zone_matches?(&1, query))
+    total = length(matches)
 
     rows =
-      inventory.zones
+      matches
       |> Enum.take(@zone_limit)
       |> Enum.map(fn zone ->
         %{
@@ -194,7 +201,10 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
         }
       end)
 
-    reason = if total > @zone_limit, do: "Showing #{@zone_limit} of #{total} zones."
+    reason =
+      if total > @zone_limit do
+        "Showing #{@zone_limit} of #{total} #{if query, do: "matching "}zones."
+      end
 
     result =
       %{"zones" => rows, "total" => total}
@@ -205,7 +215,7 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
         kind: "fare_zones",
         title: "Fare zones",
         total: total,
-        total_label: "zones",
+        total_label: if(query, do: "matching zones", else: "zones"),
         completeness: if(reason, do: :incomplete, else: :complete),
         completeness_reason: reason,
         facts: [
@@ -217,6 +227,21 @@ defmodule GtfsPlanner.Agents.Packs.FareZones do
       })
 
     {:ok, result, evidence}
+  end
+
+  # The query is optional: without one every zone matches. With one, a zone
+  # matches when its ID or name contains the text, ignoring case.
+  defp parse_zone_query(%{"query" => _query} = args), do: parse_query(args)
+  defp parse_zone_query(_args), do: {:ok, nil}
+
+  defp zone_matches?(_zone, nil), do: true
+
+  defp zone_matches?(zone, query) do
+    needle = String.downcase(query)
+
+    Enum.any?([zone.zone_id, zone.name], fn text ->
+      is_binary(text) and String.contains?(String.downcase(text), needle)
+    end)
   end
 
   defp find_routes(args, %Scope{} = scope) do
