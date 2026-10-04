@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
   @snapshot_kind "stop_focus"
   @source_ref "gtfs_stop_references"
   @listed_labels 10
+  @no_pin "No pin is placed. Move the pin on the map, then ask again."
 
   # What a dependency answer does not check, always stated, never guessed.
   @unchecked [
@@ -88,6 +89,22 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
           "required" => [],
           "additionalProperties" => false
         }
+      },
+      %{
+        name: "preview_stop_move",
+        description:
+          "Say what moving the stop open on this page to the pin placed on the map would " <>
+            "affect: the distance and the native band, the weekday trips and patterns using " <>
+            "the stop, each transfer's walking distance before and after, relief points and " <>
+            "every other kind of row that names the stop. It takes no arguments: the stop and " <>
+            "the pin are the page's, and it makes no routing request and prepares nothing.",
+        activity: "Previewed what moving the stop affects",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{},
+          "required" => [],
+          "additionalProperties" => false
+        }
       }
     ]
   end
@@ -109,6 +126,7 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
 
   @impl true
   def call("get_stop_dependencies", _args, %Scope{} = scope), do: get_stop_dependencies(scope)
+  def call("preview_stop_move", _args, %Scope{} = scope), do: preview_stop_move(scope)
 
   # -- get_stop_dependencies --------------------------------------------------
 
@@ -207,6 +225,130 @@ defmodule GtfsPlanner.Agents.Packs.StopImpact do
     |> :erlang.term_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  # -- preview_stop_move ------------------------------------------------------
+
+  # Answers from `StopEditing.move_impact/3` at the pin the host admitted: no routing
+  # request, no lock and no write. The pin is never an argument (CR-2).
+  defp preview_stop_move(scope) do
+    with {:ok, %{stop: stop, candidate: candidate}} <- require_bound(scope),
+         {:ok, point} <- require_pin(candidate),
+         {:ok, impact} <- StopEditing.move_impact(stop.id, point, Scope.audit_context(scope)) do
+      result = move_result(stop, impact)
+      {:ok, result, move_evidence(stop, impact, result, scope)}
+    else
+      {:error, :forbidden} -> {:error, "Your access to this service version has changed."}
+      {:error, reason} when is_atom(reason) -> {:error, "This stop's move could not be read."}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp require_pin(nil), do: {:error, @no_pin}
+  defp require_pin(point), do: {:ok, point}
+
+  defp move_result(stop, impact) do
+    %{
+      "stop" => %{
+        "stop_id" => stop.stop_id,
+        "stop_name" => stop.stop_name,
+        "location_type" => stop.location_type
+      },
+      "distance_m" => Float.round(impact.distance_m, 1),
+      "band" => Atom.to_string(impact.band),
+      "band_note" => band_note(impact.band),
+      "served" => impact.served?,
+      "weekday_trips" => impact.weekday_trips,
+      "patterns" =>
+        impact.patterns
+        |> Enum.take(@listed_labels)
+        |> Enum.map(&%{"label" => &1.label, "weekday_trips" => &1.weekday_trips}),
+      "patterns_omitted" => omitted(impact.patterns),
+      "transfers" => impact.transfers |> Enum.take(@listed_labels) |> Enum.map(&transfer_row/1),
+      "transfers_omitted" => omitted(impact.transfers),
+      "relief_points" => Enum.take(impact.relief_points, @listed_labels),
+      "relief_points_omitted" => omitted(impact.relief_points),
+      "references" =>
+        Enum.map(impact.references, fn reference ->
+          %{
+            "key" => Atom.to_string(reference.key),
+            "label" => reference.label,
+            "kind" => Atom.to_string(reference.kind),
+            "count" => reference.count
+          }
+        end),
+      "unchecked" => Enum.map(impact.unmodeled, &unmodeled_sentence/1)
+    }
+  end
+
+  defp omitted(rows), do: max(length(rows) - @listed_labels, 0)
+
+  defp transfer_row(transfer) do
+    %{
+      "label" => transfer.label,
+      "before_m" => round_metres(transfer.before_m),
+      "after_m" => round_metres(transfer.after_m),
+      "min_transfer_time" => transfer.min_transfer_time
+    }
+  end
+
+  defp round_metres(nil), do: nil
+  defp round_metres(metres), do: Float.round(metres, 1)
+
+  defp band_note(:correction), do: "A correction: the editor can save it without a move review."
+  defp band_note(:review), do: "The native move review is required before this move is saved."
+
+  defp band_note(:far),
+    do: "The native move review asks whether this is the same stop before it is saved."
+
+  defp unmodeled_sentence(:street_path),
+    do: "The street path is decided by the native move review, not here."
+
+  defp unmodeled_sentence(:pattern_lines),
+    do: "Which pattern lines would be redrawn is decided by the native move review."
+
+  defp unmodeled_sentence(:boarding_safety),
+    do: "Boarding safety at the new position is not checked."
+
+  defp unmodeled_sentence(:accessibility),
+    do: "Accessibility at the new position is not checked."
+
+  defp unmodeled_sentence(:alerts),
+    do: "Organization alerts that name this stop's ID are not checked."
+
+  defp move_evidence(stop, impact, result, scope) do
+    cut =
+      for {name, key} <- [
+            {"patterns", "patterns_omitted"},
+            {"transfers", "transfers_omitted"},
+            {"relief points", "relief_points_omitted"}
+          ],
+          result[key] > 0,
+          do: name
+
+    %{
+      kind: "stop_move_impact",
+      title: stop.stop_name || stop.stop_id,
+      total: impact.references |> Enum.map(& &1.count) |> Enum.sum(),
+      total_label: "rows that name this stop",
+      completeness: if(cut == [], do: :complete, else: :incomplete),
+      completeness_reason:
+        if(cut == [],
+          do: nil,
+          else: "Lists are cut to #{@listed_labels} for: " <> Enum.join(cut, ", ")
+        ),
+      facts: [
+        %{label: "Distance", value: "#{result["distance_m"]} m"},
+        %{label: "Band", value: result["band"]},
+        %{label: "Weekday trips", value: Integer.to_string(result["weekday_trips"])}
+      ],
+      source_ref: "gtfs_stop_move_impact",
+      digest: digest(result),
+      source_revision: nil,
+      scope: Pack.evidence_scope(scope),
+      exclusions: [],
+      resources: [%{kind: "stop", id: stop.stop_id, label: stop.stop_name}]
+    }
   end
 
   # -- the host-bound target --------------------------------------------------

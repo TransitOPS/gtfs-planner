@@ -17,9 +17,9 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveImpactTest do
   use GtfsPlanner.DataCase, async: false
 
   import GtfsPlanner.AccountsFixtures
-  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.StopHelperFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
@@ -37,8 +37,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveImpactTest do
   @routing_owner GtfsPlanner.StreetRouting.Geoapify
   @stop_lat 44.6210
   @stop_lon -124.0530
-  # One degree of latitude, in metres, on the sphere `StopPlacement.distance/2` measures.
-  @metres_per_degree 111_195.0
 
   setup do
     Req.Test.set_req_test_to_shared(%{})
@@ -71,72 +69,7 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveImpactTest do
       actor_email: actor.email
     }
 
-    stops =
-      Map.new(
-        [
-          {"1330", 44.6200, @stop_lon},
-          {"1434", @stop_lat, @stop_lon},
-          {"2000", @stop_lat, @stop_lon + 0.0010},
-          {"3000", @stop_lat + 0.0010, @stop_lon}
-        ],
-        fn {id, lat, lon} ->
-          {id,
-           stop_fixture(organization.id, version.id, %{
-             stop_id: id,
-             stop_name: "Stop #{id}",
-             stop_lat: Decimal.from_float(lat),
-             stop_lon: Decimal.from_float(lon)
-           })}
-        end
-      )
-
-    route =
-      route_fixture(organization.id, version.id, %{route_id: "1", route_short_name: "1"})
-
-    pattern =
-      route_pattern_fixture(organization.id, version.id, %{
-        route_pattern_id: "P",
-        route_id: route.route_id,
-        headsign: "To P"
-      })
-
-    for {stop_id, position} <- Enum.with_index(["1330", "1434"], 1),
-        do: route_pattern_stop_fixture(pattern, stop_id, position)
-
-    calendar = calendar_fixture(organization.id, version.id, %{service_id: "WEEKDAYS"})
-    timing = timed_pattern_fixture(pattern)
-
-    trip =
-      trip_fixture(organization.id, version.id, route.route_id, %{
-        trip_id: "TRIP-P-1",
-        service_id: calendar.service_id
-      })
-
-    trip_pattern_metadata_fixture(trip, %{
-      route_pattern_id: pattern.route_pattern_id,
-      timed_pattern_id: timing.id,
-      pattern_derivation_state: "linked"
-    })
-
-    for {stop_id, position} <- Enum.with_index(["1330", "1434"], 1) do
-      stop_time_fixture(organization.id, version.id, "TRIP-P-1", stop_id, %{
-        stop_sequence: position
-      })
-    end
-
-    transfer_fixture(organization.id, version.id, %{
-      from_stop_id: "1434",
-      to_stop_id: "2000",
-      min_transfer_time: 300
-    })
-
-    transfer_fixture(organization.id, version.id, %{
-      from_stop_id: "3000",
-      to_stop_id: "1434",
-      min_transfer_time: 120
-    })
-
-    relief_point_fixture(organization.id, version.id, %{stop_id: "1434"})
+    %{stops: stops} = staged_move_fixture(organization, version)
 
     %{organization: organization, version: version, audit: audit, stops: stops}
   end
@@ -330,9 +263,6 @@ defmodule GtfsPlanner.Gtfs.StopEditingMoveImpactTest do
   end
 
   # -- helpers ----------------------------------------------------------------
-
-  # `metres` north of latitude `lat` along the fixture's meridian, as `{lon, lat}`.
-  defp north(lat, metres), do: {@stop_lon, lat + metres / @metres_per_degree}
 
   defp stamps(context) do
     scope = [context.organization.id, context.version.id]

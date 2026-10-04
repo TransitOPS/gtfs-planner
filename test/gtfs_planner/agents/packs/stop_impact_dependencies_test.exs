@@ -267,7 +267,12 @@ defmodule GtfsPlanner.Agents.Packs.StopImpactDependenciesTest do
       assert Agents.packs()["stop_impact"] == StopImpact
       assert StopImpact.id() == "stop_impact"
       assert StopImpact.title() == "Stop impact helper"
-      assert Enum.map(StopImpact.tools(), & &1.name) == ["get_stop_dependencies"]
+
+      assert Enum.map(StopImpact.tools(), & &1.name) == [
+               "get_stop_dependencies",
+               "preview_stop_move"
+             ]
+
       assert StopImpact.skill() =~ "get_stop_dependencies"
     end
   end
