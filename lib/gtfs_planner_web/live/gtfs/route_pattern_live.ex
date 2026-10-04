@@ -3473,6 +3473,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         {:noreply,
          socket
+         |> record_headsign_receipt(operation)
          |> saved(message, :details)
          |> assign(:headsign_undo, headsign_undo_state(undo, :pattern))}
 
@@ -3668,6 +3669,70 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:timing_headsign, command.to)
     |> assign(:timing_headsign_open?, true)
   end
+
+  # --- prepared headsign receipt ----------------------------------------------------------------
+
+  @receipt_changed_notice "You changed the request before saving, so the original card stays unconfirmed. Your saved change is in the history."
+
+  # After a native save that came from a prepared card, the card is marked applied
+  # only if the saved operation is the prepared command: `Session.record_applied/4`
+  # compares the two for equality, so a different trip set or an extra edited field
+  # leaves it unconfirmed. This runs before `saved/3`, which drops the staging.
+  defp record_headsign_receipt(%{assigns: %{headsign_origin: nil}} = socket, _operation),
+    do: socket
+
+  defp record_headsign_receipt(%{assigns: %{headsign_origin: origin}} = socket, operation) do
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           applied_headsign_command(socket.assigns, operation)
+         ) do
+      :ok ->
+        assign(socket, :headsign_origin, nil)
+
+      {:error, :command_changed} ->
+        socket |> assign(:agent_notice, @receipt_changed_notice) |> assign(:headsign_origin, nil)
+
+      # The card's conversation was replaced or ended; there is nothing to confirm.
+      {:error, _stale_or_ended} ->
+        socket
+    end
+  end
+
+  # The same canonical shape the pack prepared: the scope, the default read before
+  # the save, the normalized new text and the sorted trip UUIDs. Any other edited
+  # attribute, or a save with no staged trips, can never equal a prepared command.
+  defp applied_headsign_command(assigns, operation) do
+    case headsign_only_operation(operation) do
+      {scope, attrs, selection} ->
+        {:headsign_change,
+         %{
+           pattern_id: assigns.pattern.id,
+           scope: scope,
+           from: assigns.headsign_usage && assigns.headsign_usage.default,
+           to: Headsigns.normalize(attrs.headsign),
+           trip_ids: Enum.sort(selection.headsign_trip_ids)
+         }}
+
+      nil ->
+        {:headsign_change, :other}
+    end
+  end
+
+  defp headsign_only_operation(
+         {:details, %{headsign: _} = attrs, %{headsign_trip_ids: _} = selection}
+       )
+       when map_size(attrs) == 1,
+       do: {:pattern, attrs, selection}
+
+  defp headsign_only_operation(
+         {:timing, id, %{headsign: _} = attrs, %{headsign_trip_ids: _} = selection}
+       )
+       when map_size(attrs) == 1,
+       do: {{:timing, id}, attrs, selection}
+
+  defp headsign_only_operation(_operation), do: nil
 
   # --- headsign selection staging -------------------------------------------------------------
 
@@ -5659,6 +5724,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         {:noreply,
          socket
+         |> record_headsign_receipt(operation)
          |> saved(message, timing_scope(operation))
          |> assign(:headsign_undo, headsign_undo_state(undo, timing_scope(operation)))}
 
