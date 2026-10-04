@@ -24,6 +24,11 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   day type must have at least one date on that weekday; anything else is a field
   error rather than a stored key that silently falls back to another day's service
   (INV-6).
+
+  The writers here are also what a TODS generation's save composes inside its own
+  transaction (`apply_generation_in_transaction!/4`), so a generated line, slot and
+  operator go through the same rules, changesets and indexes the page's own writes
+  do.
   """
 
   import Ecto.Query, warn: false
@@ -107,6 +112,37 @@ defmodule GtfsPlanner.Gtfs.Rosters do
           run_days: %{optional(String.t()) => map()},
           settings: roster_settings(),
           roster: Roster.t()
+        }
+
+  @typedoc """
+  One single-slot line a generation proposes, with the ordinal of the fictional
+  operator that would hold it.
+
+  This is this writer's name for the candidate's own shape
+  (`TodsGenerator.Plan.roster_line/0`): a fixed weekday, the day type that weekday
+  works, the run and the candidate's snapshot of that run's sign-on and sign-off.
+  The snapshot is compared with the run the version persists now and never stored,
+  so a run re-cut between the candidate and the save is refused rather than written
+  with stale times.
+  """
+  @type generation_line :: %{
+          weekday: 1..7,
+          day_type_key: String.t(),
+          run_id: String.t(),
+          run_sign_on_secs: integer(),
+          run_sign_off_secs: integer(),
+          operator_ordinal: pos_integer()
+        }
+
+  @typedoc """
+  What a generation's roster write stored: the lines and slots it added, in the
+  order the proposals were given, and the base-week choices it wrote into the
+  version's roster settings.
+  """
+  @type generation_result :: %{
+          line_ids: [Ecto.UUID.t()],
+          slot_ids: [Ecto.UUID.t()],
+          settings_changes: %{optional(String.t()) => String.t()}
         }
 
   @doc """
@@ -778,6 +814,206 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   @doc """
+  Stores a generation's base-week choices, fictional operators, lines and slots
+  inside the caller's own transaction.
+
+  This is the transaction-local operation the TODS generator's save calls once the
+  candidate's blocks, relief marks and runs have landed in the same transaction. It
+  opens no transaction, takes no version or blocking lock and starts no retry: the
+  documented caller preconditions are that the caller already holds the editor
+  membership lock, the scoped version `FOR SHARE` and `Blocking.lock_blocking!/1`,
+  and that its three arguments are the candidate composed from those locked rows.
+  The current editor membership is re-checked here, so transaction presence alone
+  never authorizes a write (INV-2).
+
+  `base_additions` is the candidate's `roster_day_types`: the weekday choices a save
+  would store, `"1".."7"` to a day type key. Only an absent choice is insertable —
+  the version's stored choices are read first, and a weekday the version has since
+  answered refuses the whole write with `:stale_plan` rather than replacing the
+  choice the operator made. What is written beside the merged choices are the three
+  stored roster rules, through the same changeset and column set
+  `update_roster_settings/2` writes.
+
+  `line_proposals` is the candidate's `roster_lines` and `operators_by_ordinal` is
+  the fictional operator each `operator_ordinal` is created as, in
+  `Operations.create_operator_in_transaction!/2`'s own attributes. Each proposal is
+  written as a new line holding exactly one weekday, numbered under the lock, with
+  its operator created beside it — never for a proposal that is refused. The slot's
+  day type and run come from the version as this transaction persists them, and the
+  candidate's times are compared with that derivation rather than stored.
+
+  A proposal is refused, and the caller's whole transaction is rolled back with the
+  reason, when the weekday's present base is not the day type the proposal named or
+  the run's present times are not the candidate's snapshot (`:stale_plan`), when the
+  run-day is no longer the version's (`{:no_base, weekday}`, `{:unknown_run,
+  run_id}`) or is held by another line (`{:run_held, weekday, line_number}`, the
+  run-once-per-weekday index included), when the proposal's ordinal has no
+  attributes (`{:missing_operator, ordinal}`), or when its employee ID is one the
+  organization already holds (the insert's own changeset).
+
+  Unlike `set_slot/4` a replacement never happens here: a run-day another line holds
+  is refused rather than taken over, which is what keeps a generation additive
+  (INV-3). The public slot writer keeps its own replacement semantics, and every
+  write below is the same `insert_line!`, `write_day` and `write_operator` it uses.
+
+  Returns the ids of the lines and slots added, in proposal order, and the base-week
+  choices written — the caller's own record of what this save created.
+  """
+  @spec apply_generation_in_transaction!(
+          AuditContext.t(),
+          %{optional(String.t()) => String.t()},
+          [generation_line()],
+          %{optional(pos_integer()) => map()}
+        ) :: generation_result()
+  def apply_generation_in_transaction!(
+        %AuditContext{} = audit,
+        base_additions,
+        line_proposals,
+        operators_by_ordinal
+      )
+      when is_map(base_additions) and is_list(line_proposals) and is_map(operators_by_ordinal) do
+    assert_transaction!("apply_generation_in_transaction!/4")
+    Authorization.lock_editor!(audit)
+
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    settings_changes = add_base_choices!(organization_id, gtfs_version_id, base_additions)
+
+    # One composition, read after the choices above are stored and after the
+    # candidate's own block/run writes, so the weekday's base and the run each
+    # proposal names are what this transaction persists rather than what the
+    # candidate held when it was composed.
+    {:ok, view} = compose_read(organization_id, gtfs_version_id)
+
+    {line_ids, slot_ids} =
+      Enum.reduce(line_proposals, {[], []}, fn proposal, {line_ids, slot_ids} ->
+        {line_id, slot_id} = write_generation_line!(view, audit, proposal, operators_by_ordinal)
+        {[line_id | line_ids], [slot_id | slot_ids]}
+      end)
+
+    %{
+      line_ids: Enum.reverse(line_ids),
+      slot_ids: Enum.reverse(slot_ids),
+      settings_changes: settings_changes
+    }
+  end
+
+  # The candidate's base choices, written only where the version has none. A
+  # weekday choice the version has stored since is a candidate that is no longer
+  # current, so the whole write is refused rather than replacing what the operator
+  # chose; a save with nothing to add writes no settings row at all.
+  defp add_base_choices!(_organization_id, _gtfs_version_id, additions)
+       when map_size(additions) == 0 do
+    %{}
+  end
+
+  defp add_base_choices!(organization_id, gtfs_version_id, additions) do
+    stored = get_roster_settings(organization_id, gtfs_version_id)
+
+    if Enum.any?(Map.keys(additions), &Map.has_key?(stored.roster_day_types, &1)) do
+      Repo.rollback(:stale_plan)
+    end
+
+    attrs = Map.put(stored, :roster_day_types, Map.merge(stored.roster_day_types, additions))
+
+    case write_roster_settings!(organization_id, gtfs_version_id, attrs) do
+      {:ok, _saved} -> additions
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # One admitted proposal, written in the order the save's contract names: its
+  # line, its single day, and the fictional operator that holds it. The run and its
+  # times are read from the version as this transaction persists it, and a run-day
+  # another line holds is refused before anything is inserted, so an operator only
+  # ever exists beside an admitted slot.
+  defp write_generation_line!(view, audit, proposal, operators_by_ordinal) do
+    organization_id = audit.organization_id
+    gtfs_version_id = audit.gtfs_version_id
+
+    {key, run} = generation_run!(view, proposal)
+
+    # No line is a holder: the line this proposal works does not exist yet, so every
+    # line the composition knows about is asked.
+    case check_run_held(view.roster, proposal.weekday, nil, key, proposal.run_id) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+
+    line = insert_line!(organization_id, gtfs_version_id)
+
+    day =
+      write_generation_day!(
+        organization_id,
+        gtfs_version_id,
+        line.id,
+        proposal.weekday,
+        key,
+        run
+      )
+
+    operator =
+      Operations.create_operator_in_transaction!(
+        audit,
+        operator_attrs!(operators_by_ordinal, proposal.operator_ordinal)
+      )
+
+    {:ok, _picked} = write_operator(line, operator)
+
+    {line.id, day.id}
+  end
+
+  # The run-day a proposal names, read from the version as this transaction
+  # persists it, with the candidate's snapshot checked rather than stored: a
+  # weekday whose base another day type has taken, and a run whose times have moved
+  # since the candidate was composed, are both a candidate that is no longer
+  # current, while a run this transaction does not derive is the unknown run the
+  # slot writer already names.
+  defp generation_run!(view, proposal) do
+    case weekday_run(view, proposal.weekday, proposal.run_id) do
+      {:ok, key, run} ->
+        cond do
+          key != proposal.day_type_key -> Repo.rollback(:stale_plan)
+          run.work.sign_on_secs != proposal.run_sign_on_secs -> Repo.rollback(:stale_plan)
+          run.work.sign_off_secs != proposal.run_sign_off_secs -> Repo.rollback(:stale_plan)
+          true -> {key, run}
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp write_generation_day!(organization_id, gtfs_version_id, line_id, weekday, key, run) do
+    case write_day(organization_id, gtfs_version_id, line_id, weekday, key, run) do
+      {:ok, day} -> day
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The fictional operator one ordinal is created as. The ordinals and the proposals
+  # come from one candidate, so an ordinal a proposal names without attributes is a
+  # malformed call rather than a state a save can reach: it is refused instead of
+  # failing after earlier lines have been written.
+  defp operator_attrs!(operators_by_ordinal, ordinal) do
+    case Map.fetch(operators_by_ordinal, ordinal) do
+      {:ok, attrs} -> attrs
+      :error -> Repo.rollback({:missing_operator, ordinal})
+    end
+  end
+
+  # A transaction-local writer asserts the transaction it does not own, the same
+  # way `Blocking.apply_generation_in_transaction!/3` does: `lock_editor!/1` would
+  # roll back with `:forbidden` whatever the context, so a missing transaction is a
+  # programming error rather than a refusal.
+  defp assert_transaction!(caller) do
+    unless Repo.in_transaction?() do
+      raise ArgumentError, "#{caller} requires a caller-owned transaction"
+    end
+  end
+
+  @doc """
   Every line one operator holds, across all versions of the organization.
 
   This is what the delete-operator confirmation names before a hard delete, and
@@ -897,6 +1133,51 @@ defmodule GtfsPlanner.Gtfs.Rosters do
       )
 
     {movements, run_days}
+  end
+
+  @doc """
+  Returns the version's roster lines and their slots as plain facts.
+
+  This is `export_roster/4`'s line read without the composition: the line's id and
+  number, the operator holding it and each weekday's day type, run and stored
+  sign-on and sign-off times, scoped by organization and version on the line query
+  itself.
+
+  A caller fingerprinting the source it read — the TODS generator's preview —
+  needs to name the roster facts that would change a generated candidate without
+  deriving a roster from movements to learn them. The stored sign-on and sign-off
+  times are included because they are what makes a re-cut run a stale slot
+  (INV-13); a write that moved one changes the hash even though the run did not.
+
+  The operator's own identity rides along beside its id because a caller composing
+  a roster from these facts reads the two fields the roster grid and the export
+  both read: a line's `operator` is what makes it assigned rather than open, and
+  `employee_id` and `display_name` are what an assignment row names.
+  """
+  @spec export_line_facts(Ecto.UUID.t(), Ecto.UUID.t()) :: [map()]
+  def export_line_facts(organization_id, gtfs_version_id) do
+    organization_id
+    |> list_lines(gtfs_version_id)
+    |> Enum.map(fn line ->
+      %{
+        id: line.id,
+        line_number: line.line_number,
+        operator_id: line.operator && line.operator.id,
+        employee_id: line.operator && line.operator.employee_id,
+        display_name: line.operator && line.operator.display_name,
+        days:
+          Enum.map(
+            line.days,
+            &%{
+              weekday: &1.weekday,
+              day_type_key: &1.day_type_key,
+              run_id: &1.run_id,
+              run_sign_on_secs: &1.run_sign_on_secs,
+              run_sign_off_secs: &1.run_sign_off_secs
+            }
+          )
+      }
+    end)
   end
 
   @doc """

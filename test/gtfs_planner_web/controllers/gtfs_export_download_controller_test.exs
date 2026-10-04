@@ -10,9 +10,12 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportRuns
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.TodsGeneratorFixtures
   alias GtfsPlanner.Versions
+  alias GtfsPlanner.Versions.GtfsVersion
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
 
@@ -119,6 +122,48 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
 
     assert conn.status == 404
     assert conn.resp_body == "Not Found"
+  end
+
+  test "serves a generated operations ZIP to its version's editor and refuses a foreign scope",
+       %{conn: conn} do
+    world = TodsGeneratorFixtures.generated_operations_world_fixture()
+
+    # The manual records and the version's public state as the generation left
+    # them, before any request is made.
+    manual_blocks = stored_blocks(world)
+    publication = publication_state(world.version.id)
+
+    run = TodsGeneratorFixtures.start_operations_export(world, @actor)
+    editor = editor_in(world)
+
+    conn =
+      conn
+      |> log_in_user(editor, organization: world.organization)
+      |> get(download_path(world.version.id, run.id))
+
+    assert conn.status == 200
+    assert [_file | _] = unzip(conn.resp_body)
+    assert [content_type] = get_resp_header(conn, "content-type")
+    assert content_type =~ "application/zip"
+    assert [content_disposition] = get_resp_header(conn, "content-disposition")
+    assert content_disposition =~ "attachment"
+
+    # A foreign organization's editor cannot reach it, and the same run is still
+    # unreadable from outside the scope.
+    %{organization: foreign_organization, user: foreign_user} = editor_context()
+
+    foreign_conn =
+      build_conn()
+      |> log_in_user(foreign_user, organization: foreign_organization)
+      |> get(download_path(world.version.id, run.id))
+
+    assert foreign_conn.status == 404
+    assert foreign_conn.resp_body == "Not Found"
+
+    # The download changed nothing about the manual records or the feed's
+    # publication state.
+    assert stored_blocks(world) == manual_blocks
+    assert publication_state(world.version.id) == publication
   end
 
   test "redirects logged-out requests before artifact lookup", %{conn: conn} do
@@ -246,6 +291,47 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
       })
 
     %{organization: organization, version: version, user: user}
+  end
+
+  # An editor of `world`'s own organization, so the generated version's run is
+  # requested with the membership that owns it.
+  defp editor_in(world) do
+    user = user_fixture()
+
+    {:ok, _membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: world.organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+    user
+  end
+
+  # Every trip's block, so a manual block a generation preserved is observable.
+  defp stored_blocks(world) do
+    from(t in Trip,
+      where: t.organization_id == ^world.organization.id,
+      select: {t.id, t.block_id},
+      order_by: t.id
+    )
+    |> Repo.all()
+    |> Enum.filter(fn {_id, block_id} -> not is_nil(block_id) end)
+    |> Map.new()
+  end
+
+  # The lifecycle fields a public activation would move. `published_at` is set by
+  # the database, so reading it back is the state a later reader observes.
+  defp publication_state(version_id) do
+    %GtfsVersion{publication_status: status, published_at: published_at} =
+      Repo.get!(GtfsVersion, version_id)
+
+    {status, published_at}
+  end
+
+  defp unzip(bytes) do
+    {:ok, files} = :zip.unzip(bytes, [:memory])
+    files
   end
 
   defp ready_run!(organization_id, version_id, bytes) do

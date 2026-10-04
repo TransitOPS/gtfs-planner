@@ -19,11 +19,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
   Monday has two Weekday dates and one Sunday date.
 
   Times are service-day seconds, so `sign_on_secs: -900` is 15 minutes before
-  midnight and puts the run on the day type's `_prev` service and the previous
-  date — 10-11 becomes 10-10, 10-18 becomes 10-17, which are dates the Saturday
-  day type also works. That is correct: the two files name the same service for
-  the same run, and the run is not dropped because another day type happens to
-  hold that date.
+  midnight. A run signing on before midnight keeps the day type's own date and
+  service — 10-11 and 10-18 stay 10-11 and 10-18 on `ops_dt_sunday` — because the
+  same service day is what `Runs.TodsExport` names for it, and a consumer requires
+  the run's service dates to be a subset of every trip it works. That is correct:
+  the two files name the same service for the same run, and the run is not dropped
+  because another day type happens to hold that date.
 
   The module is pure, so `async: true` and no sandbox are right here.
   """
@@ -140,18 +141,18 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
                row(~D[2026-10-07], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
                row(~D[2026-10-08], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
                row(~D[2026-10-09], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
-               row(~D[2026-10-10], "ops_dt_sunday_prev", "7002", "E4090", "Kim Adeyemi"),
                row(~D[2026-10-11], "ops_dt_sunday", "7001", "E4108", "Dan Okonkwo"),
+               row(~D[2026-10-11], "ops_dt_sunday", "7002", "E4090", "Kim Adeyemi"),
                row(~D[2026-10-13], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
                row(~D[2026-10-14], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
                row(~D[2026-10-15], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
                row(~D[2026-10-16], "ops_dt_weekday", "1001", "E4101", "Rosa Iversen"),
-               row(~D[2026-10-17], "ops_dt_sunday_prev", "7002", "E4090", "Kim Adeyemi"),
-               row(~D[2026-10-18], "ops_dt_sunday", "7001", "E4108", "Dan Okonkwo")
+               row(~D[2026-10-18], "ops_dt_sunday", "7001", "E4108", "Dan Okonkwo"),
+               row(~D[2026-10-18], "ops_dt_sunday", "7002", "E4090", "Kim Adeyemi")
              ]
     end
 
-    test "dates a run signing on before midnight a day earlier on the previous service" do
+    test "keeps a run signing on before midnight on the day type's own date and service" do
       result = rows(roster())
 
       before_midnight =
@@ -160,8 +161,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
         |> Enum.map(&{Date.to_iso8601(&1.date), &1.service_id})
 
       assert before_midnight == [
-               {"2026-10-10", "ops_dt_sunday_prev"},
-               {"2026-10-17", "ops_dt_sunday_prev"}
+               {"2026-10-11", "ops_dt_sunday"},
+               {"2026-10-18", "ops_dt_sunday"}
              ]
     end
 
@@ -191,11 +192,13 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
       result = rows(roster(), nil)
 
       assert Enum.all?(result.rows, &is_nil(&1.service_id))
-      assert row(~D[2026-10-10], nil, "7002", "E4090", "Kim Adeyemi") in result.rows
-      # The shift is the run's, not the service map's: the date still moves.
+      assert row(~D[2026-10-11], nil, "7002", "E4090", "Kim Adeyemi") in result.rows
+
+      # The date is the day type's own: a run signing on before midnight shares
+      # that service day, and the service map does not move it.
       assert Enum.filter(result.rows, &(&1.run_id == "7002")) |> Enum.map(& &1.date) == [
-               ~D[2026-10-10],
-               ~D[2026-10-17]
+               ~D[2026-10-11],
+               ~D[2026-10-18]
              ]
     end
 

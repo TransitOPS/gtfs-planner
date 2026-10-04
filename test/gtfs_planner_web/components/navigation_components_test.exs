@@ -628,6 +628,123 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
   end
 
+  describe "account menu TODS generator" do
+    test "an editor with a selected version gets the generator just below Settings" do
+      doc = menu_doc(editor_menu_context("/"))
+      generator = LazyHTML.query(doc, "#tods-generator-link")
+
+      assert Enum.count(generator) == 1
+      assert LazyHTML.attribute(generator, "href") == ["/gtfs/42/tods-generator"]
+      assert LazyHTML.attribute(generator, "role") == ["menuitem"]
+      assert LazyHTML.text(generator) =~ "TODS generator"
+      assert LazyHTML.text(generator) =~ "Fictional blocks, runs and rosters"
+
+      # Document order is the menu's order: Settings, then the generator, and the
+      # account's own entries after both.
+      ids =
+        doc
+        |> LazyHTML.query("#user-menu-panel a[id]")
+        |> LazyHTML.attribute("id")
+
+      assert ids == ["settings-link", "tods-generator-link"]
+    end
+
+    test "the generator entry marks itself and the menu current on its own page" do
+      doc = menu_doc(editor_menu_context("/gtfs/42/tods-generator"))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#tods-generator-link"), "aria-current") == [
+               "page"
+             ]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-link"), "aria-current") == []
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "[data-user-menu-trigger]"), "data-current") ==
+               ["true"]
+    end
+
+    test "a lookalike path or another version's page does not mark the entry current" do
+      for path <- [
+            "/gtfs/42/tods-generator-archive",
+            "/gtfs/9/tods-generator",
+            "/tods-generator"
+          ] do
+        doc = menu_doc(editor_menu_context(path))
+
+        assert LazyHTML.attribute(LazyHTML.query(doc, "#tods-generator-link"), "aria-current") ==
+                 [],
+               "#{path} must not mark the generator current"
+      end
+    end
+
+    test "an editor with no selected version gets no generator entry" do
+      doc =
+        menu_doc(%{
+          current_organization: org(),
+          user_roles: ["pathways_studio_editor"],
+          current_gtfs_version: nil
+        })
+
+      assert Enum.empty?(LazyHTML.query(doc, "#tods-generator-link"))
+    end
+
+    test "a membership without the editor role gets no generator entry" do
+      for roles <- [[], ["pathways_studio_viewer"], ["pathways_studio_admin"]] do
+        doc =
+          menu_doc(%{
+            current_organization: org(),
+            user_roles: roles,
+            current_gtfs_version: gtfs_version()
+          })
+
+        assert Enum.empty?(LazyHTML.query(doc, "#tods-generator-link")),
+               "#{inspect(roles)} must not be offered the generator"
+      end
+    end
+
+    test "no organization renders no generator entry" do
+      doc =
+        menu_doc(%{user_roles: ["pathways_studio_editor"], current_gtfs_version: gtfs_version()})
+
+      assert Enum.empty?(LazyHTML.query(doc, "#tods-generator-link"))
+    end
+
+    test "a pathways organization hides the entry while keeping Settings" do
+      pathways = %Organization{id: 1, alias: "test-org", name: "Test Org", product: :pathways}
+
+      doc =
+        menu_doc(%{
+          current_organization: pathways,
+          user_roles: ["pathways_studio_editor", "pathways_studio_admin"],
+          current_gtfs_version: gtfs_version()
+        })
+
+      assert Enum.empty?(LazyHTML.query(doc, "#tods-generator-link"))
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-link"), "href") == ["/admin/users"]
+    end
+
+    test "a planner organization shows the entry" do
+      planner = %Organization{id: 1, alias: "test-org", name: "Test Org", product: :planner}
+
+      doc =
+        menu_doc(%{
+          current_organization: planner,
+          user_roles: ["pathways_studio_editor"],
+          current_gtfs_version: gtfs_version()
+        })
+
+      assert Enum.count(LazyHTML.query(doc, "#tods-generator-link")) == 1
+    end
+
+    test "the generator entry has a 44px minimum target" do
+      doc = menu_doc(editor_menu_context("/"))
+
+      classes =
+        LazyHTML.attribute(LazyHTML.query(doc, "#tods-generator-link"), "class") |> List.first()
+
+      assert classes =~ "min-h-11"
+    end
+  end
+
   describe "product filtering (ProductSurfaces)" do
     defp planner_struct_org,
       do: %Organization{id: 1, alias: "test-org", name: "Test Org", product: :planner}

@@ -59,10 +59,17 @@ defmodule GtfsPlanner.Gtfs.Rosters.Roster do
   @typedoc "The version's roster rules, as `blocking_settings` stores them."
   @type rules :: %{min_rest_minutes: 480..720, weekly_hours_warn_above: 40..60}
 
-  @typedoc "One stored line with its days, as the roster writer reads them."
+  @typedoc """
+  One stored line with its days, as the roster writer reads them.
+
+  `id` and `line_number` are `nil` for a line a caller is composing rather than
+  reading: the TODS generator's preview composes proposed lines beside the
+  version's own, and neither the row's identity nor its number exists until the
+  writer assigns it (`create_line/1` owns the numbering).
+  """
   @type line_input :: %{
-          id: Ecto.UUID.t(),
-          line_number: pos_integer(),
+          id: Ecto.UUID.t() | nil,
+          line_number: pos_integer() | nil,
           operator: map() | nil,
           days: [map()]
         }

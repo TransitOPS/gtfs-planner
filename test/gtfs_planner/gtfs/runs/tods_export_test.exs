@@ -26,7 +26,6 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
 
   @key "day-key"
   @service "ops_dt_abc123"
-  @prev_service "ops_dt_abc123_prev"
 
   @garage_uuid "0f2b3a4c-5d6e-4f70-8a91-b2c3d4e5f607"
   @other_garage_uuid "1a2b3c4d-5e6f-4a70-8b91-c2d3e4f50617"
@@ -624,43 +623,43 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
             pieces: [piece],
             work: %{sign_on_secs: -10 * @m, segments: segments}
           ),
-        prev_ids:
-          ids(service_ids: %{@key => %{service_id: @service, prev_service_id: @prev_service}})
+        day_ids: ids(service_ids: %{@key => %{service_id: @service, prev_service_id: nil}})
       }
     end
 
-    test "is written on the _prev service", %{run: run, prev_ids: prev_ids} do
-      for event <- events([run], ids: prev_ids) do
-        assert event.service_id == @prev_service
+    test "is written on the day type's own service", %{run: run, day_ids: day_ids} do
+      for event <- events([run], ids: day_ids) do
+        assert event.service_id == @service
       end
     end
 
     test "reads 23:50 for a 23:50 sign-on and 30:00 for a 06:00 trip", %{
       run: run,
-      prev_ids: prev_ids
+      day_ids: day_ids
     } do
-      written = events([run], ids: prev_ids)
+      written = events([run], ids: day_ids)
 
       report = Enum.find(written, &(&1.event_type == "Report Time"))
       assert report.start_time == "23:50:00"
       assert report.end_time == "23:55:00"
 
-      # 06:00 on this service day is 30:00 on the previous one. Above 24:00, not
+      # 06:00 on this service day reads 30:00 because the whole run is read one
+      # day later, so the 23:50 sign-on stays in order before it. Above 24:00, not
       # wrapped into the morning: the run really did work past midnight.
       operator = Enum.find(written, &(&1.event_type == "Operator"))
       assert operator.start_time == "30:00:00"
       assert operator.end_time == "31:00:00"
     end
 
-    test "writes no negative time", %{run: run, prev_ids: prev_ids} do
-      for event <- events([run], ids: prev_ids) do
+    test "writes no negative time", %{run: run, day_ids: day_ids} do
+      for event <- events([run], ids: day_ids) do
         assert to_secs(event.start_time) >= 0
         assert to_secs(event.end_time) >= 0
       end
     end
 
-    test "run_day_types/1 marks this day type prev?", %{run: run} do
-      assert TodsExport.run_day_types(%{@key => day([run])}) == %{@key => %{prev?: true}}
+    test "run_day_types/1 marks this day type shifted?", %{run: run} do
+      assert TodsExport.run_day_types(%{@key => day([run])}) == %{@key => %{shifted?: true}}
     end
   end
 
@@ -668,12 +667,12 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
     test "is false for a day type whose runs all sign on at or after midnight" do
       normal = run(work: %{sign_on_secs: 5 * @h, segments: []})
 
-      assert TodsExport.run_day_types(%{@key => day([normal])}) == %{@key => %{prev?: false}}
+      assert TodsExport.run_day_types(%{@key => day([normal])}) == %{@key => %{shifted?: false}}
     end
 
     test "ignores a run with an error, because it is never written" do
       # A run that signs on before midnight but is dropped for an error would
-      # leave a _prev service listing dates with no row on it.
+      # leave a movement read as extended against a service the run never uses.
       broken = %{
         run_id: "10000",
         pieces: [],
@@ -682,12 +681,12 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
       }
 
       # Still listed: the run is not left out of the day, it is left out of the
-      # FILE. What it must not do is ask for a previous-day service.
-      assert TodsExport.run_day_types(%{@key => day([broken])}) == %{@key => %{prev?: false}}
+      # FILE. What it must not do is shift a movement for a run no file carries.
+      assert TodsExport.run_day_types(%{@key => day([broken])}) == %{@key => %{shifted?: false}}
     end
 
     test "a day type with no runs is not asked for a service at all" do
-      # Absent, not present with prev?: false. Asking for a service makes the
+      # Absent, not present with shifted?: false. Asking for a service makes the
       # movement export mint one and list the day type's dates on it, which is the
       # header-only `calendar_dates_supplement.txt` it otherwise refuses to write.
       assert TodsExport.run_day_types(%{@key => day([])}) == %{}

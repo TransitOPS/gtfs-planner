@@ -340,6 +340,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @typedoc """
+  The block portion of one generation candidate, the input
+  `apply_generation_in_transaction!/3` writes.
+
+  `assignments` maps a trip UUID to the block ID the generation places it on,
+  keyed the way `Blocking.Generator.run/4` assigns and `Blocking.Plan` builds one,
+  and `blocks` are the new blocks it creates, each carrying the garage and vehicle
+  type `Context.resolve_block/3` resolved for it and the trip rows that run on it.
+  The engine's `TodsGenerator.Plan.block_candidate/2` produces this shape, so the
+  writer reads the candidate directly rather than a second projection of it.
+  """
+  @type generation_block_delta :: %{
+          assignments: %{Ecto.UUID.t() => String.t()},
+          blocks: [
+            %{
+              block_id: String.t(),
+              garage_id: Ecto.UUID.t() | nil,
+              vehicle_type_id: Ecto.UUID.t() | nil,
+              trips: [%{required(:service_id) => String.t(), optional(atom()) => term()}]
+            }
+          ]
+        }
+
+  @typedoc """
   The loaded review input set one calendar combination is projected over.
 
   `calendars` carries every selected calendar in the summary shape
@@ -1312,13 +1335,24 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # delete above, so a repeated save of the same marks is a no-op rather than a
   # constraint violation.
   defp insert_relief_point!(organization_id, gtfs_version_id, stop_id) do
+    case insert_relief_point(organization_id, gtfs_version_id, stop_id) do
+      {:ok, row} -> row
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The one insert both the relief drawer and a generation's relief additions use,
+  # so the scoping fields, the changeset and the conflict target cannot drift
+  # between them. It returns the insert's tuple: the drawer rolls back its
+  # transaction on an error, and a generation rolls back the caller's.
+  defp insert_relief_point(organization_id, gtfs_version_id, stop_id) do
     %ReliefPoint{
       organization_id: organization_id,
       gtfs_version_id: gtfs_version_id,
       stop_id: stop_id
     }
     |> ReliefPoint.changeset(%{})
-    |> Repo.insert!(
+    |> Repo.insert(
       on_conflict: :nothing,
       conflict_target: [:organization_id, :gtfs_version_id, :stop_id]
     )
@@ -1364,18 +1398,31 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # station row itself is not required to exist in `stops` for the grouping to
   # hold — the child names the station, and the name falls back below.
   defp candidate_groups(stops) do
-    Enum.group_by(Map.values(stops), &candidate_stop_id/1)
+    Enum.group_by(Map.values(stops), &relief_candidate_stop_id/1)
   end
 
-  defp candidate_stop_id(%{parent_station: parent_station})
-       when is_binary(parent_station) and parent_station != "" do
+  @doc """
+  Returns the ID a relief mark for one stop is stored under.
+
+  A stop with a parent station is marked through that station, so the two bays of
+  one Riverside Station are one relief point and one row; a stop without one is
+  marked by its own ID. This is the grouping `list_relief_candidates/3` lists and
+  `update_relief_settings/3` writes, exposed so a caller that *proposes* a mark —
+  rather than saving one — names the same place the drawer would.
+
+  `stop` is a stop reference carrying `:stop_id` and `:parent_station`, or a map
+  with those keys.
+  """
+  @spec relief_candidate_stop_id(map()) :: String.t()
+  def relief_candidate_stop_id(%{parent_station: parent_station})
+      when is_binary(parent_station) and parent_station != "" do
     parent_station
   end
 
-  defp candidate_stop_id(%{stop_id: stop_id}), do: stop_id
+  def relief_candidate_stop_id(%{stop_id: stop_id}), do: stop_id
 
   # A candidate is a station when any of the day's stops under it is a child, which
-  # is the same test `candidate_stop_id/1` grouped it by.
+  # is the same test `relief_candidate_stop_id/1` grouped it by.
   defp station?(stop_id, stops) do
     Enum.any?(stops, &(&1.stop_id != stop_id))
   end
@@ -1445,7 +1492,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           is_integer(gap.wait_secs),
           gap.wait_secs > 0,
           stop <- wait_stops(gap, trips),
-          do: candidate_stop_id(stop)
+          do: relief_candidate_stop_id(stop)
 
     Enum.frequencies(counted)
   end
@@ -1707,6 +1754,124 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       {:ok, problems} -> {:ok, problems}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc """
+  Returns the candidate inputs of one generator run over several day types.
+
+  `suggest_blocks/4` reads one day type and hands the result to
+  `Blocking.Plan.build/1` for a review and an apply. A caller that composes the
+  candidate itself — the TODS generator's `Plan` — needs the same reads for a
+  *set* of day types and nothing else, so this is that read and no more: the
+  trips of every named day type *completed with the rest of every block they
+  touch*, the one planning context they are all read against, and every block ID
+  in use on an affected date so a new block continues after the highest one.
+
+  A block is one vehicle's work across every date it runs and a trip's `block_id`
+  is stored once for all of its dates, so the rows are the named day types' own
+  trips plus every trip sharing a block with one of them anywhere in the version.
+  A scope holding only its own dates would read a shared block as half-empty: it
+  could count three trips against a capacity bound where the block holds five,
+  and it could call a chain valid that already overlaps a trip running on a date
+  outside the range. `{:blocks, block_ids}` is the same companion read a calendar
+  combination's closure uses.
+
+  The returned `day_types` is every derived day type that runs one of those rows,
+  which is a superset of the requested keys: the requested keys are the days a
+  caller composes *on*, and the returned set is the days that decide whether what
+  it composed is valid there. `rows_by_day_type` keys both, so a requested day
+  type the completed rows do not reach is an empty list rather than a missing key.
+  `version_day_types` is every day type the version derives, rows or no rows, which
+  is what a caller resolving the roster's base week needs: a slot repeats by
+  weekday and base day type, so a weekday this read selected nothing on still
+  decides where a slot lands.
+
+  The context is built once over the completed rows, not once per day type, so a
+  block the generator forms across two day types is resolved against the same
+  route settings, attributes, driving times and relief points whichever day it is
+  evaluated on.
+
+  **It opens no transaction.** It runs inside the caller's — the export's and the
+  generator's one read snapshot, which has already established its isolation, and
+  a nested `Repo.transaction/1` would only take a savepoint. It writes no row and
+  takes no lock, so it is a read like `load_day/3` and `export_movements/2`.
+
+  An unknown day type key is refused with `{:unknown_day_type, day_types}` and
+  selects nothing, exactly as `load_day/3` refuses one: nothing falls back to
+  another day type (INV-6). A foreign or unpublished version is
+  `{:error, :not_found}` through `Calendars.list_calendars/3`.
+  """
+  @spec candidate_input(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          {:ok,
+           %{
+             day_types: [DayTypes.day_type()],
+             version_day_types: [DayTypes.day_type()],
+             rows_by_day_type: %{optional(String.t()) => [Queries.trip_row()]},
+             context: Context.t(),
+             used_block_ids: [String.t()]
+           }}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+  def candidate_input(organization_id, gtfs_version_id, day_type_keys) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    requested = Enum.map(day_type_keys, &resolve_day_type!(day_types, &1))
+
+    service_ids = requested |> Enum.flat_map(& &1.service_ids) |> Enum.uniq() |> Enum.sort()
+
+    rows =
+      organization_id
+      |> Queries.trip_rows(gtfs_version_id, {:services, service_ids})
+      |> complete_touched_blocks(organization_id, gtfs_version_id)
+
+    affected = affected_day_types(day_types, rows)
+    affected_services = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+    settings = get_settings(organization_id, gtfs_version_id)
+    context = build_context!(organization_id, gtfs_version_id, settings, rows)
+
+    used_block_ids =
+      organization_id
+      |> Queries.used_block_ids(gtfs_version_id, affected_services)
+      |> MapSet.to_list()
+
+    {:ok,
+     %{
+       day_types: affected,
+       # Every day type the version derives, not only the ones the completed rows
+       # reach: a roster slot repeats by weekday and base day type, so a caller
+       # resolving the base week needs the day types the selected dates did not
+       # touch as much as the ones they did.
+       version_day_types: day_types,
+       rows_by_day_type: rows_by_day_type(requested, affected, rows),
+       context: context,
+       # Sorted so a run's `used_ids` does not depend on the order the set
+       # happened to iterate in.
+       used_block_ids: Enum.sort_by(used_block_ids, &Summary.natural_key/1)
+     }}
+  end
+
+  # Every trip of every block the requested trips touch, wherever those trips
+  # run: the checks read a block as a whole, and a block with a trip outside the
+  # requested dates is not a smaller block.
+  defp complete_touched_blocks(rows, organization_id, gtfs_version_id) do
+    touched = rows |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    companions = Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, touched})
+
+    (rows ++ companions)
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(& &1.id)
+  end
+
+  # The requested day types first, so a requested day the completed rows do not
+  # reach comes back as an empty list rather than a missing key.
+  defp rows_by_day_type(requested, affected, rows) do
+    (requested ++ affected)
+    |> Enum.uniq_by(& &1.key)
+    |> Map.new(&{&1.key, rows_of_service(rows, &1)})
+  end
+
+  defp rows_of_service(rows, %{service_ids: service_ids}) do
+    Enum.filter(rows, &(&1.service_id in service_ids))
   end
 
   @doc """
@@ -2356,6 +2521,72 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   def apply_block_plan(_day_type_key, _plan, _audit), do: {:error, :invalid_plan}
 
+  @doc """
+  Applies a generation candidate's block additions and relief marks inside the
+  caller's transaction.
+
+  This is the transaction-local operation the TODS generator's save calls once it
+  has rebuilt the authoritative candidate from the rows it holds locked. It opens
+  no transaction, takes no version or blocking lock and starts no retry: the
+  documented caller preconditions are that the caller already holds the editor
+  membership lock, the version `FOR SHARE`, `lock_blocking!/1` and the UUID-ordered
+  trip, garage and vehicle-type locks, and that `block_delta` is the candidate
+  composed from those locked rows. The current editor membership is re-checked
+  here, so transaction presence alone never authorizes a write.
+
+  `block_delta` is the candidate's own block portion — `:assignments`, a map of
+  trip UUID to the new block ID, and `:blocks`, the new blocks with the garage and
+  vehicle type each resolved. `relief_additions` is the stops the candidate's
+  admitted runs hand over at that the version does not already mark.
+
+  Every move is validated against the locked rows before the first write: a named
+  trip this organization and version does not hold is `:not_found`, and a named
+  trip that already carries a block is `:stale_plan` — the candidate was built from
+  unassigned trips, so a stored block means the delta is no longer additive and
+  must not replace a manual assignment. Any write or audit the transaction refuses
+  rolls the caller's whole transaction back with its reason, so a generation's
+  blocks, attribute rows, trip audits and relief marks commit together or not at
+  all. The trip audits and the 500-row write batches are `write_plan!/2`'s, shared
+  with `apply_block_plan/3` rather than reimplemented here.
+
+  Returns the bare result map the caller's transaction wraps: the audit
+  `operation_id` (nil when no trip moved), the changed trip UUIDs and the relief
+  stops inserted.
+  """
+  @spec apply_generation_in_transaction!(AuditContext.t(), generation_block_delta(), [String.t()]) ::
+          %{
+            operation_id: Ecto.UUID.t() | nil,
+            changed_trip_ids: [Ecto.UUID.t()],
+            relief_stop_ids: [String.t()]
+          }
+  def apply_generation_in_transaction!(
+        %AuditContext{} = audit,
+        block_delta,
+        relief_additions
+      )
+      when is_map(block_delta) and is_list(relief_additions) do
+    assert_transaction!("apply_generation_in_transaction!/3")
+
+    Authorization.lock_editor!(audit)
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    moves =
+      generation_moves!(organization_id, version_id, Map.get(block_delta, :assignments, %{}))
+
+    result =
+      write_plan!(audit, %{
+        moves: moves,
+        attribute_rows: generation_attribute_rows(Map.get(block_delta, :blocks, []))
+      })
+
+    %{
+      operation_id: result.operation_id,
+      changed_trip_ids: result.changed_trip_ids,
+      relief_stop_ids: store_generation_relief!(organization_id, version_id, relief_additions)
+    }
+  end
+
   # The plan's shape, checked before any transaction opens. Only the `mode` decides
   # what is run; the rest of the plan's contents are re-derived under the lock and a
   # hand-built plan naming a mode the generator does not accept is refused here rather
@@ -2616,6 +2847,71 @@ defmodule GtfsPlanner.Gtfs.Blocking do
            ) do
         {:ok, _row} -> :ok
         {:error, refused} -> Repo.rollback(refused)
+      end
+    end)
+  end
+
+  # A generation writer asserts the transaction it does not own. `lock_editor!/1`
+  # would roll back with `:forbidden` whatever the context, so the caller-supplied
+  # candidate is never treated as authority and a missing transaction is a
+  # programming error rather than a refusal.
+  defp assert_transaction!(caller) do
+    unless Repo.in_transaction?() do
+      raise ArgumentError, "#{caller} requires a caller-owned transaction"
+    end
+  end
+
+  # The candidate's assignments read against the rows this transaction holds
+  # locked: every named trip must be this organization's and version's own, and
+  # must still be unassigned. A generation's delta is additive by construction, so
+  # a stored block on a named trip is a delta that would replace a manual
+  # assignment, and it is refused rather than written.
+  defp generation_moves!(organization_id, version_id, assignments) do
+    ids = assignments |> Map.keys() |> Enum.sort()
+
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.id in ^ids,
+        order_by: t.trip_id
+      )
+      |> Repo.all()
+
+    if length(trips) != length(ids), do: Repo.rollback(:not_found)
+    if Enum.any?(trips, &(&1.block_id != nil)), do: Repo.rollback(:stale_plan)
+
+    Enum.map(trips, &%{trip: &1, from: nil, to: Map.fetch!(assignments, &1.id)})
+  end
+
+  # One attribute row per service a new block's trips run on, the same shape
+  # `Blocking.Plan.attribute_rows/1` builds for a reviewed plan: the garage and
+  # vehicle type `Context.resolve_block/3` resolved for the block, repeated on
+  # every row because the block has one resolution.
+  defp generation_attribute_rows(blocks) do
+    for block <- blocks,
+        service_id <- block.trips |> Enum.map(& &1.service_id) |> Enum.uniq() |> Enum.sort() do
+      %{
+        service_id: service_id,
+        block_id: block.block_id,
+        garage_id: block.garage_id,
+        vehicle_type_id: block.vehicle_type_id
+      }
+    end
+  end
+
+  # The marks the candidate proposed and the version did not already hold. A mark
+  # is additive, so an ID a concurrent save already stored is left exactly as that
+  # save left it: the insert conflicts on nothing rather than replacing the row.
+  defp store_generation_relief!(_organization_id, _version_id, []), do: []
+
+  defp store_generation_relief!(organization_id, version_id, stop_ids) do
+    stop_ids
+    |> Enum.uniq()
+    |> Enum.map(fn stop_id ->
+      case insert_relief_point(organization_id, version_id, stop_id) do
+        {:ok, _row} -> stop_id
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
   end

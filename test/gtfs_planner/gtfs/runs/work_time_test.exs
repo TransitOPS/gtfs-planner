@@ -284,5 +284,66 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTimeTest do
         assert piece.start_secs == segment.end_secs
       end
     end
+
+    # The TODS export writes both location fields of every `run_events.txt` row and
+    # the spec marks them required, so a report, a break and a sign-off each name
+    # the place the run is: the piece they belong to, and the garage a closing
+    # travel returned to. A report, a break and a sign-off last no time and move
+    # nobody, so their two ends are the same place.
+    test "a report, a break and the sign-off name the place the run is" do
+      work =
+        WorkTime.compute(
+          [garage_piece(hms(6, 0), hms(8, 0)), relief_piece(hms(11, 0), hms(13, 0))],
+          context(),
+          @crew
+        )
+
+      assert [
+               pull_out_report,
+               _first_piece,
+               break,
+               _travel_between,
+               relief_report,
+               _second_piece,
+               _travel_out,
+               sign_off
+             ] = work.segments
+
+      assert pull_out_report.from == {:garage, @garage}
+      assert pull_out_report.to == pull_out_report.from
+
+      assert break.from == {:garage, @garage}
+      assert break.to == break.from
+
+      assert relief_report.from == {:stop, @riv}
+      assert relief_report.to == relief_report.from
+
+      assert sign_off.from == {:garage, @garage}
+      assert sign_off.to == sign_off.from
+    end
+
+    test "a run with no travel out signs off where its last piece ended" do
+      piece = %{
+        run_id: "3030",
+        start_secs: hms(6, 0),
+        end_secs: hms(8, 0),
+        start_kind: :relief,
+        end_kind: :relief,
+        garage_id: nil,
+        start_ref: {:stop, @riv},
+        start_stop: @riv_point,
+        end_ref: {:stop, @riv},
+        end_stop: @riv_point,
+        gaps: []
+      }
+
+      work = WorkTime.compute([piece], context(garage_id: nil, garages: %{}), @crew)
+
+      assert [report, _piece, sign_off] = work.segments
+      assert report.from == {:stop, @riv}
+      assert report.to == report.from
+      assert sign_off.from == {:stop, @riv}
+      assert sign_off.to == sign_off.from
+    end
   end
 end

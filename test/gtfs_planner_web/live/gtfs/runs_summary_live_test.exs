@@ -416,15 +416,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
       world = two_day_types(context)
       view = signed_in(context, world)
 
-      view |> element("#runs-count-strip-item-runs") |> render_click()
+      click_html = view |> element("#runs-count-strip-item-runs") |> render_click()
+      click_document = LazyHTML.from_fragment(click_html)
 
       # No `render_async/2` here on purpose. The point of loading the shares
-      # asynchronously is that the drawer's own half is already usable; if this
-      # assertion needed the async to settle, the split would be pointless.
-      assert has_element?(view, "#runs-summary-straight")
-      assert has_element?(view, "#runs-summary-one-piece")
-      assert has_element?(view, "#runs-summary-rules")
-      assert has_element?(view, "#runs-share-loading")
+      # asynchronously is that the drawer's own half is already usable. Check
+      # the click response itself: later DOM reads can observe the completed task.
+      assert Enum.count(LazyHTML.query(click_document, "#runs-summary-straight")) == 1
+      assert Enum.count(LazyHTML.query(click_document, "#runs-summary-one-piece")) == 1
+      assert Enum.count(LazyHTML.query(click_document, "#runs-summary-rules")) == 1
+      assert Enum.count(LazyHTML.query(click_document, "#runs-share-loading")) == 1
     end
 
     test "the tile that opened the drawer is marked pressed", context do

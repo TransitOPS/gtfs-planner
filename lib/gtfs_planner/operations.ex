@@ -27,6 +27,7 @@ defmodule GtfsPlanner.Operations do
   import Ecto.Changeset, only: [put_change: 3]
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Gtfs.DeadheadTime
@@ -444,6 +445,39 @@ defmodule GtfsPlanner.Operations do
     |> Map.new(&{&1.id, &1})
   end
 
+  @doc """
+  Holds the organization's planning garages and vehicle types `FOR SHARE` in UUID
+  order.
+
+  This is the write half of `planning_garages/1` and `planning_vehicle_types/1`: a
+  caller that composes a plan from them and then writes holds the rows its
+  resolution read, so a garage's geometry or a type's limit cannot change under the
+  write. Garage and type edits go through `authorized_write/3`, which takes no
+  blocking lock, so these scoped row locks plus the caller's serializable reads are
+  what close that boundary.
+
+  Call only inside `Repo.transaction/1`. The order is the UUID order `lock_trips!/5`
+  uses, so two callers take the same rows in the same sequence.
+  """
+  @spec lock_planning_rows!(Ecto.UUID.t()) :: :ok
+  def lock_planning_rows!(organization_id) do
+    Garage
+    |> where([g], g.organization_id == ^organization_id)
+    |> order_by([g], asc: g.id)
+    |> lock("FOR SHARE")
+    |> select([g], g.id)
+    |> Repo.all()
+
+    VehicleType
+    |> where([t], t.organization_id == ^organization_id)
+    |> order_by([t], asc: t.id)
+    |> lock("FOR SHARE")
+    |> select([t], t.id)
+    |> Repo.all()
+
+    :ok
+  end
+
   # --- vehicles --------------------------------------------------------------
 
   @doc """
@@ -829,14 +863,64 @@ defmodule GtfsPlanner.Operations do
           {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :forbidden}
   def create_operator(organization_id, actor, attrs) do
     authorized_write(organization_id, actor, fn ->
-      changeset =
-        %Operator{organization_id: organization_id, updated_by_id: actor_id(actor)}
-        |> Operator.changeset(attrs)
-
-      with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
-        Repo.insert(changeset, mode: :savepoint)
-      end
+      insert_operator(organization_id, actor_id(actor), attrs)
     end)
+  end
+
+  @doc """
+  Inserts one operator inside the caller's own transaction.
+
+  This is the transaction-local operation the TODS generator's save creates its
+  fictional operators through, beside the roster slot each one holds. It opens no
+  transaction, takes no editor or version lock and starts no retry: the documented
+  caller preconditions are that the caller already holds the editor membership
+  lock, the scoped version `FOR SHARE` and `Blocking.lock_blocking!/1`, and that
+  `attrs` are the fictional operator's own fields. The current editor membership is
+  re-checked here, so transaction presence alone never authorizes a write (INV-2).
+
+  The insert is `insert_operator/3` — the same changeset, holder check and insert
+  `create_operator/3` writes — so an employee ID the organization already holds is
+  refused with the error naming the operator who holds it. There is no upsert and no
+  update path: an ID a previous save left, a `DEMO-...` one included, can neither
+  attach to nor edit an existing person. Every refusal rolls the caller's whole
+  transaction back with its reason instead of being returned as a tuple or
+  swallowed.
+
+  Returns the inserted `Operator`.
+  """
+  @spec create_operator_in_transaction!(AuditContext.t(), map()) :: Operator.t()
+  def create_operator_in_transaction!(%AuditContext{} = audit, attrs) when is_map(attrs) do
+    assert_transaction!("create_operator_in_transaction!/2")
+    Authorization.lock_editor!(audit)
+
+    case insert_operator(audit.organization_id, audit.actor_id, attrs) do
+      {:ok, operator} -> operator
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The one operator insert both callers write: the row's organization and acting
+  # user come from the caller's arguments rather than from the attributes, and an
+  # employee ID the organization already holds is refused before the insert, so a
+  # refused write leaves the transaction usable and the holder untouched.
+  defp insert_operator(organization_id, updated_by_id, attrs) do
+    changeset =
+      %Operator{organization_id: organization_id, updated_by_id: updated_by_id}
+      |> Operator.changeset(attrs)
+
+    with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
+      Repo.insert(changeset, mode: :savepoint)
+    end
+  end
+
+  # A transaction-local writer asserts the transaction it does not own, the same
+  # way `Blocking.apply_generation_in_transaction!/3` does: `lock_editor!/1` would
+  # roll back with `:forbidden` whatever the context, so a missing transaction is a
+  # programming error rather than a refusal.
+  defp assert_transaction!(caller) do
+    unless Repo.in_transaction?() do
+      raise ArgumentError, "#{caller} requires a caller-owned transaction"
+    end
   end
 
   @doc """

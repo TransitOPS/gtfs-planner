@@ -70,6 +70,8 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Gtfs.TodsGeneration
+  alias GtfsPlanner.Gtfs.TodsGenerator
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
@@ -5757,6 +5759,83 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Rosters.roster_view()} | {:error, :not_found | :unavailable}
   def load_roster(organization_id, gtfs_version_id) do
     catalog_read_adapter().load_roster(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Answers what one TODS generation request would add to a version, writing
+  nothing.
+
+  `params` are the five business inputs of `TodsGenerator.Input` and `audit`
+  carries the version, the organization and the actor; the actor's current
+  editor membership is read first, so a revoked editor is refused before any
+  source fact. Every source fact is read inside one `Export.with_read_snapshot/1`
+  read boundary.
+
+  The result is the candidate a page previews: the normalized inputs, the source
+  fingerprint a later save compares against, the new blocks and the trip moves,
+  the blocks that are preserved, and the exclusions with their reasons. An empty
+  service in the selected range is `{:ok, preview}` with `no_work?: true` rather
+  than an error, because "this version has nothing to staff" is something a page
+  must be able to say.
+
+  The refusals are `{:error, :forbidden}`, `{:error, :not_found}` for a foreign
+  or unusable version, `{:error, :missing_garages}`, `{:error, {:too_large,
+  count}}` above 3,000 distinct trips, and `{:error, changeset}` for anything the
+  input refuses — including a garage UUID of another organization or of no one,
+  which is a field error and never a fallback garage.
+  """
+  @spec preview_tods_generation(AuditContext.t(), map()) ::
+          {:ok, TodsGenerator.preview()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :forbidden
+             | :not_found
+             | :missing_garages
+             | {:snapshot_timeout}
+             | {:too_large, non_neg_integer()}}
+  def preview_tods_generation(%AuditContext{} = audit, params) do
+    TodsGenerator.preview(audit, params)
+  end
+
+  @doc """
+  Applies one reviewed TODS generation preview and returns its completed receipt.
+
+  `request` carries the transport facts of one request: the `:request_id` UUID the
+  page generated for the preview, the `:input` map `preview_tods_generation/2`
+  normalized and the `:source_fingerprint` it reported. The save is one
+  SERIALIZABLE transaction with at most three attempts, and it refuses with
+  `:stale_plan` when the source no longer matches the reviewed fingerprint, so a
+  schedule edited after the preview is never written from a stale candidate.
+
+  The refusals are `{:error, changeset}` for a refused input, `:forbidden` for a
+  revoked editor, `:not_found` for a foreign, unusable or malformed request,
+  `:missing_garages` or `{:too_large, count}` when the source the attempt re-reads
+  holds no usable garage or is above the admission bound, `:stale_plan`,
+  `:request_conflict` for a completed request with another input,
+  `:nothing_to_save`, `:busy` after three exhausted attempts, `{:audit_failed, reason}`
+  for a change log the transaction refused, and `:write_failed` for a write no retry
+  can fix. A repeated identical request answers with the receipt it already has, so a
+  lost reply cannot generate twice.
+  """
+  @spec apply_tods_generation(AuditContext.t(), map()) ::
+          {:ok, TodsGeneration.t()} | {:error, TodsGenerator.apply_error()}
+  def apply_tods_generation(%AuditContext{} = audit, request) do
+    TodsGenerator.apply(audit, request)
+  end
+
+  @doc """
+  Returns the completed receipt of one TODS generation request, scoped to the
+  audit's organization and version.
+
+  The lookup authorizes the caller's current editor membership before it reads, so
+  a revoked editor is `{:error, :forbidden}` and a request of another scope or of
+  none is `{:error, :not_found}`. It never creates a receipt, so a page asking
+  after a disconnect learns whether the request completed without writing anything.
+  """
+  @spec get_tods_generation(AuditContext.t(), Ecto.UUID.t()) ::
+          {:ok, TodsGeneration.t()} | {:error, :forbidden | :not_found}
+  def get_tods_generation(%AuditContext{} = audit, request_id) do
+    TodsGenerator.completed(audit, request_id)
   end
 
   @doc """
