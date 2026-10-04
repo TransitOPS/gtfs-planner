@@ -51,6 +51,9 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.Export.Runner
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Gtfs.Trip
@@ -525,6 +528,109 @@ defmodule GtfsPlanner.TodsGeneratorFixtures do
   """
   def preview(world, overrides \\ %{}) do
     Gtfs.preview_tods_generation(world.audit, tods_inputs(world, overrides))
+  end
+
+  # The default unblocked trip: one weekday trip on the generator's own route and
+  # vehicle type, departing just after midnight service time. The generator's crew
+  # stage signs the run it cuts from it on before midnight, which is the previous-day
+  # case the export's own date rule has to write one service and date earlier.
+  @generated_operation_trip {"gen-a", "WK", "RIV", "RIV", "00:05:00", "00:35:00"}
+
+  # A fixed request token, so the generated operators' employee IDs (`DEMO-<token>-<NNN>`)
+  # are the same on every run and a case can name them literally.
+  @generated_request_id "5c1e6f4a-8b2d-4e3f-9a7c-1d2e3f4a5b6c"
+
+  @doc """
+  Builds a committed generation to export: `roster_world_fixture/1` with one unblocked
+  weekday trip of its own, the production preview, and one real `Gtfs.apply_tods_generation/2`
+  save of it.
+
+  The world is the roster fixture, so the exported version carries a holiday Monday
+  whose day type no weekday base reaches — the date running other service the export
+  must omit — and the extra trip departs just after midnight, so one generated run
+  signs on before midnight. Nothing here feeds candidate assigns to a consumer: the
+  cases read the records back and export them through the ordinary composition.
+
+  Returns the world with `:preview` (the saved answer), `:request_id` (the token the
+  receipt is keyed by) and `:receipt` (the committed outcome).
+  """
+  def generated_operations_world_fixture(opts \\ %{}) do
+    opts = Map.new(opts)
+
+    world =
+      roster_world_fixture(extra_trips: Map.get(opts, :extra_trips, [@generated_operation_trip]))
+
+    {:ok, preview} = roster_preview(world)
+    request_id = Map.get(opts, :request_id, @generated_request_id)
+
+    {:ok, receipt} =
+      Gtfs.apply_tods_generation(world.audit, %{
+        request_id: request_id,
+        input: preview.normalized_inputs,
+        source_fingerprint: preview.source_fingerprint
+      })
+
+    Map.merge(world, %{preview: preview, request_id: request_id, receipt: receipt})
+  end
+
+  @doc """
+  Starts the normal operations export composition for `world`'s version and waits
+  for its fenced worker to publish a ready run.
+
+  `ExportRuns.create_pending/4` records the run, `Runner.start_build/3` runs the
+  concrete `Export.Worker` under the application supervisor, and the ready run is
+  read from the topic the run's own transitions broadcast on. No artifact path is
+  given by a caller and no test-only worker is substituted.
+  """
+  def start_operations_export(world, actor, timeout \\ 30_000) do
+    {:ok, run} =
+      ExportRuns.create_pending(world.organization.id, world.version.id, actor, :operations)
+
+    :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
+    {:ok, _runner} = Runner.start_build(world.organization.id, run.id)
+
+    await_export(run.id, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  # `ExportRuns` broadcasts the changed run's ID, so the state is read back from the
+  # durable row rather than carried in the message.
+  defp await_export(run_id, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+    if remaining <= 0, do: raise("the operations export did not finish in time")
+
+    receive do
+      {:export_run_changed, _} ->
+        case Repo.get(Run, run_id) do
+          %Run{state: :ready} = ready ->
+            ready
+
+          %Run{state: state, failure_code: code} when state in [:failed, :cancelled] ->
+            raise "the operations export closed as #{state} (#{inspect(code)})"
+
+          _pending_or_missing ->
+            await_export(run_id, deadline)
+        end
+    after
+      remaining -> raise("the operations export did not finish within its deadline")
+    end
+  end
+
+  @doc """
+  Reads the ready run's main artifact through the same scoped claim the download
+  controller takes, so the bytes are the ones a download would serve.
+  """
+  def download_operations_zip(world, run) do
+    {:ok, claim} = ExportRuns.claim_download(world.organization.id, world.version.id, run.id)
+
+    :ok =
+      ExportRuns.complete_download(
+        world.organization.id,
+        world.version.id,
+        run.id,
+        claim.claim_id
+      )
+
+    File.read!(claim.path)
   end
 
   @doc """
