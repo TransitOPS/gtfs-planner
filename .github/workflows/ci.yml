@@ -168,7 +168,15 @@ jobs:
       - name: Fetch main for credo diff
         # actions/checkout fetched only the PR merge ref, so credo's
         # --from-git-ref origin/main needs the remote-tracking ref created.
-        run: git fetch --no-tags origin main:refs/remotes/origin/main
+        # Credo's diff task (Credo.CLI.Command.Diff.Task.GetGitDiff) also
+        # clones this checkout and runs `git checkout origin/main` inside the
+        # clone; a clone only carries refs/heads/* from its source, so
+        # origin/main resolves in the clone only when this checkout has a
+        # local `main` branch. The checkout is a detached PR merge ref, so
+        # forcing the local branch is safe.
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git branch -f main refs/remotes/origin/main
       - name: Run credo
         run: mise run lint:elixir:credo
       - name: Run sobelow
