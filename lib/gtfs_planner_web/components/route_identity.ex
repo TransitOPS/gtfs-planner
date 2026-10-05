@@ -17,6 +17,14 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   # The prototype's advisory similarity threshold, in CIE76 units.
   @similar_color_delta 12
 
+  # A feed's named `route_text_color` is honoured only when it reads on the
+  # route's own colour. The two floors are different numbers for different
+  # things, so they are named rather than shared: 4.5 is the WCAG 2.1 AA floor
+  # for body text, and 3.0 is the floor for a component graphic (the badge
+  # background) against the page it sits on.
+  @minimum_text_contrast 4.5
+  @minimum_badge_edge_contrast 3.0
+
   @spec normalize_hex(term()) :: {:ok, String.t()} | :error
   def normalize_hex(value) when is_binary(value) do
     stripped = String.trim(value)
@@ -155,9 +163,15 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   attr :class, :any, default: nil
 
   attr :size, :string,
-    values: ~w(default large),
+    values: ~w(default compact large),
     default: "default",
-    doc: "`large` is the badge a route's own page leads its heading with"
+    doc:
+      "`compact` is the badge a map row draws inside its own click target; " <>
+        "`large` is the badge a route's own page leads its heading with"
+
+  attr :title, :string,
+    default: nil,
+    doc: "the tooltip, when the caller has a long name the badge cannot show"
 
   def route_badge(assigns) do
     {style, badge_class} =
@@ -167,7 +181,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
           # or the badge disappears into the page. Anything below the 3:1 WCAG
           # 1.4.11 floor for component graphics gets a subtle ring.
           edge =
-            if contrast_ratio(norm_bg, "FFFFFF") < 3.0,
+            if contrast_ratio(norm_bg, "FFFFFF") < @minimum_badge_edge_contrast,
               do: " ring-1 ring-inset ring-subtle",
               else: ""
 
@@ -188,6 +202,13 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
         "large" ->
           "min-h-10 min-w-12 max-w-full px-3 py-1 text-center text-xl leading-tight break-words"
 
+        "compact" ->
+          # The map's badge sits inside an existing 44 px row action, so it is
+          # decorative: 20 px tall with the same padding and 12 px text the map
+          # rows have always drawn. It shares none of the default size's
+          # competing padding/font/leading classes.
+          "h-5 min-w-6 px-1.5 text-[12px]"
+
         _default ->
           "px-2 py-0.5 text-xs leading-none"
       end
@@ -201,6 +222,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
 
     ~H"""
     <span
+      title={@title}
       class={[
         "inline-flex items-center justify-center rounded-badge font-bold tabular-nums",
         @size_class,
@@ -217,7 +239,7 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   defp resolve_foreground(norm_bg, fg) do
     case normalize_hex(fg) do
       {:ok, norm_fg} ->
-        if contrast_ratio(norm_bg, norm_fg) >= 4.5 do
+        if contrast_ratio(norm_bg, norm_fg) >= @minimum_text_contrast do
           norm_fg
         else
           automatic_text_color(norm_bg)

@@ -257,15 +257,26 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
       # The long name is on the badge rather than in the row: the row's job is
       # to say which buses stop here, and the long name would crowd out the
       # second stop's name in the list.
-      assert view |> element("#stops-map-row-1434") |> render() =~ "Nye Beach"
+      badge_titles =
+        view
+        |> element("#stops-map-row-1434")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("span.rounded-badge")
+        |> LazyHTML.attribute("title")
+
+      assert badge_titles == ["Nye Beach"]
     end
 
     test "a route badge picks ink that reads on the route's own colour", ctx do
       # A pale route colour in white is unreadable, and a dark one in black is
       # unreadable too. The badge chooses from the colour rather than assuming,
       # because a route number nobody can read beside the stop's name is worse
-      # than no badge at all. The expectations below are the contract; the
-      # fixture loop only writes the rows.
+      # than no badge at all. The badge is the shared one, so the ink is its
+      # normalized black/white pick: a pale route colour gets black rather than
+      # a navy tint, and the same route reads the same on the map as anywhere
+      # else. The expectations below are the contract; the fixture loop only
+      # writes the rows.
       for {route_id, colour, text} <- [
             {"1", "1F5FBF", "000000"},
             {"3", "4B1F78", "000000"},
@@ -307,12 +318,12 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapLiveTest do
       view = open_map(ctx.editor_conn, ctx.version)
 
       for {route_id, _colour, _text, ink} <- [
-            {"1", "1F5FBF", "000000", "#ffffff"},
-            {"3", "4B1F78", "000000", "#ffffff"},
+            {"1", "1F5FBF", "000000", "#FFFFFF"},
+            {"3", "4B1F78", "000000", "#FFFFFF"},
             {"4", "FFE066", "000000", "#000000"},
-            {"5", "FFE066", "FFFFFF", "#0a1330"},
+            {"5", "FFE066", "FFFFFF", "#000000"},
             {"55", "FFFFFF", "000000", "#000000"},
-            {"6", "1F5FBF", "000000", "#ffffff"},
+            {"6", "1F5FBF", "000000", "#FFFFFF"},
             {"7", "FFFFFF", "1F5FBF", "#1F5FBF"}
           ] do
         html = view |> element("#stops-map-row-S-#{route_id}") |> render()

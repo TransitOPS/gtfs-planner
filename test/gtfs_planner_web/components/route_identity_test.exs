@@ -125,6 +125,84 @@ defmodule GtfsPlannerWeb.Components.RouteIdentityTest do
       assert html =~ "background-color: #D32F2F"
       assert html =~ "color: #FFFFFF"
       assert html =~ "42"
+      assert html =~ "px-2 py-0.5 text-xs leading-none"
+      refute html =~ "h-5"
+    end
+
+    test "the compact size is the map row's geometry and shares no default classes" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge
+          size="compact"
+          route={%{route_color: "1F5FBF", route_text_color: "FFFFFF", route_short_name: "1"}}
+        />
+        """)
+
+      assert html =~ "h-5 min-w-6 px-1.5 text-[12px]"
+      refute html =~ "text-xs"
+      refute html =~ "px-2 py-0.5"
+      refute html =~ "text-xl"
+      assert html =~ "background-color: #1F5FBF"
+    end
+
+    test "renders a supplied title and omits an absent one" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge
+          title="Coast Highway"
+          route={%{route_color: "1F5FBF", route_short_name: "1"}}
+        />
+        """)
+
+      assert html =~ ~s(title="Coast Highway")
+
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge route={%{route_color: "1F5FBF", route_short_name: "1"}} />
+        """)
+
+      refute html =~ "title="
+    end
+
+    test "escapes the title rather than letting it write markup" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge
+          title={~s(A & B "quoted")}
+          route={%{route_color: "1F5FBF", route_short_name: "1"}}
+        />
+        """)
+
+      assert html =~ ~s(title="A &amp; B &quot;quoted&quot;")
+      refute html =~ ~s(A & B "quoted")
+    end
+
+    test "adds the shared edge to a pale background and not to a dark one" do
+      assigns = %{}
+
+      pale =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge route={%{route_color: "FFFFFF", route_short_name: "1"}} />
+        """)
+
+      assert pale =~ "ring-1 ring-inset ring-subtle"
+
+      assigns = %{}
+
+      dark =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge route={%{route_color: "1F5FBF", route_short_name: "1"}} />
+        """)
+
+      refute dark =~ "ring-1 ring-inset ring-subtle"
     end
 
     test "the large size grows the badge without changing its colors" do
