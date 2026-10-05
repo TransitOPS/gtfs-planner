@@ -534,7 +534,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   defp validate_coordinate(val, axis) do
     case cast_float(val) do
       {:ok, f} ->
-        if not infinite?(f) and f >= 0.0 and f <= Coordinates.max_diagram_coordinate(axis) do
+        # One range guard is enough: cast_float/1 already rejects atom sentinels
+        # (:infinity, :"-infinity") via its catch-all clause before narrowing to
+        # {:ok, float}, BEAM floats are always finite, and a stray sentinel atom
+        # fails `f <= max` by term order anyway.
+        if f >= 0.0 and f <= Coordinates.max_diagram_coordinate(axis) do
           {:ok, f}
         else
           :error
@@ -557,8 +561,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   end
 
   defp cast_float(_), do: :error
-
-  defp infinite?(val), do: val in [:infinity, :"-infinity"]
 
   defp normalize_id(nil), do: nil
   defp normalize_id(id) when is_binary(id), do: id
