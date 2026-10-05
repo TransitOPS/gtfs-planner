@@ -124,6 +124,13 @@ jobs:
           path: |
             deps
             _build
+      # The save and restore keys now agree on the root mix.lock (#769), but a
+      # cold runner, an evicted cache or a failed cache save still leaves the
+      # workspace without deps; fetch and compile them before the compile gate.
+      - name: Fetch dependencies (cache-miss resilience)
+        run: |
+          mise run elixir:deps -f
+          mix deps.compile
       - name: Compile without warnings
         run: mix compile --force --warnings-as-errors
       - name: Run tests with coverage
