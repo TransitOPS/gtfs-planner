@@ -58,20 +58,24 @@ const BLANK_TILE = Buffer.from(
   "base64",
 );
 
-// Spec artifacts deliberately do not belong to implementation worktrees. Set
-// FARE_EDITOR_SPEC_ROOT to the canonical package when this test runs in one.
-const SPEC_ROOT =
-  process.env.FARE_EDITOR_SPEC_ROOT ||
-  resolve(REPO_ROOT, "..", "gtfs-planner", ".specs", "29-fares-v1-v2-add-edit");
-const REFERENCE_PATH = resolve(
-  SPEC_ROOT,
-  "references",
-  "fares-editor-prototype.html",
-);
+// The reference prototype is vendored under fixtures/ so CI checkouts (which
+// never carry the untracked .specs/ tree) can run these comparisons. Point
+// FARE_EDITOR_REFERENCE_PATH at a canonical-package copy to compare a
+// work-in-progress reference instead.
+const REFERENCE_PATH =
+  process.env.FARE_EDITOR_REFERENCE_PATH ||
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "fixtures",
+    "prototypes",
+    "fares-editor-prototype.html",
+  );
 
+// Captures stay out of git: default to the Playwright results directory, or
+// set FARE_EDITOR_CAPTURE_DIR (for example a .specs evidence folder).
 const CAPTURE_DIR =
   process.env.FARE_EDITOR_CAPTURE_DIR ||
-  resolve(dirname(REFERENCE_PATH), "../evidence/captures");
+  resolve(REPO_ROOT, "assets", "test-results", "captures", "fare-editor");
 
 let priceRecovery;
 

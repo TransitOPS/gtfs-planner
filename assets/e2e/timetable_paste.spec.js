@@ -34,7 +34,13 @@ const PASTE_ROUTE = "BROWSER_PASTE";
 // PASTE_CAPTURE_DIR when driving the journey elsewhere.
 const IMPL_CAPTURE_DIR =
   process.env.PASTE_CAPTURE_DIR ||
-  "/Users/ryanmahoney/Documents/gtfs-planner/.specs/04-timetable-paste-import/evidence/captures";
+  resolve(
+    import.meta.dirname,
+    "..",
+    "test-results",
+    "captures",
+    "04-timetable-paste-import",
+  );
 
 async function captureImpl(page, name) {
   mkdirSync(IMPL_CAPTURE_DIR, { recursive: true });
