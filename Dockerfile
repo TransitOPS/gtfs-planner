@@ -76,6 +76,7 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     && apt-get install -y --no-install-recommends temurin-21-jre \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives && \
     export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= \
+    AWS_SES_REGION= AWS_ACCESS_KEY_ID= AWS_SECRET_ACCESS_KEY= \
     OPENROUTER_API_KEY=build-only OPENROUTER_MODEL=build/smoke-check \
     AGENT_ORG_DAILY_ATTEMPTS=1 AGENT_ACTOR_DAILY_ATTEMPTS=1 && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
