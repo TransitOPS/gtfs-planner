@@ -59,7 +59,14 @@ task_artifacts_path =
       # an absent root in production means the volume is not mounted.
       case config_env() do
         :test ->
-          Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts")
+          # Storage readiness never creates the root (an absent production root
+          # means the volume is not mounted), so the test environment creates
+          # its own throwaway root at boot, as :dev does — otherwise `mix run`
+          # consumers such as the browser seed hit :artifact_storage_unavailable
+          # on a fresh machine.
+          test_root = Path.join(System.tmp_dir!(), "gtfs_planner_test_task_artifacts")
+          File.mkdir_p!(test_root)
+          test_root
 
         :dev ->
           default_path = Path.expand("../tmp/gtfs_task_artifacts", __DIR__)
