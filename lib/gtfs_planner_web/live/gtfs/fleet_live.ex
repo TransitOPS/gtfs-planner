@@ -92,10 +92,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   # how many more the request covers.
   @bulk_name_limit 5
 
-  # Mirrors the two bounds `Operations.create_vehicle_range/3` enforces before it
-  # allocates anything; the preview only reports them and never relaxes them.
-  @range_limit 200
-  @max_vehicle_id_length 255
+  # The two bounds `Operations.create_vehicle_range/3` enforces are read from
+  # Operations where the preview reports them; the preview never relaxes them.
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -2277,7 +2275,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         }
 
       :error ->
-        %{ok?: false, text: "Choose a numbered group of 1 to 200 vehicles."}
+        %{
+          ok?: false,
+          text: "Choose a numbered group of 1 to #{Operations.vehicle_range_limit()} vehicles."
+        }
     end
   end
 
@@ -2294,7 +2295,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp range_preview_count(first_value, last_value) do
     count = last_value - first_value + 1
 
-    if count in 1..@range_limit, do: {:ok, count}, else: :error
+    if count in 1..Operations.vehicle_range_limit(), do: {:ok, count}, else: :error
   end
 
   defp range_preview_padded_ids(first_value, count, width) do
@@ -2304,7 +2305,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         &String.pad_leading(Integer.to_string(&1), width, "0")
       )
 
-    if Enum.all?(ids, &(String.length(&1) <= @max_vehicle_id_length)),
+    if Enum.all?(ids, &(String.length(&1) <= Operations.vehicle_id_max_length())),
       do: {:ok, ids},
       else: :error
   end
@@ -2313,7 +2314,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     digits = String.trim(value)
 
     cond do
-      String.length(digits) > @max_vehicle_id_length -> :error
+      String.length(digits) > Operations.vehicle_id_max_length() -> :error
       Regex.match?(~r/^\d+$/, digits) -> {:ok, String.to_integer(digits), String.length(digits)}
       true -> :error
     end
@@ -2514,8 +2515,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp vehicle_drawer_scope(vehicle),
     do: "Vehicle #{vehicle.vehicle_id} · shared across all service versions"
 
-  defp vehicle_drawer_description(nil, :range),
-    do: "Adds every number from the first to the last, up to 200 at once."
+  defp vehicle_drawer_description(nil, :range) do
+    "Adds every number from the first to the last, up to #{Operations.vehicle_range_limit()} at once."
+  end
 
   defp vehicle_drawer_description(_entity, _mode), do: "Only the vehicle number is required."
 

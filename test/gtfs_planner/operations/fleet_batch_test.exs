@@ -79,6 +79,11 @@ defmodule GtfsPlanner.Operations.FleetBatchTest do
       assert Enum.map(wide, & &1.vehicle_id) == ["98", "99", "100", "101", "102"]
     end
 
+    test "the policy accessors report the enforced count and ID-length limits" do
+      assert Operations.vehicle_range_limit() == 200
+      assert Operations.vehicle_id_max_length() == 255
+    end
+
     test "rejects a range of more than 200 vehicles and inserts nothing" do
       organization = organization_fixture()
 

@@ -564,4 +564,60 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       assert has_element?(view, "#vehicles-count", "1 vehicle")
     end
   end
+
+  describe "numbered group preview" do
+    setup :editor_setup
+
+    test "the range form previews padded IDs and states the shared limit help", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      render_click(element(view, "#add-vehicles"))
+      render_change(element(view, "#vehicle-mode-form"), %{"vehicle_mode" => "range"})
+
+      assert has_element?(
+               view,
+               "#vehicle-drawer-description",
+               "Adds every number from the first to the last, up to 200 at once."
+             )
+
+      render_change(element(view, "#vehicle-range-form"), %{
+        "range" => %{"first" => "0098", "last" => "0102"}
+      })
+
+      assert has_element?(view, "#range-preview", "Adds 0098–0102 (5 vehicles)")
+    end
+
+    test "an over-limit count or an over-long bound keeps the invalid preview state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      render_click(element(view, "#add-vehicles"))
+      render_change(element(view, "#vehicle-mode-form"), %{"vehicle_mode" => "range"})
+
+      render_change(element(view, "#vehicle-range-form"), %{
+        "range" => %{"first" => "1", "last" => "300"}
+      })
+
+      assert has_element?(view, "#range-preview", "Choose a numbered group of 1 to 200 vehicles.")
+
+      render_change(element(view, "#vehicle-range-form"), %{
+        "range" => %{"first" => String.duplicate("9", 256), "last" => String.duplicate("9", 256)}
+      })
+
+      assert has_element?(view, "#range-preview", "Choose a numbered group of 1 to 200 vehicles.")
+    end
+  end
 end

@@ -92,6 +92,18 @@ defmodule GtfsPlanner.Operations do
   @range_limit 200
   @max_vehicle_id_length 255
 
+  @doc """
+  Returns the largest numbered group `create_vehicle_range/3` accepts.
+  """
+  @spec vehicle_range_limit() :: non_neg_integer()
+  def vehicle_range_limit, do: @range_limit
+
+  @doc """
+  Returns the longest vehicle ID `create_vehicle_range/3` accepts.
+  """
+  @spec vehicle_id_max_length() :: non_neg_integer()
+  def vehicle_id_max_length, do: @max_vehicle_id_length
+
   # Rows per operator insert statement. PostgreSQL caps a statement at 65535 bind
   # parameters and an operator row binds eight, so one `insert_all` fails above
   # about 8,000 rows; 500 stays far below that, as `Runs`' write batch does.
