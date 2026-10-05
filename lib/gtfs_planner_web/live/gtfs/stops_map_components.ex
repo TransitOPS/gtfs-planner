@@ -25,6 +25,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   alias GtfsPlanner.Gtfs.StopReferences
+  alias GtfsPlannerWeb.Components.RouteIdentity
   alias Phoenix.HTML.Form
 
   @doc """
@@ -686,21 +687,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
   end
 
   @doc """
-  A route's badge: its short name on the route's own colour, with the long name
-  for anything that reads the row rather than the map.
+  A route's badge on the map: the shared badge's colour policy at the compact
+  size, with the long name for anything that reads the row rather than the map.
+
+  The map's own keys are adapted here and nowhere else, so a badge reads the
+  same wherever it appears without the shared component learning a map shape.
   """
   attr :route, :map, required: true
 
   def route_badge(assigns) do
     ~H"""
-    <span
-      title={@route.long_name || @route.short_name}
-      class="inline-flex h-5 min-w-6 items-center justify-center rounded-badge px-1.5 text-[12px] font-bold"
-      style={badge_style(@route)}
-    >
-      {@route.short_name}
-    </span>
+    <RouteIdentity.route_badge
+      size="compact"
+      title={Map.get(@route, :long_name) || Map.get(@route, :short_name)}
+      route={route_identity(@route)}
+    />
     """
+  end
+
+  # The map's route data uses the page's own key names; the shared badge takes
+  # the GTFS field names, because its other callers hold feed rows. `text_color`
+  # is optional in GTFS and in this map, so it is read rather than required.
+  defp route_identity(route) do
+    %{
+      route_id: Map.get(route, :route_id),
+      route_short_name: Map.get(route, :short_name),
+      route_color: Map.get(route, :color),
+      route_text_color: Map.get(route, :text_color)
+    }
   end
 
   @doc """
@@ -2412,12 +2426,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
 
   # The badge takes the shape the browse rows already use, so a route reads the
   # same wherever it appears. A pattern with no route colour falls back to the
-  # panel's own ink inside `route_badge/1`.
+  # shared neutral badge inside `route_badge/1`.
   defp pattern_route(detail) do
     %{
+      route_id: detail.route_id,
       short_name: detail.route_short_name || detail.route_id,
       long_name: detail.route_id,
-      color: detail.route_color
+      color: detail.route_color,
+      text_color: Map.get(detail, :route_text_color)
     }
   end
 
@@ -3688,72 +3704,5 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapComponents do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
-  end
-
-  defp badge_style(%{color: color, text_color: text_color})
-       when is_binary(color) and is_binary(text_color) do
-    background = css_color(color)
-    named = css_color(text_color)
-
-    # `route_text_color` is optional in GTFS and this app fills a blank with
-    # `000000`, which is not what an agency chose — it is what it declined to
-    # say. Black text on a dark route colour is unreadable, and a route number
-    # that cannot be read is worse than no badge at all, so a named ink is
-    # honoured only when it actually meets the 4.5:1 contrast floor against the
-    # route's own colour. Otherwise the ink is chosen from that colour.
-    if contrast_ratio(named, background) >= 4.5 do
-      "background: #{background}; color: #{named};"
-    else
-      "background: #{background}; color: #{contrast_ink(background)};"
-    end
-  end
-
-  defp badge_style(%{color: color}) when is_binary(color),
-    do: "background: #{css_color(color)}; color: #{contrast_ink(css_color(color))};"
-
-  defp badge_style(_route), do: "background: #27344b; color: #ffffff;"
-
-  # A route colour is six hexadecimal digits in an import, with or without the
-  # leading `#` GTFS writes them without, and a `route_text_color` is optional.
-  # A badge's whole job is to be read, so the text colour falls back to white and
-  # the background falls back to the page's own ink when a feed carries neither.
-  # Anything that is not six hex digits is dropped rather than pasted into a
-  # `style` attribute, so a hostile feed cannot close the attribute and restyle
-  # the row.
-  defp css_color("#" <> <<_::binary-size(6)>> = hex), do: hex
-  defp css_color(<<_::binary-size(6)>> = hex), do: "#" <> hex
-  defp css_color(_other), do: "#27344b"
-
-  # The ink a badge needs when the feed named no `route_text_color`. Agencies
-  # write pale route colours as often as dark ones, and white on a pale yellow
-  # route number is unreadable, so the choice is made from the colour's own
-  # luminance rather than assumed. The relative-luminance coefficients are the
-  # sRGB ones from WCAG 2.1.
-  defp contrast_ink("#" <> <<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
-    luminance = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-
-    if luminance > 0.179, do: "#0a1330", else: "#ffffff"
-  end
-
-  defp contrast_ink(_other), do: "#ffffff"
-
-  # WCAG 2.1's relative-luminance ratio.
-  defp contrast_ratio(foreground, background) do
-    light = max(luminance(foreground), luminance(background))
-    dark = min(luminance(foreground), luminance(background))
-
-    (light + 0.05) / (dark + 0.05)
-  end
-
-  defp luminance("#" <> <<r::binary-size(2), g::binary-size(2), b::binary-size(2)>>) do
-    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-  end
-
-  defp luminance(_other), do: 0.0
-
-  defp channel(<<byte::binary-size(2), _rest::binary>>) do
-    value = String.to_integer(byte, 16) / 255
-
-    if value <= 0.03928, do: value / 12.92, else: ((value + 0.055) / 1.055) ** 2.4
   end
 end

@@ -204,6 +204,52 @@ async function expectFits(page) {
   ).toBe(true);
 }
 
+// A browse row's route badge, read from the DOM the way a reader sees it: the
+// route the seed writes for 1434 is 1 on Coast Highway, and its long name is the
+// tooltip the row has always carried. The numbers are the map's compact badge —
+// 20 px tall inside the row's own 44 px click target — rather than the default
+// badge a route page leads with.
+async function mapBadge(page) {
+  const badge = page.locator('#stops-map-row-1434 span[title="Coast Highway"]');
+
+  await expect(badge).toBeAttached();
+
+  return badge.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+
+    return {
+      text: el.textContent.trim(),
+      title: el.getAttribute("title"),
+      height: rect.height,
+      width: rect.width,
+      paddingLeft: style.paddingLeft,
+      paddingRight: style.paddingRight,
+      fontSize: style.fontSize,
+      background: style.backgroundColor,
+      color: style.color,
+    };
+  });
+}
+
+// The same badge contract at whichever viewport is current: the panel sits
+// beside the map at 1440 px and under it at 390 px, and the badge has to be the
+// same badge in both.
+function expectMapBadge(measured, label) {
+  expect(measured.text, `${label} badge text`).toBe("1");
+  expect(measured.title, `${label} badge tooltip`).toBe("Coast Highway");
+  expect(measured.height, `${label} badge height`).toBe(20);
+  expect(measured.width, `${label} badge width`).toBeGreaterThanOrEqual(24);
+  expect(measured.paddingLeft, `${label} badge padding`).toBe("6px");
+  expect(measured.paddingRight, `${label} badge padding`).toBe("6px");
+  expect(measured.fontSize, `${label} badge font size`).toBe("12px");
+  // 1F5FBF with no feed foreground: the badge's ink is the shared pick.
+  expect(measured.background, `${label} badge background`).toBe(
+    "rgb(31, 95, 191)",
+  );
+  expect(measured.color, `${label} badge ink`).toBe("rgb(255, 255, 255)");
+}
+
 // The Map view of the seeded version, past the read and with the hook's view
 // reported. The bounds are the seed's own extent with a margin, so the panel
 // lists the stops the map is showing.
@@ -375,6 +421,17 @@ test("the shell at both viewports @shell", async ({ page }, testInfo) => {
       };
     }),
   ).toMatchObject({ panel: expect.anything() });
+
+  // A browse row's route badge, at both viewports: the panel's rows arrive with
+  // the hook's own view, so the wait is for the map's readiness and then for the
+  // seeded row's badge. `captureBoth` follows and re-checks that neither
+  // viewport scrolls sideways with the badge in place.
+  await waitForMapReady(page);
+  expectMapBadge(await mapBadge(page), DESKTOP.label);
+
+  await page.setViewportSize(MOBILE);
+  expectMapBadge(await mapBadge(page), MOBILE.label);
+  await page.setViewportSize(DESKTOP);
 
   await captureBoth(page, testInfo, "workspace");
 });
