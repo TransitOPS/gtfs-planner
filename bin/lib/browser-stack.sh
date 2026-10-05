@@ -73,6 +73,7 @@ use_homebrew_postgres() {
 # in <dir>/<postgres version>) so the caller can stop it with stop_database. A
 # caller that names its own directory wants its own server, so the CI server is
 # not reused for it.
+# shellcheck disable=SC2120 # callers may pass no args; --keep/--datadir handled above
 start_database() {
   local keep='' datadir=''
   while [ $# -gt 0 ]; do

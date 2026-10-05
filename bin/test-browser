@@ -33,6 +33,7 @@ fi
 # shellcheck source=lib/browser-stack.sh
 source bin/lib/browser-stack.sh
 
+# shellcheck disable=SC2119 # zero-or-one conditional argument is intentional
 start_database ${keep:+--keep}
 
 port=$(free_port)
