@@ -1014,11 +1014,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
   # dialog is one, and the application header is `relative z-30`.
   defp drawer_panel_class("planner", modal),
     do:
-      "#{drawer_panel_position(modal)} top-0 right-0 flex h-full w-screen min-w-[320px] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
+      "#{drawer_panel_position(modal)} top-0 right-0 flex h-full w-full min-w-[min(320px,100%)] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
 
   defp drawer_panel_class(_default, modal),
     do:
-      "#{drawer_panel_position(modal)} top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
+      "#{drawer_panel_position(modal)} top-0 right-0 h-full w-full min-w-[min(320px,100%)] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
 
   defp drawer_panel_position(true), do: "absolute"
   defp drawer_panel_position(false), do: "fixed pointer-events-auto"
