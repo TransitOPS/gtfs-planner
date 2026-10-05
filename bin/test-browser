@@ -33,12 +33,17 @@ fi
 # shellcheck source=lib/browser-stack.sh
 source bin/lib/browser-stack.sh
 
+# shellcheck disable=SC2119 # zero-or-one conditional argument is intentional
 start_database ${keep:+--keep}
 
 port=$(free_port)
 echo "Phoenix: http://127.0.0.1:${port}" >&2
 
 export MIX_ENV=test
+# The Playwright server boots without test/test_helper.exs, which normally
+# creates the task artifact root at ExUnit boot; ArtifactStorage never creates
+# it itself, so create the configured root here for fresh machines.
+mix run --no-start -e 'File.mkdir_p!(Application.fetch_env!(:gtfs_planner, :gtfs_task_artifacts_path))'
 build_assets
 
 # create, migrate, then seed with `mix run test/support/browser_seed.exs`.

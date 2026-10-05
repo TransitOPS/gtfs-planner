@@ -60,4 +60,4 @@ runs:
             - 'mise.toml'
             - 'bin/check-ci-results'
             - 'test/scripts/check-ci-results-test'
-            - '.github/**/*'
+            - '.github/**'
