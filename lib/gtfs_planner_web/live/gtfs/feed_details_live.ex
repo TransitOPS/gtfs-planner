@@ -60,8 +60,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.LanguageCodes
   alias GtfsPlanner.Values
-  alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.GtfsVersionNavigation
   alias GtfsPlannerWeb.Layouts
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -105,10 +105,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     if version_id != to_string(socket.assigns.current_gtfs_version.id) &&
-         Versions.published_gtfs_version_for_org?(
-           socket.assigns.current_organization.id,
-           version_id
-         ) do
+         GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       {:noreply,
        socket
        |> push_event("gtfs_version_selected", %{version_id: version_id})
@@ -123,10 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(
-           socket.assigns.current_organization.id,
-           version_id
-         ) do
+         GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/settings/feed-details")}
     else
       {:noreply, socket}
