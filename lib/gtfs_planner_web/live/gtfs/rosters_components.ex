@@ -106,6 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.CoreComponents
+  alias GtfsPlannerWeb.PlannerComponents
   alias Phoenix.HTML.Form
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
@@ -1543,55 +1544,22 @@ defmodule GtfsPlannerWeb.Gtfs.RostersComponents do
   Renders the page's one toast: a refusal or a confirmation, fixed at the foot of
   the viewport because it is about the whole edit rather than about a row.
 
-  `role="status"` with `aria-live="polite"`: it arrives while the reader is
-  looking at the page they acted on, and it is an announcement, not a heading.
-  The dark surface is the only inverted treatment on this page, because a
-  confirmation is not part of the page's reading order and should not look as
-  though it were. There is no Undo here: the page has no undoable write yet, and
-  a button that has nothing to undo is worse than no button.
+  This is the adapter over the shared `PlannerComponents.toast/1` shell: it
+  supplies the page's own `rosters-toast` / `rosters-toast-text` contract and
+  nothing else. The announcement semantics, icon, dismiss control and styling
+  belong to the shared shell; there is no Undo here, because the page has no
+  undoable write yet and a button that has nothing to undo is worse than no
+  button. The timer, token and state stay in `RostersLive`.
   """
   attr :toast, :map, default: nil
 
   def toast(assigns) do
     ~H"""
-    <div
-      :if={@toast}
+    <PlannerComponents.toast
       id="rosters-toast"
-      role="status"
-      aria-live="polite"
-      data-role="rosters-toast"
-      data-kind={@toast.kind}
-      data-token={@toast.token}
-      class="fixed bottom-6 left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-control bg-neutral px-[18px] py-2 text-sm text-neutral-content shadow-lg"
-    >
-      <span
-        :if={@toast.kind == :refused}
-        data-role="toast-icon"
-        aria-hidden="true"
-        class="inline-flex size-4 shrink-0 items-center justify-center"
-      >
-        !
-      </span>
-      <span
-        :if={@toast.kind == :done}
-        data-role="toast-icon"
-        aria-hidden="true"
-        class="inline-flex size-4 shrink-0 items-center justify-center"
-      >
-        &check;
-      </span>
-      <span id="rosters-toast-text" data-role="toast-text">{@toast.text}</span>
-
-      <button
-        type="button"
-        phx-click="dismiss_toast"
-        data-role="dismiss-toast"
-        aria-label="Dismiss"
-        class="inline-flex size-11 shrink-0 items-center justify-center rounded-control hover:text-neutral-content/80"
-      >
-        &times;
-      </button>
-    </div>
+      text_id="rosters-toast-text"
+      toast={@toast}
+    />
     """
   end
 

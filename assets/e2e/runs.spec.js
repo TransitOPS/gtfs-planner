@@ -47,7 +47,7 @@
 //
 // Captures are written under `testInfo.outputPath`.
 import { test, expect } from "@playwright/test";
-import { bodyFitsViewport } from "./browser_helpers";
+import { bodyFitsViewport, captureShot } from "./browser_helpers";
 
 // The seeded editor, the same account `blocks_advanced.spec.js` uses.
 const EDITOR = {
@@ -70,6 +70,8 @@ const ROW_PX = 44;
 const BAR_PX = 28;
 
 const DESKTOP = { width: 1440, height: 1000 };
+// The mobile viewport the toast shell is asserted and captured at.
+const MOBILE = { width: 390, height: 844 };
 
 async function logIn(page) {
   await page.goto("/users/log_in");
@@ -153,6 +155,26 @@ async function closeDrawer(page, drawerId) {
 
 function toastText(page) {
   return page.locator("[data-role='toast-text']");
+}
+
+// The toast shell's computed bounds at the width being measured: the shell
+// sits inside the viewport, the dismiss control keeps its 44px target, and
+// the Undo action keeps its 44px height.
+async function expectToastShellFits(page, width) {
+  const shell = await page.locator("#runs-toast").boundingBox();
+  const dismiss = await page
+    .locator("#runs-toast [data-role='dismiss-toast']")
+    .boundingBox();
+  const undo = await page.locator("#runs-undo").boundingBox();
+
+  expect(shell, "the toast shell must be rendered").not.toBeNull();
+  expect(dismiss, "the dismiss control must be rendered").not.toBeNull();
+  expect(undo, "the Undo control must be rendered").not.toBeNull();
+  expect(shell.x).toBeGreaterThanOrEqual(0);
+  expect(shell.x + shell.width).toBeLessThanOrEqual(width);
+  expect(dismiss.width).toBeGreaterThanOrEqual(44);
+  expect(dismiss.height).toBeGreaterThanOrEqual(44);
+  expect(undo.height).toBeGreaterThanOrEqual(44);
 }
 
 // The suggestion drawer, opened from the page's own Suggest runs control.
@@ -428,6 +450,35 @@ test.describe("Runs page at 1440x1000", () => {
     // this day type and Saturday's 2001 and 2009 are scoped to Saturday.
     await expect(toastText(page)).toContainText(`moved to run ${NEXT_RUN_ID}.`);
     await expect(page.locator("#runs-undo")).toBeVisible();
+
+    // The shared shell at 1440x1000: root, text, icon, dismiss target, and the
+    // Undo action carrying its event and page contract.
+    const toast = page.locator("#runs-toast");
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute("role", "status");
+    await expect(toast).toHaveAttribute("aria-live", "polite");
+    await expect(toast).toHaveAttribute("data-role", "runs-toast");
+    await expect(page.locator("#runs-toast-text")).toBeVisible();
+    await expect(page.locator("#runs-toast [data-role='toast-icon']")).toHaveCount(1);
+    await expect(page.locator("#runs-toast [data-role='dismiss-toast']")).toBeVisible();
+
+    const undo = page.locator("#runs-undo");
+    await expect(undo).toHaveAttribute("data-role", "undo");
+    await expect(undo).toHaveAttribute("phx-click", "undo");
+    expect(await undo.getAttribute("data-trips")).toBeTruthy();
+
+    await expectToastShellFits(page, DESKTOP.width);
+    // These two captures go to ROUTE16_CAPTURE_DIR alongside the Rosters
+    // journey's, so the package evidence holds both viewports of both shells.
+    await captureShot(page, "runs-split-undo-1440", { fullPage: false });
+
+    // The same shell at 390x844: it stays inside the mobile viewport and both
+    // targets keep their 44px.
+    await page.setViewportSize(MOBILE);
+    await expect(toast).toBeVisible();
+    await expectToastShellFits(page, MOBILE.width);
+    await captureShot(page, "runs-split-undo-390", { fullPage: false });
+    await page.setViewportSize(DESKTOP);
 
     // The drawer follows the run the trips went to, and the new run is on the
     // chart: the write is visible, not only reported.

@@ -364,6 +364,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
 
       assert attribute(view, "#runs-toast", "data-kind") == "refused"
       assert all_run_ids(w) == before
+      # The shell renders without an Undo control when no undo is assigned.
       refute has_element?(view, "#runs-undo")
 
       # **The refusal re-reads the day**, and the count is the observable. This
@@ -442,7 +443,19 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
 
       assert attribute(view, "#runs-toast", "role") == "status"
       assert attribute(view, "#runs-toast", "aria-live") == "polite"
+      assert attribute(view, "#runs-toast", "data-role") == "runs-toast"
       assert attribute(view, "#runs-toast", "data-kind") == "done"
+      assert attribute(view, "#runs-toast", "data-token")
+
+      # The shared shell's own contract, reached through this page's wrapper:
+      # text span, one kind icon and the dismiss control wired to the LiveView.
+      assert attribute(view, "#runs-toast-text", "data-role") == "toast-text"
+      assert has_element?(view, "#runs-toast [data-role=toast-icon]")
+
+      assert has_element?(
+               view,
+               "#runs-toast [data-role=dismiss-toast][phx-click=dismiss_toast]"
+             )
     end
 
     test "the Undo button carries how many trips it would reverse", ctx do
@@ -459,6 +472,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
       # Steps 30-32 move one piece, a split's halves and a rename: three shapes
       # with one answer, and this attribute is how each of them says which.
       assert attribute(view, "#runs-undo", "data-trips") == to_string(trips)
+      assert attribute(view, "#runs-undo", "data-role") == "undo"
+      assert attribute(view, "#runs-undo", "phx-click") == "undo"
     end
 
     test "the toast can be dismissed by keyboard-operable button", ctx do

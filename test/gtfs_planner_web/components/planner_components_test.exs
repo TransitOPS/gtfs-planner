@@ -391,6 +391,79 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
     end
   end
 
+  describe "toast/1" do
+    test "renders the shared shell with the caller's ids, kind, token and dismiss control" do
+      assigns = %{toast: %{text: "Line 6 created.", kind: :done, token: 12}}
+
+      html =
+        rendered_to_string(~H"""
+        <.toast id="rosters-toast" text_id="rosters-toast-text" toast={@toast} />
+        """)
+
+      toast = doc(html) |> LazyHTML.query("#rosters-toast")
+
+      assert LazyHTML.attribute(toast, "role") == ["status"]
+      assert LazyHTML.attribute(toast, "aria-live") == ["polite"]
+      # data-role doubles the root id, so a page's selector contract is one attr.
+      assert LazyHTML.attribute(toast, "data-role") == ["rosters-toast"]
+      assert LazyHTML.attribute(toast, "data-kind") == ["done"]
+      assert LazyHTML.attribute(toast, "data-token") == ["12"]
+
+      text_span = LazyHTML.query(toast, "#rosters-toast-text")
+      assert LazyHTML.attribute(text_span, "data-role") == ["toast-text"]
+      assert LazyHTML.text(text_span) =~ "Line 6 created."
+      assert Enum.count(LazyHTML.query(toast, "[data-role=toast-icon]")) == 1
+
+      dismiss = LazyHTML.query(toast, "[data-role=dismiss-toast]")
+      assert LazyHTML.attribute(dismiss, "phx-click") == ["dismiss_toast"]
+      assert LazyHTML.attribute(dismiss, "aria-label") == ["Dismiss"]
+    end
+
+    test "marks a refusal with the exclamation, not the check" do
+      assigns = %{toast: %{text: "Nope.", kind: :refused, token: 3}}
+
+      html =
+        rendered_to_string(~H"""
+        <.toast id="runs-toast" text_id="runs-toast-text" toast={@toast} />
+        """)
+
+      toast = doc(html) |> LazyHTML.query("#runs-toast")
+
+      assert LazyHTML.attribute(toast, "data-role") == ["runs-toast"]
+      assert LazyHTML.attribute(toast, "data-kind") == ["refused"]
+      assert Enum.count(LazyHTML.query(toast, "[data-role=toast-icon]")) == 1
+      assert LazyHTML.text(LazyHTML.query(toast, "[data-role=toast-icon]")) =~ "!"
+    end
+
+    test "renders nothing while the LiveView holds no toast" do
+      assigns = %{toast: nil}
+
+      html =
+        rendered_to_string(~H"""
+        <.toast id="rosters-toast" text_id="rosters-toast-text" toast={@toast} />
+        """)
+
+      assert String.trim(html) == ""
+    end
+
+    test "renders the caller's action markup between the text and the dismiss control" do
+      assigns = %{toast: %{text: "Moved.", kind: :done, token: 7}}
+
+      html =
+        rendered_to_string(~H"""
+        <.toast id="runs-toast" text_id="runs-toast-text" toast={@toast}>
+          <:action><button id="runs-undo" type="button" phx-click="undo">Undo</button></:action>
+        </.toast>
+        """)
+
+      toast = doc(html) |> LazyHTML.query("#runs-toast")
+
+      assert Enum.count(LazyHTML.query(toast, "#runs-undo")) == 1
+      # The shell owns no action of its own: the only other control is dismiss.
+      assert Enum.count(LazyHTML.query(toast, "button")) == 2
+    end
+  end
+
   describe "choice_cards/1" do
     test "renders radios for a single choice, checking only the selected value" do
       assigns = %{options: @options}

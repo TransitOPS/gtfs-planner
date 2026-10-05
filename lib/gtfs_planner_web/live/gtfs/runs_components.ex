@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
+  alias GtfsPlannerWeb.PlannerComponents
 
   # The select's marker for "a run of its own". Run IDs are one to eight
   # letters, digits or hyphens, so no real run can carry this value and the
@@ -2893,73 +2894,34 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   construct the stale case will not notice its guard being deleted. It renders
   as a string, because the DOM has no integers.
 
-  `role="status"` with `aria-live="polite"`: the toast arrives while the reader is
-  looking at the row they just edited, and it is an announcement, not a heading.
-  The Undo button is inside the live region, so its arrival is announced too.
-
-  It is `fixed` at the foot of the viewport because it is about the whole edit
-  rather than about the row, and a reader who has scrolled to another block can
-  still undo the change they made above.
-
-  The dark surface is the only place on this page with
-  an inverted treatment: a confirmation is not part of the page's reading order
-  and should not look as though it is.
+  The shared shell is `PlannerComponents.toast/1`: this adapter supplies the
+  page's own `runs-toast` / `runs-toast-text` contract and renders **its
+  existing conditional Undo button through the shell's caller-owned `:action`
+  slot**. The announcement semantics, icon, dismiss control and fixed dark shell
+  belong to the shared component; the timer, token, state and Undo policy stay
+  in `RunsLive`. The Undo button sits inside the live region, so its arrival is
+  announced too.
   """
   attr :toast, :map, default: nil
   attr :undo, :map, default: nil
 
   def toast(assigns) do
     ~H"""
-    <div
-      :if={@toast}
-      id="runs-toast"
-      role="status"
-      aria-live="polite"
-      data-role="runs-toast"
-      data-kind={@toast.kind}
-      data-token={@toast.token}
-      class="fixed bottom-6 left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-control bg-neutral px-[18px] py-2 text-sm text-neutral-content shadow-lg"
-    >
-      <span
-        :if={@toast.kind == :refused}
-        data-role="toast-icon"
-        aria-hidden="true"
-        class="inline-flex size-4 shrink-0 items-center justify-center"
-      >
-        !
-      </span>
-      <span
-        :if={@toast.kind == :done}
-        data-role="toast-icon"
-        aria-hidden="true"
-        class="inline-flex size-4 shrink-0 items-center justify-center"
-      >
-        &check;
-      </span>
-      <span id="runs-toast-text" data-role="toast-text">{@toast.text}</span>
-
-      <button
-        :if={@undo}
-        id="runs-undo"
-        type="button"
-        phx-click="undo"
-        data-role="undo"
-        data-trips={@undo.trips}
-        class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-semibold underline underline-offset-4 hover:text-neutral-content/80"
-      >
-        Undo
-      </button>
-
-      <button
-        type="button"
-        phx-click="dismiss_toast"
-        data-role="dismiss-toast"
-        aria-label="Dismiss"
-        class="inline-flex size-11 shrink-0 items-center justify-center rounded-control hover:text-neutral-content/80"
-      >
-        &times;
-      </button>
-    </div>
+    <PlannerComponents.toast id="runs-toast" text_id="runs-toast-text" toast={@toast}>
+      <:action>
+        <button
+          :if={@undo}
+          id="runs-undo"
+          type="button"
+          phx-click="undo"
+          data-role="undo"
+          data-trips={@undo.trips}
+          class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-semibold underline underline-offset-4 hover:text-neutral-content/80"
+        >
+          Undo
+        </button>
+      </:action>
+    </PlannerComponents.toast>
     """
   end
 

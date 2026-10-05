@@ -246,6 +246,42 @@ defmodule GtfsPlannerWeb.Gtfs.RostersLiveTest do
     end
   end
 
+  describe "the shared toast shell" do
+    setup :editor_setup
+
+    test "a successful write announces politely with kind, token, icon, dismiss and no Undo",
+         context do
+      {conn, world} = signed_in(context)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{world.version.id}/rosters")
+
+      render_hook(view, "add_line", %{})
+
+      # The page's own ids over the shared shell: polite status, the root's own
+      # data-role, a kind and a timer token, the text span, one kind icon and
+      # the dismiss control wired to the LiveView's event.
+      assert has_element?(
+               view,
+               "#rosters-toast[role=status][aria-live=polite][data-role=rosters-toast][data-kind=done]"
+             )
+
+      assert has_element?(view, "#rosters-toast[data-token]")
+      assert has_element?(view, "#rosters-toast-text[data-role=toast-text]")
+      assert has_element?(view, "#rosters-toast [data-role=toast-icon]")
+
+      assert has_element?(
+               view,
+               "#rosters-toast [data-role=dismiss-toast][phx-click=dismiss_toast]"
+             )
+
+      # This page has no undoable write, so no control that claims one appears.
+      refute has_element?(view, "[data-role=undo]")
+
+      view |> element("[data-role=dismiss-toast]") |> render_click()
+      refute has_element?(view, "#rosters-toast")
+    end
+  end
+
   describe "access" do
     setup :editor_setup
 
