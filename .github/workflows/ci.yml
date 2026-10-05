@@ -345,8 +345,6 @@ jobs:
         with:
           image-ref: pathways
           trivy-config: trivy.yml
-        env:
-          TRIVY_SKIP_JAVA_DB_UPDATE: true
 
   infra:
     name: Lint/scan infrastructure
