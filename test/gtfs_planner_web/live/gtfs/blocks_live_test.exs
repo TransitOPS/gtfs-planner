@@ -176,6 +176,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
       end
     end
 
+    test "an explicit selection of the current version reports it and stays on Blocks",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      selected_version_id = to_string(version.id)
+
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
+
+      assert_push_event(view, "gtfs_version_selected", %{version_id: ^selected_version_id})
+      assert_redirect(view, blocks_path(version.id))
+    end
+
     test "staging, foreign and absent selections neither navigate nor report a selection",
          %{conn: conn, user: user, organization: organization, version: version} do
       {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})

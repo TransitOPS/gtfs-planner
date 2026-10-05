@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   alias GtfsPlanner.Support.RunnerSlots
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+  alias GtfsPlanner.Versions
 
   @validation_supervisor GtfsPlanner.Validations.RunnerSupervisor
   @fake_java Path.expand("../../../support/fixtures/fake_validator.sh", __DIR__)
@@ -148,6 +149,84 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     assert has_element?(view, "#start-export", "Export feed")
     refute has_element?(view, "#export-download-link")
     refute has_element?(view, "#recent-checks")
+  end
+
+  describe "version switching" do
+    test "an explicit selection of another published version reports it and moves",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      {:ok, other_version} =
+        Versions.create_gtfs_version(organization.id, %{name: "Second Version"})
+
+      conn = log_in_user(conn, user, organization: organization)
+      selected_version_id = to_string(other_version.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
+
+      assert_push_event(view, "gtfs_version_selected", %{version_id: ^selected_version_id})
+      assert_redirect(view, "/gtfs/#{other_version.id}/export")
+    end
+
+    test "a stored selection of another published version moves without reporting a selection",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      {:ok, other_version} =
+        Versions.create_gtfs_version(organization.id, %{name: "Second Version"})
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      render_hook(view, "gtfs_version_loaded", %{
+        "version_id" => to_string(other_version.id)
+      })
+
+      assert_redirect(view, "/gtfs/#{other_version.id}/export")
+      refute_push_event(view, "gtfs_version_selected", %{version_id: _})
+    end
+
+    test "staging, foreign and absent selections neither navigate nor report a selection",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      {:ok, staging} = Versions.create_staging_gtfs_version(organization.id, %{name: "Staging"})
+
+      other_organization = organization_fixture()
+      foreign_version = gtfs_version_fixture(other_organization.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      for version_id <- [staging.id, foreign_version.id, Ecto.UUID.generate()] do
+        render_hook(view, "switch_gtfs_version", %{"version" => to_string(version_id)})
+        refute_push_event(view, "gtfs_version_selected", %{version_id: _})
+        refute_redirected(view)
+      end
+    end
+
+    test "a stored nil or current selection changes nothing",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      for version_id <- [to_string(version.id), nil] do
+        render_hook(view, "gtfs_version_loaded", %{"version_id" => version_id})
+        refute_redirected(view)
+      end
+
+      refute_push_event(view, "gtfs_version_selected", %{version_id: _})
+    end
+
+    test "an explicit selection of the current version is still accepted",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      selected_version_id = to_string(version.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+
+      render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
+
+      assert_push_event(view, "gtfs_version_selected", %{version_id: ^selected_version_id})
+      assert_redirect(view, "/gtfs/#{version.id}/export")
+    end
   end
 
   describe "export notices" do

@@ -236,6 +236,27 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       end
     end
 
+    test "an explicit selection of the current version reports it while a stored one changes nothing",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      selected_version_id = to_string(version.id)
+
+      {:ok, switch_view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+      render_hook(switch_view, "switch_gtfs_version", %{"version" => selected_version_id})
+      assert_push_event(switch_view, "gtfs_version_selected", %{version_id: ^selected_version_id})
+      assert_redirect(switch_view, "/gtfs/#{version.id}#{@garages_path}")
+
+      {:ok, loaded_view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+      render_hook(loaded_view, "gtfs_version_loaded", %{"version_id" => selected_version_id})
+      refute_redirected(loaded_view)
+      refute_push_event(loaded_view, "gtfs_version_selected", %{version_id: _})
+    end
+
     test "Fleet keeps its query string across a version switch", %{
       conn: conn,
       user: user,

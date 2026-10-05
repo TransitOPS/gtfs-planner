@@ -55,8 +55,8 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Values
-  alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
+  alias GtfsPlannerWeb.GtfsVersionNavigation
   alias LiveSelect.Component, as: LiveSelectComponent
 
   @garage_id_field "garage_id"
@@ -122,11 +122,10 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+         GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/settings/garages")}
     else
       {:noreply, socket}
@@ -135,9 +134,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
-
-    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+    if GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
       {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/settings/garages")}
     else

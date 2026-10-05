@@ -20,8 +20,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Evidence
-  alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.AgentPanel
+  alias GtfsPlannerWeb.GtfsVersionNavigation
   alias GtfsPlannerWeb.ProductSurfaces
   alias Phoenix.LiveView.AsyncResult
 
@@ -196,11 +196,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+         GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/export")}
     else
       {:noreply, socket}
@@ -209,9 +208,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   @impl Phoenix.LiveView
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
-
-    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
+    if GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       # Push event to JS hook to update localStorage
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 

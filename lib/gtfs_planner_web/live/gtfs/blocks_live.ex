@@ -104,11 +104,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.OperationsAssistance
   alias GtfsPlanner.Values
-  alias GtfsPlanner.Versions
   alias GtfsPlanner.Wording
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
   alias GtfsPlannerWeb.Gtfs.OperationsHelper
+  alias GtfsPlannerWeb.GtfsVersionNavigation
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
@@ -1771,10 +1771,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    if Versions.published_gtfs_version_for_org?(
-         socket.assigns.current_organization.id,
-         version_id
-       ) do
+    if GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
       {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/blocks")}
     else
@@ -1786,10 +1783,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
 
     if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(
-           socket.assigns.current_organization.id,
-           version_id
-         ) do
+         GtfsVersionNavigation.published_for_current_organization?(socket, version_id) do
       {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/blocks")}
     else
       {:noreply, socket}
