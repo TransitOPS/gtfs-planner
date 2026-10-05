@@ -127,7 +127,7 @@ Freshness: `source_hash=b8865893f1df3f41936e7008f0463913ad6ffa5568508d9fbffcdbb2
 - [ ] If changing password/reset: verify all-token deletion behavior
 - [ ] If changing membership: verify soft-delete exclusion in `list_user_org_memberships/1`
 - [ ] If changing emails: verify which implementation is canonical and update both or remove unused
-- [ ] Run `mix precommit`
+- [ ] Confirm required CI checks pass on the final pushed revision; follow `AGENTS.md` for focused feedback and optional local reproduction.
 
 ## Escalate To Deep Analysis
 - Full token expiry/days mapping: `UserToken.days_for_context/1`

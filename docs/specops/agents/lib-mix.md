@@ -58,7 +58,7 @@ Freshness: `source_hash=null`, `last_synthesized=null`
 ## Change Checklist
 - Modify OTP prerequisites? Update `lib/gtfs_planner/otp/prerequisites.ex`; both `otp.install` and `otp.check` consume it.
 - Add a new OTP config key? Add to `config/runtime.exs` and both `fetch_env_path!/2` callers in install.ex and check.ex.
-- After changes, run `mix precommit`.
+- After changes, use useful focused checks; follow `AGENTS.md` for CI-owned completion checks.
 
 ## Escalate To Deep Analysis
 - Detailed file:line evidence for every rule, interface, and error handling category.

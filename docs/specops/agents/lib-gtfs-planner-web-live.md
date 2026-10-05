@@ -110,7 +110,7 @@ All LiveViews use `use GtfsPlannerWeb, :live_view`. Root wrappers: `<Layouts.app
 - [ ] Use `push_patch`/`push_navigate` (never deprecated variants).
 - [ ] Use `stream/3` for all collections with empty-state tracking.
 - [ ] Use `to_form/2` for all forms with explicit DOM ids.
-- [ ] Run `mix precommit` after changes.
+- [ ] Use useful focused checks after changes; follow `AGENTS.md` for CI-owned completion checks.
 
 ## Escalate To Deep Analysis
 - Authorization boundaries between roles or `on_mount` guards need clarification.

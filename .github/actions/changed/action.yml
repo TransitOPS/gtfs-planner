@@ -1,14 +1,15 @@
 name: Detect Changed Files
+description: Select the CI jobs affected by the diff, or all jobs for scheduled runs.
 
 outputs:
   elixir-changed:
-    value: ${{ fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.shared) }}
+    value: ${{ github.event_name == 'schedule' || fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.shared) }}
   js-changed:
-    value: ${{ fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
+    value: ${{ github.event_name == 'schedule' || fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
   infra-changed:
-    value: ${{ fromJSON(steps.changes.outputs.infra) || fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.shared) }}
+    value: ${{ github.event_name == 'schedule' || fromJSON(steps.changes.outputs.infra) || fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.shared) }}
   docker-changed:
-    value: ${{ fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
+    value: ${{ github.event_name == 'schedule' || fromJSON(steps.changes.outputs.docker) || fromJSON(steps.changes.outputs.elixir) || fromJSON(steps.changes.outputs.js) || fromJSON(steps.changes.outputs.shared) }}
 
 runs:
   using: "composite"
@@ -22,11 +23,15 @@ runs:
             - 'mix.lock'
             - '**/*.ex'
             - '**/*.exs'
+            - '**/*.heex'
             - 'priv/gtfs_validator/**'
             - '.credo.exs'
             - '.formatter.exs'
             - '.sobelow-conf'
             - 'coveralls.json'
+            - 'bin/test-all'
+            - 'bin/test-affected'
+            - 'bin/lib/browser-stack.sh'
           js:
             - 'assets/**/*.js'
             - 'assets/**/*.cjs'
@@ -35,14 +40,24 @@ runs:
             - 'assets/.postcssrc'
             - 'assets/.prettier*'
             - 'assets/eslint.config.mjs'
+            - 'lib/gtfs_planner_web/**/*.heex'
+            - 'config/**'
+            - 'mix.exs'
+            - 'mix.lock'
             - 'lib/gtfs_planner_web/components/**/*.ex'
             - 'lib/gtfs_planner_web/live/**/*.ex'
-            - 'mise.toml'
+            - 'bin/test-browser'
+            - 'bin/lib/browser-stack.sh'
           infra:
             - 'infra/**/*.tf'
+            - 'bin/**'
+            - 'mise-tasks/**'
           docker:
             - 'Dockerfile'
             - '.dockerignore'
           shared:
             - '.tool-versions'
+            - 'mise.toml'
+            - 'bin/check-ci-results'
+            - 'test/scripts/check-ci-results-test'
             - '.github/**/*'

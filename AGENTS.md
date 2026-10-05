@@ -2,7 +2,7 @@ This is a web application written using the Phoenix web framework.
 
 ## Project guidelines
 
-- For executable changes, run `mix precommit` once at branch completion and resolve relevant failures. Implementation steps use focused checks below; do not run the full alias after every step. Documentation-only changes require diff, command/path, and instruction-consistency checks, not application suites.
+- CI owns broad regression, coverage, and repository-wide static checks for executable changes. Use focused checks for useful immediate feedback, push coherent checkpoints and open/update a draft PR early within authorized publication scope, and require relevant CI checks to pass on the final pushed revision before merge readiness. `mix precommit` is an optional local diagnostic, not a mandatory completion gate. Documentation-only changes require diff, command/path, and instruction-consistency checks, not application suites.
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
 ### Test selection and execution
@@ -10,7 +10,8 @@ This is a web application written using the Phoenix web framework.
 Keep integration coverage growing where it proves wiring, persistence, transactions,
 authorization, or user interactions. During implementation, default to affected unit tests
 for calculations, parsing, and rule permutations. Run focused database, LiveView, or API tests
-when the changed boundary is ready; browser tests belong to affected browser behavior.
+when they provide useful immediate feedback or required behavioral evidence; browser tests belong
+to affected browser behavior. Reuse sufficient evidence and let CI run broad checks while work continues.
 Do not repeat the same permutation matrix at every layer. Extend existing fixtures and tests,
 keep setup minimal, and make new cases independently selectable.
 
@@ -24,7 +25,8 @@ keep setup minimal, and make new cases independently selectable.
 | Previously failed ExUnit cases | `mix test --failed` (this checkout's last recorded failures; after a partitioned run, those of every partition) |
 | Map geometry unit feedback | `npm --prefix assets test -- js/__tests__/stop_map_geometry_test.js` |
 | Calendar browser journey | `bin/test-browser e2e/calendars.spec.js` |
-| Final Elixir regression and static checks | `mix precommit` (static checks, then `bin/test-all` partitions on throwaway `pg_tmp` servers) |
+| CI-owned regression and static checks | `.github/workflows/ci.yml` (ExUnit coverage, validator CLI, warnings-as-errors, unused lock check, format, Credo, Sobelow, Dialyzer; JS/browser jobs when selected) |
+| Optional local broad reproduction | `mix precommit` (static checks, then `bin/test-all` partitions on throwaway `pg_tmp` servers) |
 
 Find nearby context tests under `test/gtfs_planner/`, LiveView tests under
 `test/gtfs_planner_web/live/`, API tests under `test/gtfs_planner_web/api/`, JavaScript tests
@@ -38,7 +40,8 @@ It matches module names and imports, so it misses dynamic references and files r
 It recommends `bin/test-all` instead of a file list when a change touches `test/support/`,
 `config/`, `mix.exs` or migrations, or selects over a quarter of the test files. `--run` runs the
 printed ExUnit and JavaScript commands, never browser tests. The selection is advisory;
-`mix precommit` stays the completion gate.
+relevant CI checks on the final pushed revision remain the completion gate. A broad recommendation
+does not require a local run when CI covers it.
 
 `mix test` always runs the database-create/migrate alias first, even for pure tests. Tags and
 name filters may still load broad collections; prefer explicit files. `--stale` is supplementary
@@ -68,8 +71,21 @@ checkout's manifest under `_build`, so `--failed` covers all partitions.
 database keeps the locale it was created with. A test that depends on collation or sort order can
 pass in one mode and fail in the other; reproduce it in both before changing the test.
 
-One owner runs final regression checks. Reuse valid step/CI results, preserving their original
-revision and explaining why later changes leave them applicable. Rerun affected checks after
+CI owns final broad regression. Its Elixir coverage and validator CLI job uses the disposable
+PostGIS service with `TEST_PARTITIONS=1` and an explicit test database URL; it does not require
+host `pg_tmp` or run the local partitions. It also compiles the test environment with
+`--warnings-as-errors`. CI checks unused lock entries without modifying `mix.lock`, and runs the
+repository-wide static, JavaScript and browser jobs selected by the diff. Scheduled CI runs
+select every check. Shared runner/config changes must select the affected jobs. The
+`CI Passed?` aggregate requires successful change detection and every selected job to succeed.
+Record the final pushed SHA, check/run URL, result and scope with existing verification evidence;
+The optional receipt command
+`node ~/.agents/scripts/verification/ci.mjs --repo "$PWD" --require 'CI Passed?'`
+collects required checks and the aggregate for the current PR head; add `--pr NUMBER` when
+needed. Treat missing, stale or dirty-checkout evidence as incomplete.
+
+One implementation owner tracks verification. Reuse valid focused results, preserving their
+original revision and explaining why later changes leave them applicable. Rerun affected checks after
 fixes; broaden for changed shared foundations or a concrete integration risk. A new reviewer,
 workflow stage, or unrelated commit alone is not a reason for another full run. Keep scale and
 real external-service tests opt-in unless the feature or project gate requires them.
@@ -103,8 +119,16 @@ observed failure. Do not add retries or sleeps to keep it asynchronous.
 Use finite command deadlines (120 seconds for focused checks unless measured setup/runtime
 justifies longer). Record selection, elapsed time, outcome, and why a rerun is needed. Diagnose
 timeouts and narrow the reproduction instead of repeatedly extending a broad run. A timeout
-or unavailable check is not a pass. Passing required checks end verification unless a relevant
-change or new finding invalidates them.
+or unavailable check is not a pass. Passing required checks on the final pushed revision end
+verification unless a relevant
+change or new finding invalidates them. Intentional path-filter skips are not evidence that a
+suite ran; an expected job that is skipped, failed, cancelled, pending or unavailable blocks
+readiness. A draft PR may remain pending while CI runs.
+
+Load and follow `~/.agents/rules/verification-and-review.md` for CI scheduling and the Jev
+verification/review-triage checkpoints (`node ~/.agents/scripts/jev/cli.mjs`). Supply
+`"policy": {"broad_suite_owner": "ci"}` and the planned CI checks to Jev. Jev advises
+scheduling and triage; it cannot certify checks, waive acceptance or resolve required failures.
 
 ### Delivery priorities
 

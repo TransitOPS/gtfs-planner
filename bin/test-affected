@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Advisory diff-to-tests selector: print the focused tests for what changed since a base revision.
-# It never replaces `mix precommit`, which stays the completion gate.
+# It is advisory; required CI checks on the final pushed revision are the completion gate.
 #
 # Usage: bin/test-affected [--base <ref>] [--run]
 #
@@ -39,7 +39,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-advisory="Advisory selection; mix precommit remains the completion gate."
+advisory="Advisory selection; required CI checks on the final pushed revision remain the completion gate."
 
 usage() {
   echo "Usage: bin/test-affected [--base <ref>] [--run]" >&2
