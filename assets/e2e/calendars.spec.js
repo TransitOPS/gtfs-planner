@@ -1065,140 +1065,159 @@ test.describe("cross-calendar date change drawer", () => {
     await page.setViewportSize(VIEWPORTS[0]);
     const versionId = await openCalendars(page);
 
-    // A Friday inside CAL_SCHOOL's range and clear of the seeded date changes.
-    const serviceDate = isoDate(nextFriday(shiftDays(new Date(), 4)));
+    // The preceding Friday sits inside CAL_SCHOOL's range, clear of its
+    // upcoming seeded break and its final day (which would trim the range).
+    const serviceDate = isoDate(nextFriday(shiftDays(new Date(), -7)));
 
-    for (const viewport of VIEWPORTS) {
-      await page.setViewportSize({
-        width: viewport.width,
-        height: viewport.height,
-      });
-      await page.goto(`/gtfs/${versionId}/calendars`);
-      await page.waitForSelector("#calendars-list-container", {
-        timeout: 15000,
-      });
+    // This swap requires a calendar that does not already run on Friday.
+    // Prepare that state explicitly instead of depending on earlier journeys.
+    await openEditorFor(page, versionId, "CAL_UNUSED");
+    const unusedFriday = await page.locator("#calendar-weekdays-friday").isChecked();
+    if (unusedFriday) await page.locator("label:has(#calendar-weekdays-friday)").click();
+    await expect(page.locator("#calendar-weekdays-friday")).not.toBeChecked();
+    await page.click("#calendar-save");
+    await expect(page.locator("#calendar-status")).toContainText(/Saved|No change/);
 
-      // Keyboard activation opens the drawer and moves focus into it.
-      await page.locator("#calendar-date-change").focus();
-      await page.keyboard.press("Enter");
-      await expect(page.locator("#calendar-date-change-drawer")).toBeVisible();
-      await waitForDrawerReady(page);
+    try {
+      for (const viewport of VIEWPORTS) {
+        await page.setViewportSize({
+          width: viewport.width,
+          height: viewport.height,
+        });
+        await page.goto(`/gtfs/${versionId}/calendars`);
+        await page.waitForSelector("#calendars-list-container", {
+          timeout: 15000,
+        });
 
-      expect(
-        await page.evaluate(() =>
-          document
-            .getElementById("calendar-date-change-drawer")
-            .contains(document.activeElement),
-        ),
-      ).toBe(true);
+        // Keyboard activation opens the drawer and moves focus into it.
+        await page.locator("#calendar-date-change").focus();
+        await page.keyboard.press("Enter");
+        await expect(page.locator("#calendar-date-change-drawer")).toBeVisible();
+        await waitForDrawerReady(page);
 
-      // A reversed range is refused on its own control and writes nothing.
-      await page.selectOption("#calendar-date-change-dates-mode", "range");
-      await page.fill("#calendar-date-change-dates-date-from", serviceDate);
-      await page.fill(
-        "#calendar-date-change-dates-date-to",
-        isoDate(shiftDays(new Date(serviceDate), -3)),
-      );
-      await expect(
-        page.locator("#calendar-date-change-dates-date-to"),
-      ).toHaveValue(isoDate(shiftDays(new Date(serviceDate), -3)));
-      await expect(
-        page.locator("#calendar-date-change-dates-date-to-error"),
-      ).toContainText("on or after");
+        expect(
+          await page.evaluate(() =>
+            document
+              .getElementById("calendar-date-change-drawer")
+              .contains(document.activeElement),
+          ),
+        ).toBe(true);
 
-      // A single date defaults removal to the calendars running that day.
-      await page.selectOption("#calendar-date-change-dates-mode", "single");
-      await page.fill("#calendar-date-change-dates-date", serviceDate);
-      await expect(
-        page.locator("#calendar-date-change-dates-date"),
-      ).toHaveValue(serviceDate);
-      await expect(
-        page.locator("#calendar-date-change-remove-CAL_SCHOOL input"),
-      ).toBeChecked();
-      await expect(
-        page.locator("#calendar-date-change-remove-CAL_DAILY input"),
-      ).toBeChecked();
+        // A reversed range is refused on its own control and writes nothing.
+        await page.selectOption("#calendar-date-change-dates-mode", "range");
+        await page.fill("#calendar-date-change-dates-date-from", serviceDate);
+        await page.fill(
+          "#calendar-date-change-dates-date-to",
+          isoDate(shiftDays(new Date(serviceDate), -3)),
+        );
+        await expect(
+          page.locator("#calendar-date-change-dates-date-to"),
+        ).toHaveValue(isoDate(shiftDays(new Date(serviceDate), -3)));
+        await expect(
+          page.locator("#calendar-date-change-dates-date-to-error"),
+        ).toContainText("on or after");
 
-      // Stop the school calendar and run the unused one instead, in one review.
-      await page.uncheck("#calendar-date-change-remove-CAL_DAILY input");
-      await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
-      await uncheckFixtureCalendars(page, [serviceDate]);
-      await expect(
-        page.locator("#calendar-date-change-remove-CAL_DAILY input"),
-      ).not.toBeChecked();
-      await page.check("#calendar-date-change-add-CAL_UNUSED input");
-      await expect(
-        page.locator("#calendar-date-change-add-CAL_UNUSED input"),
-      ).toBeChecked();
+        // A single date defaults removal to the calendars running that day.
+        await page.selectOption("#calendar-date-change-dates-mode", "single");
+        await page.fill("#calendar-date-change-dates-date", serviceDate);
+        await expect(
+          page.locator("#calendar-date-change-dates-date"),
+        ).toHaveValue(serviceDate);
+        await expect(
+          page.locator("#calendar-date-change-remove-CAL_SCHOOL input"),
+        ).toBeChecked();
+        await expect(
+          page.locator("#calendar-date-change-remove-CAL_DAILY input"),
+        ).toBeChecked();
 
-      await page.click("#calendar-date-change-review");
-      await expect(
-        page.locator("#calendar-date-change-review-panel"),
-      ).toContainText("Result after applying");
-      await expect(
-        page.locator("#calendar-date-change-review-panel"),
-      ).toContainText("Stop School days");
-      await expect(
-        page.locator("#calendar-date-change-review-panel"),
-      ).toContainText("Run Unused calendar");
-      await expect(
-        page.locator("#calendar-date-change-review-count"),
-      ).toContainText("This changes 2 calendars");
-      await expect(
-        page.locator("#calendar-date-change-review-count"),
-      ).toContainText("GTFS: 2 rows change");
+        // Stop the school calendar and run the unused one instead, in one review.
+        await page.uncheck("#calendar-date-change-remove-CAL_DAILY input");
+        await uncheckFixtureCalendars(page, [serviceDate]);
+        await expect(
+          page.locator("#calendar-date-change-remove-CAL_DAILY input"),
+        ).not.toBeChecked();
+        await page.check("#calendar-date-change-add-CAL_UNUSED input");
+        await expect(
+          page.locator("#calendar-date-change-add-CAL_UNUSED input"),
+        ).toBeChecked();
 
-      await page.click("#calendar-date-change-apply");
-      await expect(page.locator("#calendars-date-change-status")).toContainText(
-        "Applied the date change",
-        { timeout: 10000 },
-      );
-      await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+        await page.click("#calendar-date-change-review");
+        await expect(
+          page.locator("#calendar-date-change-review-panel"),
+        ).toContainText("Result after applying");
+        await expect(
+          page.locator("#calendar-date-change-review-panel"),
+        ).toContainText("Stop School days");
+        await expect(
+          page.locator("#calendar-date-change-review-panel"),
+        ).toContainText("Run Unused calendar");
+        await expect(
+          page.locator("#calendar-date-change-review-count"),
+        ).toContainText("This changes 2 calendars");
+        await expect(
+          page.locator("#calendar-date-change-review-count"),
+        ).toContainText("GTFS: 2 rows change");
 
-      // The committed rows survive a real reload through the editor surfaces.
-      await openEditorFor(page, versionId, "CAL_SCHOOL");
-      await expect(
-        page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toBeVisible();
-      await expect(
-        page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toContainText("No service");
+        await page.click("#calendar-date-change-apply");
+        await expect(page.locator("#calendars-date-change-status")).toContainText(
+          "Applied the date change",
+          { timeout: 10000 },
+        );
+        await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
 
+        try {
+          // The committed rows survive a real reload through the editor surfaces.
+          await openEditorFor(page, versionId, "CAL_SCHOOL");
+          const schoolDate = page.locator(`#calendar-exception-chips-${serviceDate}`);
+          const schoolBreak = schoolDate.locator("xpath=ancestor-or-self::tr");
+          await expect(schoolBreak).toContainText("No service");
+          // Consecutive removed days are grouped into a break; its dates are
+          // deliberately collapsed until the reviewer asks to see them.
+          const details = schoolBreak.locator("details");
+          if (await details.count()) await details.locator("summary").click();
+          await expect(schoolDate).toBeVisible();
+
+          await openEditorFor(page, versionId, "CAL_UNUSED");
+          await expect(
+            page.locator(`#calendar-exception-chips-${serviceDate}`),
+          ).toBeVisible();
+          await expect(
+            page.locator(`#calendar-exception-chips-${serviceDate}`),
+          ).toContainText("Extra service");
+        } finally {
+          // Restore both committed rows even if a persistence assertion fails,
+          // so later journeys never inherit this test's school day off.
+          for (const serviceId of ["CAL_UNUSED", "CAL_SCHOOL"]) {
+            await openEditorFor(page, versionId, serviceId);
+            const date = page.locator(`#calendar-exception-chips-${serviceDate}`);
+            const details = page.locator("details").filter({ has: date });
+            if (await details.count()) await details.locator("summary").click();
+            await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
+            await expect(page.locator("#calendar-status")).toContainText(
+              "Regular schedule restored.", { timeout: 10000 },
+            );
+          }
+        }
+
+        // Escape closes the drawer and focus returns to the entry control.
+        await page.goto(`/gtfs/${versionId}/calendars`);
+        await page.waitForSelector("#calendars-list-container", {
+          timeout: 15000,
+        });
+        await page.click("#calendar-date-change");
+        await waitForDrawerReady(page);
+        await page.keyboard.press("Escape");
+        await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
+        await expect(page.locator("#calendar-date-change")).toBeFocused();
+      }
+    } finally {
       await openEditorFor(page, versionId, "CAL_UNUSED");
-      await expect(
-        page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toBeVisible();
-      await expect(
-        page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toContainText("Extra service");
-
-      // Restore the fixture state through the same reviewed command.
-      await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
-      await expect(page.locator("#calendar-status")).toContainText(
-        "Regular schedule restored.",
-        {
-          timeout: 10000,
-        },
-      );
-      await openEditorFor(page, versionId, "CAL_SCHOOL");
-      await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
-      await expect(page.locator("#calendar-status")).toContainText(
-        "Regular schedule restored.",
-        {
-          timeout: 10000,
-        },
-      );
-
-      // Escape closes the drawer and focus returns to the entry control.
-      await page.goto(`/gtfs/${versionId}/calendars`);
-      await page.waitForSelector("#calendars-list-container", {
-        timeout: 15000,
-      });
-      await page.click("#calendar-date-change");
-      await waitForDrawerReady(page);
-      await page.keyboard.press("Escape");
-      await expect(page.locator("#calendar-date-change-drawer")).toBeHidden();
-      await expect(page.locator("#calendar-date-change")).toBeFocused();
+      if ((await page.locator("#calendar-weekdays-friday").isChecked()) !== unusedFriday) {
+        await page.locator("label:has(#calendar-weekdays-friday)").click();
+      }
+      await expect(page.locator("#calendar-weekdays-friday")).toBeChecked({ checked: unusedFriday });
+      await page.click("#calendar-save");
+      await expect(page.locator("#calendar-status")).toContainText(/Saved|No change/);
     }
   });
 });
@@ -1227,7 +1246,8 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
   await page.click("#calendar-date-change-dates-add");
   await expect(page.locator(`#calendar-date-change-dates-chip-${second}`)).toBeVisible();
   await page.uncheck("#calendar-date-change-remove-CAL_SCHOOL input");
-  await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
+  const unusedRemoval = page.locator("#calendar-date-change-remove-CAL_UNUSED input");
+  if (await unusedRemoval.count()) await unusedRemoval.uncheck();
   await uncheckFixtureCalendars(page, [first, second]);
   await page.click("#calendar-date-change-review");
   await expect(page.locator("#calendar-date-change-review-panel")).toBeVisible();

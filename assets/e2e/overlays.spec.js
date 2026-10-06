@@ -543,9 +543,9 @@ test.describe("Presentation and motion", () => {
       motion.middle.scrollLeft,
       motion.end.scrollLeft,
     ]).toEqual([0, 0, 0]);
-    // The visible layout viewport, not viewportSize(): classic scrollbars make
-    // viewportSize() 15px wider than the edge the drawer lands on in Linux CI.
-    const visibleWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    // The top-layer modal reaches the viewport edge across the root's
+    // reserved scrollbar gutter.
+    const visibleWidth = await page.evaluate(() => window.innerWidth);
     expect(Math.abs(motion.end.right - visibleWidth)).toBeLessThanOrEqual(1);
   });
 

@@ -2574,11 +2574,9 @@ async function settleScriptDrawer(page) {
       const element = document.querySelector("#script-drawer");
       if (!element) return false;
 
-      // The panel sits against the edge of the page's own content box. A
-      // vertical scrollbar (15 px at 1440) takes its width out of
-      // `clientWidth` and leaves it in `innerWidth`, so the edge is read from
-      // `clientWidth`.
-      const edge = document.documentElement.clientWidth;
+      // The top-layer modal spans the viewport, including the root's
+      // reserved scrollbar gutter.
+      const edge = window.innerWidth;
       const rect = element.getBoundingClientRect();
       const settled = Math.abs(rect.right - edge) <= 2 && rect.left < edge;
       const stillMoving = element

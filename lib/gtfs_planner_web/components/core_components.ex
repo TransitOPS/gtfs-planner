@@ -950,8 +950,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
       aria-labelledby={"#{@id}-title"}
       {drawer_dialog_attrs(assigns)}
       class={[
-        "m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0",
-        !@modal && "fixed inset-0 z-40 pointer-events-none"
+        "m-0 border-0 h-full max-w-none max-h-none overflow-hidden bg-transparent p-0",
+        @modal && "w-screen",
+        !@modal && "fixed inset-0 z-40 w-full pointer-events-none"
       ]}
     >
       <aside
@@ -1007,7 +1008,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  # A modal panel is positioned inside the full-viewport top-layer dialog. A
+  # A modal dialog uses viewport width so the root's stable scrollbar gutter
+  # does not leave a strip beside its panel. The modal panel is positioned
+  # inside that full-viewport top-layer dialog. A
   # non-modal panel is the fixed right-hand inspector itself: it re-enables
   # pointer events on the transparent dialog wrapper it sits in. The wrapper
   # carries the inspector's stacking context, because a `position: fixed`

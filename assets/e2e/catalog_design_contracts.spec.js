@@ -134,10 +134,9 @@ test.describe("Route catalog responsive contracts", () => {
         "drawer body overflows",
       ).toBe(true);
 
-      // The visible layout viewport, not viewport.width: classic scrollbars
-      // make viewport.width 15px wider than the space the drawer lands in on
-      // Linux CI, and the fit contract is about visible space.
-      const visibleWidth = await page.evaluate(() => document.documentElement.clientWidth);
+      // A modal occupies the full viewport, including the root's reserved
+      // scrollbar gutter, so no blank strip remains beside the drawer.
+      const visibleWidth = await page.evaluate(() => window.innerWidth);
       const panel = await page.locator("#new-route-drawer").boundingBox();
       expect(panel, "drawer panel").not.toBeNull();
       expect(Math.abs(panel.x + panel.width - visibleWidth)).toBeLessThanOrEqual(1);
