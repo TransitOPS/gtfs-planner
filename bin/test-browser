@@ -36,6 +36,15 @@ source bin/lib/browser-stack.sh
 # shellcheck disable=SC2119 # zero-or-one conditional argument is intentional
 start_database ${keep:+--keep}
 
+# The load-error journey may disconnect only a reader on this disposable
+# cluster. CI declares its container-owned data directory in the workflow;
+# pg_tmp's directory belongs to this local run and is verified by the test.
+if [ -z "${CI:-}" ]; then
+  export FARE_EDITOR_OWNED_PG_DIR
+  FARE_EDITOR_OWNED_PG_DIR=$(psql -X --no-psqlrc --tuples-only --no-align \
+    --dbname "$GTFS_PLANNER_TEST_DATABASE_URL" -c 'SHOW data_directory')
+fi
+
 port=$(free_port)
 echo "Phoenix: http://127.0.0.1:${port}" >&2
 

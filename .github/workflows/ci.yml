@@ -302,6 +302,10 @@ jobs:
           # wrapper does not start pg_tmp. config/test.exs accepts this URL because
           # the host is loopback and the database starts with `gtfs_planner_exunit`.
           GTFS_PLANNER_TEST_DATABASE_URL: postgres://gtfs_planner_test:gtfs_planner_test@localhost:5432/gtfs_planner_exunit
+          # This job owns the disposable service container. The fault journey
+          # verifies its database, loopback address and exact server data path.
+          FARE_EDITOR_DATABASE_OWNER: ci-service
+          FARE_EDITOR_OWNED_PG_DIR: /var/lib/postgresql/data
       # Snapshot tests write their Linux baselines on first sight (and -actual
       # files on mismatch); harvest both so the baselines can be reviewed and
       # committed instead of being recreated on every run.
