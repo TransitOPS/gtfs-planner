@@ -273,12 +273,16 @@ defmodule GtfsPlanner.Gtfs.ExportPublicationPinTest do
 
     # A real database statement, not a mocked cleanup: the run's own
     # ON DELETE CASCADE from the version is stopped by the pin's RESTRICT key.
-    # A RESTRICT violation (SQLSTATE 23001) is not one of the constraint classes
-    # Ecto converts, so it surfaces as `Postgrex.Error`; either pin run key can
-    # be the one PostgreSQL checks first.
-    assert_raise Postgrex.Error, ~r/feed_publication_pins_(run_owner|export_run_id)_fkey/, fn ->
-      Repo.delete!(version, mode: :savepoint)
-    end
+    # Raw SQL exposes the database error consistently across PostgreSQL versions;
+    # Ecto wraps some constraint SQLSTATEs, but either pin run key must refuse it.
+    error =
+      assert_raise Postgrex.Error, ~r/feed_publication_pins_(run_owner|export_run_id)_fkey/, fn ->
+        Repo.query!("DELETE FROM gtfs_versions WHERE id = $1", [Ecto.UUID.dump!(version.id)],
+          mode: :savepoint
+        )
+      end
+
+    assert error.postgres.pg_code in ["23001", "23503"]
 
     assert Repo.get(Run, run.id)
     assert File.exists?(pin.path)

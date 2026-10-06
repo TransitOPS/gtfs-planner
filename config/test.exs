@@ -1,5 +1,7 @@
 import Config
 
+browser_e2e? = System.get_env("BROWSER_E2E") == "true"
+
 # Configure your database
 #
 # Tests connect as `gtfs_planner_test`, a role that cannot connect to
@@ -50,7 +52,10 @@ config :gtfs_planner, GtfsPlanner.Repo,
   password: "gtfs_planner_test",
   hostname: "localhost",
   database: database,
-  pool: Ecto.Adapters.SQL.Sandbox,
+  # Browser journeys use committed state and long-lived LiveViews/background
+  # workers. Sandbox auto mode pins their connections until the owner timeout;
+  # use the production pool so idle processes release connections.
+  pool: if(browser_e2e?, do: DBConnection.ConnectionPool, else: Ecto.Adapters.SQL.Sandbox),
   # Two connections per scheduler is two on a single-scheduler host. The interleaving
   # cases in `test/gtfs_planner/gtfs/blocking/concurrency_test.exs` hold one connection
   # per holder, one per concurrent command and one for the shared sandbox owner, so a
@@ -187,28 +192,43 @@ config :gtfs_planner, :agents_req_options, agents_req_options
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 
-# The SQL sandbox already holds an open transaction, so it cannot change the
-# enclosing transaction's isolation level. The export-race test selects the
-# production Repo snapshot boundary directly.
+# ExUnit fixtures already hold a sandbox transaction and cannot change its
+# isolation. Browser journeys use committed data, so exercise the production
+# transaction and snapshot boundaries there.
 config :gtfs_planner,
        :gtfs_export_snapshot,
-       GtfsPlanner.Gtfs.Export.Snapshot.Sandbox
+       if(browser_e2e?,
+         do: GtfsPlanner.Gtfs.Export.Snapshot.Repo,
+         else: GtfsPlanner.Gtfs.Export.Snapshot.Sandbox
+       )
 
 config :gtfs_planner,
        :gtfs_service_query_snapshot,
-       GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
+       if(browser_e2e?,
+         do: GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Repo,
+         else: GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
+       )
 
 config :gtfs_planner,
        :alerts_read_snapshot,
-       GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
+       if(browser_e2e?,
+         do: GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Repo,
+         else: GtfsPlanner.Gtfs.ServiceQueries.Snapshot.Sandbox
+       )
 
 config :gtfs_planner,
        :gtfs_flex_assistant_snapshot,
-       GtfsPlanner.Gtfs.Flex.Assistant.Snapshot.Sandbox
+       if(browser_e2e?,
+         do: GtfsPlanner.Gtfs.Flex.Assistant.Snapshot.Repo,
+         else: GtfsPlanner.Gtfs.Flex.Assistant.Snapshot.Sandbox
+       )
 
 config :gtfs_planner,
        :reviewed_apply_transaction,
-       GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox
+       if(browser_e2e?,
+         do: GtfsPlanner.Gtfs.ReviewedApplyTransaction.Repo,
+         else: GtfsPlanner.Gtfs.ReviewedApplyTransaction.Sandbox
+       )
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false

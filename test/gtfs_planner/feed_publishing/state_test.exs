@@ -278,9 +278,16 @@ defmodule GtfsPlanner.FeedPublishing.StateTest do
       scope = editor_scope(organization)
       assert {:ok, _namespace} = FeedPublishing.claim_namespace(scope)
 
-      assert_raise Postgrex.Error, ~r/feed_publication_namespaces_organization_id_fkey/, fn ->
-        Repo.transaction(fn -> Repo.delete!(organization) end)
-      end
+      error =
+        assert_raise Postgrex.Error, ~r/feed_publication_namespaces_organization_id_fkey/, fn ->
+          Repo.query!(
+            "DELETE FROM organizations WHERE id = $1",
+            [Ecto.UUID.dump!(organization.id)],
+            mode: :savepoint
+          )
+        end
+
+      assert error.postgres.pg_code in ["23001", "23503"]
 
       assert Repo.get!(Organization, organization.id)
       assert namespace_count(organization) == 1
