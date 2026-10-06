@@ -27,7 +27,13 @@ const EDITOR_USER = {
 
 const CAPTURE_DIR =
   process.env.AI02_CAPTURE_DIR ||
-  "/Users/ryanmahoney/Documents/gtfs-planner/.specs/ai-02-rider-text-and-stop-review/evidence/screenshots";
+  resolve(
+    import.meta.dirname,
+    "..",
+    "test-results",
+    "captures",
+    "ai-02-rider-text-and-stop-review",
+  );
 
 const DESKTOP = { width: 1440, height: 1000 };
 const PHONE = { width: 390, height: 844 };

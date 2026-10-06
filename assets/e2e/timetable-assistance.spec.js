@@ -34,7 +34,13 @@ const PASTE_ROUTE = "BROWSER_PASTE";
 
 const CAPTURE_DIR =
   process.env.AI04_CAPTURE_DIR ||
-  "/Users/ryanmahoney/Documents/gtfs-planner/.specs/ai-04-timetable-assistance/evidence/captures";
+  resolve(
+    import.meta.dirname,
+    "..",
+    "test-results",
+    "captures",
+    "ai-04-timetable-assistance",
+  );
 
 // Two rows whose first departure matches exactly one seeded feed trip each
 // (BPS_1201 at 06:00 and BPS_1205 at 07:00), on the pattern's first three

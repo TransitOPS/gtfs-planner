@@ -43,6 +43,8 @@ bin/setup-test-db-role
 
 `mix test` creates its own `gtfs_planner_exunit*` databases as that role.
 
+ExUnit uses the SQL Sandbox so each test can roll back its changes. The browser server (`BROWSER_E2E=true`) uses a normal connection pool and real transactions on the disposable database created by `bin/test-browser` or the CI service. Browser journeys share that database with background workers, so they must restore fixture state after changing it.
+
 Partitioned runs (`bin/test-all`, the last step of `mix precommit`) do not use those databases. Each partition runs on its own throwaway `pg_tmp` server, which `bin/test-all` starts and stops. This needs ephemeralpg (`brew install ephemeralpg`), which `bin/test-browser` also uses. `TEST_PARTITIONS=1 bin/test-all` and plain `mix test` use the local databases.
 
 ## Run Migrations

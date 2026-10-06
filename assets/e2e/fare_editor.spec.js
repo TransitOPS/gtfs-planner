@@ -58,20 +58,24 @@ const BLANK_TILE = Buffer.from(
   "base64",
 );
 
-// Spec artifacts deliberately do not belong to implementation worktrees. Set
-// FARE_EDITOR_SPEC_ROOT to the canonical package when this test runs in one.
-const SPEC_ROOT =
-  process.env.FARE_EDITOR_SPEC_ROOT ||
-  resolve(REPO_ROOT, "..", "gtfs-planner", ".specs", "29-fares-v1-v2-add-edit");
-const REFERENCE_PATH = resolve(
-  SPEC_ROOT,
-  "references",
-  "fares-editor-prototype.html",
-);
+// The reference prototype is vendored under fixtures/ so CI checkouts (which
+// never carry the untracked .specs/ tree) can run these comparisons. Point
+// FARE_EDITOR_REFERENCE_PATH at a canonical-package copy to compare a
+// work-in-progress reference instead.
+const REFERENCE_PATH =
+  process.env.FARE_EDITOR_REFERENCE_PATH ||
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "fixtures",
+    "prototypes",
+    "fares-editor-prototype.html",
+  );
 
+// Captures stay out of git: default to the Playwright results directory, or
+// set FARE_EDITOR_CAPTURE_DIR (for example a .specs evidence folder).
 const CAPTURE_DIR =
   process.env.FARE_EDITOR_CAPTURE_DIR ||
-  resolve(dirname(REFERENCE_PATH), "../evidence/captures");
+  resolve(REPO_ROOT, "assets", "test-results", "captures", "fare-editor");
 
 let priceRecovery;
 
@@ -160,8 +164,8 @@ function fareTestDatabase() {
   const parsed = new URL(databaseUrl);
   const databasePath = decodeURIComponent(parsed.pathname.slice(1));
   if (
-    !new Set(["127.0.0.1", "::1"]).has(parsed.hostname) ||
-    !/^gtfs_planner_exunit(?:_[a-zA-Z0-9]+)*$/.test(databasePath)
+    !new Set(["localhost", "127.0.0.1", "[::1]"]).has(parsed.hostname) ||
+    !/^(?:test|gtfs_planner_exunit(?:_[a-zA-Z0-9]+)*)$/.test(databasePath)
   ) {
     throw new Error("The load-error capture refused a database outside the loopback test target.");
   }
@@ -169,10 +173,18 @@ function fareTestDatabase() {
   const databaseName = psql(databaseUrl, "SELECT current_database()");
   const serverAddress = psql(databaseUrl, "SELECT host(inet_server_addr())");
   const dataDirectory = psql(databaseUrl, "SHOW data_directory");
-  if (databaseName !== databasePath || !new Set(["127.0.0.1", "::1"]).has(serverAddress)) {
+  const ciService = process.env.CI && process.env.FARE_EDITOR_DATABASE_OWNER === "ci-service";
+  // Docker publishes a loopback client endpoint but PostgreSQL sees its
+  // container interface. CI ownership is checked against the exact data path;
+  // a local pg_tmp server must also report a loopback server address.
+  if (databaseName !== databasePath || (!ciService && !new Set(["127.0.0.1", "::1"]).has(serverAddress))) {
     throw new Error("The load-error capture refused a database whose server identity is not the loopback test target.");
   }
-  if (realpathSync(dataDirectory) !== realpathSync(ownedDirectory)) {
+  // The CI service owns its data directory inside the container. Local pg_tmp
+  // owns a directory on this host, so resolve symlinks there before comparing.
+  const actualDirectory = ciService ? resolve(dataDirectory) : realpathSync(dataDirectory);
+  const expectedDirectory = ciService ? resolve(ownedDirectory) : realpathSync(ownedDirectory);
+  if (actualDirectory !== expectedDirectory) {
     throw new Error("The load-error capture refused a PostgreSQL data directory other than FARE_EDITOR_OWNED_PG_DIR.");
   }
 
@@ -230,12 +242,8 @@ async function withFareProductCatalogLock(callback) {
   const databaseUrl = fareTestDatabase();
   const applicationName = `fare_layout_lock_${randomUUID().replaceAll("-", "")}`;
   const locker = spawn(
-    "gtimeout",
+    "psql",
     [
-      "--signal=TERM",
-      "--kill-after=10s",
-      "120s",
-      "psql",
       "-X",
       "--no-psqlrc",
       "-v",
@@ -245,7 +253,7 @@ async function withFareProductCatalogLock(callback) {
       "--dbname",
       databaseUrl,
     ],
-    { stdio: ["pipe", "ignore", "ignore"] },
+    { stdio: ["pipe", "ignore", "ignore"], timeout: 120_000, killSignal: "SIGTERM" },
   );
   let spawnError;
   let backendPid;
@@ -290,9 +298,13 @@ async function withFareProductCatalogLock(callback) {
         locker.kill("SIGTERM");
       }
       if (locker.pid) {
-        await expect.poll(() => locker.exitCode !== null || locker.signalCode !== null, {
-          timeout: 5000,
-        }).toBe(true);
+        try {
+          await expect.poll(() => locker.exitCode !== null || locker.signalCode !== null, {
+            timeout: 5000,
+          }).toBe(true);
+        } finally {
+          if (locker.exitCode === null && locker.signalCode === null) locker.kill("SIGKILL");
+        }
       }
       await expect.poll(() => fareProductLockCount(databaseUrl, applicationName), {
         timeout: 5000,

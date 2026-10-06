@@ -950,8 +950,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
       aria-labelledby={"#{@id}-title"}
       {drawer_dialog_attrs(assigns)}
       class={[
-        "m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0",
-        !@modal && "fixed inset-0 z-40 pointer-events-none"
+        "m-0 border-0 h-full max-w-none max-h-none overflow-hidden bg-transparent p-0",
+        @modal && "w-screen",
+        !@modal && "fixed inset-0 z-40 w-full pointer-events-none"
       ]}
     >
       <aside
@@ -1007,18 +1008,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  # A modal panel is positioned inside the full-viewport top-layer dialog. A
+  # A modal dialog uses viewport width so the root's stable scrollbar gutter
+  # does not leave a strip beside its panel. The modal panel is positioned
+  # inside that full-viewport top-layer dialog. A
   # non-modal panel is the fixed right-hand inspector itself: it re-enables
   # pointer events on the transparent dialog wrapper it sits in. The wrapper
   # carries the inspector's stacking context, because a `position: fixed`
   # dialog is one, and the application header is `relative z-30`.
   defp drawer_panel_class("planner", modal),
     do:
-      "#{drawer_panel_position(modal)} top-0 right-0 flex h-full w-screen min-w-[320px] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
+      "#{drawer_panel_position(modal)} top-0 right-0 flex h-full w-full min-w-[min(320px,100%)] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
 
   defp drawer_panel_class(_default, modal),
     do:
-      "#{drawer_panel_position(modal)} top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
+      "#{drawer_panel_position(modal)} top-0 right-0 h-full w-full min-w-[min(320px,100%)] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
 
   defp drawer_panel_position(true), do: "absolute"
   defp drawer_panel_position(false), do: "fixed pointer-events-auto"

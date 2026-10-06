@@ -948,7 +948,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       # appears and the panel measures the edited shape, not the stored one.
       view |> element("#area-mode-edit") |> render_click()
 
-      moved = replace_position(stored_ring(ctx, service, "a1"), 0, [-124.07, 44.595])
+      ring = stored_ring(ctx, service, "a1")
+      # PostGIS may rotate the closed ring's starting vertex. Move the saved
+      # lower-left point, rather than whichever corner occupies index zero.
+      corner = Enum.find_index(ring, &(&1 == [-124.075, 44.595]))
+      assert is_integer(corner)
+      moved = replace_position(ring, corner, [-124.07, 44.595])
 
       render_hook(view, "flex_area_edited", %{"ring" => moved})
 

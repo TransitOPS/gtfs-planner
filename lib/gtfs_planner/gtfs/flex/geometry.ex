@@ -536,7 +536,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
 
   @land_boundary_geojson_sql """
   #{@land_boundary_cte}
-  SELECT ST_AsGeoJSON(ST_ForcePolygonCCW(ST_ReducePrecision(land.g, 0.000001)))
+  SELECT ST_AsGeoJSON(ST_Multi(ST_ForcePolygonCCW(ST_ReducePrecision(land.g, 0.000001))))
   FROM land
   """
 
@@ -552,9 +552,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   WHERE id = $1
   """
 
+  # Writes already normalized geometry. Reading it directly preserves its ring
+  # origin and MultiPolygon type; another precision reduction can rotate rings
+  # and collapse a single polygon on older GEOS versions.
   @get_geojson_sql """
   SELECT id::text,
-         ST_AsGeoJSON(ST_ForcePolygonCCW(ST_ReducePrecision(geom, 0.000001)))
+         ST_AsGeoJSON(geom)
   FROM flex_areas
   WHERE id = ANY($1) AND geom IS NOT NULL
   """

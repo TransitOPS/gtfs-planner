@@ -1921,8 +1921,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_base_operation(pattern, :copy, _loaded, _opts) do
-    if is_nil(pattern), do: {:error, :not_found}, else: :ok
+  defp validate_lifecycle_base_operation(_pattern, :copy, _loaded, _opts) do
+    # The loaded pattern is a struct on every call path — a missing id is
+    # rejected upstream before validation — so no nil guard here; dialyzer
+    # proved `is_nil(pattern)` could never be true.
+    :ok
   end
 
   defp validate_lifecycle_base_operation(pattern, :delete, _loaded, _opts) do

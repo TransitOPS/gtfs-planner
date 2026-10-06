@@ -201,6 +201,79 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   end
 
   @doc """
+  The fixed status toast a page shows at the foot of the viewport: one line
+  saying what just happened, with a caller-owned action beside the dismiss
+  control.
+
+  `id` and `text_id` are the page's own DOM contract, and the root doubles its
+  `id` as `data-role` so a page's selector cannot drift from its root. `toast`
+  is the rendered `%{text:, kind:, token:}` the LiveView owns — or `nil`, in
+  which case nothing is drawn. The `:action` slot is caller-owned markup (Rosters
+  passes none; Runs passes its conditional Undo button): this shell never
+  decides what can be undone and holds no lifecycle of its own.
+
+  `role="status"` with `aria-live="polite"`: the toast arrives while the reader
+  is looking at the page they acted on, and it is an announcement, not a
+  heading. An action slot's content sits inside the live region, so its arrival
+  is announced too. The dark surface is the only inverted treatment, because a
+  confirmation is not part of the page's reading order and should not look as
+  though it were.
+
+  ## Examples
+
+      <.toast id="rosters-toast" text_id="rosters-toast-text" toast={@toast} />
+  """
+  attr :id, :string, required: true, doc: "the page's root id, doubled as data-role"
+  attr :text_id, :string, required: true, doc: "the text span's id"
+  attr :toast, :map, required: true, doc: "%{text:, kind:, token:} or nil"
+  slot :action
+
+  def toast(assigns) do
+    ~H"""
+    <div
+      :if={@toast}
+      id={@id}
+      role="status"
+      aria-live="polite"
+      data-role={@id}
+      data-kind={@toast.kind}
+      data-token={@toast.token}
+      class="fixed bottom-6 left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-control bg-neutral px-[18px] py-2 text-sm text-neutral-content shadow-lg"
+    >
+      <span
+        :if={@toast.kind == :refused}
+        data-role="toast-icon"
+        aria-hidden="true"
+        class="inline-flex size-4 shrink-0 items-center justify-center"
+      >
+        !
+      </span>
+      <span
+        :if={@toast.kind == :done}
+        data-role="toast-icon"
+        aria-hidden="true"
+        class="inline-flex size-4 shrink-0 items-center justify-center"
+      >
+        &check;
+      </span>
+      <span id={@text_id} data-role="toast-text">{@toast.text}</span>
+
+      {render_slot(@action)}
+
+      <button
+        type="button"
+        phx-click="dismiss_toast"
+        data-role="dismiss-toast"
+        aria-label="Dismiss"
+        class="inline-flex size-11 shrink-0 items-center justify-center rounded-control hover:text-neutral-content/80"
+      >
+        &times;
+      </button>
+    </div>
+    """
+  end
+
+  @doc """
   The landing place after a rejected submit: every problem at once, each linking
   to the field it names. Renders nothing when there are no failures, so live
   validation, which is not a rejection, never produces one.

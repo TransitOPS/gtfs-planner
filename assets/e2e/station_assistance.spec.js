@@ -63,6 +63,18 @@ const PATHWAYS_UPLOAD = [
   "BROWSER_EVO_EMPTY_PW,BROWSER_EVO_EMPTY_A,BROWSER_EVO_EMPTY_B,1,1,,,",
 ].join("\n");
 
+// The earlier merge-results journey proves its new sibling persists. Repeat
+// that row only when it exists, so this journey keeps the same five decisions
+// both on its own and after the full suite's additive merge journey.
+async function pathwaysUploadFor(page, versionId) {
+  await page.goto(`/gtfs/${versionId}/stops/BROWSER_EVO_EMPTY_STATION/evolutions`);
+  await waitForLiveView(page);
+  const merged = page.locator('#closure-pathway-list button[data-pathway-id="BROWSER_EVO_PW_MERGE_ADDED"]');
+  return (await merged.count())
+    ? `${PATHWAYS_UPLOAD}\nBROWSER_EVO_PW_MERGE_ADDED,BROWSER_EVO_EMPTY_A,BROWSER_EVO_EMPTY_B,1,1,30,,`
+    : PATHWAYS_UPLOAD;
+}
+
 const W14_SOURCE_REF = "SURVEY-NOV-C";
 const W12_SOURCE_REF = "SURVEY-NOV-D";
 
@@ -317,6 +329,7 @@ test.describe("import station measurements", () => {
     await logIn(page);
     const versionId = await seededVersionId(page);
 
+    const pathwaysUpload = await pathwaysUploadFor(page, versionId);
     await page.goto(`/gtfs/${versionId}/import`);
     await waitForLiveView(page);
     await expect(page.locator("#import-page")).toBeVisible();
@@ -334,7 +347,7 @@ test.describe("import station measurements", () => {
     await page.locator("#diff-upload-input input").setInputFiles({
       name: "pathways.txt",
       mimeType: "text/plain",
-      buffer: Buffer.from(PATHWAYS_UPLOAD),
+      buffer: Buffer.from(pathwaysUpload),
     });
     await expect(page.locator("#diff-upload-entries")).toContainText("pathways.txt");
     await page.locator("#diff-compute-btn").click();
@@ -396,6 +409,7 @@ test.describe("import station measurements", () => {
     await logIn(page);
     const versionId = await seededVersionId(page);
 
+    const pathwaysUpload = await pathwaysUploadFor(page, versionId);
     await page.goto(`/gtfs/${versionId}/import`);
     await waitForLiveView(page);
     await expect(page.locator("#import-page")).toBeVisible();
@@ -414,7 +428,7 @@ test.describe("import station measurements", () => {
     await page.locator("#diff-upload-input input").setInputFiles({
       name: "pathways.txt",
       mimeType: "text/plain",
-      buffer: Buffer.from(PATHWAYS_UPLOAD),
+      buffer: Buffer.from(pathwaysUpload),
     });
     await expect(page.locator("#diff-upload-entries")).toContainText("pathways.txt");
     await page.locator("#diff-compute-btn").click();

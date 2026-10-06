@@ -113,6 +113,8 @@ const OPERATORS_CSV = resolve(
 
 const DESKTOP = { width: 1440, height: 1000 };
 const NARROW = { width: 1280, height: 900 };
+// The mobile viewport the toast shell is asserted and captured at.
+const MOBILE = { width: 390, height: 844 };
 
 // The prototype states this journey mirrors, in the card's own order.
 const REFERENCE_SCENARIOS = [
@@ -211,6 +213,22 @@ function toastText(page) {
   return page.locator("#rosters-toast-text");
 }
 
+// The toast shell's computed bounds at the width being measured: the shell
+// sits inside the viewport and the dismiss control keeps its 44px target.
+async function expectToastShellFits(page, width) {
+  const shell = await page.locator("#rosters-toast").boundingBox();
+  const dismiss = await page
+    .locator("#rosters-toast [data-role='dismiss-toast']")
+    .boundingBox();
+
+  expect(shell, "the toast shell must be rendered").not.toBeNull();
+  expect(dismiss, "the dismiss control must be rendered").not.toBeNull();
+  expect(shell.x).toBeGreaterThanOrEqual(0);
+  expect(shell.x + shell.width).toBeLessThanOrEqual(width);
+  expect(dismiss.width).toBeGreaterThanOrEqual(44);
+  expect(dismiss.height).toBeGreaterThanOrEqual(44);
+}
+
 // A capture into the evidence folder named by the card. Drawers and dialogs
 // live in the top layer, so they are captured against the viewport rather than
 // as a full-page stitch of the page behind them.
@@ -299,6 +317,33 @@ test.describe("Rosters page at 1440x1000", () => {
       `Line ${CREATED_LINE} created: run ${OPEN_RUN}, Monday, Tuesday, Wednesday, Thursday, Friday.`,
     );
 
+    // The shared shell at 1440x1000: root, text, icon and dismiss target —
+    // and no Undo control on this page.
+    const toast = page.locator("#rosters-toast");
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute("role", "status");
+    await expect(toast).toHaveAttribute("aria-live", "polite");
+    await expect(toast).toHaveAttribute("data-role", "rosters-toast");
+    await expect(page.locator("#rosters-toast-text")).toBeVisible();
+    await expect(page.locator("#rosters-toast [data-role='toast-icon']")).toHaveCount(1);
+    await expect(page.locator("#rosters-toast [data-role='dismiss-toast']")).toBeVisible();
+    await expect(page.locator("#rosters-toast [data-role='undo']")).toHaveCount(0);
+
+    await expectToastShellFits(page, DESKTOP.width);
+
+    // Read while the toast is up: it dismisses itself after four seconds, and
+    // the grid assertions below take their own time.
+    const toastWords = (await toastText(page).textContent()).trim();
+    await capture(page, "create-line-1440");
+
+    // The same shell at 390x844: the responsive max width keeps it inside the
+    // mobile viewport and the dismiss target stays 44px.
+    await page.setViewportSize(MOBILE);
+    await expect(toast).toBeVisible();
+    await expectToastShellFits(page, MOBILE.width);
+    await capture(page, "create-line-390");
+    await page.setViewportSize(DESKTOP);
+
     // The line is on the grid, and it is the highlighted one.
     expect(await lineNumbers(page)).toEqual([1, 2, 3, 4, 5, CREATED_LINE]);
     const newRow = page.locator(`#rosters-grid-body tr:has(#rosters-line-${CREATED_LINE}-open)`);
@@ -325,13 +370,11 @@ test.describe("Rosters page at 1440x1000", () => {
       run: OPEN_RUN,
       line: CREATED_LINE,
       highlighted: await newRow.getAttribute("data-new"),
-      toast: (await toastText(page).textContent()).trim(),
+      toast: toastWords,
       weekdaySlots: await Promise.all(
         [1, 2, 3, 4, 5, 6, 7].map((w) => slotState(page, CREATED_LINE, w)),
       ),
     };
-
-    await capture(page, "create-line-1440");
   });
 
   test("the short-rest line's Monday drawer refuses the group and saves the day as a warning", async ({

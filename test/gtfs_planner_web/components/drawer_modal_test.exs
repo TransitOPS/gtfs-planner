@@ -79,7 +79,7 @@ defmodule GtfsPlannerWeb.DrawerModalTest do
 
       assert "absolute" in panel_classes(html)
       refute "fixed" in panel_classes(html)
-      assert "w-full" in dialog_classes(html)
+      assert "w-screen" in dialog_classes(html)
       refute "pointer-events-none" in dialog_classes(html)
       refute "z-40" in dialog_classes(html)
     end

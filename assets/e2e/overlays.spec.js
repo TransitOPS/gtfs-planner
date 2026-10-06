@@ -543,9 +543,10 @@ test.describe("Presentation and motion", () => {
       motion.middle.scrollLeft,
       motion.end.scrollLeft,
     ]).toEqual([0, 0, 0]);
-    expect(
-      Math.abs(motion.end.right - page.viewportSize().width),
-    ).toBeLessThanOrEqual(1);
+    // The top-layer modal reaches the viewport edge across the root's
+    // reserved scrollbar gutter.
+    const visibleWidth = await page.evaluate(() => window.innerWidth);
+    expect(Math.abs(motion.end.right - visibleWidth)).toBeLessThanOrEqual(1);
   });
 
   test("all three action controls compute to at least 44 by 44 CSS pixels", async ({

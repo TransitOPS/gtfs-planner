@@ -134,9 +134,12 @@ test.describe("Route catalog responsive contracts", () => {
         "drawer body overflows",
       ).toBe(true);
 
+      // A modal occupies the full viewport, including the root's reserved
+      // scrollbar gutter, so no blank strip remains beside the drawer.
+      const visibleWidth = await page.evaluate(() => window.innerWidth);
       const panel = await page.locator("#new-route-drawer").boundingBox();
       expect(panel, "drawer panel").not.toBeNull();
-      expect(Math.abs(panel.x + panel.width - viewport.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(panel.x + panel.width - visibleWidth)).toBeLessThanOrEqual(1);
     });
   }
 

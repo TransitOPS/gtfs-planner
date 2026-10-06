@@ -13,7 +13,10 @@ defmodule GtfsPlanner.MixProject do
       test_coverage: [summary: [threshold: 77]],
       dialyzer: [
         plt_local_path: "priv/plts",
-        ignore_warnings: ".dialyzer_ignore.exs"
+        ignore_warnings: ".dialyzer_ignore.exs",
+        # Baseline entries that stop matching fail the run instead of lingering
+        # as silent coverage holes, so the ignore file stays a ratchet.
+        list_unused_filters: true
       ],
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader]

@@ -458,8 +458,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       occurrence_rows =
         occurrences(pattern, [
-          stop(organization, version, "SEARCH1", 90),
-          stop(organization, version, "SEARCH1", 91)
+          stop(organization, version, "EXISTING", 90, "Existing stop A"),
+          stop(organization, version, "EXISTING", 91, "Existing stop B")
         ])
 
       timing(pattern, occurrence_rows, "Timing A", [{0, 0}, {0, 0}])

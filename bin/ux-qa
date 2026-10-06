@@ -342,6 +342,8 @@ up() {
     return 2
   fi
 
+  # Deliberately no flags: a QA replay never keeps its throwaway database.
+  # shellcheck disable=SC2119
   start_database
 
   if ! command -v psql >/dev/null; then

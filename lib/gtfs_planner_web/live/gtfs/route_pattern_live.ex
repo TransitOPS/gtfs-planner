@@ -6480,7 +6480,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:details_params, params)
     |> assign(:details_baseline, baseline)
     |> assign(:details_form, details_form(params, []))
-    |> assign_dirty(baseline != nil and params != baseline)
+    # `baseline` is always a details-params map here (both callers pass the
+    # freshly built params), so the nil guard is dead; dialyzer proved it.
+    |> assign_dirty(params != baseline)
   end
 
   defp details_form(params, errors) do

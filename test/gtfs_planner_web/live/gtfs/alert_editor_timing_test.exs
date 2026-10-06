@@ -135,7 +135,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
                Alerts.save_draft(context.audit, alert.id, alert.revision, %{
                  "timing" => %{
                    "end_kind" => "estimated",
-                   "check_in_at" => "2026-10-05T16:30:00"
+                   "check_in_at" => "2000-01-01T16:30:00"
                  }
                })
 
@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorTimingTest do
       assert has_element?(
                view,
                "#timing-check-in option[selected]",
-               "Check back Oct 5, 4:30 PM"
+               "Check back Jan 1, 4:30 PM"
              )
 
       assert has_element?(view, "#timing-check-in option", "In 30 minutes")
