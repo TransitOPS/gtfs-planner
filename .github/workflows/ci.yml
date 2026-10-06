@@ -141,6 +141,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Run validator CLI tests
+        env:
+          JAVA_PATH: java
         run: mise run elixir:deps && mix test --only validator_cli
 
   elixir_dev:
