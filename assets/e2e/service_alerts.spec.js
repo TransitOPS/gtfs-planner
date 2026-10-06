@@ -3075,15 +3075,17 @@ async function searchRoutes(page, query, ready = "#alert-route-options button") 
   }).toPass({ timeout: 30_000 });
 }
 
-// A card that mounts takes the focus for its own heading, so a control focused in
-// the same tick loses it again and the keystroke that follows goes nowhere. The
-// focus is retried until it holds, which is the same wait pressChoice does before
-// it presses a key.
+// Phoenix JS.focus reasserts a newly mounted question's heading focus in two
+// nested animation frames. Finish that lifecycle before focusing an answer;
+// an immediate focus assertion can pass before the heading steals it back.
 async function focusControl(control) {
-  await expect(async () => {
-    await control.focus();
-    await expect(control).toBeFocused();
-  }).toPass({ timeout: 15_000 });
+  await control.evaluate(async (element) => {
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
+    element.focus();
+  });
+  await expect(control).toBeFocused();
 }
 
 async function pressChoice(page, selector) {

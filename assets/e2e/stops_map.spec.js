@@ -1193,6 +1193,13 @@ test("what a placement is told @add", async ({ page }, testInfo) => {
 
   await captureBoth(page, testInfo, "nearby", "add-");
 
+  // A placed draft is adjusted through its pin; canvas clicks intentionally
+  // browse instead. Start a fresh draft for the second placement.
+  await page.locator("#stops-map-add-cancel").click();
+  await expect(page.locator("[data-stop-map-pin]")).toHaveCount(0);
+  await page.locator("#stops-map-add-stop").click();
+  await expect(page.locator("#stop-map")).toHaveClass(/stop-map-adding/);
+
   // On the line itself, the panel has a side to describe and says so. The click
   // is made at a point on the stroke itself, read from the SVG rather than
   // guessed from a box: a point a few pixels off a route is not "on" it.
@@ -1461,51 +1468,73 @@ async function clickCentre(page) {
 // bounding box is not the route and a click in the middle of one is somewhere
 // along it at best.
 async function clickOnLine(page) {
-  const points = await page.evaluate(() => {
+  // captureBoth has just restored the desktop viewport. Let ResizeObserver
+  // invalidate Leaflet's size and the following paint position its SVG before
+  // reading screen coordinates from the stroke.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+
+  const point = await page.evaluate(() => {
     const map = document.querySelector("#stop-map").getBoundingClientRect();
 
-    return [
-      ...document.querySelectorAll("#stop-map .leaflet-overlay-pane path"),
-    ]
-      .map((path) => {
-        const length = path.getTotalLength();
-        if (!length) return null;
+    for (const path of document.querySelectorAll(
+      "#stop-map .leaflet-overlay-pane path",
+    )) {
+      const length = path.getTotalLength();
+      const matrix = path.getScreenCTM();
+      if (!length || !matrix) continue;
 
-        const matrix = path.getScreenCTM();
-        if (!matrix) return null;
+      // Five fractions of a full route can all miss the visible window at
+      // street zoom. Walk the drawn stroke in screen-sized steps instead.
+      const scale = Math.max(
+        Math.hypot(matrix.a, matrix.b),
+        Math.hypot(matrix.c, matrix.d),
+      );
+      const steps = Math.max(1, Math.ceil(length * scale / 8));
+      for (let step = 1; step < steps; step++) {
+        const local = path.getPointAtLength(length * step / steps);
+        const candidate = {
+          x: matrix.a * local.x + matrix.c * local.y + matrix.e,
+          y: matrix.b * local.x + matrix.d * local.y + matrix.f,
+        };
+        if (
+          candidate.x <= map.left ||
+          candidate.x >= map.right ||
+          candidate.y <= map.top ||
+          candidate.y >= map.bottom
+        ) continue;
 
-        return [0.5, 0.35, 0.65, 0.2, 0.8]
-          .map((fraction) => path.getPointAtLength(length * fraction))
-          .map((point) => ({
-            x: matrix.a * point.x + matrix.c * point.y + matrix.e,
-            y: matrix.b * point.x + matrix.d * point.y + matrix.f,
-          }))
-          .filter(
-            (point) =>
-              point.x > map.left &&
-              point.x < map.right &&
-              point.y > map.top &&
-              point.y < map.bottom,
-          );
-      })
-      .filter(Boolean)
-      .flat();
+        // A stop marker opens its row and the existing pin receives a drag;
+        // neither is the canvas placement this case is exercising.
+        const hit = document.elementFromPoint(candidate.x, candidate.y);
+        if (
+          !hit?.closest("#stop-map") ||
+          hit.closest(".stop-map-marker, [data-stop-map-pin], button, a")
+        ) continue;
+        return candidate;
+      }
+    }
+    return null;
   });
 
-  if (points.length === 0) {
-    throw new Error("the map drew no line point inside the window to place on");
-  }
-
-  for (const point of points) {
-    await page.mouse.click(point.x, point.y);
-
-    const where = await page.locator("#stops-map-add-where").textContent();
-    if (where && where.includes("side of the")) return;
-  }
-
-  throw new Error(
-    "no point on a drawn line placed a draft the panel could give a side",
+  expect(
+    point,
+    "the map drew a clickable line point inside the window",
+  ).not.toBeNull();
+  const coordinates = page.locator("#stops-map-add-lat, #stops-map-add-lon");
+  const readCoordinates = () => coordinates.evaluateAll((inputs) =>
+    inputs.map((input) => input.value).join(","),
   );
+  const before = await readCoordinates();
+  await page.mouse.click(point.x, point.y);
+  // The coordinate change proves this placement's LiveView response arrived;
+  // a side description left from the nearby placement is insufficient.
+  await expect.poll(readCoordinates).not.toBe(before);
+  await expect(page.locator("#stops-map-add-where")).toContainText("side of the");
 }
 
 // The move: a pin the editor drags, the ghost it left behind, the distance
