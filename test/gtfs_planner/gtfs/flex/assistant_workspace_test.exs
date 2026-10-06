@@ -483,7 +483,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
     test "reads a controlled writer's committed change wholly before or wholly after", %{
       supervisor: supervisor
     } do
-      context = in_task(supervisor, fn -> flex_scope() end)
+      context = in_task(supervisor, fn -> committed_flex_scope() end)
       on_exit(fn -> cleanup([context]) end)
 
       parent = self()
@@ -526,7 +526,7 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
     end
 
     test "leaves every source row unchanged and writes nothing", %{supervisor: supervisor} do
-      context = in_task(supervisor, fn -> flex_scope() end)
+      context = in_task(supervisor, fn -> committed_flex_scope() end)
       on_exit(fn -> cleanup([context]) end)
 
       before = row_counts(context.organization.id, context.version.id)
@@ -541,6 +541,14 @@ defmodule GtfsPlanner.Gtfs.Flex.AssistantWorkspaceTest do
 
   defp flex_context(context) do
     Map.merge(context, flex_scope())
+  end
+
+  # Seed the committed feed atomically: one commit avoids a separate fsync for
+  # every row, and an interrupted setup rolls back before it can leave fixtures
+  # behind without the cleanup context.
+  defp committed_flex_scope do
+    {:ok, context} = Repo.transaction(fn -> flex_scope() end)
+    context
   end
 
   defp flex_scope do

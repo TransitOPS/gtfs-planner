@@ -410,7 +410,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsMapAddTest do
       assert has_element?(view, "#stops-map-add-name[aria-invalid=true]")
       assert has_element?(view, "#stops-map-add-errors", "Enter a name")
 
-      assert Repo.aggregate(Stop, :count) == 0
+      assert created_stops(ctx) == []
     end
 
     test "a reverse failure still lets the editor name the stop and create it", ctx do
