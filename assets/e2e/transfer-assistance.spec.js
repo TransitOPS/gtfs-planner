@@ -1061,7 +1061,16 @@ async function ask(page, question) {
 async function transferRuleCount(page, name = E2E_VERSION) {
   const versionId = await versionIdFor(page, name);
   await page.goto(`/gtfs/${versionId}/transfers`);
-  await page.waitForSelector("#transfers-count", { timeout: 15_000 });
+  await page.waitForSelector("#transfers-count, #transfers-first-use", { timeout: 15_000 });
+  // A version with zero rules renders first use instead of the list count.
+  // Require that explicit ready state and no rule rows: a missing count during
+  // loading or a failed query must never count as proof that nothing was written.
+  if (await page.locator("#transfers-first-use").count()) {
+    await expect(page.locator("#transfers-first-use")).toBeVisible();
+    await expect(page.locator("#transfers-count")).toHaveCount(0);
+    await expect(page.locator("#transfers tr")).toHaveCount(0);
+    return "0 transfer rules";
+  }
   const count = (await page.locator("#transfers-count").innerText()).trim();
   if (!/^\d+ transfer rules?$/.test(count)) {
     throw new Error(`unexpected transfer-rule count: ${count}`);

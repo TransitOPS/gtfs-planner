@@ -143,9 +143,12 @@ const PINNED_MASK_WIDTHS = [
 // page scroll offset can move that clip boundary by one device pixel, so the
 // reviewed element screenshots are taken from the top of the page.
 async function scrollToTop(page) {
-  await page.evaluate(() =>
-    window.scrollTo({ top: 0, left: 0, behavior: "instant" }),
-  );
+  await page.evaluate(async () => {
+    // FormErrorFocus reasserts rejected-submit focus on the next frame. Let
+    // that lifecycle finish before positioning the screenshot viewport.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  });
   await page.waitForFunction(() => window.scrollY === 0);
 }
 
@@ -1035,6 +1038,7 @@ test.describe("account settings", () => {
     await page.waitForFunction(
       () => document.querySelector("#email_form [aria-invalid='true']"),
     );
+    await expect(page.locator("#email-error-summary")).toBeFocused();
     await waitForLiveView(page);
     await scrollToTop(page);
     await expect(page.locator("#email-settings")).toHaveScreenshot(
@@ -1053,6 +1057,7 @@ test.describe("account settings", () => {
     await page.waitForFunction(
       () => document.querySelector("#password_form [aria-invalid='true']"),
     );
+    await expect(page.locator("#password-error-summary")).toBeFocused();
     await waitForLiveView(page);
     await scrollToTop(page);
     await expect(page.locator("#password-settings")).toHaveScreenshot(

@@ -254,12 +254,17 @@ for (const viewport of VIEWPORTS) {
       await capture(page, `step-006-${viewport.label}-no-calendars`);
 
       // The first paint before the socket connects is the table skeleton.
-      await page.route("**/live/websocket**", (route) => route.abort());
-      await page.goto(schedulesPath(versionId, READY_ROUTE));
-      await expect(page.locator("#schedules-loading")).toBeVisible();
-      await expect(page.locator("#planning-summary")).toHaveCount(0);
-      await capture(page, `step-006-${viewport.label}-loading`);
-      await page.unroute("**/live/websocket**");
+      const loadingPage = await page.context().newPage();
+      try {
+        await loadingPage.setViewportSize({ width: viewport.width, height: viewport.height });
+        await loadingPage.routeWebSocket("**/live/websocket*", () => {});
+        await loadingPage.goto(schedulesPath(versionId, READY_ROUTE));
+        await expect(loadingPage.locator("#schedules-loading")).toBeVisible();
+        await expect(loadingPage.locator("#planning-summary")).toHaveCount(0);
+        await capture(loadingPage, `step-006-${viewport.label}-loading`);
+      } finally {
+        await loadingPage.close();
+      }
     });
 
     test("the 62-occurrence mutation table keeps its pinned columns", async ({ page }) => {
