@@ -182,6 +182,40 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLiveTest do
       assert has_element?(view, "#comparison-window-note", "93")
       refute has_element?(view, "#comparison-progress")
       refute has_element?(view, "#comparison-status-title", "Comparing exports")
+
+      # The error border is the shared control's own invalid state, so both
+      # fields keep their 44px control styling while they carry it.
+      for id <- ~w(comparison-from comparison-to) do
+        assert has_element?(view, "input##{id}.input.input-lg[aria-invalid=true]")
+      end
+
+      # A range inside the limit is not invalid, and keeps the same styling.
+      render_change(view, "select_comparison", %{
+        "comparison" => %{"from" => "2026-10-12", "to" => "2026-11-12"}
+      })
+
+      for id <- ~w(comparison-from comparison-to) do
+        assert has_element?(view, "input##{id}.input.input-lg[aria-invalid=false]")
+      end
+    end
+
+    test "the derived line stays factual over a range with no service", context do
+      %{conn: conn, user: user, organization: organization, version: version} = context
+      publish_run!(organization, version, left_zip())
+      publish_run!(organization, version, right_zip())
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
+
+      # The files have not been read yet, so the line states only what the draft
+      # itself proves: two dates and the range.
+      render_change(view, "select_comparison", %{
+        "comparison" => %{"from" => "2026-11-28", "to" => "2026-11-29"}
+      })
+
+      assert has_element?(view, "#comparison-window-note", "2 dates")
+      assert has_element?(view, "#comparison-window-note", "Nov 28, 2026 – Nov 29, 2026")
+      refute has_element?(view, "#comparison-window-note", "service on every date")
     end
 
     test "no comparable choices renders the empty state linking to the full export", context do

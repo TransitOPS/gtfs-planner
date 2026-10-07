@@ -22,7 +22,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   import GtfsPlannerWeb.Gtfs.CompareComponents,
     only: [
       comparison: 1,
-      comparison_difference_row: 1,
       comparison_helper: 1,
       comparison_results: 1,
       comparison_structural_row: 1,
@@ -43,7 +42,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   @comparison_row_limit 25
   @comparison_row_limit_max 100
   @comparison_collections [
-    :comparison_differences,
     :comparison_structural,
     :comparison_unresolved,
     :comparison_unknowns
@@ -97,12 +95,12 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
      |> assign(:comparison_scope_form, comparison_scope_form(%{}))
      |> assign(:comparison_scope_notice, nil)
      |> assign(:comparison_inspected, nil)
+     |> assign(:comparison_inspected_route, nil)
      |> assign(:comparison_page, comparison_page_defaults())
      |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
      |> AgentPanel.mount("release_comparison", allowed_packs: ["release_comparison"])
      |> reset_comparison_context()
      |> configure_comparison_streams()
-     |> stream(:comparison_differences, [])
      |> stream(:comparison_structural, [])
      |> stream(:comparison_unresolved, [])
      |> stream(:comparison_unknowns, [])}
@@ -237,13 +235,38 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
 
       {:noreply,
        socket
-       |> assign(:comparison_inspected, detail)}
+       |> assign(:comparison_inspected, detail)
+       |> assign(:comparison_inspected_route, nil)}
     else
       {:noreply, socket}
     end
   end
 
   def handle_event("inspect_comparison_row", _params, socket), do: {:noreply, socket}
+
+  # Inspecting a grouped route row resolves the row against the rows this render
+  # would draw: the row must be in the held result *and* pass the kind filter in
+  # force, so a forged id cannot open a row the editor cannot see.
+  @impl Phoenix.LiveView
+  def handle_event("inspect_comparison_route", %{"row" => row}, socket) when is_binary(row) do
+    detail =
+      case socket.assigns.comparison_view do
+        nil ->
+          nil
+
+        view ->
+          view
+          |> ComparePresentation.route_rows(socket.assigns.comparison_kind_filter)
+          |> Enum.find(&(&1.id == row))
+      end
+
+    {:noreply,
+     socket
+     |> assign(:comparison_inspected_route, detail)
+     |> assign(:comparison_inspected, nil)}
+  end
+
+  def handle_event("inspect_comparison_route", _params, socket), do: {:noreply, socket}
 
   # One bounded page of one collection. The page only ever re-reads the
   # immutable result already held in assigns: the native result itself is never
@@ -306,7 +329,11 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   end
 
   def handle_event("close_comparison_detail", _params, socket),
-    do: {:noreply, assign(socket, :comparison_inspected, nil)}
+    do:
+      {:noreply,
+       socket
+       |> assign(:comparison_inspected, nil)
+       |> assign(:comparison_inspected_route, nil)}
 
   def handle_event("narrow_comparison", _params, socket), do: {:noreply, socket}
 
@@ -327,6 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
          |> assign(:comparison_scope, nil)
          |> assign(:comparison_scope_notice, nil)
          |> assign(:comparison_scope_form, comparison_scope_form(%{}))
+         |> assign(:comparison_inspected_route, nil)
          |> stream_comparison(result.comparison)
          |> attach_comparison_context(result, :all)}
     end
@@ -360,8 +388,14 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   @impl Phoenix.LiveView
   def handle_event("filter_comparison_kind", %{"kind" => value}, socket) do
     case comparison_kind_filter(value) do
-      {:ok, filter} -> {:noreply, assign(socket, :comparison_kind_filter, filter)}
-      :ignore -> {:noreply, socket}
+      {:ok, filter} ->
+        {:noreply,
+         socket
+         |> assign(:comparison_kind_filter, filter)
+         |> assign(:comparison_inspected_route, nil)}
+
+      :ignore ->
+        {:noreply, socket}
     end
   end
 
@@ -758,9 +792,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     {Enum.slice(rows, offset, limit), length(rows)}
   end
 
-  defp comparison_rows(:comparison_differences, view),
-    do: Map.get(view, :effective_changes, [])
-
   defp comparison_rows(:comparison_structural, view),
     do: Map.get(view, :structural_changes, [])
 
@@ -840,6 +871,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
         |> assign(:comparison_scope, selection)
         |> assign(:comparison_scope_notice, nil)
         |> assign(:comparison_inspected, nil)
+        |> assign(:comparison_inspected_route, nil)
         |> stream_comparison(view)
         |> attach_comparison_context(result, selection)
 
@@ -851,6 +883,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
         |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
         |> assign(:comparison_scope, nil)
         |> assign(:comparison_inspected, nil)
+        |> assign(:comparison_inspected_route, nil)
         |> stream_comparison(result.comparison)
         |> attach_comparison_context(result, :all)
     end
@@ -906,6 +939,12 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     |> assign(:comparison_kind_filter, nil)
   end
 
+  # Only a genuinely complete, empty comparison retires the result card for the
+  # no-change state. The held full result decides, not the narrowed view, so a
+  # scope that happens to select no change cannot hide a full comparison's rows.
+  defp no_change_result?(%{comparison: comparison}),
+    do: ComparePresentation.no_change?(comparison)
+
   defp comparison_kind_filter(""), do: {:ok, nil}
   defp comparison_kind_filter("all"), do: {:ok, nil}
 
@@ -925,10 +964,10 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     |> assign(:comparison_scope_form, comparison_scope_form(%{}))
     |> assign(:comparison_scope_notice, nil)
     |> assign(:comparison_inspected, nil)
+    |> assign(:comparison_inspected_route, nil)
     |> assign(:comparison_page, comparison_page_defaults())
     |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
     |> reset_comparison_context()
-    |> stream(:comparison_differences, [], reset: true)
     |> stream(:comparison_structural, [], reset: true)
     |> stream(:comparison_unresolved, [], reset: true)
     |> stream(:comparison_unknowns, [], reset: true)
@@ -1044,13 +1083,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                 version_id={@current_gtfs_version.id}
               />
 
-              <.comparison_helper
-                :if={@comparison_result}
-                context={@comparison_context}
-                notice={@comparison_context_notice}
-                open?={@agent_open? and @agent_pack_id == "release_comparison"}
-              />
-
               <.comparison_results
                 :if={@comparison_result}
                 result={@comparison_result}
@@ -1059,6 +1091,8 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                 scope_form={@comparison_scope_form}
                 scope_notice={@comparison_scope_notice}
                 inspected={@comparison_inspected}
+                inspected_route={@comparison_inspected_route}
+                no_change?={no_change_result?(@comparison_result)}
                 page={@comparison_page}
                 true_totals={@comparison_true_totals}
                 kind_filter={@comparison_kind_filter}
@@ -1067,15 +1101,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                 conclusion={@comparison_conclusion}
                 kind_counts={@comparison_kind_counts}
               >
-                <:differences_list>
-                  <div id="comparison-rows" phx-update="stream" class="divide-y divide-subtle">
-                    <.comparison_difference_row
-                      :for={{dom_id, change} <- @streams.comparison_differences}
-                      dom_id={dom_id}
-                      change={change}
-                    />
-                  </div>
-                </:differences_list>
                 <:structural_list>
                   <div
                     id="comparison-structural-rows"
@@ -1112,6 +1137,13 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                   </div>
                 </:unknowns_list>
               </.comparison_results>
+
+              <.comparison_helper
+                :if={@comparison_result}
+                context={@comparison_context}
+                notice={@comparison_context_notice}
+                open?={@agent_open? and @agent_pack_id == "release_comparison"}
+              />
             </div>
           </div>
 

@@ -67,6 +67,20 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentation do
   end
 
   @doc """
+  Whether a completed comparison really found nothing to report.
+
+  Only a comparison the engine called complete may promise identical service:
+  an empty difference list beside unreadable rows or a window with no service
+  states what could not be measured, not that the two files agree.
+  """
+  @spec no_change?(map()) :: boolean()
+  def no_change?(%{completeness: %{status: :complete}} = result) do
+    result.effective_changes == [] and result.structural_changes == []
+  end
+
+  def no_change?(_result), do: false
+
+  @doc """
   One row per `{route, direction_id, kind, delta}` group of effective changes.
 
   `nil` `kind_filter` keeps every kind; a kind atom keeps only that kind. Rows
@@ -94,6 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentation do
       grouped_changes = Map.fetch!(grouped, key)
 
       %{
+        id: route_row_id(key),
         route: route,
         route_ids: hd(grouped_changes).route_ids,
         direction_id: direction_id,
@@ -103,6 +118,21 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentation do
         changes: grouped_changes
       }
     end)
+  end
+
+  # The row's DOM identity comes from the group's complete key, so two groups
+  # that differ only by delta, or two route names that sanitize alike, never
+  # share one id. The digest keeps the identity stable across renders and short
+  # enough to stay readable in the page source.
+  defp route_row_id({route, direction_id, kind, delta}) do
+    digest =
+      [route, direction_id, kind, delta]
+      |> :erlang.term_to_binary()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 12)
+
+    "comparison-route-#{kind}-#{direction_id}-#{digest}"
   end
 
   @doc "How many effective changes carry each kind."

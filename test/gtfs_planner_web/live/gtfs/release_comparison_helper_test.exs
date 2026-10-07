@@ -216,9 +216,10 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert socket_assigns(view).comparison_context == nil
       assert socket_assigns(view).comparison_context_notice == :source_too_large
 
-      assert has_element?(view, "#comparison-results")
-      assert has_element?(view, "#comparison-totals")
-      assert has_element?(view, "#comparison-differences")
+      # The native comparison is kept and inspectable — here as its no-change
+      # card — and the explicit narrowing form is still the way to a smaller copy.
+      assert has_element?(view, "#comparison-nochange", "No differences")
+      refute has_element?(view, "#comparison-result")
       assert has_element?(view, "#comparison-scope-form")
 
       # An explicit narrower scope is the only way to a smaller copy.
@@ -249,7 +250,11 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert has_element?(view, "#comparison-totals-unknown", "was not measured")
       assert has_element?(view, "#comparison-total-reasons", "frequency windows")
       assert has_element?(view, "#comparison-completeness", "Incomplete")
-      refute has_element?(view, "#comparison-exact-delta")
+
+      # The cell is present and states "—"; no number may stand in for an
+      # unmeasured total.
+      assert has_element?(view, "#comparison-exact-delta", "—")
+      refute has_element?(view, "#comparison-exact-delta", "0")
 
       # The helper is still offered: an incomplete comparison is explained, not hidden.
       assert has_element?(view, "#agent-helper-open")
@@ -297,11 +302,14 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
 
       view = view(context) |> compare!(first, second)
 
-      assert has_element?(view, "#comparison-totals", "no change")
-      assert has_element?(view, "#comparison-completeness", "Complete")
-      assert has_element?(view, "#comparison-differences-empty")
-      assert has_element?(view, "#comparison-structural-empty")
-      assert has_element?(view, "#comparison-unresolved-empty")
+      # A complete comparison with nothing to report is its own state card, not
+      # the result card with empty sections.
+      assert has_element?(view, "#comparison-nochange", "No differences")
+      assert has_element?(view, "#comparison-nochange", "Riders get the same service")
+      refute has_element?(view, "#comparison-result")
+      refute has_element?(view, "#comparison-differences-empty")
+      refute has_element?(view, "#comparison-structural-empty")
+      refute has_element?(view, "#comparison-unresolved-empty")
     end
   end
 
@@ -522,7 +530,11 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
         has_element?(view, "#comparison-status-title", "couldn’t finish")
     end)
 
-    assert has_element?(view, "#comparison-results")
+    # A complete no-change result renders its own state card instead of the
+    # result card; every other terminal result renders the result.
+    assert has_element?(view, "#comparison-results") or
+             has_element?(view, "#comparison-nochange")
+
     view
   end
 

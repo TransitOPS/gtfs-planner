@@ -121,6 +121,41 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentationTest do
       assert row.changes == changes
     end
 
+    test "route_rows gives distinct stable ids to groups that differ only by delta" do
+      [date | _] = weekday_dates(1)
+
+      result =
+        result(%{
+          effective_changes: [
+            change(date, :count_changed, "R1", 1),
+            change(date, :count_changed, "R1", -2)
+          ]
+        })
+
+      assert [first, second] = ComparePresentation.route_rows(result, nil)
+      assert first.id != second.id
+
+      # The id comes from the group's own key, so the same result always
+      # produces the same row ids.
+      assert Enum.map(ComparePresentation.route_rows(result, nil), & &1.id) ==
+               [first.id, second.id]
+    end
+
+    test "route_rows gives distinct ids to route names that sanitize alike" do
+      [date | _] = weekday_dates(1)
+
+      result =
+        result(%{
+          effective_changes: [
+            change(date, :count_changed, "A/B", 1),
+            change(date, :count_changed, "A B", 1)
+          ]
+        })
+
+      assert [first, second] = ComparePresentation.route_rows(result, nil)
+      assert first.id != second.id
+    end
+
     test "route_rows filters by kind and kind_counts counts every kind" do
       [first, second | _] = weekday_dates(2)
 
@@ -140,6 +175,30 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentationTest do
                timing_changed: 2,
                count_changed: 1
              }
+    end
+  end
+
+  describe "no_change?/1" do
+    test "a complete empty comparison is a no-change result" do
+      assert ComparePresentation.no_change?(result(%{}))
+    end
+
+    test "an incomplete comparison is never a no-change result" do
+      incomplete =
+        result(%{completeness: %{status: :incomplete, reasons: [:no_service_groups]}})
+
+      refute ComparePresentation.no_change?(incomplete)
+    end
+
+    test "a structural change is not a no-change result" do
+      result =
+        result(%{
+          structural_changes: [
+            %{entity: :route, id: "R1", change: :identifier, meaning_changed: false}
+          ]
+        })
+
+      refute ComparePresentation.no_change?(result)
     end
   end
 
@@ -172,7 +231,13 @@ defmodule GtfsPlannerWeb.Gtfs.ComparePresentationTest do
 
   defp result(overrides) do
     Map.merge(
-      %{window: %{from: @reference, to: @reference}, groups: [], effective_changes: []},
+      %{
+        window: %{from: @reference, to: @reference},
+        groups: [],
+        effective_changes: [],
+        structural_changes: [],
+        completeness: %{status: :complete, reasons: []}
+      },
       overrides
     )
   end

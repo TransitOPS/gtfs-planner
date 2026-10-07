@@ -6,8 +6,8 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   one explicit date range (`comparison/1`), then read what the completed
   comparison found (`comparison_results/1`). The helper entry
   (`comparison_helper/1`) offers the comparison helper once a comparison has
-  finished, and the difference, structural, unresolved and unknown row
-  components render each paged stream's rows.
+  finished, and the structural, unresolved and unknown row components render
+  each paged stream's rows.
 
   The components carry no state and run no queries: `CompareLive` owns the
   events and the data, and passes the choices, the chosen rows and the result
@@ -16,7 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.ResultComponents, only: [result_section: 1, tone_badge: 1]
+  import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
 
   alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -71,159 +71,11 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       |> assign(:no_change?, no_change?(assigns.status, assigns.result))
 
     ~H"""
-    <div id="export-comparison" class="px-5 py-5">
-      <.form
-        for={@form}
-        id="export-comparison-form"
-        phx-change="select_comparison"
-        phx-submit="start_comparison"
-      >
-        <fieldset>
-          <legend class="text-[13px] font-semibold text-strong">
-            Which two files do you want to compare?
-          </legend>
-          <div class="mt-2.5 grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-            <.input
-              field={@form[:left_run_id]}
-              type="select"
-              id="comparison-left"
-              label="Earlier file"
-              prompt="Choose a file"
-              options={@options}
-            />
-            <span class="hidden pb-2.5 text-muted sm:block" aria-hidden="true">
-              <.icon name="hero-arrow-right" class="size-4" />
-            </span>
-            <.input
-              field={@form[:right_run_id]}
-              type="select"
-              id="comparison-right"
-              label="Newer file"
-              prompt="Choose a file"
-              options={@options}
-            />
-          </div>
-        </fieldset>
-
-        <div class="mt-3 flex flex-wrap items-end gap-3">
-          <.input
-            field={@form[:from]}
-            type="date"
-            id="comparison-from"
-            label="From"
-            class={@too_long? && "border-error-line"}
-          />
-          <span class="pb-2.5 text-[13px] text-muted">to</span>
-          <.input
-            field={@form[:to]}
-            type="date"
-            id="comparison-to"
-            label="To"
-            class={@too_long? && "border-error-line"}
-          />
-        </div>
-
-        <p
-          id="comparison-window-note"
-          class={[
-            "mt-2 text-[13px] leading-relaxed",
-            @too_long? && "font-semibold text-error-fg",
-            !@too_long? && "text-muted"
-          ]}
-        >
-          {window_note(@window_dates, @too_long?)}
-        </p>
-
-        <div class="mt-4 flex flex-wrap items-center gap-2 max-sm:w-full max-sm:[&>*]:flex-1">
-          <.button
-            :if={not @running?}
-            id="comparison-start"
-            class="min-h-11"
-            phx-click={JS.focus(to: "#comparison-status-title")}
-          >
-            Compare files
-          </.button>
-          <.button
-            :if={@status == :cancelling}
-            id="comparison-start"
-            class="min-h-11"
-            disabled
-          >
-            Cancelling…
-          </.button>
-          <.button
-            :if={@running?}
-            id="comparison-cancel"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="cancel_comparison"
-          >
-            Cancel comparison
-          </.button>
-          <.button
-            :if={@status in [:completed, :refused]}
-            id="comparison-close"
-            variant="quiet"
-            class="min-h-11"
-            phx-click="close_comparison"
-          >
-            Start over
-          </.button>
-          <.button
-            :if={@choices.next_cursor}
-            id="comparison-more-choices"
-            variant="quiet"
-            class="min-h-11"
-            phx-click="load_more_comparison_choices"
-          >
-            Show more exports
-          </.button>
-        </div>
-
-        <div
-          id="comparison-caps"
-          class="mt-4 rounded-card border border-subtle bg-canvas px-4 py-3 text-[13px] leading-relaxed text-default"
-        >
-          <p class="font-semibold text-strong">What one comparison reads</p>
-          <ul class="mt-1.5 grid gap-1">
-            <li>At most 150 MB compressed and 20 MB of the compared tables per file.</li>
-            <li>At most 100,000 rows per file, and 200,000 exact departures per file.</li>
-            <li>A file over any of these limits is refused whole, never partly compared.</li>
-          </ul>
-          <p class="mt-2">
-            Comparing takes the normal download claim on each file, so that file’s download count goes
-            up. If a file turns out to be damaged, it is closed and deleted and must be exported again.
-          </p>
-        </div>
-      </.form>
-
-      <.comparison_status view={@view} notice={@notice} />
-
-      <%= if @running? do %>
-        <section
-          id="comparison-progress"
-          class="mt-4 rounded-card border border-subtle bg-white px-5 py-5"
-        >
-          <div class="h-1.5 overflow-hidden rounded-full bg-info-bg">
-            <div class="h-full w-1/3 rounded-full bg-info-fg motion-safe:animate-pulse" />
-          </div>
-          <p class="mt-3 text-sm font-semibold text-strong">
-            Comparing service on {window_date_count(@window_dates)} dates…
-          </p>
-          <p class="text-[13px] text-muted">Usually under a minute.</p>
-        </section>
-      <% end %>
-
-      <%= if @status == :refused and @notice do %>
-        <.callout id="comparison-refused" kind="error" title="The comparison couldn’t finish">
-          <p class="text-[13px] leading-relaxed">{@notice}</p>
-        </.callout>
-      <% end %>
-
+    <div id="export-comparison">
       <%= if @empty? do %>
         <section
           id="comparison-empty"
-          class="mt-4 rounded-card border border-subtle bg-white px-6 py-10 text-center"
+          class="rounded-card border border-subtle bg-white px-6 py-10 text-center"
         >
           <.icon name="hero-arrows-right-left" class="mx-auto size-8 text-muted" />
           <p class="mt-3 text-base font-semibold text-strong">
@@ -240,26 +92,174 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
             Export full feed
           </.link>
         </section>
-      <% end %>
-
-      <%= if @no_change? do %>
-        <section
-          id="comparison-nochange"
-          class="mt-4 rounded-card border border-subtle bg-white px-5 py-5"
+      <% else %>
+        <.form
+          for={@form}
+          id="export-comparison-form"
+          phx-change="select_comparison"
+          phx-submit="start_comparison"
         >
-          <span class="inline-flex items-center gap-1 rounded-badge bg-success-bg px-2 py-0.5 text-[12px] font-semibold text-success-fg">
-            <.icon name="hero-check" class="size-3.5" /> No differences
-          </span>
-          <h2 class="mt-2 font-display text-[26px] leading-tight text-strong">
-            Riders get the same service from both files.
-          </h2>
-          <p class="mt-1 text-sm text-default">
-            Every route has the same service on all {window_date_count(@window_dates)} dates.
+          <fieldset>
+            <legend class="text-[13px] font-semibold text-strong">
+              Which two files do you want to compare?
+            </legend>
+            <div class="mt-2.5 grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+              <.input
+                field={@form[:left_run_id]}
+                type="select"
+                id="comparison-left"
+                label="Earlier file"
+                prompt="Choose a file"
+                options={@options}
+              />
+              <span class="hidden pb-2.5 text-muted sm:block" aria-hidden="true">
+                <.icon name="hero-arrow-right" class="size-4" />
+              </span>
+              <.input
+                field={@form[:right_run_id]}
+                type="select"
+                id="comparison-right"
+                label="Newer file"
+                prompt="Choose a file"
+                options={@options}
+              />
+            </div>
+          </fieldset>
+
+          <div class="mt-3 flex flex-wrap items-end gap-3">
+            <.input
+              field={@form[:from]}
+              type="date"
+              id="comparison-from"
+              label="From"
+              invalid={@too_long?}
+            />
+            <span class="pb-2.5 text-[13px] text-muted">to</span>
+            <.input
+              field={@form[:to]}
+              type="date"
+              id="comparison-to"
+              label="To"
+              invalid={@too_long?}
+            />
+          </div>
+
+          <p
+            id="comparison-window-note"
+            class={[
+              "mt-2 text-[13px] leading-relaxed",
+              @too_long? && "font-semibold text-error-fg",
+              !@too_long? && "text-muted"
+            ]}
+          >
+            {window_note(@window_dates, @too_long?)}
           </p>
-          <p class="mt-3 text-[12px] text-muted">
-            Not compared: fares, station pathways and flex services.
-          </p>
-        </section>
+
+          <div class="mt-4 flex flex-wrap items-center gap-2 max-sm:w-full max-sm:[&>*]:flex-1">
+            <.button
+              :if={not @running?}
+              id="comparison-start"
+              class="min-h-11"
+              phx-click={JS.focus(to: "#comparison-status-title")}
+            >
+              Compare files
+            </.button>
+            <.button
+              :if={@status == :cancelling}
+              id="comparison-start"
+              class="min-h-11"
+              disabled
+            >
+              Cancelling…
+            </.button>
+            <.button
+              :if={@running?}
+              id="comparison-cancel"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="cancel_comparison"
+            >
+              Cancel comparison
+            </.button>
+            <.button
+              :if={@status in [:completed, :refused]}
+              id="comparison-close"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_comparison"
+            >
+              Start over
+            </.button>
+            <.button
+              :if={@choices.next_cursor}
+              id="comparison-more-choices"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="load_more_comparison_choices"
+            >
+              Show more exports
+            </.button>
+          </div>
+
+          <div
+            id="comparison-caps"
+            class="mt-4 rounded-card border border-subtle bg-canvas px-4 py-3 text-[13px] leading-relaxed text-default"
+          >
+            <p class="font-semibold text-strong">What one comparison reads</p>
+            <ul class="mt-1.5 grid gap-1">
+              <li>At most 150 MB compressed and 20 MB of the compared tables per file.</li>
+              <li>At most 100,000 rows per file, and 200,000 exact departures per file.</li>
+              <li>A file over any of these limits is refused whole, never partly compared.</li>
+            </ul>
+            <p class="mt-2">
+              Comparing takes the normal download claim on each file, so that file’s download count goes
+              up. If a file turns out to be damaged, it is closed and deleted and must be exported again.
+            </p>
+          </div>
+        </.form>
+
+        <.comparison_status view={@view} notice={@notice} />
+
+        <%= if @running? do %>
+          <section
+            id="comparison-progress"
+            class="mt-4 rounded-card border border-subtle bg-white px-5 py-5"
+          >
+            <div class="h-1.5 overflow-hidden rounded-full bg-info-bg">
+              <div class="h-full w-1/3 rounded-full bg-info-fg motion-safe:animate-pulse" />
+            </div>
+            <p class="mt-3 text-sm font-semibold text-strong">
+              Comparing service on {window_date_count(@window_dates)} dates…
+            </p>
+            <p class="text-[13px] text-muted">Usually under a minute.</p>
+          </section>
+        <% end %>
+
+        <%= if @status == :refused and @notice do %>
+          <.callout id="comparison-refused" kind="error" title="The comparison couldn’t finish">
+            <p class="text-[13px] leading-relaxed">{@notice}</p>
+          </.callout>
+        <% end %>
+
+        <%= if @no_change? do %>
+          <section
+            id="comparison-nochange"
+            class="mt-4 rounded-card border border-t-4 border-subtle border-t-success-line bg-white px-5 py-5"
+          >
+            <span class="inline-flex items-center gap-1 rounded-badge bg-success-bg px-2 py-0.5 text-[12px] font-semibold text-success-fg">
+              <.icon name="hero-check" class="size-3.5" /> No differences
+            </span>
+            <h2 class="mt-2 font-display text-[26px] leading-tight text-strong">
+              Riders get the same service from both files.
+            </h2>
+            <p class="mt-1 text-sm text-default">
+              Every route has the same service on all {window_date_count(@window_dates)} dates.
+            </p>
+            <p class="mt-3 text-[12px] text-muted">
+              Not compared: fares, station pathways and flex services.
+            </p>
+          </section>
+        <% end %>
       <% end %>
     </div>
     """
@@ -294,15 +294,19 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
     do: "Choose 62 dates or fewer. This range has #{count}."
 
   defp window_note({count, from, to}, false),
-    do:
-      "#{count} dates · #{format_date_range(%{from: from, to: to})} · both files have service on every date"
+    do: "#{count} dates · #{format_date_range(%{from: from, to: to})}"
 
+  # The note is written before either file has been read, so it states only what
+  # the draft itself proves: how many dates and which range. A service-coverage
+  # claim here would describe files the page has not opened.
   defp window_date_count(nil), do: "the chosen"
   defp window_date_count({count, _from, _to}), do: count
 
-  defp no_change?(:completed, %{comparison: comparison}) do
-    comparison.effective_changes == [] and comparison.structural_changes == []
-  end
+  # A no-change verdict is only affordable for a comparison the engine itself
+  # called complete: an empty difference list beside unreadable rows or a window
+  # with no service states what could not be measured, not identical service.
+  defp no_change?(:completed, %{comparison: comparison}),
+    do: ComparePresentation.no_change?(comparison)
 
   defp no_change?(_status, _result), do: false
 
@@ -509,6 +513,8 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   attr :scope_form, :any, required: true
   attr :scope_notice, :string, default: nil
   attr :inspected, :map, default: nil
+  attr :inspected_route, :map, default: nil
+  attr :no_change?, :boolean, default: false
   attr :page, :map, required: true
   attr :true_totals, :map, required: true
   attr :kind_filter, :atom, default: nil
@@ -521,7 +527,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   # stream may iterate it. A stream consumed anywhere else renders its first
   # page and then stops pruning, so a narrowed scope would leave the full
   # comparison's rows on the page.
-  slot :differences_list, required: true
   slot :structural_list, required: true
   slot :unresolved_list, required: true
   slot :unknowns_list, required: true
@@ -540,30 +545,33 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       |> assign(:completeness, assigns.view.completeness)
       |> assign(:omitted, omitted_units(assigns.view.exclusions))
       |> assign(:per_date, per_date)
+      |> assign(:per_date_max, per_date_max(per_date))
       |> assign(:day_classes, assigns.day_classes || [])
       |> assign(:conclusion, assigns.conclusion || %{changed: 0, compared: 0})
       |> assign(:kind_counts, kind_counts)
       |> assign(:kind_counts_list, kind_counts_list(kind_counts))
+      |> assign(:change_total, kind_counts |> Map.values() |> Enum.sum())
       |> assign(:route_rows, ComparePresentation.route_rows(assigns.view, kind_filter))
 
     ~H"""
     <div id="comparison-results" class="grid gap-6">
-      <.result_section
-        id="comparison-summary"
-        title="What the comparison found"
-        lede={summary_lede(@completeness)}
+      <section
+        :if={not @no_change?}
+        id="comparison-result"
+        aria-labelledby="verdict-h"
+        class="min-w-0 overflow-hidden rounded-card border border-subtle bg-white"
       >
-        <div class="grid gap-5 px-5 py-5">
+        <div class="border-t-4 border-t-info-line px-5 pt-5">
           <dl id="comparison-artifacts" class="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
             <.artifact_column label="Earlier export" identity={@result.left} />
             <.artifact_column label="Candidate export" identity={@result.right} />
           </dl>
 
-          <p id="comparison-window" class="text-[13px] leading-relaxed text-muted">
+          <p id="comparison-window" class="mt-3 text-[13px] leading-relaxed text-muted">
             Both files were compared over the same dates, {format_date_range(@window)}.
           </p>
 
-          <div id="comparison-verdict">
+          <div id="comparison-verdict" class="mt-3">
             <h2 id="verdict-h" class="font-display text-[26px] leading-tight text-strong">
               {@conclusion.changed} of {@conclusion.compared} routes change.
             </h2>
@@ -576,63 +584,8 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
             </p>
           </div>
 
-          <div id="comparison-per-date">
-            <p class="text-[13px] font-semibold text-strong">Scheduled trips by date</p>
-            <ul class="mt-1.5 flex flex-wrap gap-1.5">
-              <li
-                :for={entry <- @per_date}
-                id={"comparison-date-#{Date.to_iso8601(entry.date)}"}
-                class="rounded-control border border-subtle bg-canvas px-2 py-1 text-[12px] tabular-nums text-strong"
-              >
-                {date_bar_value(entry.value)}
-              </li>
-            </ul>
-          </div>
-
-          <div id="comparison-kind-chips" class="flex flex-wrap gap-2">
-            <.kind_chip
-              id="comparison-kind-all"
-              label={"All #{@true_totals.comparison_differences}"}
-              kind="all"
-              pressed={is_nil(@kind_filter)}
-            />
-            <.kind_chip
-              :for={{kind, count} <- @kind_counts_list}
-              id={"comparison-kind-#{kind}"}
-              label={"#{change_kind(kind)} #{count}"}
-              kind={kind}
-              pressed={@kind_filter == kind}
-            />
-          </div>
-
-          <div id="comparison-routes">
-            <p class="text-[13px] font-semibold text-strong">By route</p>
-            <p :if={@route_rows == []} class="mt-1.5 text-[13px] text-muted">
-              No changes match this filter.
-            </p>
-            <div class="mt-1.5 grid gap-2">
-              <div
-                :for={row <- @route_rows}
-                id={route_row_id(row)}
-                class="rounded-control border border-subtle bg-white px-4 py-3"
-              >
-                <div class="flex flex-wrap items-center gap-2">
-                  <RouteIdentity.route_badge
-                    size="compact"
-                    title={row.route}
-                    route={route_badge_route(row.route)}
-                  />
-                  <span class="text-sm font-semibold text-strong">{change_kind(row.kind)}</span>
-                  <span class="text-[13px] text-muted">{route_row_dates(row)}</span>
-                </div>
-                <p class="mt-1 text-[13px] text-muted">{route_row_delta(row)}</p>
-              </div>
-            </div>
-          </div>
-
-          <div id="comparison-totals">
-            <p class="text-[13px] font-semibold text-strong">Totals across the compared routes</p>
-            <dl class="mt-1.5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div id="comparison-totals" class="mt-4">
+            <dl class="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <.total_cell
                 id="comparison-scheduled-delta"
                 label="Scheduled trips"
@@ -683,175 +636,294 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
             </p>
           </div>
 
-          <div id="comparison-completeness">
-            <.tone_badge tone={completeness_tone(@completeness.status)}>
-              {completeness_label(@completeness.status)}
-            </.tone_badge>
-            <ul
-              :if={@completeness.reasons != []}
-              id="comparison-completeness-reasons"
-              class="mt-2 grid gap-1 text-[13px] leading-relaxed text-default"
-            >
-              <li :for={reason <- @completeness.reasons} data-reason={reason}>
-                {completeness_reason(reason)}
-              </li>
-            </ul>
-          </div>
+          <figure id="comparison-per-date" class="mt-5">
+            <figcaption class="text-[13px] font-semibold text-strong">
+              Trip change by date
+            </figcaption>
+            <div class="mt-2 overflow-x-auto pb-1">
+              <ol class="flex min-w-max items-end gap-1">
+                <li
+                  :for={entry <- @per_date}
+                  id={"comparison-date-#{Date.to_iso8601(entry.date)}"}
+                  aria-label={per_date_label(entry)}
+                  class="flex w-11 shrink-0 flex-col items-center gap-1"
+                >
+                  <span class={[
+                    "text-[11px] font-semibold tabular-nums",
+                    per_date_value_class(entry.value)
+                  ]}>
+                    {per_date_value(entry.value)}
+                  </span>
+                  <div class="relative h-11 w-full" aria-hidden="true">
+                    <div
+                      :if={is_integer(entry.value) and entry.value > 0}
+                      class="absolute bottom-1/2 w-full rounded-t-[3px] bg-info-line"
+                      style={"height: #{per_date_bar_height(entry.value, @per_date_max)}px"}
+                    />
+                    <div
+                      :if={is_integer(entry.value) and entry.value < 0}
+                      class="absolute top-1/2 w-full rounded-b-[3px] bg-action"
+                      style={"height: #{per_date_bar_height(entry.value, @per_date_max)}px"}
+                    />
+                    <div class="absolute top-1/2 h-px w-full bg-control" />
+                  </div>
+                  <span class="text-[11px] text-muted">{format_chart_date(entry.date)}</span>
+                </li>
+              </ol>
+            </div>
+          </figure>
+        </div>
 
-          <div
-            :if={@view[:scope]}
-            id="comparison-scope-applied"
-            class="rounded-card border border-info-line bg-info-bg px-4 py-3 text-[13px] leading-relaxed"
+        <div
+          id="comparison-kind-chips"
+          role="group"
+          aria-label="Show changes"
+          class="mt-5 flex flex-wrap gap-2 border-t border-subtle px-5 py-3"
+        >
+          <.kind_chip
+            id="comparison-kind-all"
+            label={"All #{@change_total}"}
+            kind="all"
+            pressed={is_nil(@kind_filter)}
+          />
+          <.kind_chip
+            :for={{kind, count} <- @kind_counts_list}
+            id={"comparison-kind-#{kind}"}
+            label={"#{change_kind(kind)} #{count}"}
+            kind={kind}
+            pressed={@kind_filter == kind}
+          />
+        </div>
+
+        <div id="comparison-rows" class="overflow-x-auto border-t border-subtle">
+          <table class="w-full min-w-[44rem] text-left">
+            <thead>
+              <tr class="border-b border-subtle text-[12px] text-muted">
+                <th class="px-5 py-2 font-semibold">Route</th>
+                <th class="px-4 py-2 font-semibold">Change</th>
+                <th class="px-4 py-2 font-semibold">When</th>
+                <th class="px-4 py-2 text-right font-semibold">Trips a day</th>
+                <th class="px-5 py-2"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :if={@route_rows == []}>
+                <td colspan="5" class="px-5 py-6 text-center text-[13px] text-muted">
+                  No changes match this filter.
+                </td>
+              </tr>
+              <%= for row <- @route_rows do %>
+                <tr id={row.id} class="border-b border-subtle align-top last:border-b-0">
+                  <td class="px-5 py-3">
+                    <div class="flex items-center gap-2">
+                      <RouteIdentity.route_badge
+                        size="compact"
+                        title={row.route}
+                        route={route_badge_route(row.route)}
+                      />
+                      <span class="text-sm font-semibold text-strong">
+                        {route_label(row.route_ids)}
+                      </span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 text-sm font-semibold text-strong">
+                    {change_kind(row.kind)}
+                  </td>
+                  <td class="px-4 py-3 text-[13px] text-default">{route_row_dates(row)}</td>
+                  <td class="px-4 py-3 text-right text-[13px] tabular-nums text-strong">
+                    {route_row_delta(row)}
+                  </td>
+                  <td class="px-5 py-3 text-right">
+                    <.button
+                      id={"#{row.id}-inspect"}
+                      variant="quiet"
+                      size="sm"
+                      aria-expanded={to_string(@inspected_route && @inspected_route.id == row.id)}
+                      phx-click="inspect_comparison_route"
+                      phx-value-row={row.id}
+                    >
+                      Inspect
+                    </.button>
+                  </td>
+                </tr>
+                <tr
+                  :if={@inspected_route && @inspected_route.id == row.id}
+                  id="comparison-inspected"
+                  class="border-b border-subtle last:border-b-0"
+                >
+                  <td colspan="5" class="bg-canvas px-5 py-4">
+                    <.grouped_route_detail row={@inspected_route} />
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+
+        <details id="comparison-structural" class="group border-t border-subtle">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 text-sm font-semibold text-strong [&::-webkit-details-marker]:hidden">
+            <.icon
+              name="hero-chevron-right"
+              class="size-4 text-muted transition-transform group-open:rotate-90"
+            /> Stops and routes added, removed or renamed
+            <span class="font-normal tabular-nums text-muted">
+              · {@true_totals.comparison_structural}
+            </span>
+          </summary>
+          <p class="px-5 pb-1 text-[13px] leading-relaxed text-muted">
+            Renamed, added and removed entities. These are not service loss on their own.
+          </p>
+          {render_slot(@structural_list)}
+          <p
+            :if={@true_totals.comparison_structural == 0}
+            id="comparison-structural-empty"
+            class="px-5 py-6 text-center text-[13px] text-muted"
           >
-            <p class="font-semibold">Showing a narrowed scope</p>
-            <p class="mt-0.5">
-              {length(@view.scope.route_pair_keys)} route{plural(@view.scope.route_pair_keys)} and {length(
-                @view.scope.dates
-              )} date{plural(@view.scope.dates)}. The totals above
-              count only these; the full comparison is still held by this page.
+            No identifiers changed.
+          </p>
+          <.page_bar
+            collection={:comparison_structural}
+            page={@page.comparison_structural}
+            true_total={@true_totals.comparison_structural}
+            noun="change"
+          />
+        </details>
+
+        <div :if={@true_totals.comparison_unresolved > 0} id="comparison-unresolved">
+          <div class="border-t border-subtle px-5 pt-4">
+            <p class="text-[13px] font-semibold text-strong">
+              Unresolved entity matches
+              <span class="font-normal tabular-nums text-muted">
+                · {@true_totals.comparison_unresolved}
+              </span>
             </p>
-            <p :if={@omitted != []} id="comparison-omitted-count" class="mt-1">
-              {length(@omitted)} route and date group{plural(@omitted)} from the full
-              comparison {if length(@omitted) == 1, do: "is", else: "are"} left out of this scope.
+            <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
+              Entities this comparison could not pair with confidence. They are never counted as a
+              loss.
             </p>
+          </div>
+          {render_slot(@unresolved_list)}
+          <.page_bar
+            collection={:comparison_unresolved}
+            page={@page.comparison_unresolved}
+            true_total={@true_totals.comparison_unresolved}
+            noun="unresolved match"
+          />
+        </div>
+
+        <div :if={@true_totals.comparison_unknowns > 0} id="comparison-unknowns-section">
+          <div class="border-t border-subtle px-5 pt-4">
+            <p class="text-[13px] font-semibold text-strong">
+              What this comparison could not read
+              <span class="font-normal tabular-nums text-muted">
+                · {@true_totals.comparison_unknowns}
+              </span>
+            </p>
+            <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
+              Rows the files did not state clearly. They are never counted as zero service.
+            </p>
+          </div>
+          {render_slot(@unknowns_list)}
+          <.page_bar
+            collection={:comparison_unknowns}
+            page={@page.comparison_unknowns}
+            true_total={@true_totals.comparison_unknowns}
+            noun="unknown row"
+          />
+        </div>
+
+        <div
+          :if={@inspected}
+          id="comparison-inspected"
+          role="region"
+          aria-labelledby="comparison-inspected-title"
+          tabindex="-1"
+          class="border-t border-subtle bg-canvas px-5 py-5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <h3 id="comparison-inspected-title" class="text-base font-bold text-strong">
+              One row in full
+            </h3>
             <.button
-              id="comparison-clear-scope"
+              id="comparison-inspected-close"
               variant="quiet"
-              class="mt-2 min-h-11"
-              phx-click="clear_comparison_scope"
+              size="sm"
+              phx-click={
+                JS.push("close_comparison_detail") |> JS.focus(to: "#comparison-inspected-title")
+              }
             >
-              Show the whole comparison
+              Close
             </.button>
           </div>
+          <p class="mt-1 text-[13px] leading-relaxed text-muted">
+            The row as the comparison recorded it, including the file and row it came from.
+          </p>
+          <dl
+            id="comparison-inspected-body"
+            class="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]"
+          >
+            <.detail_term term="Kind" value={inspect_kind(@inspected)} />
+            <.detail_term term="Route" value={inspect_route(@inspected)} />
+            <.detail_term term="Dates" value={inspect_dates(@inspected)} />
+            <.detail_term term="Counts" value={inspect_counts(@inspected)} />
+            <.detail_term term="Reason" value={inspect_reason(@inspected)} />
+            <.detail_term term="Source rows" value={inspect_refs(@inspected)} />
+            <.detail_term term="Frequency windows" value={inspect_frequency(@inspected)} />
+          </dl>
         </div>
-      </.result_section>
 
-      <.result_section
-        id="comparison-differences"
-        title="Service differences"
-        count={@true_totals.comparison_differences}
-        lede="What changed in the compared service, one row per difference."
-      >
-        {render_slot(@differences_list)}
-        <p
-          :if={@true_totals.comparison_differences == 0}
-          id="comparison-differences-empty"
-          class="px-5 py-6 text-center text-[13px] text-muted"
-        >
-          No service differences were found in this scope.
-        </p>
-        <.page_bar
-          collection={:comparison_differences}
-          page={@page.comparison_differences}
-          true_total={@true_totals.comparison_differences}
-          noun="difference"
-        />
-      </.result_section>
+        <div id="comparison-completeness" class="border-t border-subtle px-5 py-4">
+          <.tone_badge tone={completeness_tone(@completeness.status)}>
+            {completeness_label(@completeness.status)}
+          </.tone_badge>
+          <ul
+            :if={@completeness.reasons != []}
+            id="comparison-completeness-reasons"
+            class="mt-2 grid gap-1 text-[13px] leading-relaxed text-default"
+          >
+            <li :for={reason <- @completeness.reasons} data-reason={reason}>
+              {completeness_reason(reason)}
+            </li>
+          </ul>
+        </div>
 
-      <.result_section
-        id="comparison-structural"
-        title="Identifier and presence changes"
-        count={@true_totals.comparison_structural}
-        lede="Renamed, added and removed entities. These are not service loss on their own."
-      >
-        {render_slot(@structural_list)}
-        <p
-          :if={@true_totals.comparison_structural == 0}
-          id="comparison-structural-empty"
-          class="px-5 py-6 text-center text-[13px] text-muted"
-        >
-          No identifiers changed.
-        </p>
-        <.page_bar
-          collection={:comparison_structural}
-          page={@page.comparison_structural}
-          true_total={@true_totals.comparison_structural}
-          noun="change"
-        />
-      </.result_section>
-
-      <.result_section
-        id="comparison-unresolved"
-        title="Unresolved entity matches"
-        count={@true_totals.comparison_unresolved}
-        lede="Entities this comparison could not pair with confidence. They are never counted as a loss."
-      >
-        {render_slot(@unresolved_list)}
-        <p
-          :if={@true_totals.comparison_unresolved == 0}
-          id="comparison-unresolved-empty"
-          class="px-5 py-6 text-center text-[13px] text-muted"
-        >
-          Every entity was paired.
-        </p>
-        <.page_bar
-          collection={:comparison_unresolved}
-          page={@page.comparison_unresolved}
-          true_total={@true_totals.comparison_unresolved}
-          noun="unresolved match"
-        />
-      </.result_section>
-
-      <.result_section
-        id="comparison-unknowns-section"
-        title="What this comparison could not read"
-        count={@true_totals.comparison_unknowns}
-        lede="Rows the files did not state clearly. They are never counted as zero service."
-      >
-        {render_slot(@unknowns_list)}
-        <p
-          :if={@true_totals.comparison_unknowns == 0}
-          id="comparison-unknowns-empty"
-          class="px-5 py-6 text-center text-[13px] text-muted"
-        >
-          Nothing was unreadable.
-        </p>
-        <.page_bar
-          collection={:comparison_unknowns}
-          page={@page.comparison_unknowns}
-          true_total={@true_totals.comparison_unknowns}
-          noun="unknown row"
-        />
-      </.result_section>
+        <div id="comparison-exclusions" class="border-t border-subtle bg-canvas px-5 py-3">
+          <p class="text-[12px] font-semibold text-muted">Not compared</p>
+          <ul
+            id="comparison-exclusion-list"
+            class="mt-1 grid gap-1 text-[13px] leading-relaxed text-default"
+          >
+            <li :for={exclusion <- @view.exclusions} data-reason={exclusion.reason}>
+              {exclusion.detail}
+            </li>
+          </ul>
+        </div>
+      </section>
 
       <div
-        :if={@inspected}
-        id="comparison-inspected"
-        role="region"
-        aria-labelledby="comparison-inspected-title"
-        tabindex="-1"
-        class="rounded-card border border-subtle bg-white px-5 py-5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        :if={@view[:scope]}
+        id="comparison-scope-applied"
+        class="rounded-card border border-info-line bg-info-bg px-4 py-3 text-[13px] leading-relaxed"
       >
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <h3 id="comparison-inspected-title" class="text-base font-bold text-strong">
-            One row in full
-          </h3>
-          <.button
-            id="comparison-inspected-close"
-            variant="quiet"
-            size="sm"
-            phx-click={
-              JS.push("close_comparison_detail") |> JS.focus(to: "#comparison-inspected-title")
-            }
-          >
-            Close
-          </.button>
-        </div>
-        <p class="mt-1 text-[13px] leading-relaxed text-muted">
-          The row as the comparison recorded it, including the file and row it came from.
+        <p class="font-semibold">Showing a narrowed scope</p>
+        <p class="mt-0.5">
+          {length(@view.scope.route_pair_keys)} route{plural(@view.scope.route_pair_keys)} and {length(
+            @view.scope.dates
+          )} date{plural(@view.scope.dates)}. The totals above
+          count only these; the full comparison is still held by this page.
         </p>
-        <dl
-          id="comparison-inspected-body"
-          class="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]"
+        <p :if={@omitted != []} id="comparison-omitted-count" class="mt-1">
+          {length(@omitted)} route and date group{plural(@omitted)} from the full
+          comparison {if length(@omitted) == 1, do: "is", else: "are"} left out of this scope.
+        </p>
+        <.button
+          id="comparison-clear-scope"
+          variant="quiet"
+          class="mt-2 min-h-11"
+          phx-click="clear_comparison_scope"
         >
-          <.detail_term term="Kind" value={inspect_kind(@inspected)} />
-          <.detail_term term="Route" value={inspect_route(@inspected)} />
-          <.detail_term term="Dates" value={inspect_dates(@inspected)} />
-          <.detail_term term="Counts" value={inspect_counts(@inspected)} />
-          <.detail_term term="Reason" value={inspect_reason(@inspected)} />
-          <.detail_term term="Source rows" value={inspect_refs(@inspected)} />
-          <.detail_term term="Frequency windows" value={inspect_frequency(@inspected)} />
-        </dl>
+          Show the whole comparison
+        </.button>
       </div>
 
       <.form for={@scope_form} id="comparison-scope-form" phx-submit="narrow_comparison">
@@ -904,29 +976,136 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
           </div>
         </fieldset>
       </.form>
-
-      <details
-        id="comparison-exclusions"
-        class="group rounded-card border border-subtle bg-white px-5 py-4"
-      >
-        <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold text-strong [&::-webkit-details-marker]:hidden">
-          <.icon
-            name="hero-chevron-right"
-            class="size-4 text-muted transition-transform group-open:rotate-90"
-          /> What this comparison does not cover
-        </summary>
-        <ul
-          id="comparison-exclusion-list"
-          class="grid gap-1.5 pt-2 text-[13px] leading-relaxed text-default"
-        >
-          <li :for={exclusion <- @view.exclusions} data-reason={exclusion.reason}>
-            {exclusion.detail}
-          </li>
-        </ul>
-      </details>
     </div>
     """
   end
+
+  attr :row, :map, required: true
+
+  # A grouped route row's detail: one line per change in the group, naming the
+  # dates it covers, the trip each file states and the timing that trip departed.
+  defp grouped_route_detail(assigns) do
+    ~H"""
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 id="comparison-inspected-title" class="text-sm font-bold text-strong">
+          {change_kind(@row.kind)} · {route_label(@row.route_ids)}
+        </h3>
+        <p class="mt-0.5 text-[13px] leading-relaxed text-muted">
+          The changes behind this row, with the trip each file states and the timing it departed.
+        </p>
+      </div>
+      <.button
+        id="comparison-inspected-close"
+        variant="quiet"
+        size="sm"
+        phx-click="close_comparison_detail"
+      >
+        Close
+      </.button>
+    </div>
+    <table class="mt-3 w-full max-w-3xl text-left text-[13px]">
+      <thead>
+        <tr class="border-b border-subtle text-[12px] text-muted">
+          <th class="py-1 pr-4 font-semibold">Date</th>
+          <th class="py-1 pr-4 font-semibold">Earlier file</th>
+          <th class="py-1 pr-4 font-semibold">Candidate file</th>
+          <th class="py-1 font-semibold">Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr :for={change <- @row.changes} class="border-b border-subtle/60 last:border-0">
+          <td class="py-1.5 pr-4 align-top text-strong">{change_dates(change)}</td>
+          <td class="py-1.5 pr-4 align-top tabular-nums text-strong">
+            {trip_note(change, :left)}
+          </td>
+          <td class="py-1.5 pr-4 align-top tabular-nums text-strong">
+            {trip_note(change, :right)}
+          </td>
+          <td class="py-1.5 align-top tabular-nums text-default">{route_detail_delta(change)}</td>
+        </tr>
+      </tbody>
+    </table>
+    """
+  end
+
+  # A grouped change carries its own trip identities and the per-stop timing the
+  # comparison recorded. A file cell names the trip and its first departure, or
+  # "—" when the change identified no trip (a count or frequency churn).
+  defp trip_note(change, side) do
+    trip = get_in(change, [:trips, side])
+    timing = change |> Map.get(:timing, []) |> List.wrap() |> List.first()
+
+    [trip && to_string(trip), timing && format_seconds(timing_seconds(timing, side))]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> "—"
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp timing_seconds(%{left_secs: left}, :left), do: left
+  defp timing_seconds(%{right_secs: right}, :right), do: right
+  defp timing_seconds(_entry, _side), do: nil
+
+  defp route_detail_delta(%{timing: timing}) when is_list(timing) and timing != [] do
+    case timing |> Enum.map(& &1.delta_secs) |> Enum.uniq() do
+      [0] -> "no change"
+      [delta] -> "#{signed_seconds(delta)} at #{length(timing)} stops"
+      _varies -> "differs by stop"
+    end
+  end
+
+  defp route_detail_delta(change), do: "trips #{signed(change.delta[:scheduled_count])}"
+
+  defp signed_seconds(seconds) when seconds > 0, do: "later by #{div(seconds, 60)} min"
+  defp signed_seconds(seconds) when seconds < 0, do: "earlier by #{div(abs(seconds), 60)} min"
+  defp signed_seconds(_seconds), do: "no change"
+
+  defp format_seconds(seconds) when is_integer(seconds) and seconds >= 0 do
+    "#{pad2(div(seconds, 3600))}:#{pad2(div(rem(seconds, 3600), 60))}:#{pad2(rem(seconds, 60))}"
+  end
+
+  defp format_seconds(_seconds), do: "—"
+
+  defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
+
+  # One value per date, so the chart scales to its own window: the tallest bar
+  # is 44px and every other bar keeps its proportion, with a floor so a small
+  # change stays visible. A date whose value is nil draws no bar, only "—".
+  defp per_date_max(entries) do
+    entries
+    |> Enum.map(&abs(&1.value || 0))
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp per_date_bar_height(value, max) when is_integer(value) and max > 0,
+    do: max(div(abs(value) * 44, max), 3)
+
+  defp per_date_bar_height(_value, _max), do: 0
+
+  defp per_date_value(nil), do: "—"
+  defp per_date_value(0), do: "0"
+  defp per_date_value(value) when value > 0, do: "+#{value}"
+  defp per_date_value(value), do: "−#{abs(value)}"
+
+  defp per_date_value_class(nil), do: "text-muted"
+  defp per_date_value_class(0), do: "text-muted"
+  defp per_date_value_class(value) when value > 0, do: "text-info-fg"
+  defp per_date_value_class(_value), do: "text-action"
+
+  # The bar's value and the date are both read aloud, so the chart's meaning
+  # survives without seeing colour or height.
+  defp per_date_label(%{date: date, value: value}) do
+    "#{format_chart_date(date)}: #{per_date_meaning(value)}"
+  end
+
+  defp per_date_meaning(nil), do: "not measured"
+  defp per_date_meaning(0), do: "no change"
+  defp per_date_meaning(value) when value > 0, do: "gain #{value} trip#{plural(value)}"
+  defp per_date_meaning(value), do: "lose #{abs(value)} trip#{plural(abs(value))}"
+
+  defp format_chart_date(%Date{} = date), do: Calendar.strftime(date, "%b %-d")
 
   attr :label, :string, required: true
   attr :identity, :map, required: true
@@ -1013,7 +1192,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   # The DOM ids of the paging controls drop the stream's own `comparison_`
   # prefix, so the page's ids stay short and stable.
-  defp short_collection(:comparison_differences), do: "differences"
   defp short_collection(:comparison_structural), do: "structural"
   defp short_collection(:comparison_unresolved), do: "unresolved"
   defp short_collection(:comparison_unknowns), do: "unknowns"
@@ -1052,7 +1230,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       phx-value-kind={@kind}
       aria-pressed={to_string(@pressed)}
       class={[
-        "min-h-9 rounded-full border px-3 py-1.5 text-[13px] font-semibold",
+        "min-h-11 rounded-full border px-3 py-1.5 text-[13px] font-semibold",
         @pressed && "border-strong bg-strong text-white",
         !@pressed && "border-subtle bg-white text-strong hover:bg-canvas"
       ]}
@@ -1064,9 +1242,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   defp total_value(nil), do: "—"
   defp total_value(value), do: signed(value)
-
-  defp date_bar_value(nil), do: "—"
-  defp date_bar_value(value), do: signed(value)
 
   defp kind_counts_list(counts) do
     for kind <- [:count_changed, :timing_changed, :added, :removed, :frequency_changed],
@@ -1101,15 +1276,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   defp route_row_delta(%{delta: %{scheduled_count: count}}), do: "trips #{signed(count)}"
   defp route_row_delta(_row), do: ""
 
-  defp route_row_id(row) do
-    "comparison-route-#{row.kind}-#{route_key_part(row.route)}-#{row.direction_id}"
-  end
-
-  defp route_key_part(nil), do: "unnamed"
-
-  defp route_key_part(route),
-    do: route |> to_string() |> String.replace(~r/[^A-Za-z0-9_-]/, "-")
-
   defp route_badge_route(route) do
     %{
       route_id: route,
@@ -1136,12 +1302,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   defp omitted_units(exclusions),
     do: Enum.filter(exclusions, &(&1.reason == :narrowed_out_of_scope))
-
-  defp summary_lede(%{status: :complete}),
-    do: "Every supported dimension of both files was compared over these dates."
-
-  defp summary_lede(%{status: :incomplete}),
-    do: "Some of what these files describe could not be compared, so this is a partial answer."
 
   defp completeness_tone(:complete), do: "success"
   defp completeness_tone(:incomplete), do: "warning"
@@ -1272,10 +1432,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
     end
   end
 
-  defp change_delta(%{delta: delta, counts: counts}) do
-    "trips #{signed(delta[:scheduled_count])} · exact #{signed(delta[:exact_count])} · was #{counts_description(counts)}"
-  end
-
   defp counts_description(%{left: left, right: right}),
     do: "#{side_count(left)} then #{side_count(right)}"
 
@@ -1336,16 +1492,13 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
     "was #{counts_description(counts)}; now trips #{signed(delta[:scheduled_count])}, exact #{signed(delta[:exact_count])}"
   end
 
+  defp inspect_counts(%{entity: entity}),
+    do: "This #{entity} has no trip counts; it is an identity or presence change."
+
   defp inspect_counts(%{left: left, right: right}) when is_map(left) and is_map(right) do
     "earlier #{side_count(Map.take(left, [:scheduled_count, :exact_count]))}, " <>
       "candidate #{side_count(Map.take(right, [:scheduled_count, :exact_count]))}"
   end
-
-  defp inspect_counts(%{left: left, right: right}),
-    do: "earlier #{side_count(left)}, candidate #{side_count(right)}"
-
-  defp inspect_counts(%{entity: entity}),
-    do: "This #{entity} has no trip counts; it is an identity or presence change."
 
   defp inspect_counts(%{reason: reason}), do: "This row has no counts: #{unknown_reason(reason)}."
 
@@ -1428,51 +1581,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   defp format_date_range(%{from: from, to: to}),
     do: "#{format_timestamp(from)} – #{format_timestamp(to)}"
-
-  @doc """
-  One row of the differences list. The list itself is a slot on
-  `comparison_results/1`; this is only the row's own markup, so the owning
-  template stays the one that iterates the stream.
-  """
-  attr :dom_id, :string, required: true
-  attr :change, :map, required: true
-
-  def comparison_difference_row(assigns) do
-    ~H"""
-    <div
-      id={@dom_id}
-      class="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-start sm:justify-between"
-    >
-      <div class="min-w-0">
-        <p class="text-sm font-semibold text-strong">
-          {change_kind(@change.kind)} · {route_label(@change.route_ids)}
-        </p>
-        <p class="mt-0.5 text-[13px] text-muted">
-          {change_dates(@change)}
-          {if @change.direction_id, do: " · direction #{@change.direction_id}"}
-        </p>
-        <p :if={@change.reason} class="mt-0.5 text-[13px] text-muted">
-          {difference_reason(@change.reason)}
-        </p>
-      </div>
-      <div class="flex shrink-0 items-center gap-2">
-        <span id={"#{@dom_id}-delta"} class="text-sm font-semibold tabular-nums text-strong">
-          {change_delta(@change)}
-        </span>
-        <.button
-          id={"#{@dom_id}-inspect"}
-          variant="quiet"
-          size="sm"
-          phx-click="inspect_comparison_row"
-          phx-value-collection={:comparison_differences}
-          phx-value-row={@dom_id}
-        >
-          Inspect
-        </.button>
-      </div>
-    </div>
-    """
-  end
 
   @doc "One row of the identifier and presence changes list."
   attr :dom_id, :string, required: true

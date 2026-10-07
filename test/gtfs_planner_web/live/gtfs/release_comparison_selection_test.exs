@@ -90,8 +90,8 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       assert html =~ "comparison-status"
 
       # Both run selectors are labelled, and the date range starts blank.
-      assert field_label(view, "select#comparison-left") == "Earlier export"
-      assert field_label(view, "select#comparison-right") == "Candidate export"
+      assert field_label(view, "select#comparison-left") == "Earlier file"
+      assert field_label(view, "select#comparison-right") == "Newer file"
       assert field_label(view, "input#comparison-from") == "From"
       assert field_label(view, "input#comparison-to") == "To"
 
@@ -419,7 +419,11 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
 
       render_hook(view, "narrow_comparison", %{"comparison_scope" => ["not-a-map"]})
 
-      assert has_element?(view, "#comparison-status-title", "No comparison running")
+      # No files are listed, so the page is its empty state and no forged form
+      # event can make it render a comparison surface.
+      assert has_element?(view, "#comparison-empty")
+      refute has_element?(view, "#export-comparison-form")
+      refute has_element?(view, "#comparison-results")
     end
 
     test "closing and reopening does not adopt the previous request's result", context do

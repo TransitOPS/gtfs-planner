@@ -466,13 +466,15 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
     await openExport(page, viewport);
     await compare(page, UNCHANGED);
 
-    await expect(page.locator("#comparison-totals")).toContainText("no change");
-    await expect(page.locator("#comparison-completeness")).toContainText(
-      "Complete for this window",
+    // A complete comparison with nothing to report is its own state card, not
+    // the result card with empty sections.
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "No differences",
     );
-    await expect(page.locator("#comparison-differences-empty")).toBeVisible();
-    await expect(page.locator("#comparison-structural-empty")).toBeVisible();
-    await expect(page.locator("#comparison-unresolved-empty")).toBeVisible();
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "Riders get the same service",
+    );
+    await expect(page.locator("#comparison-result")).toHaveCount(0);
     await capture(page, "no-difference", viewport);
 
     await openHelper(page);
@@ -527,7 +529,9 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
     // A retained pair still compares on the same page.
     await page.locator("#comparison-close").click();
     await compare(page, UNCHANGED);
-    await expect(page.locator("#comparison-totals")).toContainText("no change");
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "No differences",
+    );
   });
 });
 
@@ -548,10 +552,9 @@ test.describe("helper limits, failure and replacement", () => {
       await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
       await expect(page.locator("#agent-panel")).toHaveCount(0);
 
-      await expect(page.locator("#comparison-totals")).toContainText(
-        "no change",
+      await expect(page.locator("#comparison-nochange")).toContainText(
+        "No differences",
       );
-      await expect(page.locator("#comparison-differences")).toBeVisible();
       await expect(page.locator("#comparison-scope-form")).toBeVisible();
       expect(await fitsWidth(page)).toBe(true);
       await capture(

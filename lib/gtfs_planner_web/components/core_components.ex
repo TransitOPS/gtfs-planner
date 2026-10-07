@@ -210,6 +210,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
     doc: "a form field struct retrieved from the form, for example: @form[:email]"
 
   attr :errors, :list, default: []
+
+  attr :invalid, :boolean,
+    default: false,
+    doc: "marks a server-validated invalid control that has no changeset errors"
+
   attr :checked, :boolean, doc: "the checked flag for checkbox inputs"
   attr :prompt, :string, default: nil, doc: "the prompt for select inputs"
   attr :options, :list, doc: "the options to pass to Phoenix.HTML.Form.options_for_select/2"
@@ -301,7 +306,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @errors != [] && (@error_class || "select-error")
           ]}
           multiple={@multiple}
-          aria-invalid={to_string(@errors != [])}
+          aria-invalid={to_string(@invalid or @errors != [])}
           aria-describedby={@describedby}
           {@rest}
         >
@@ -359,7 +364,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             @class || "w-full input input-lg",
             @errors != [] && (@error_class || "input-error")
           ]}
-          aria-invalid={to_string(@errors != [])}
+          aria-invalid={to_string(@invalid or @errors != [])}
           aria-describedby={@describedby}
           {@rest}
         />
