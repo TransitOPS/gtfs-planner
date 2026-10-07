@@ -26,7 +26,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   @snapshot_kind "feed_quality"
   @snapshot_schema 1
   @snapshot_sections ["validation", "export"]
-  @export_types ["full", "pathways", "operations"]
+  @export_types ["full", "pathways", "operations", "operations_only"]
   @max_result_bytes 32_768
 
   @impl true
@@ -105,7 +105,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
       %{
         name: "get_export_readiness",
         description:
-          "Report the current defaults'd profile, structured preflight totals, recent scoped checks and whether the selected artifact's exact bytes were checked. export_type is full, pathways, operations or stations (the stations alias names the pathways files) and artifact is primary or flex. relationship is checked, different_bytes, different_profile, unknown or unavailable; currentness is always unknown and publication is unsupported.",
+          "Report the current defaults'd profile, structured preflight totals, recent scoped checks and whether the selected artifact's exact bytes were checked. export_type is full, pathways, operations, operations_only or stations (the stations alias names the pathways files) and artifact is primary or flex. relationship is checked, different_bytes, different_profile, unknown or unavailable; currentness is always unknown and publication is unsupported.",
         activity: "Read export readiness",
         parameters: %{
           "type" => "object",
@@ -998,6 +998,7 @@ defmodule GtfsPlanner.Agents.Packs.FeedQuality do
   defp export_type_label(:full), do: "Full feed"
   defp export_type_label(:pathways), do: "Pathways / stations files"
   defp export_type_label(:operations), do: "Operations"
+  defp export_type_label(:operations_only), do: "Operations data only"
   defp export_type_label(other), do: to_string(other)
 
   defp flex_label(%{include_flex: true}), do: "included (current default)"
