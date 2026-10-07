@@ -669,31 +669,13 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     case Ecto.UUID.cast(id) do
       {:ok, uuid} ->
         case ExportRuns.get_comparable(socket.assigns.current_organization.id, nil, uuid) do
-          {:ok, run} -> comparison_choice_row(run)
+          {:ok, run} -> ReleaseComparison.choice_row(run)
           {:error, _reason} -> nil
         end
 
       :error ->
         nil
     end
-  end
-
-  # The same server-held shape `ReleaseComparison.list_choices/2` returns, so a
-  # prefilled candidate names itself in the form and the finished band exactly
-  # like a listed one.
-  defp comparison_choice_row(run) do
-    %{
-      run_id: run.id,
-      version_id: run.gtfs_version_id,
-      sha256: run.artifact_sha256,
-      size: run.artifact_size_bytes,
-      export_type: run.export_type,
-      expires_at: run.artifact_expires_at,
-      estimate_missing_times: run.estimate_missing_times,
-      estimate_method: run.estimate_method,
-      version_name: run.version_name,
-      created_at: run.inserted_at
-    }
   end
 
   # -- comparison result -----------------------------------------------------

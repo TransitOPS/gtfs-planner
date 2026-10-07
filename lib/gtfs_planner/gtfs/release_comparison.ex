@@ -242,7 +242,15 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
     }
   end
 
-  defp choice_row(%Run{} = run) do
+  @doc """
+  Projects one resolved comparable run into the chooser row returned by
+  `list_choices/2`.
+
+  Callers remain responsible for resolving the run through an authorized,
+  organization-scoped comparison lookup before using this pure projection.
+  """
+  @spec choice_row(%Run{}) :: map()
+  def choice_row(%Run{} = run) do
     run
     |> artifact_identity()
     |> Map.put(:version_name, run.version_name)
