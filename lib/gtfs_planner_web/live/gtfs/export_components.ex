@@ -681,6 +681,342 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp tile_columns(5), do: "sm:grid-cols-5"
 
   @doc """
+  The Files card: every retained run of this version, newest first, kept for 24
+  hours. Rows are the live `:files` stream, each with a stable
+  `export-file-<id>` id, so a run's row can be replaced in place.
+  """
+  attr :empty?, :boolean, default: true
+  attr :has_more?, :boolean, default: false
+  attr :notice, :string, default: nil
+  attr :finished_run, :any, default: nil
+  attr :clash_run, :any, default: nil
+  attr :version, :map, required: true
+  slot :files_list, required: true
+
+  def files_card(assigns) do
+    ~H"""
+    <section id="export-files-card" class="rounded-card border border-subtle bg-white">
+      <div class="flex items-center justify-between px-5 pt-5">
+        <h2 id="files-h" class="text-base font-bold text-strong">Files</h2>
+        <p class="text-[13px] text-muted">Kept for 24 hours</p>
+      </div>
+
+      <p
+        :if={@notice}
+        id="export-files-notice"
+        role="status"
+        class="px-5 pt-3 text-[13px] font-semibold text-strong"
+      >
+        {@notice}
+      </p>
+
+      <.finished_band :if={@finished_run} run={@finished_run} version={@version} />
+
+      <div
+        :if={@clash_run}
+        id="export-garage-clash"
+        class="mx-5 mt-3 rounded-card border border-error-line bg-error-bg px-4 py-3.5 text-error-fg"
+      >
+        <p class="text-sm font-semibold">Garage IDs clash with stop IDs.</p>
+        <ul id="export-garage-clash-details" class="mt-2 grid gap-3 text-sm">
+          <li
+            :for={warning <- conflict_warnings(@clash_run)}
+            class="border-l-2 border-error-line pl-3"
+          >
+            {warning_detail(warning)}
+          </li>
+        </ul>
+        <.link
+          id="export-edit-garages"
+          navigate={~p"/gtfs/#{@version.id}/settings/garages"}
+          class="mt-2 inline-flex min-h-11 items-center font-semibold underline"
+        >
+          Edit garages
+        </.link>
+      </div>
+
+      <div class="mt-3 overflow-x-auto">
+        <table class="w-full min-w-[760px] border-collapse text-left text-sm">
+          <thead>
+            <tr>
+              <th
+                scope="col"
+                class="border-b border-subtle px-5 py-2.5 text-[13px] font-[650] text-default"
+              >
+                File
+              </th>
+              <th
+                scope="col"
+                class="border-b border-subtle px-5 py-2.5 text-[13px] font-[650] text-default"
+              >
+                Created
+              </th>
+              <th
+                scope="col"
+                class="border-b border-subtle px-5 py-2.5 text-[13px] font-[650] text-default"
+              >
+                Status
+              </th>
+              <th
+                scope="col"
+                class="border-b border-subtle px-5 py-2.5 text-right text-[13px] font-[650] text-default"
+              >
+                Actions
+              </th>
+            </tr>
+          </thead>
+          {render_slot(@files_list)}
+        </table>
+      </div>
+
+      <p :if={@empty?} id="export-files-empty" class="px-5 py-6 text-sm text-muted">
+        No files from the last 24 hours.
+      </p>
+
+      <div :if={@has_more?} class="border-t border-subtle px-5 py-3">
+        <.button
+          id="load-more-files"
+          type="button"
+          phx-click="load_more_files"
+          variant="secondary"
+          class="min-h-11"
+        >
+          Show more files
+        </.button>
+      </div>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".FileMenu">
+        export default {
+          mounted() {
+            this.el.addEventListener("keydown", (event) => {
+              if (event.key === "Escape") this.el.removeAttribute("open")
+            })
+          }
+        }
+      </script>
+    </section>
+    """
+  end
+
+  @doc "One Files row: identity, created time, status and the scoped action."
+  attr :dom_id, :string, required: true
+  attr :run, :map, required: true
+  attr :version, :map, required: true
+
+  def file_row(assigns) do
+    ~H"""
+    <tr id={@dom_id} class="border-b border-subtle last:border-0">
+      <th scope="row" class="px-5 py-3 align-top font-normal">
+        <span class="font-semibold text-strong">{file_label(@run)}</span>
+        <span
+          :if={@run.export_type in [:operations, :operations_only]}
+          class="ml-2 rounded-full bg-warning-bg px-2 py-0.5 text-[12px] font-semibold text-warning-fg"
+        >
+          Private
+        </span>
+        <span :if={@run.state == :ready} class="mt-0.5 block font-mono text-[12px] text-muted">
+          {ready_file_meta(@run)}
+        </span>
+      </th>
+      <td class="px-5 py-3 align-top text-[13px] tabular-nums text-muted">
+        <span class="block">{DisplayClock.format_datetime(@run.inserted_at)}</span>
+        <span :if={@run.state == :ready} class="mt-0.5 block text-[12px]">
+          Until {DisplayClock.format_datetime(@run.artifact_expires_at)}
+        </span>
+      </td>
+      <td class="px-5 py-3 align-top text-[13px] text-default">
+        <%= if @run.state == :building and is_nil(@run.cancel_requested_at) do %>
+          <span class="block font-semibold text-strong">Building…</span>
+          <span class="mt-1 block text-[12px] text-muted">
+            Started {DisplayClock.format_datetime(@run.started_at || @run.inserted_at)}
+          </span>
+          <progress
+            id={"#{@dom_id}-progress"}
+            class="progress progress-info mt-1.5 block h-1.5 w-full"
+            aria-label="Build progress"
+          />
+        <% else %>
+          {file_status(@run)}
+        <% end %>
+      </td>
+      <td class="px-5 py-3 align-top text-right">
+        <span class="inline-flex items-center gap-2">
+          <.file_actions run={@run} version={@version} />
+          <.file_menu :if={file_menu?(@run)} run={@run} version={@version} />
+        </span>
+      </td>
+    </tr>
+    """
+  end
+
+  attr :run, :map, required: true
+  attr :version, :map, required: true
+
+  defp file_actions(assigns) do
+    ~H"""
+    <span class="inline-flex items-center gap-2">
+      <.link
+        :if={@run.state == :ready}
+        id={"export-file-#{@run.id}-download"}
+        navigate={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download"}
+        class="inline-flex min-h-11 items-center gap-1.5 whitespace-nowrap rounded-control border border-control px-3 text-[13px] font-semibold text-action hover:bg-canvas"
+      >
+        <.icon name="hero-arrow-down-tray" class="size-4" /> Download file
+      </.link>
+      <.button
+        :if={@run.state in [:pending, :building]}
+        type="button"
+        phx-click="cancel_file"
+        phx-value-run={@run.id}
+        variant="quiet"
+        size="sm"
+      >
+        Cancel
+      </.button>
+      <.button
+        :if={@run.state in [:failed, :interrupted, :cancelled, :expired]}
+        type="button"
+        phx-click={if @run.state == :failed, do: "retry_file", else: "export_again_file"}
+        phx-value-run={@run.id}
+        variant="quiet"
+        size="sm"
+      >
+        {if @run.state == :failed, do: "Retry export", else: "Export again"}
+      </.button>
+    </span>
+    """
+  end
+
+  defp file_menu?(%{state: :ready} = run),
+    do: not is_nil(run.flex_artifact_key) or run.export_type == :full
+
+  defp file_menu?(_run), do: false
+
+  attr :run, :map, required: true
+  attr :version, :map, required: true
+
+  defp file_menu(assigns) do
+    ~H"""
+    <details
+      id={"export-file-#{@run.id}-menu"}
+      phx-hook=".FileMenu"
+      class="relative inline-block text-left"
+    >
+      <summary
+        aria-label="More actions"
+        class="inline-flex size-11 cursor-pointer list-none items-center justify-center rounded-control border border-control text-default hover:bg-canvas [&::-webkit-details-marker]:hidden"
+      >
+        <.icon name="hero-ellipsis-horizontal" class="size-5" />
+      </summary>
+      <div class="absolute right-0 z-20 mt-1 min-w-44 rounded-control border border-subtle bg-white py-1 shadow-lg">
+        <.link
+          :if={@run.state == :ready and not is_nil(@run.flex_artifact_key)}
+          id={"export-file-#{@run.id}-download-flex"}
+          navigate={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download?file=flex"}
+          class="block min-h-11 px-4 py-2 text-[13px] text-default hover:bg-canvas"
+        >
+          Download flex file
+        </.link>
+        <.link
+          :if={@run.state == :ready and @run.export_type == :full}
+          id={"export-file-#{@run.id}-compare"}
+          navigate={~p"/gtfs/#{@version.id}/compare?newer=#{@run.id}"}
+          class="block min-h-11 px-4 py-2 text-[13px] text-default hover:bg-canvas"
+        >
+          Compare with another file
+        </.link>
+      </div>
+    </details>
+    """
+  end
+
+  attr :run, :map, required: true
+  attr :version, :map, required: true
+
+  defp finished_band(assigns) do
+    ~H"""
+    <div
+      id="export-finished"
+      role="status"
+      class="mx-5 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-card border border-subtle bg-canvas px-4 py-3"
+    >
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-strong">{file_label(@run)} is ready.</p>
+        <p class="mt-0.5 text-[13px] text-muted">{finished_meta(@run)}</p>
+      </div>
+      <span class="inline-flex items-center gap-2">
+        <.link
+          id="export-download-link"
+          navigate={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download"}
+          class="inline-flex min-h-11 items-center font-semibold text-action hover:underline"
+        >
+          Download file
+        </.link>
+        <.button
+          id="export-finished-dismiss"
+          type="button"
+          phx-click="dismiss_finished"
+          variant="quiet"
+          size="sm"
+          class="min-h-11"
+        >
+          Dismiss
+        </.button>
+      </span>
+    </div>
+    """
+  end
+
+  defp ready_file_meta(run) do
+    flex = if run.flex_artifact_key, do: " · + flex file", else: ""
+
+    "#{run.artifact_filename || "file"} · #{file_size(run.artifact_size_bytes)}#{flex}"
+  end
+
+  defp finished_meta(run) do
+    count = length(run.warnings || [])
+    warnings = if count == 0, do: "No warnings", else: "#{count} warnings"
+
+    "#{file_size(run.artifact_size_bytes)} · #{warnings} · until " <>
+      DisplayClock.format_datetime(run.artifact_expires_at)
+  end
+
+  defp file_size(nil), do: "unknown size"
+  defp file_size(bytes) when bytes < 1024, do: "#{bytes} B"
+  defp file_size(bytes) when bytes < 1_048_576, do: "#{Float.round(bytes / 1024, 1)} KB"
+  defp file_size(bytes), do: "#{Float.round(bytes / 1_048_576, 1)} MB"
+
+  defp file_label(%{export_type: :pathways}), do: "Station pathways"
+  defp file_label(%{export_type: :operations}), do: "Full feed with operations data"
+  defp file_label(%{export_type: :operations_only}), do: "Operations data only"
+  defp file_label(_run), do: "Full feed"
+
+  defp file_status(%{state: :pending}), do: "Queued"
+
+  defp file_status(%{state: :building, cancel_requested_at: at}) when not is_nil(at),
+    do: "Cancelling…"
+
+  defp file_status(%{state: :building}), do: "Building…"
+
+  defp file_status(%{state: :ready, warnings: warnings}) when warnings in [nil, []],
+    do: "No warnings"
+
+  defp file_status(%{state: :ready, warnings: warnings}), do: "#{length(warnings)} warnings"
+
+  defp file_status(%{state: :failed, failure_code: @conflict_code}),
+    do: "Garage IDs clash with stop IDs"
+
+  defp file_status(%{state: :failed, failure_code: "busy"}), do: "Could not start"
+  defp file_status(%{state: :failed}), do: "Export failed"
+  defp file_status(%{state: :interrupted}), do: "Export interrupted"
+  defp file_status(%{state: :cancelled}), do: "Export cancelled"
+  defp file_status(%{state: :expired}), do: "Download expired"
+  defp file_status(_run), do: "Unknown"
+
+  defp conflict_warnings(run),
+    do: Enum.filter(run.warnings || [], &(warning_code(&1) == @conflict_code))
+
+  @doc """
   The latest export of this type, and what to do next.
 
   `run` is the latest `Export.Run` for the selected type, or `nil` before the

@@ -76,11 +76,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveBusyTest do
 
     assert has_element?(view, "#export-notice", @busy)
     assert has_element?(view, "#export-type-pathways[checked]")
-    assert has_element?(view, "#start-export", "Export feed")
-    refute has_element?(view, "#export-run-title", "Export failed")
+    assert has_element?(view, "#start-export", "Export station pathways")
+    assert has_element?(view, "#export-files-card")
 
-    assert [%Run{state: :failed, failure_code: "busy", export_type: :pathways}] =
+    assert [%Run{id: busy_id, state: :failed, failure_code: "busy", export_type: :pathways}] =
              version_runs(version)
+
+    assert has_element?(view, "#export-file-#{busy_id}", "Could not start")
+    refute has_element?(view, "#export-file-#{busy_id}", "Export failed")
 
     assert ExportRuns.latest_for_version(organization.id, version.id, :pathways) == nil
   end
@@ -99,12 +102,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveBusyTest do
 
     {_runner, _worker} = hold_export_slot(organization, user)
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
-    assert has_element?(view, "#retry-export")
 
-    view |> element("#retry-export") |> render_click()
+    assert has_element?(view, "#export-file-#{failed.id} button[phx-click='retry_file']")
+
+    view
+    |> element("#export-file-#{failed.id} button[phx-click='retry_file']")
+    |> render_click()
 
     assert has_element?(view, "#export-notice", @busy)
-    assert has_element?(view, "#retry-export")
+    assert has_element?(view, "#export-file-#{failed.id} button[phx-click='retry_file']")
 
     assert version_runs(version) |> Enum.map(& &1.failure_code) |> Enum.sort() ==
              ["build_failed", "busy"]
@@ -125,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveBusyTest do
     view |> element("#start-export") |> render_click()
 
     refute has_element?(view, "#export-notice")
-    assert has_element?(view, "#export-run-status")
+    assert has_element?(view, "#export-files-card")
 
     assert Repo.exists?(
              from(r in Run, where: r.gtfs_version_id == ^version.id and r.state != :failed)

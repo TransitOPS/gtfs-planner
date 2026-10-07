@@ -25,9 +25,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publication_section: 1]
 
+  import GtfsPlannerWeb.PlannerComponents, only: [toast: 1]
+
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
       check_panel: 1,
+      file_row: 1,
+      files_card: 1,
       new_file: 1,
       recent_checks: 1
     ]
@@ -86,7 +90,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:recent_checks, [])
      |> assign(:publication, default_publication())
      |> assign(:feed_quality, @empty_feed_quality)
-     |> AgentPanel.mount("feed_quality")}
+     |> assign(:files_cursor, nil)
+     |> assign(:files_has_more?, false)
+     |> assign(:files_empty?, true)
+     |> assign(:files_started_ids, MapSet.new())
+     |> assign(:files_finished_run, nil)
+     |> assign(:files_notice, nil)
+     |> assign(:files_toast, nil)
+     |> assign(:files_subscribed_ids, MapSet.new())
+     |> assign(:files_clash_run, nil)
+     |> AgentPanel.mount("feed_quality")
+     |> stream_configure(:files, dom_id: &"export-file-#{&1.id}")
+     |> stream(:files, [])}
   end
 
   @impl Phoenix.LiveView
@@ -107,6 +122,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
       |> assign(:export_defaults, ExportDefaults.get(organization_id))
       |> refresh_export_run()
+      |> load_files()
       |> refresh_file_inventory()
       |> assign_recent_checks()
       |> load_missing_summary()
@@ -223,7 +239,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            ),
          :ok <- subscribe_export_run(run),
          :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
+      {:noreply,
+       socket
+       |> subscribe_file_run(run)
+       |> assign(:export_run, run)
+       |> remember_started(run)
+       |> stream_insert(:files, run, at: 0)
+       |> assign(:files_finished_run, nil)
+       |> refresh_feed_quality()}
     else
       {:error, :invalid_transition} ->
         {:noreply, refresh_export_run(socket)}
@@ -248,46 +271,69 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
-  @impl Phoenix.LiveView
-  def handle_event("cancel_export", _params, socket) do
-    socket = assign(socket, :export_notice, nil)
+  # -- Files card ----------------------------------------------------------
 
-    with %{id: run_id} <- socket.assigns.export_run,
-         {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, run_id) do
-      {:noreply, refresh_export_run(socket)}
-    else
-      _ ->
-        {:noreply,
-         socket
-         |> refresh_export_run()
-         |> assign(
-           :export_notice,
-           "The export couldn’t be cancelled. Check the status below and try again."
-         )}
-    end
-  end
+  # One page of this version's retained runs. The keyset cursor is the last
+  # listed row's `(inserted_at, id)`, so paging cannot skip or repeat a row.
+  @files_page_size 25
+  @file_unavailable_notice "That file isn't available."
 
   @impl Phoenix.LiveView
-  def handle_event("retry_export", _params, socket) do
+  def handle_event("load_more_files", _params, socket) do
     organization_id = socket.assigns.current_organization.id
-    socket = assign(socket, :export_notice, nil)
+    version_id = socket.assigns.current_gtfs_version.id
 
-    with %{id: run_id} <- socket.assigns.export_run,
-         {:ok, run} <- ExportRuns.retry(organization_id, run_id),
-         :ok <- subscribe_export_run(run),
-         :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
+    rows =
+      ExportRuns.list_files(organization_id, version_id,
+        after: socket.assigns.files_cursor,
+        limit: @files_page_size + 1
+      )
+
+    {page, rest} = Enum.split(rows, @files_page_size)
+
+    {:noreply,
+     socket
+     |> assign(:files_has_more?, rest != [])
+     |> assign(:files_cursor, cursor_for(List.last(page)))
+     |> assign(:files_empty?, false)
+     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
+     |> subscribe_listed_files(page)
+     |> stream(:files, page)}
+  end
+
+  # A scoped row action casts the submitted id, resolves it inside this
+  # organization and version, and only then writes. A forged id changes nothing
+  # and is answered with the same opaque notice as an absent run.
+  @impl Phoenix.LiveView
+  def handle_event("cancel_file", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} <- scoped_export_run(socket, uuid),
+         {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, uuid) do
+      {:noreply,
+       socket
+       |> assign(:files_notice, nil)
+       |> put_files_toast("Export cancelled. No file was saved.", :done)}
     else
-      {:error, :busy} ->
-        {:noreply, export_busy(socket)}
-
-      _ ->
-        {:noreply,
-         socket
-         |> refresh_export_run()
-         |> assign(:export_notice, "The export couldn’t be restarted. Try again.")}
+      _ -> {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
     end
   end
+
+  def handle_event("cancel_file", _params, socket),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+
+  @impl Phoenix.LiveView
+  def handle_event("retry_file", params, socket), do: retry_file(socket, params)
+
+  @impl Phoenix.LiveView
+  def handle_event("export_again_file", params, socket), do: retry_file(socket, params)
+
+  @impl Phoenix.LiveView
+  def handle_event("dismiss_finished", _params, socket),
+    do: {:noreply, assign(socket, :files_finished_run, nil)}
+
+  @impl Phoenix.LiveView
+  def handle_event("dismiss_toast", _params, socket),
+    do: {:noreply, assign(socket, :files_toast, nil)}
 
   # -- Static publication --------------------------------------------------
 
@@ -405,6 +451,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         do: socket,
         else: close_publication_review(socket)
 
+    socket =
+      case changed_run do
+        %{} = run -> stream_insert(socket, :files, run)
+        _ -> socket
+      end
+
+    # A listed run that fails with a garage/stop clash now owns the card's
+    # callout, the same as one already failed when the page mounted.
+    socket =
+      if changed_run && changed_run.state == :failed &&
+           changed_run.failure_code == "garage_stop_id_conflict" do
+        assign(socket, :files_clash_run, changed_run)
+      else
+        socket
+      end
+
+    socket =
+      if changed_run && changed_run.state == :ready &&
+           MapSet.member?(socket.assigns.files_started_ids, changed_run.id) do
+        assign(socket, :files_finished_run, changed_run)
+      else
+        socket
+      end
+
     {:noreply,
      socket
      |> refresh_operations_preview_for_ready_run(changed_run)
@@ -463,6 +533,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     {:noreply, socket}
   end
 
+  # The toast's dismiss timer carries its token, so a timer set for an earlier
+  # toast cannot clear a later one.
+  @impl Phoenix.LiveView
+  def handle_info({:dismiss_toast, token}, socket) do
+    if socket.assigns.files_toast && socket.assigns.files_toast.token == token do
+      {:noreply, assign(socket, :files_toast, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   defp apply_validation_outcome(socket, %{status: "completed"} = run) do
     socket
     |> assign_persisted_validation_result(run)
@@ -495,6 +576,93 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> assign_recent_checks()
     end
   end
+
+  defp load_files(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    rows = ExportRuns.list_files(organization_id, version_id, limit: @files_page_size + 1)
+    {page, rest} = Enum.split(rows, @files_page_size)
+
+    socket
+    |> assign(:files_has_more?, rest != [])
+    |> assign(:files_cursor, cursor_for(List.last(page)))
+    |> assign(:files_empty?, page == [])
+    |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
+    |> subscribe_listed_files(page)
+    |> stream(:files, page, reset: true)
+  end
+
+  defp cursor_for(nil), do: nil
+  defp cursor_for(%{inserted_at: inserted_at, id: id}), do: {inserted_at, id}
+
+  defp subscribe_listed_files(socket, runs) do
+    Enum.reduce(runs, socket, fn run, acc ->
+      if run.state in [:pending, :building], do: subscribe_file_run(acc, run), else: acc
+    end)
+  end
+
+  # A listed run is subscribed once per LiveView, so a type patch that reloads
+  # the same page never doubles its broadcasts; a started or retried run is
+  # remembered the same way.
+  defp subscribe_file_run(socket, run) do
+    if MapSet.member?(socket.assigns.files_subscribed_ids, run.id) do
+      socket
+    else
+      subscribe_export_run(run)
+
+      assign(
+        socket,
+        :files_subscribed_ids,
+        MapSet.put(socket.assigns.files_subscribed_ids, run.id)
+      )
+    end
+  end
+
+  defp clash_run(runs, existing) do
+    cond do
+      existing != nil ->
+        existing
+
+      true ->
+        Enum.find(
+          runs,
+          &(&1.state == :failed and &1.failure_code == "garage_stop_id_conflict")
+        )
+    end
+  end
+
+  defp put_files_toast(socket, text, kind) do
+    token = System.unique_integer([:positive, :monotonic])
+    Process.send_after(self(), {:dismiss_toast, token}, 4_000)
+    assign(socket, :files_toast, %{text: text, kind: kind, token: token})
+  end
+
+  defp remember_started(socket, run),
+    do: assign(socket, :files_started_ids, MapSet.put(socket.assigns.files_started_ids, run.id))
+
+  defp retry_file(socket, %{"run" => run_id}) do
+    organization_id = socket.assigns.current_organization.id
+
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} <- scoped_export_run(socket, uuid),
+         {:ok, run} <- ExportRuns.retry(organization_id, uuid),
+         :ok <- ExportRunner.ensure_started(organization_id, run) do
+      {:noreply,
+       socket
+       |> subscribe_file_run(run)
+       |> remember_started(run)
+       |> stream_insert(:files, run)
+       |> assign(:files_notice, nil)
+       |> assign(:files_finished_run, nil)}
+    else
+      {:error, :busy} -> {:noreply, export_busy(socket)}
+      _ -> {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+    end
+  end
+
+  defp retry_file(socket, _params),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
 
   @impl Phoenix.LiveView
   def render(assigns) do
@@ -561,6 +729,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 </div>
 
                 <.publication_section publication={@publication} />
+
+                <.files_card
+                  empty?={@files_empty?}
+                  has_more?={@files_has_more?}
+                  notice={@files_notice}
+                  finished_run={@files_finished_run}
+                  clash_run={@files_clash_run}
+                  version={@current_gtfs_version}
+                >
+                  <:files_list>
+                    <tbody id="export-files-rows" phx-update="stream">
+                      <.file_row
+                        :for={{dom_id, run} <- @streams.files}
+                        dom_id={dom_id}
+                        run={run}
+                        version={@current_gtfs_version}
+                      />
+                    </tbody>
+                  </:files_list>
+                </.files_card>
               </div>
 
               <div class="grid min-w-0 gap-6">
@@ -627,6 +815,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           }
         }
       </script>
+      <.toast
+        :if={@files_toast}
+        id="export-toast"
+        text_id="export-toast-text"
+        toast={@files_toast}
+      />
     </Layouts.app>
     """
   end
