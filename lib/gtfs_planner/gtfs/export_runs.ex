@@ -131,17 +131,28 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   The verified artifacts of one build: `:main` is required and `:flex` is the
   RUN15-only extra feed, absent or nil when the build produced no flex zip.
   """
-  @type artifacts :: %{required(:main) => map(), optional(:flex) => map() | nil}
+  @type artifacts :: %{
+          required(:main) => map(),
+          optional(:flex) => map() | nil,
+          optional(:reference_sha256) => String.t() | nil
+        }
 
   @spec mark_ready(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), artifacts()) ::
           {:ok, Run.t()} | {:error, :lease_lost | term()}
   def mark_ready(organization_id, run_id, generation, token, %{main: main} = artifacts)
       when is_map(main) do
     flex = Map.get(artifacts, :flex)
+    reference_sha256 = Map.get(artifacts, :reference_sha256)
 
     with :ok <- requested_artifacts?(organization_id, run_id, main, flex),
          :ok <- verified_artifacts(main, flex) do
-      commit_ready(organization_id, run_id, generation, token, %{main: main, flex: flex})
+      commit_ready(
+        organization_id,
+        run_id,
+        generation,
+        token,
+        %{main: main, flex: flex, reference_sha256: reference_sha256}
+      )
     end
   end
 
@@ -907,10 +918,11 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   # Both artifact sets land in the same fenced `update_all`, so a lease loss
   # leaves the row without either set and the files unreferenced.
-  defp ready_run(run, generation, token, %{main: main, flex: flex}) do
+  defp ready_run(run, generation, token, %{main: main, flex: flex} = artifacts) do
     database_now = database_now()
     expires_at = DateTime.add(database_now, artifact_ttl_seconds())
     flex_fields = flex_artifact_fields(flex)
+    reference_sha256 = Map.get(artifacts, :reference_sha256)
 
     attrs =
       Map.merge(
@@ -924,7 +936,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           artifact_sha256: main.sha256,
           artifact_size_bytes: main.size,
           artifact_expires_at: expires_at,
-          finished_at: database_now
+          finished_at: database_now,
+          gtfs_reference_sha256: reference_sha256
         },
         flex_fields
       )
@@ -955,6 +968,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
               flex_artifact_sha256: ^flex_fields.flex_artifact_sha256,
               flex_artifact_size_bytes: ^flex_fields.flex_artifact_size_bytes,
               finished_at: ^database_now,
+              gtfs_reference_sha256: ^reference_sha256,
               updated_at: fragment("CURRENT_TIMESTAMP")
             ]
           ]
