@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Operations
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.Evidence
   alias GtfsPlannerWeb.AgentPanel
@@ -28,23 +28,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
       check_panel: 1,
-      closures_omitted: 1,
-      contents: 1,
-      guide: 1,
-      operations_note: 1,
-      recent_checks: 1,
-      run_status: 1,
-      type_options: 1
+      new_file: 1,
+      recent_checks: 1
     ]
-
-  import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # The URL is the single source of truth for the selected export type: only
   # these query values are accepted, and `export_type_from_param/1` maps them
   # onto the atoms `ExportRuns` accepts.
-  @export_type_params ~w(full pathways operations)
+  @export_type_params ~w(full pathways operations operations_only)
+
+  # Both operations-bearing kinds read the same organization TODS data, so one
+  # operations preview serves either selection.
+  @operations_kinds [:operations, :operations_only]
 
   @export_busy_message "Another export is running. Try again when it finishes."
   @validation_busy_message "Another validation is running. Try again when it finishes."
@@ -73,6 +70,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:operations?, false)
      |> assign(:include_flex, true)
      |> assign(:file_inventory, [])
+     |> assign(:operations_preview, AsyncResult.loading())
+     |> assign(:operations_preview_started?, false)
+     |> assign(:operations_preview_refreshed_run_id, nil)
      |> assign(:closure_count, 0)
      |> assign(:export_run, nil)
      |> assign(:export_notice, nil)
@@ -113,7 +113,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> reset_publication()
       |> assign_publication()
 
-    {:noreply, refresh_feed_quality(socket)}
+    {:noreply,
+     socket
+     |> refresh_feed_quality()
+     |> ensure_operations_preview()}
   end
 
   @impl Phoenix.LiveView
@@ -401,7 +404,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         do: socket,
         else: close_publication_review(socket)
 
-    {:noreply, socket |> assign_publication() |> refresh_feed_quality()}
+    {:noreply,
+     socket
+     |> refresh_operations_preview_for_ready_run()
+     |> assign_publication()
+     |> refresh_feed_quality()}
   end
 
   # The check the open review is waiting for finished. Building the review again is
@@ -506,8 +513,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       <div id="export-page" class="ds-page">
         <.header>
-          Export feed
-          <:subtitle>{lede(@current_gtfs_version, @operations?)}</:subtitle>
+          Export
           <:actions>
             <.button
               id="agent-helper-open"
@@ -537,48 +543,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               ]}
             >
               <div class="grid min-w-0 gap-6">
-                <.result_section
-                  id="export-workspace"
-                  title="Create a feed file"
-                  lede={"Uses #{@current_gtfs_version.name} as it is now."}
-                >
-                  <.type_options
+                <div id="export-workspace">
+                  <.new_file
                     form={@export_form}
                     export_type={@export_type}
                     operations?={@operations?}
-                  />
-                  <.closures_omitted
-                    :if={@export_type == :pathways and @closure_count > 0}
-                    count={@closure_count}
-                  />
-                  <.operations_note
-                    :if={@export_type == :operations}
+                    version={@current_gtfs_version}
                     file_inventory={@file_inventory}
-                  />
-                  <.contents
-                    export_type={@export_type}
-                    file_inventory={@file_inventory}
+                    operations_preview={@operations_preview}
                     missing_summary={@missing_summary}
                     defaults={@export_defaults}
-                    version_id={@current_gtfs_version.id}
-                  />
-                  <.run_status
                     run={@export_run}
-                    export_type={@export_type}
-                    version={@current_gtfs_version}
                     notice={@export_notice}
-                    defaults={@export_defaults}
-                    publish?={@publication.opener?}
+                    closure_count={@closure_count}
                   />
+                </div>
 
-                  <.publication_section publication={@publication} />
-                </.result_section>
-
-                <.guide
-                  export_type={@export_type}
-                  version={@current_gtfs_version}
-                  organization={@current_organization}
-                />
+                <.publication_section publication={@publication} />
               </div>
 
               <div class="grid min-w-0 gap-6">
@@ -654,11 +635,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # The feed quality helper prepares an export-options change for review, which is
   # the component's own default rule.
   defp helper_composer_hint, do: "Review changes before applying."
-
-  defp lede(version, operations?) do
-    "Create a file of #{version.name} for trip planners such as Google Maps and Transit app" <>
-      if(operations?, do: ", or for your CAD/AVL vendor.", else: ".")
-  end
 
   # The title a check carries in Recent checks: a plain name for the kind of check.
   defp check_title(%{run_type: "mobility_data"}, _station_names_by_run_id), do: "Feed check"
@@ -838,19 +814,75 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp export_type_from_param("pathways"), do: :pathways
   defp export_type_from_param("operations"), do: :operations
+  defp export_type_from_param("operations_only"), do: :operations_only
   defp export_type_from_param(_type), do: :full
 
   # ProductSurfaces alone decides visibility (INV-1): a Pathways organization
-  # never selects the operations export, so its query param falls back to full.
+  # never selects either operations kind, so its query param falls back to full.
   defp resolve_export_type(type_param, organization) do
     case export_type_from_param(type_param) do
-      :operations ->
+      type when type in @operations_kinds ->
         if ProductSurfaces.visible?(organization, :operations_export),
-          do: :operations,
+          do: type,
           else: :full
 
       export_type ->
         export_type
+    end
+  end
+
+  defp operations_kind?(export_type), do: export_type in @operations_kinds
+
+  # The operations preview is one async derivation per LiveView visit. The first
+  # time either operations-bearing kind is selected the task starts; switching
+  # back to full and then to the other operations kind never starts a second one.
+  defp ensure_operations_preview(socket) do
+    if operations_kind?(socket.assigns.export_type) and
+         not socket.assigns.operations_preview_started? do
+      load_operations_preview(socket)
+    else
+      socket
+    end
+  end
+
+  # `Export.operations_preview/2` is the sole derivation of the TODS file counts,
+  # runs and trips; neither this page nor a component counts them again.
+  defp load_operations_preview(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    repo = Repo.get_dynamic_repo()
+
+    socket
+    |> assign(:operations_preview_started?, true)
+    |> assign_async(:operations_preview, fn ->
+      # `assign_async` runs its function in a fresh task, which does not inherit
+      # this LiveView's dynamic repo, so the task re-binds it before reading.
+      Repo.put_dynamic_repo(repo)
+
+      case Gtfs.Export.operations_preview(organization_id, version_id) do
+        {:ok, preview} -> {:ok, %{operations_preview: preview}}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  # A newly ready operations-bearing run can change the counts the preview read
+  # before that run, so the preview is derived once more. The refreshed run's id
+  # is recorded, so a repeat broadcast for the same run never starts another task.
+  defp refresh_operations_preview_for_ready_run(socket) do
+    case socket.assigns.export_run do
+      %{state: :ready, export_type: export_type, id: run_id}
+      when export_type in @operations_kinds ->
+        if socket.assigns.operations_preview_refreshed_run_id == run_id do
+          socket
+        else
+          socket
+          |> assign(:operations_preview_refreshed_run_id, run_id)
+          |> load_operations_preview()
+        end
+
+      _other ->
+        socket
     end
   end
 
@@ -862,28 +894,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     export_type = socket.assigns.export_type
-    # The operations export packages the full GTFS file set; its TODS additions
-    # come from the organization, not from the version.
-    base_type = if export_type == :operations, do: :full, else: export_type
+
+    # The combined operations export packages the full GTFS file set; the
+    # operations-only export has no GTFS base. TODS counts are never derived
+    # here: `Export.operations_preview/2` is the one place that counts them.
+    base_type =
+      case export_type do
+        :operations -> :full
+        :operations_only -> nil
+        other -> other
+      end
 
     file_inventory =
-      organization_id
-      |> Gtfs.get_file_inventory(version_id, base_type)
-      |> Kernel.++(tods_inventory(organization_id, export_type))
-      |> Enum.sort_by(fn {filename, _count} -> filename end)
+      case base_type do
+        nil -> []
+        type -> Gtfs.get_file_inventory(organization_id, version_id, type)
+      end
 
     # The omission notice reads the published closure count through the same
     # scope the Evolutions surface uses; the route only mounts a published
     # version, so it matches the rows the full inventory reports.
     socket
-    |> assign(:file_inventory, file_inventory)
+    |> assign(
+      :file_inventory,
+      Enum.sort_by(file_inventory, fn {filename, _count} -> filename end)
+    )
     |> assign(:closure_count, Gtfs.count_closures(organization_id, version_id))
   end
-
-  defp tods_inventory(organization_id, :operations),
-    do: Operations.tods_file_inventory(organization_id)
-
-  defp tods_inventory(_organization_id, _export_type), do: []
 
   # -- Feed quality helper ----------------------------------------------------
 

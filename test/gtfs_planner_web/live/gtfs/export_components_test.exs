@@ -246,10 +246,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
       })
     end
 
-    test "offers three types and checks the selected one" do
+    test "offers four choices across two audience groups when operations are visible" do
       html = options_html(true, :pathways)
 
-      assert count(html, ~s(input[type="radio"])) == 3
+      assert count(html, ~s(input[type="radio"])) == 4
+      assert count(html, "#export-type-group-trip-planners") == 1
+      assert count(html, "#export-type-group-vendor") == 1
       assert attribute(html, "#export-type-pathways", "checked") == [""]
       assert count(html, "#export-type-full[checked]") == 0
     end
@@ -257,24 +259,45 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
     test "names each type for who the file is for, with the technical name last" do
       html = options_html(true, :full)
 
-      assert text(html, "label:has(#export-type-operations)") =~ "Feed with operations data"
+      assert text(html, "label:has(#export-type-operations)") =~ "Full feed with operations data"
       assert text(html, "label:has(#export-type-operations)") =~ "GTFS + operations (TODS)"
+      assert text(html, "label:has(#export-type-operations_only)") =~ "Operations data only"
     end
 
-    test "leaves out the operations type when the product hides it" do
+    test "hides the whole vendor fieldset when the product hides operations" do
       html = options_html(false, :full)
 
       assert count(html, ~s(input[type="radio"])) == 2
+      assert count(html, "#export-type-group-trip-planners") == 1
+      assert count(html, "#export-type-group-vendor") == 0
       assert count(html, "#export-type-operations") == 0
+      assert count(html, "#export-type-operations_only") == 0
     end
   end
 
   describe "contents/1" do
-    defp contents_html(export_type, inventory) do
+    defp contents_html(export_type, inventory, preview \\ nil) do
       render_component(&ExportComponents.contents/1, %{
         export_type: export_type,
-        file_inventory: inventory
+        file_inventory: inventory,
+        operations_preview: preview,
+        version_id: @version.id,
+        version: @version
       })
+    end
+
+    defp preview_ok(files, opts) do
+      %{
+        ok?: true,
+        loading: false,
+        result: %{
+          files: files,
+          runs: Keyword.get(opts, :runs, 0),
+          trips_in_run: Keyword.get(opts, :trips_in_run, 0),
+          trips_total: Keyword.get(opts, :trips_total, 0),
+          warnings: []
+        }
+      }
     end
 
     test "shows a count for what trip planners read, with thousands separated" do
@@ -288,6 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
         ])
 
       assert text(html, "#export-metrics") =~ "Routes"
+      assert text(html, "#export-metrics") =~ "Stations"
       assert text(html, "#export-metrics") =~ "1,386"
       assert count(html, "#export-metrics > div") == 4
     end
@@ -295,22 +319,67 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
     test "marks a table with no records as left out of the ZIP" do
       html = contents_html(:full, [{"routes.txt", 14}, {"frequencies.txt", 0}])
 
-      assert text(html, "#export-files summary") =~ "1 included, 1 left out"
+      assert text(html, "#export-files summary") =~ "1 file in the ZIP"
       assert text(html, "#export-inventory tbody tr:last-child") =~ "left out"
       refute text(html, "#export-inventory tbody tr:first-child") =~ "left out"
     end
 
-    test "counts garages and vehicles for an operations export" do
+    test "counts garages and vehicles from the operations preview" do
       html =
-        contents_html(:operations, [
-          {"routes.txt", 14},
-          {"stops_supplement.txt", 2},
-          {"vehicles.txt", 27}
-        ])
+        contents_html(
+          :operations,
+          [{"routes.txt", 14}, {"trips.txt", 812}],
+          preview_ok(
+            [{"stops_supplement.txt", 2}, {"vehicles.txt", 27}],
+            runs: 5,
+            trips_in_run: 9,
+            trips_total: 9
+          )
+        )
 
       assert count(html, "#export-metrics > div") == 5
       assert text(html, "#export-metrics") =~ "Garages"
       assert text(html, "#export-metrics") =~ "27"
+      assert text(html, "#export-metrics") =~ "Trips in a run"
+      assert text(html, "#export-metrics") =~ "9"
+    end
+
+    test "an operations-only export is the preview inventory on its own" do
+      html =
+        contents_html(
+          :operations_only,
+          [],
+          preview_ok(
+            [{"stops_supplement.txt", 1}, {"vehicles.txt", 2}, {"run_events.txt", 3}],
+            runs: 1,
+            trips_in_run: 4,
+            trips_total: 4
+          )
+        )
+
+      assert count(html, "#export-metrics > div") == 4
+      assert text(html, "#export-metrics") =~ "Garages"
+      assert text(html, "#export-metrics") =~ "Runs"
+      assert text(html, "#export-inventory tbody") =~ "run_events.txt"
+    end
+
+    test "a preview with no runs says there is no run work to reconcile" do
+      html =
+        contents_html(
+          :operations_only,
+          [],
+          preview_ok([], runs: 0, trips_in_run: 0, trips_total: 0)
+        )
+
+      assert text(html, "#export-metrics") =~ "No run work to reconcile"
+    end
+
+    test "shows a skeleton while the preview loads and a fallback when it fails" do
+      loading = contents_html(:operations_only, [], %{loading: true})
+      failed = contents_html(:operations_only, [], %{loading: false, ok?: false, failed: :error})
+
+      assert count(loading, "[id$='-loading']") == 4
+      assert text(failed, "#export-metrics") =~ "Couldn’t count"
     end
 
     test "shows three counts for a pathways export" do
@@ -318,14 +387,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
         contents_html(:pathways, [{"levels.txt", 6}, {"pathways.txt", 41}, {"stops.txt", 386}])
 
       assert count(html, "#export-metrics > div") == 3
-      assert text(html, "#export-metrics") =~ "Stops and stations"
+      assert text(html, "#export-metrics") =~ "Stations"
     end
 
     test "says there are no tables when the inventory is empty" do
       html = contents_html(:full, [])
 
       assert count(html, "#export-inventory table") == 0
-      assert text(html, "#export-empty-inventory") =~ "no GTFS tables"
+      assert text(html, "#export-empty-inventory") =~ "no tables"
     end
   end
 

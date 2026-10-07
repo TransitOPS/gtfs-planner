@@ -2,19 +2,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   @moduledoc """
   The Export page's presentation, on the application design system.
 
-  One card walks the task in order: choose what to export (`type_options/1`),
-  see what goes in the file (`contents/1`), then act on the latest file
-  (`run_status/1`). The status band is the only place the page changes state and
-  holds the page's one primary action, so which control is primary follows the
-  latest run: Export feed, Download file, Retry export, Export again, or, when a
-  garage ID clashes with a stop ID, Edit garages. `guide/1`
-  says what to do with the
-  file, and the right column holds the feed check (`check_panel/1`) and its
-  history (`recent_checks/1`).
+  The Export page's presentation, on the application design system.
+
+  The page's one card is `new_file/1`: a grouped kind choice, what the chosen
+  file contains (`contents/1`, including the async operations preview), and the
+  single action that starts the build. The right column holds the feed check
+  (`check_panel/1`) and its history (`recent_checks/1`).
+
+  `run_status/1` and `guide/1` are isolated compatibility components kept for
+  their own tests; the Export page no longer renders them.
 
   The components carry no state and run no queries: `ExportLive` owns the events
-  and the data, and passes the latest `Export.Run`, the file inventory and the
-  check's state in.
+  and the data, and passes the latest `Export.Run`, the file inventory, the
+  operations preview and the check's state in.
   """
 
   use GtfsPlannerWeb, :html
@@ -38,100 +38,194 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       format: "GTFS"
     },
     pathways: %{
-      label: "Station pathways only",
+      label: "Station pathways",
       description: "Stops, levels and pathways. Not a complete feed on its own.",
       format: "GTFS pathways files"
     },
     operations: %{
-      label: "Feed with operations data",
-      description: "Full feed plus garages and vehicles, for CAD/AVL vendors. Keep it private.",
+      label: "Full feed with operations data",
+      description: "The full feed plus garages, vehicles and runs, in one file. Keep it private.",
       format: "GTFS + operations (TODS)"
+    },
+    operations_only: %{
+      label: "Operations data only",
+      description:
+        "Garages, vehicles and runs, keyed to this version. Not a feed by itself. Keep it private.",
+      format: "TODS"
     }
   ]
 
-  @doc """
-  The export type, as one radio group of whole-card targets named for who the
-  file is for. The technical name is the muted last line. The operations option
-  is left out for organizations whose product hides it.
+  @trip_planner_types [:full, :pathways]
+  @vendor_types [:operations, :operations_only]
 
-  The form's `phx-change` patches the URL, which owns the selected type.
+  @export_cta %{
+    full: "Export full feed",
+    pathways: "Export station pathways",
+    operations: "Export feed with operations",
+    operations_only: "Export operations data"
+  }
+
+  @doc """
+  The New file card: choose what kind of file to build, read what it contains,
+  and start the build with the card's one action.
+
+  The card owns the page's single `#gtfs-export-form`, so the footer's
+  `#start-export` is the form's own submit and the radio group, the contents and
+  the action all describe the same chosen draft. Selecting a kind patches the
+  URL through the form's own `phx-change`; the server owns the selected type.
+
+  The action is busy only while the selected kind's run is pending, building or
+  cancelling; every other state leaves it enabled.
   """
   attr :form, :any, required: true
-  attr :export_type, :atom, required: true, values: [:full, :pathways, :operations]
+  attr :export_type, :atom, required: true
   attr :operations?, :boolean, required: true
+  attr :version, :map, required: true
+  attr :file_inventory, :list, required: true
+  attr :operations_preview, :any, required: true
+  attr :missing_summary, :any, default: nil
+  attr :defaults, :map, default: nil
+  attr :run, :any, default: nil
+  attr :notice, :string, default: nil
+  attr :closure_count, :integer, default: 0
 
-  def type_options(assigns) do
+  def new_file(assigns) do
     assigns =
-      assign(
-        assigns,
-        :options,
-        Enum.filter(@type_options, fn {type, _option} ->
-          type != :operations or assigns.operations?
-        end)
-      )
+      assigns
+      |> assign(:busy?, operations_run_busy?(assigns.run))
+      |> assign(:cta_label, Map.fetch!(@export_cta, assigns.export_type))
 
     ~H"""
-    <.form for={@form} id="gtfs-export-form" phx-change="select_export_type" class="px-5 pt-5">
-      <fieldset>
-        <legend class="text-[13px] font-semibold text-strong">What are you exporting?</legend>
-        <div class={[
-          "mt-2.5 grid gap-3",
-          if(@operations?, do: "sm:grid-cols-3", else: "sm:grid-cols-2")
-        ]}>
-          <label
-            :for={{type, option} <- @options}
-            class={[
-              "relative flex cursor-pointer gap-3 rounded-card border border-control bg-white px-4 py-3.5 hover:bg-canvas",
-              "has-[:checked]:border-action has-[:checked]:bg-selection",
-              "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
-            ]}
-          >
-            <input
-              type="radio"
-              id={"export-type-#{type}"}
-              name={@form[:type].name}
-              value={type}
-              checked={@export_type == type}
-              class="mt-0.5 size-[18px] shrink-0 accent-action focus-visible:outline-0"
-            />
-            <span class="min-w-0">
-              <span class="block text-sm font-bold text-strong">{option.label}</span>
-              <span class="mt-1 block text-[13px] leading-relaxed text-default">
-                {option.description}
-              </span>
-              <span class="mt-1.5 block text-[13px] text-muted">{option.format}</span>
-            </span>
-          </label>
+    <.form for={@form} id="gtfs-export-form" phx-change="select_export_type">
+      <section
+        id="export-new-file"
+        aria-labelledby="new-h"
+        class="overflow-hidden rounded-card border border-subtle bg-white"
+      >
+        <div class="px-5 pb-0 pt-5">
+          <h2 id="new-h" class="text-base font-bold text-strong">New file</h2>
         </div>
-      </fieldset>
+
+        <.type_options form={@form} export_type={@export_type} operations?={@operations?} />
+
+        <.closures_omitted
+          :if={@export_type == :pathways and @closure_count > 0}
+          count={@closure_count}
+        />
+
+        <.contents
+          export_type={@export_type}
+          file_inventory={@file_inventory}
+          operations_preview={@operations_preview}
+          missing_summary={@missing_summary}
+          defaults={@defaults}
+          version_id={@version.id}
+          version={@version}
+        />
+
+        <footer class="flex flex-wrap items-center gap-3 border-t border-subtle bg-canvas px-5 py-4">
+          <div :if={@notice} class="w-full">
+            <.message id="export-notice" kind="error" title={@notice} />
+          </div>
+          <.button
+            id="start-export"
+            type="button"
+            phx-click="start_export"
+            class="min-h-11"
+            disabled={@busy?}
+          >
+            {if @busy?, do: "Exporting…", else: @cta_label}
+          </.button>
+          <span :if={@busy?} class="text-[13px] text-muted">
+            This file is being built. It appears in Files below.
+          </span>
+        </footer>
+      </section>
     </.form>
     """
   end
 
+  defp operations_run_busy?(%{state: state}) when state in [:pending, :building], do: true
+  defp operations_run_busy?(_run), do: false
+
   @doc """
-  What the operations export adds to the full feed, and why it does not depend on
-  the version. The counts are the organization's garages and vehicles.
+  The export kind, split into the two audiences the prototype names: files for
+  trip planners, and files for a CAD/AVL or scheduling vendor. The vendor group
+  and its Private tag appear only when the organization's product offers the
+  operations export.
+
+  One radio name spans both fieldsets, so the kinds are one choice.
   """
-  attr :file_inventory, :list, required: true
+  attr :form, :any, required: true
+  attr :export_type, :atom, required: true
+  attr :operations?, :boolean, required: true
 
-  def operations_note(assigns) do
-    counts = Map.new(assigns.file_inventory)
-
+  def type_options(assigns) do
     assigns =
       assigns
-      |> assign(:garages, Wording.count(Map.get(counts, "stops_supplement.txt", 0)))
-      |> assign(:vehicles, Wording.count(Map.get(counts, "vehicles.txt", 0)))
+      |> assign(:trip_planner_options, Enum.map(@trip_planner_types, &{&1, @type_options[&1]}))
+      |> assign(:vendor_options, Enum.map(@vendor_types, &{&1, @type_options[&1]}))
 
     ~H"""
-    <div class="px-5 pt-4">
-      <.message
-        id="operations-export-note"
-        kind="info"
-        title={"Garages (#{@garages}) and vehicles (#{@vehicles}) belong to the whole organization, not to one version."}
-      >
-        Vehicle types and garage assignments stay in this app; the file lists garages and vehicles only.
-      </.message>
+    <div class="grid gap-4 px-5 pt-4">
+      <fieldset id="export-type-group-trip-planners" class="min-w-0">
+        <legend class="text-[13px] font-semibold text-strong">For trip planners</legend>
+        <div class="mt-2.5 grid gap-3 sm:grid-cols-2">
+          <.type_card
+            :for={{type, option} <- @trip_planner_options}
+            form={@form}
+            type={type}
+            option={option}
+            export_type={@export_type}
+          />
+        </div>
+      </fieldset>
+
+      <fieldset :if={@operations?} id="export-type-group-vendor" class="min-w-0">
+        <legend class="flex items-center gap-2 text-[13px] font-semibold text-strong">
+          For your CAD/AVL or scheduling vendor
+          <span class="inline-flex items-center gap-1 rounded-full bg-warning-bg px-2 py-0.5 text-[12px] font-semibold text-warning-fg">
+            <.icon name="hero-lock-closed" class="size-3" /> Private
+          </span>
+        </legend>
+        <div class="mt-2.5 grid gap-3 sm:grid-cols-2">
+          <.type_card
+            :for={{type, option} <- @vendor_options}
+            form={@form}
+            type={type}
+            option={option}
+            export_type={@export_type}
+          />
+        </div>
+      </fieldset>
     </div>
+    """
+  end
+
+  attr :form, :any, required: true
+  attr :type, :atom, required: true
+  attr :option, :map, required: true
+  attr :export_type, :atom, required: true
+
+  defp type_card(assigns) do
+    ~H"""
+    <label class="relative flex min-h-11 cursor-pointer gap-3 rounded-control border border-control bg-white px-4 py-3.5 hover:bg-canvas has-[:checked]:border-action has-[:checked]:bg-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus">
+      <input
+        type="radio"
+        id={"export-type-#{@type}"}
+        name={@form[:type].name}
+        value={@type}
+        checked={@export_type == @type}
+        class="mt-0.5 size-[18px] shrink-0 accent-action focus-visible:outline-0"
+      />
+      <span class="min-w-0">
+        <span class="block text-sm font-bold text-strong">{@option.label}</span>
+        <span class="mt-1 block text-[13px] leading-relaxed text-default">
+          {@option.description}
+        </span>
+        <span class="mt-1.5 block text-[13px] text-muted">{@option.format}</span>
+      </span>
+    </label>
     """
   end
 
@@ -139,102 +233,147 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   Says that a Pathways export leaves out the version's scheduled closures.
 
   Only the Pathways profile can omit closures, so only that selection carries it.
-  Choose Full export switches the type and moves focus to the Full option.
+  The warning uses the shared callout treatment and its action switches to Full.
   """
   attr :count, :integer, required: true
 
   def closures_omitted(assigns) do
     ~H"""
     <div class="px-5 pt-4">
-      <.message
+      <.callout
         id="export-pathways-closures-omitted"
-        kind="info"
-        title={"Pathways export leaves out #{@count} #{if @count == 1, do: "scheduled closure", else: "scheduled closures"}"}
+        kind="warning"
+        title={"#{@count} #{if @count == 1, do: "scheduled closure is", else: "scheduled closures are"} left out."}
       >
-        Choose Full export to include closures and their calendars.
-        <:action>
-          <.button
-            id="export-choose-full"
-            variant="secondary"
-            class="min-h-11"
-            phx-click={
-              JS.push("select_export_type", value: %{"export" => %{"type" => "full"}})
-              |> JS.focus(to: "#export-type-full")
-            }
-          >
-            Choose Full export
-          </.button>
-        </:action>
-      </.message>
+        <p>The full feed includes them.</p>
+        <.button
+          id="export-choose-full"
+          variant="secondary"
+          class="mt-2 min-h-11"
+          phx-click={
+            JS.push("select_export_type", value: %{"export" => %{"type" => "full"}})
+            |> JS.focus(to: "#export-type-full")
+          }
+        >
+          Choose full feed
+        </.button>
+      </.callout>
     </div>
     """
   end
 
   @doc """
-  The consequence of exporting, shown before the button: a count for each thing
-  trip planners read, then every file with its record count.
+  What the chosen file contains: joined tiles for each thing it counts, the
+  compact defaults rows for the kinds that carry GTFS, and the full inventory.
 
-  A table with no records is left out of the ZIP, so its row says so instead of
-  listing a file that will not exist.
+  Operations tiles and operations inventory entries come only from
+  `Export.operations_preview/2`. While that async read is loading the tiles are
+  skeletons; a failed read says `Couldn’t count` and never disables the export.
+  A combined Operations file merges the preview into the Full base inventory; an
+  Operations-only file is the preview inventory on its own.
   """
   attr :export_type, :atom, required: true
   attr :file_inventory, :list, required: true
+  attr :operations_preview, :any, default: nil
   attr :missing_summary, :any, default: nil
   attr :defaults, :map, default: nil
-  attr :version_id, :any, default: nil
+  attr :version_id, :any, required: true
+  attr :version, :map, required: true
 
   def contents(assigns) do
-    counts = Map.new(assigns.file_inventory)
-    included = Enum.count(assigns.file_inventory, fn {_file, count} -> count > 0 end)
-    left_out = length(assigns.file_inventory) - included
+    base = assigns.file_inventory
+    preview = operations_state(assigns.operations_preview)
 
-    tile_counts =
-      for {label, file} <- tiles(assigns.export_type), do: {label, Map.get(counts, file, 0)}
+    inventory = contents_inventory(assigns.export_type, base, preview)
+    included = Enum.count(inventory, fn {_file, count} -> count > 0 end)
+    left_out = length(inventory) - included
 
     assigns =
       assigns
-      |> assign(:tiles, tile_counts)
+      |> assign(:version_label, version_label(assigns.version))
+      |> assign(:inventory, inventory)
       |> assign(:included, included)
       |> assign(:left_out, left_out)
+      |> assign(:tiles, contents_tiles(assigns.export_type, base, preview, assigns.version_id))
 
     ~H"""
     <div id="export-contents" class="px-5 pb-5 pt-5">
       <h3 class="text-[13px] font-semibold text-strong">
-        What goes in this file
-        <span class="font-normal text-muted">· Tables with no records are left out.</span>
+        In this file <span class="font-normal text-muted">· {@version_label}</span>
       </h3>
 
-      <dl id="export-metrics" class={["mt-2.5 grid grid-cols-2 gap-3", tile_columns(length(@tiles))]}>
-        <div :for={{label, count} <- @tiles} class="rounded-control border border-subtle px-4 py-2">
-          <dt class="text-[13px] text-muted">{label}</dt>
-          <dd class={[
-            "mt-0.5 font-display text-[26px] font-semibold leading-none tracking-[-0.03em] tabular-nums",
-            if(count > 0, do: "text-strong", else: "text-muted")
-          ]}>
-            {Wording.count(count)}
+      <dl
+        id="export-metrics"
+        class={[
+          "mt-2.5 grid grid-cols-2 gap-px overflow-hidden rounded-control border border-subtle bg-subtle",
+          tile_columns(length(@tiles))
+        ]}
+      >
+        <div :for={tile <- @tiles} id={"export-tile-#{tile.key}"} class="bg-white px-4 py-2">
+          <dt class="text-[13px] text-muted">{tile.label}</dt>
+          <dd class="mt-0.5 font-display text-[26px] font-semibold leading-none tracking-[-0.03em] tabular-nums">
+            <%= case tile.value do %>
+              <% {:count, count} -> %>
+                <span class={if count > 0, do: "text-strong", else: "text-muted"}>
+                  {Wording.count(count)}
+                </span>
+              <% :loading -> %>
+                <span id={"export-tile-#{tile.key}-loading"} class="text-muted">—</span>
+              <% :error -> %>
+                <span
+                  id={"export-tile-#{tile.key}-error"}
+                  class="text-[13px] font-semibold text-warning-fg"
+                >
+                  Couldn’t count
+                </span>
+              <% :no_run_work -> %>
+                <span class="text-[13px] font-normal text-muted">No run work to reconcile</span>
+            <% end %>
           </dd>
+          <p :if={tile[:note]} class="mt-1">
+            <.link
+              id={"export-tile-#{tile.key}-note"}
+              navigate={tile.note.path}
+              class="text-[12px] font-semibold text-action hover:underline"
+            >
+              {tile.note.label}
+            </.link>
+          </p>
         </div>
       </dl>
 
-      <div class="mt-3">
-        <%= case @missing_summary do %>
-          <% %{loading: true} -> %>
-            <p
-              id="export-missing-times-loading"
-              class="rounded-card border border-subtle bg-canvas px-4 py-3 text-sm text-muted"
+      <dl
+        :if={@export_type in [:full, :operations]}
+        id="export-defaults"
+        class="mt-4 grid gap-1.5 border-t border-subtle pt-4 text-[13px]"
+      >
+        <div class="flex items-baseline justify-between gap-6">
+          <dt class="text-muted">Missing stop times</dt>
+          <dd id="export-missing-times" class="flex min-w-0 items-baseline gap-4 text-right">
+            <span class="text-strong">{missing_times_label(@missing_summary, @defaults)}</span>
+            <.link
+              id="export-missing-times-link"
+              navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+              class="shrink-0 font-semibold text-action hover:underline"
             >
-              Counting missing stop times…
-            </p>
-          <% %{ok?: true, result: summary} -> %>
-            <.missing_times_line
-              :if={not is_nil(@defaults)}
-              summary={summary}
-              defaults={@defaults}
-              version_id={@version_id}
-            />
-          <% _ -> %>
-        <% end %>
-      </div>
+              Change
+            </.link>
+          </dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-6">
+          <dt class="text-muted">Flex services</dt>
+          <dd id="export-flex-defaults" class="flex min-w-0 items-baseline gap-4 text-right">
+            <span class="text-strong">{flex_label(@defaults)}</span>
+            <.link
+              id="export-flex-change"
+              navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+              class="shrink-0 font-semibold text-action hover:underline"
+            >
+              Change
+            </.link>
+          </dd>
+        </div>
+      </dl>
 
       <details
         id="export-files"
@@ -243,9 +382,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       >
         <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-control px-4 text-sm font-semibold text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
           <span>
-            See every file
+            {@included} {if @included == 1, do: "file", else: "files"} in the ZIP
             <span class="font-normal text-muted">
-              · {@included} included<span :if={@left_out > 0}>, {@left_out} left out</span>
+              · {if @left_out > 0,
+                do: "#{@left_out} empty #{if @left_out == 1, do: "table", else: "tables"} left out",
+                else: "nothing left out"}
             </span>
           </span>
           <.icon
@@ -261,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
           aria-label="Files in this export"
           class="max-h-[400px] overflow-auto border-t border-subtle"
         >
-          <table :if={@file_inventory != []} class="w-full border-collapse text-left text-sm">
+          <table :if={@inventory != []} class="w-full border-collapse text-left text-sm">
             <thead>
               <tr>
                 <th
@@ -280,7 +421,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             </thead>
             <tbody>
               <tr
-                :for={{filename, count} <- @file_inventory}
+                :for={{filename, count} <- @inventory}
                 class="border-b border-subtle last:border-0"
               >
                 <th
@@ -308,11 +449,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             </tbody>
           </table>
           <p
-            :if={@file_inventory == []}
+            :if={@inventory == []}
             id="export-empty-inventory"
             class="px-4 py-3 text-sm text-muted"
           >
-            This export type has no GTFS tables to package yet.
+            This export type has no tables to package yet.
           </p>
         </div>
 
@@ -324,62 +465,134 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     """
   end
 
-  attr :summary, :map, required: true
-  attr :defaults, :map, required: true
-  attr :version_id, :any, required: true
+  defp version_label(%{name: name}) when is_binary(name) and name != "",
+    do: "#{name} as it is now"
 
-  # How the next export treats missing stop times under the current
-  # defaults, with the counts `MissingTimes.summary/2` computed for this
-  # version. Pathways Studio organizations see the same line: the settings
-  # still describe what a full export of their data would do.
-  defp missing_times_line(%{defaults: %{estimate_missing_times: true}} = assigns) do
-    ~H"""
-    <div
-      id="export-missing-times"
-      class="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-card border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900"
-    >
-      <.icon name="hero-clock" class="mt-0.5 size-4 shrink-0" />
-      <div class="min-w-0 flex-1">
-        <p>
-          <strong>Missing stop times: estimated.</strong>
-          {estimate_sentence(@summary, @defaults)}
-        </p>
-      </div>
-      <.link
-        id="export-missing-times-link"
-        navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
-        class="inline-flex min-h-11 items-center self-center text-sm font-[650] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-      >
-        Export defaults
-      </.link>
-    </div>
-    """
+  defp version_label(_version), do: "this version as it is now"
+
+  defp flex_label(%{include_flex: true}), do: "Separate flex file"
+  defp flex_label(_defaults), do: "Not included"
+
+  defp operations_state(%{loading: true}), do: :loading
+  defp operations_state(%{ok?: true, result: result}), do: {:ok, result}
+  defp operations_state(_other), do: :error
+
+  defp contents_inventory(:operations_only, _base, {:ok, preview}), do: preview.files
+  defp contents_inventory(:operations_only, _base, _not_ok), do: []
+
+  defp contents_inventory(:operations, base, {:ok, preview}),
+    do: merge_inventory(base, preview.files)
+
+  defp contents_inventory(:operations, base, _not_ok), do: base
+  defp contents_inventory(_kind, base, _preview), do: base
+
+  defp merge_inventory(base, extra) do
+    (base ++ extra)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.map(fn {file, counts} -> {file, Enum.max(counts)} end)
+    |> Enum.sort_by(&elem(&1, 0))
   end
 
-  defp missing_times_line(assigns) do
-    ~H"""
-    <div
-      id="export-missing-times"
-      role="status"
-      class="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-card bg-warning-bg px-4 py-3 text-sm text-warning-fg"
-    >
-      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
-      <div class="min-w-0 flex-1">
-        <p>
-          <strong>Missing stop times: left blank.</strong>
-          {blank_sentence(@summary)}
-        </p>
-      </div>
-      <.link
-        id="export-missing-times-link"
-        navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
-        class="inline-flex min-h-11 items-center self-center text-sm font-[650] underline hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-      >
-        Change in Export defaults
-      </.link>
-    </div>
-    """
+  defp contents_tiles(:full, base, _preview, _version_id), do: base_tiles(tiles(:full), base)
+
+  defp contents_tiles(:pathways, base, _preview, _version_id),
+    do: base_tiles(tiles(:pathways), base)
+
+  defp contents_tiles(:operations, base, preview, version_id) do
+    base_tiles([{"Routes", "routes.txt"}, {"Trips", "trips.txt"}], base) ++
+      preview_tiles(:operations, preview, version_id)
   end
+
+  defp contents_tiles(:operations_only, _base, preview, version_id),
+    do: preview_tiles(:operations_only, preview, version_id)
+
+  defp base_tiles(specs, base) do
+    counts = Map.new(base)
+
+    Enum.map(specs, fn {label, file} ->
+      %{key: file, label: label, value: {:count, Map.get(counts, file, 0)}}
+    end)
+  end
+
+  defp preview_tiles(kind, state, version_id) do
+    Enum.map(preview_tile_specs(kind), fn tile ->
+      tile
+      |> Map.put(:value, preview_tile_value(tile, state))
+      |> Map.put(:note, preview_tile_note(tile, state, version_id))
+    end)
+  end
+
+  defp preview_tile_specs(:operations_only) do
+    [
+      %{key: "garages", label: "Garages", source: {:file, "stops_supplement.txt"}},
+      %{key: "vehicles", label: "Vehicles", source: {:file, "vehicles.txt"}},
+      %{key: "runs", label: "Runs", source: {:field, :runs}},
+      %{key: "trips_in_run", label: "Trips in a run", source: {:field, :trips_in_run}}
+    ]
+  end
+
+  defp preview_tile_specs(:operations) do
+    [
+      %{key: "garages", label: "Garages", source: {:file, "stops_supplement.txt"}},
+      %{key: "vehicles", label: "Vehicles", source: {:file, "vehicles.txt"}},
+      %{key: "trips_in_run", label: "Trips in a run", source: {:field, :trips_in_run}}
+    ]
+  end
+
+  defp preview_tile_value(_tile, :loading), do: :loading
+  defp preview_tile_value(_tile, :error), do: :error
+
+  defp preview_tile_value(%{source: {:file, file}}, {:ok, preview}),
+    do: {:count, preview_file_count(preview, file)}
+
+  defp preview_tile_value(%{source: {:field, :runs}}, {:ok, preview}), do: {:count, preview.runs}
+
+  defp preview_tile_value(%{source: {:field, :trips_in_run}}, {:ok, preview}) do
+    if preview.runs == 0 and preview.trips_in_run == 0,
+      do: :no_run_work,
+      else: {:count, preview.trips_in_run}
+  end
+
+  defp preview_file_count(preview, file), do: preview.files |> Map.new() |> Map.get(file, 0)
+
+  # A tile's note is the one thing that tile is missing, so the reader is sent
+  # to the page that fixes it. Zero garages or vehicles, and trips no run
+  # covers, each point at their own version-scoped page.
+  defp preview_tile_note(%{key: "garages"}, {:ok, preview}, version_id) do
+    if preview_file_count(preview, "stops_supplement.txt") == 0,
+      do: %{label: "Manage garages", path: ~p"/gtfs/#{version_id}/settings/garages"},
+      else: nil
+  end
+
+  defp preview_tile_note(%{key: "vehicles"}, {:ok, preview}, version_id) do
+    if preview_file_count(preview, "vehicles.txt") == 0,
+      do: %{label: "Add vehicles", path: ~p"/gtfs/#{version_id}/settings/fleet"},
+      else: nil
+  end
+
+  defp preview_tile_note(%{key: "trips_in_run"}, {:ok, preview}, version_id) do
+    gap = preview.trips_total - preview.trips_in_run
+
+    if gap > 0 and preview.trips_total > 0,
+      do: %{
+        label: "#{gap} of #{preview.trips_total} not in a run",
+        path: ~p"/gtfs/#{version_id}/runs"
+      },
+      else: nil
+  end
+
+  defp preview_tile_note(_tile, _state, _version_id), do: nil
+
+  defp missing_times_label(%{loading: true}, _defaults), do: "Counting missing stop times…"
+
+  defp missing_times_label(
+         %{ok?: true, result: summary},
+         %{estimate_missing_times: true} = defaults
+       ),
+       do: estimate_sentence(summary, defaults)
+
+  defp missing_times_label(%{ok?: true, result: summary}, _defaults), do: blank_sentence(summary)
+  defp missing_times_label(_summary, _defaults), do: "Not available"
 
   defp estimate_sentence(%{trips: 0}, _defaults),
     do: "Every trip has a time at every stop."
@@ -424,24 +637,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     do: [
       {"Routes", "routes.txt"},
       {"Trips", "trips.txt"},
-      {"Stops", "stops.txt"},
-      {"Service calendars", "calendar.txt"}
+      {"Stations", "stops.txt"},
+      {"Calendars", "calendar.txt"}
     ]
 
   defp tiles(:pathways),
     do: [
-      {"Stops and stations", "stops.txt"},
+      {"Stations", "stops.txt"},
       {"Levels", "levels.txt"},
       {"Pathways", "pathways.txt"}
-    ]
-
-  defp tiles(:operations),
-    do: [
-      {"Routes", "routes.txt"},
-      {"Trips", "trips.txt"},
-      {"Stops", "stops.txt"},
-      {"Garages", "stops_supplement.txt"},
-      {"Vehicles", "vehicles.txt"}
     ]
 
   defp tile_columns(3), do: "sm:grid-cols-3"
