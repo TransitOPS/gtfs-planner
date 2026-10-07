@@ -554,7 +554,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       |> assign(:route_rows, ComparePresentation.route_rows(assigns.view, kind_filter))
 
     ~H"""
-    <div id="comparison-results" class="grid gap-6">
+    <div id="comparison-results" class="grid w-full min-w-0 max-w-full gap-6 overflow-hidden">
       <section
         :if={not @no_change?}
         id="comparison-result"
@@ -695,7 +695,10 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
           />
         </div>
 
-        <div id="comparison-rows" class="overflow-x-auto border-t border-subtle">
+        <div
+          id="comparison-rows"
+          class="w-full min-w-0 max-w-full overflow-x-auto border-t border-subtle"
+        >
           <table class="w-full min-w-[44rem] text-left">
             <thead>
               <tr class="border-b border-subtle text-[12px] text-muted">

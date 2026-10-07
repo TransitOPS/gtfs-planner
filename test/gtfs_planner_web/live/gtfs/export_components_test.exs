@@ -521,7 +521,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
     test "uses the singular for one warning" do
       html = check_html(%{result: result(0, 1, 0)})
 
-      assert text(html, "#check-verdict") =~ "No errors. 1 warning"
+      assert text(html, "#check-verdict") ==
+               "No errors. 1 warning points to weak spots, but most trip planners still accept the feed."
     end
 
     test "reports a clean check and offers both follow-up actions as secondary" do

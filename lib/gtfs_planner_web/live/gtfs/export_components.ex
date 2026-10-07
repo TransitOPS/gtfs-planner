@@ -1304,7 +1304,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         <.link
           id="export-download-link"
           navigate={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download"}
-          class="btn btn-primary min-h-10 gap-1.5"
+          class="btn btn-primary min-h-11 gap-1.5"
         >
           <.icon name="hero-arrow-down-tray" class="size-4" /> Download file
         </.link>
@@ -2169,7 +2169,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   end
 
   defp verdict_copy(%{warnings: warnings}) when warnings > 0 do
-    "No errors. #{warnings} #{if warnings == 1, do: "warning", else: "warnings"} point to weak spots, but most trip planners still accept the feed."
+    noun = if warnings == 1, do: "warning", else: "warnings"
+    verb = if warnings == 1, do: "points", else: "point"
+
+    "No errors. #{warnings} #{noun} #{verb} to weak spots, but most trip planners still accept the feed."
   end
 
   defp verdict_copy(_summary),

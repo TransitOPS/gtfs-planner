@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { logInAs } from "./browser_helpers.js";
+import { bodyFitsViewport, logInAs } from "./browser_helpers.js";
 
 /**
  * Release comparison journeys on the Export page (step 13).
@@ -199,6 +199,20 @@ async function fitsWidth(page) {
   });
 }
 
+async function expectMinimumChipTargets(page) {
+  const chips = page.locator("#comparison-kind-chips button");
+  const count = await chips.count();
+  expect(count, "comparison result must offer at least one kind chip").toBeGreaterThan(0);
+
+  for (let index = 0; index < count; index += 1) {
+    const chip = chips.nth(index);
+    const box = await chip.boundingBox();
+    expect(box, `comparison kind chip ${index} must have a rendered box`).not.toBeNull();
+    expect(box.width, `comparison kind chip ${index} must be at least 44px wide`).toBeGreaterThanOrEqual(44);
+    expect(box.height, `comparison kind chip ${index} must be at least 44px tall`).toBeGreaterThanOrEqual(44);
+  }
+}
+
 /** One element at its own size, for a card too tall for the panel's scroll area. */
 async function captureElement(locator, name, viewport) {
   if (!CAPTURE_DIR) return;
@@ -239,7 +253,6 @@ async function exportCapture(page, name, viewport) {
   mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
   await page.screenshot({
     path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
-    fullPage: true,
   });
 }
 
@@ -337,6 +350,22 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
         "Incomplete for this window",
       );
 
+      for (const captureViewport of [
+        { label: "1440", width: 1440, height: 1000 },
+        { label: "320", width: 320, height: 800 },
+      ]) {
+        await page.setViewportSize({
+          width: captureViewport.width,
+          height: captureViewport.height,
+        });
+        await expectMinimumChipTargets(page);
+        await expect(bodyFitsViewport(page)).resolves.toBe(true);
+        await page.locator("#comparison-result").scrollIntoViewIfNeeded();
+        await exportCapture(page, "compare-result", captureViewport);
+      }
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+
       // The helper is offered beside the finished result and never opened for the person.
       await expect(page.locator("#comparison-helper-entry")).toContainText(
         "Ask about this comparison",
@@ -388,7 +417,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
       await expect(summary.locator("a")).toHaveCount(1);
       await expect(summary.locator("a")).toHaveAttribute(
         "href",
-        `/gtfs/${versionId}/export`,
+        `/gtfs/${versionId}/compare`,
       );
       await expect(
         page.locator("#agent-entries a[href*='/routes/']"),
@@ -443,7 +472,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
     await expect(page.locator("#comparison-total-reasons")).toContainText(
       "frequency windows rather than exact departures",
     );
-    await expect(page.locator("#comparison-exact-delta")).toHaveCount(0);
+    await expect(page.locator("#comparison-exact-delta")).toHaveText("—");
     await expect(page.locator("#comparison-completeness")).toContainText(
       "Incomplete for this window",
     );
@@ -579,6 +608,21 @@ test.describe("helper limits, failure and replacement", () => {
         viewport,
         "#comparison-helper-entry",
       );
+
+      for (const captureViewport of [
+        { label: "1440", width: 1440, height: 1000 },
+        { label: "320", width: 320, height: 800 },
+      ]) {
+        await page.setViewportSize({
+          width: captureViewport.width,
+          height: captureViewport.height,
+        });
+        await expect(bodyFitsViewport(page)).resolves.toBe(true);
+        await notice.scrollIntoViewIfNeeded();
+        await exportCapture(page, "compare-refused", captureViewport);
+      }
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
       // The way out is the explicit scope form, reachable by keyboard.
       await page.locator("#comparison-helper-narrow").focus();

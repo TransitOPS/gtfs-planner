@@ -185,7 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
       assert has_element?(view, "#export-file-#{run_id}-download")
       assert has_element?(view, "#export-finished .hero-check-circle")
       assert has_element?(view, "#export-finished + div #files-h")
-      assert has_element?(view, "#export-download-link.btn-primary")
+      assert has_element?(view, "#export-download-link.btn-primary.min-h-11")
       assert has_element?(view, "#export-finished-dismiss[aria-label='Dismiss finished export']")
     end
 

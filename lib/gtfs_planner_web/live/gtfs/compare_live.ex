@@ -1069,9 +1069,12 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
         <div
           id="compare-helper-focus"
           phx-hook=".CompareHelperFocus"
-          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+          class={[
+            "min-w-0 lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
         >
-          <div class={@agent_open? && "hidden lg:block"}>
+          <div class={["min-w-0", @agent_open? && "hidden lg:block"]}>
             <div class="mt-2 grid min-w-0 gap-6">
               <.comparison
                 form={@comparison_form}
