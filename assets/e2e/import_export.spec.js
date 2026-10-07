@@ -1,5 +1,21 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { bodyFitsViewport } from "./browser_helpers";
+
+// The export-UX capture surface this package's step 16 owns. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    fullPage: true,
+  });
+}
 
 const USER = {
   email: "diagram-test@gtfs-planner.test",
@@ -240,6 +256,7 @@ test.describe("durable import and export browser journeys", () => {
       "href",
       oldDownloadHref,
     );
+    await expect(page.locator("#export-finished #export-download-link")).toBeVisible();
 
     const responsePromise = page.waitForResponse((response) =>
       /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),
@@ -457,5 +474,66 @@ test.describe("durable import and export browser journeys", () => {
     );
     await expect(page.locator("[phx-hook='DownloadHook']")).toHaveCount(0);
     expect(await page.content()).not.toContain("data:application/zip;base64,");
+  });
+
+  test("operations data only exports a tods- file with a match line and opens its warnings at 320px", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 320, height: 568 });
+    await openRoute(page, "export");
+    await selectVersion(page, "Browser Runs Version");
+
+    await expectKeyboardAccess(page, "#export-type-operations_only");
+    await page.locator("#export-type-operations_only").check();
+    await expectMinimumTargetSize(page, "#start-export");
+    await page.locator("#start-export").click();
+
+    await expect(page.locator("#export-finished")).toBeVisible({
+      timeout: 60_000,
+    });
+
+    // The download goes through the run's own attachment path, and the finished
+    // band holds it.
+    const download = page.locator("#export-finished #export-download-link");
+    await expect(download).toBeVisible();
+    await expect(download).toHaveAttribute(
+      "href",
+      /\/export-runs\/[^/]+\/download$/,
+    );
+    await expectMinimumTargetSize(page, "#export-download-link");
+
+    const runId = (await download.getAttribute("href")).match(
+      /\/export-runs\/([^/]+)\/download$/,
+    )[1];
+
+    // The Files row names the operations-only artifact tods-<run id>.zip and
+    // carries its R3 match statement.
+    await expect(page.locator(`#export-file-${runId}`)).toContainText("tods-");
+    await expect(page.locator(`#export-file-${runId}-match`)).toBeVisible();
+
+    // The grouped warnings detail is reachable and opens at both widths.
+    const toggle = page.locator(`#export-file-${runId}-warnings`);
+    await expect(toggle).toBeVisible();
+
+    for (const viewport of [
+      { label: "1440", width: 1440, height: 1000 },
+      { label: "320", width: 320, height: 800 },
+    ]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await exportCapture(page, "export-ready", viewport);
+      await exportCapture(page, "export-ops", viewport);
+
+      await expectKeyboardAccess(page, `#export-file-${runId}-warnings`);
+      await toggle.click();
+      await expect(
+        page.locator(`#export-file-${runId}-warnings-detail`),
+      ).toBeVisible();
+      await exportCapture(page, "export-warnings", viewport);
+      await toggle.click();
+      await expect(
+        page.locator(`#export-file-${runId}-warnings-detail`),
+      ).toHaveCount(0);
+    }
   });
 });

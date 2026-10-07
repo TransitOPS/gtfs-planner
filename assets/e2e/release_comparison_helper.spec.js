@@ -85,9 +85,9 @@ async function openExport(page, viewport) {
   });
   await logInAs(page, EDITOR_USER);
   const versionId = await versionIdFor(page, HOST_VERSION);
-  await page.goto(`/gtfs/${versionId}/export`);
+  await page.goto(`/gtfs/${versionId}/compare`);
   await page.waitForSelector("[data-phx-main].phx-connected");
-  await expect(page.locator("#export-workspace")).toBeVisible();
+  await expect(page.locator("#compare-page")).toBeVisible();
   await expect(page.locator("#export-comparison-form")).toBeVisible();
   return versionId;
 }
@@ -190,7 +190,7 @@ async function ask(page, message) {
 /** The document and the panel fit the viewport. */
 async function fitsWidth(page) {
   return page.evaluate(() => {
-    const page = document.querySelector("#export-page");
+    const page = document.querySelector("#compare-page");
     const panel = document.querySelector("#agent-panel");
     return (
       page.scrollWidth <= page.clientWidth + 1 &&
@@ -210,21 +210,37 @@ async function captureElement(locator, name, viewport) {
 }
 
 async function capture(page, name, viewport, region = null) {
-  if (!CAPTURE_DIR) return;
+  if (CAPTURE_DIR) {
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    await page.screenshot({
+      path: resolve(CAPTURE_DIR, `${name}-${viewport.label}.png`),
+      fullPage: true,
+    });
 
-  mkdirSync(CAPTURE_DIR, { recursive: true });
+    // The page is long, so the region the state is about is captured at its own
+    // size as well, which is the one that can be read at 320px.
+    if (region) {
+      await page.locator(region).screenshot({
+        path: resolve(CAPTURE_DIR, `${name}-region-${viewport.label}.png`),
+      });
+    }
+  }
+
+  await exportCapture(page, name, viewport);
+}
+
+// The export-UX capture surface this package's step 16 owns. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
   await page.screenshot({
-    path: resolve(CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
     fullPage: true,
   });
-
-  // The page is long, so the region the state is about is captured at its own
-  // size as well, which is the one that can be read at 320px.
-  if (region) {
-    await page.locator(region).screenshot({
-      path: resolve(CAPTURE_DIR, `${name}-region-${viewport.label}.png`),
-    });
-  }
 }
 
 /**
@@ -288,7 +304,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
       await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
       await expect(page.locator("#export-helper-mode")).toHaveCount(0);
       await expect(page.locator("#agent-panel")).toHaveCount(0);
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
 
       await compare(page, FALL);
 
@@ -400,7 +416,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
 
       // The helper changed nothing on the page behind it.
       await expect(page.locator("#comparison-exact-delta")).toHaveText("-1");
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
 
       // The keyboard closes the panel and returns to the page's Open helper button.
       await page.locator("#agent-panel-close").focus();
@@ -522,7 +538,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
 
     // The editor's choices and the native export controls are untouched.
     expect(await chosenValues(page)).toEqual(chosen);
-    await expect(page.locator("#start-export")).toBeEnabled();
+    await expect(page.locator("#comparison-start")).toBeEnabled();
     await expect(page.locator("#comparison-close")).toBeVisible();
     await capture(page, "expired-baseline", viewport);
 
@@ -635,7 +651,7 @@ test.describe("helper limits, failure and replacement", () => {
       // visible again once the panel closes.
       await expect(page.locator("#comparison-exact-delta")).toHaveText("-1");
       await expect(page.locator("#comparison-results")).toBeAttached();
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
       expect(await chosenValues(page)).toEqual(chosen);
       expect(await fitsWidth(page)).toBe(true);
       await capture(page, "provider-failure", viewport, "#agent-panel");
@@ -672,7 +688,7 @@ test.describe("helper limits, failure and replacement", () => {
       await expect(page.locator("#export-helper-mode")).toHaveCount(0);
       await expect(page.locator("#comparison-results")).toHaveCount(0);
       expect((await chosenValues(page))[1]).toBe(other);
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
     });
   }
 });

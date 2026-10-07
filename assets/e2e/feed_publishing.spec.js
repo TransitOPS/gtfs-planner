@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { bodyFitsViewport, logInAs } from "./browser_helpers.js";
@@ -47,6 +47,31 @@ async function shot(page, name, { fullPage = true } = {}) {
     path: resolve(CAPTURE_DIR, `step-021-${name}.png`),
     fullPage,
   });
+}
+
+// The shared export-UX capture surface for this feature. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    fullPage: true,
+  });
+}
+
+// A ready file's Publish action is one item in the row's own more-actions menu,
+// which opens the row-bound publication drawer.
+async function openPublishDrawer(page) {
+  const menu = page.locator("[id^='export-file-'][id$='-menu']").first();
+  await menu.locator("summary").click();
+
+  const publish = page.locator("[id^='export-file-'][id$='-publish']").first();
+  await publish.click();
+  await expect(page.locator("#publish-drawer")).toBeVisible();
 }
 
 // The organization's default published version is the one the seed backdates its
@@ -109,17 +134,20 @@ test.describe("static publication @static", () => {
     await page.setViewportSize(DESKTOP);
     await exportPage(page);
 
-    // The opener sits in the run's own action row, beside the download.
+    // The opener sits in the run's own action row, inside its more-actions menu.
     await expect(page.locator("#export-download-link")).toBeVisible();
-    const opener = page.locator("#feed-publish-open");
+    const menu = page.locator("[id^='export-file-'][id$='-menu']").first();
+    await menu.locator("summary").click();
+    const opener = page.locator("[id^='export-file-'][id$='-publish']").first();
     await expect(opener).toBeVisible();
 
-    // Keyboard operation: the opener is reachable from the keyboard and opens
+    // Keyboard operation: the action is reachable from the keyboard and opens
     // the review when it is activated, not only when it is clicked.
     await opener.focus();
     await expect(opener).toBeFocused();
     await page.keyboard.press("Enter");
 
+    await expect(page.locator("#publish-drawer")).toBeVisible();
     const review = page.locator("#feed-publish-review");
     await expect(review).toBeVisible();
 
@@ -148,8 +176,10 @@ test.describe("static publication @static", () => {
 
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
 
-    await page.locator("#feed-publish-open").click();
+    await openPublishDrawer(page);
     await expect(page.locator("#feed-publish-review")).toBeVisible();
+
+    await exportCapture(page, "publish-review", NARROW);
 
     // Keyboard: the primary action is a submit control in the review's own form.
     await page.locator("#feed-publish-confirm").focus();
@@ -174,7 +204,7 @@ test.describe("static publication @static", () => {
     await page.setViewportSize(DESKTOP);
     await exportPage(page, "?type=pathways");
 
-    await page.locator("#feed-publish-open").click();
+    await openPublishDrawer(page);
     const review = page.locator("#feed-publish-review");
     await expect(review).toBeVisible();
 
