@@ -112,13 +112,20 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
 
       put_lifecycle_observer(fn
         :before_subscribe, %{id: id} when id == building.id ->
-          mark_ready!(
-            context.organization,
-            context.version,
-            building,
-            generation,
-            token
-          )
+          # A ready row is subscribed too (its expiry can change a displayed
+          # match), so the connected mount reaches this checkpoint again after
+          # the first transition; only the first call is the one under test.
+          if Repo.get!(Run, building.id).state == :building do
+            mark_ready!(
+              context.organization,
+              context.version,
+              building,
+              generation,
+              token
+            )
+          else
+            :ok
+          end
 
         _stage, _run ->
           :ok

@@ -842,6 +842,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
           <span :if={@run.state == :ready} class="mt-0.5 block font-mono text-[12px] text-muted">
             {ready_file_meta(@run)}
           </span>
+          <div :if={@match && @run.state == :ready} class="mt-1 max-w-md">
+            <.match_line id={"#{@dom_id}-match"} match={@match} full_current?={@full_current?} />
+          </div>
         </th>
         <td class="px-5 py-3 align-top text-[13px] tabular-nums text-muted">
           <span class="block">{DisplayClock.format_datetime(@run.inserted_at)}</span>
@@ -873,12 +876,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       </tr>
 
       <tr :if={@open? and ready_warnings?(@run)}>
-        <td colspan="4" class="px-5 pb-4">
+        <td colspan="4" class="bg-canvas/60 px-5 pb-4 pt-1">
           <div id={"#{@dom_id}-warnings-detail"} class="grid gap-2">
             <.warning_group
               :for={group <- warning_groups(@run.warnings)}
               group={group}
               version={@version}
+              row_id={@dom_id}
             />
             <p class="mt-1 text-[12px] text-muted">{made_with(@run)}</p>
             <p
@@ -889,16 +893,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               {stale_detail(@run, @defaults)}
             </p>
           </div>
-        </td>
-      </tr>
-
-      <tr :if={@match}>
-        <td colspan="4" class="px-5 pb-4">
-          <.match_line
-            id={"#{@dom_id}-match"}
-            match={@match}
-            full_current?={@full_current?}
-          />
         </td>
       </tr>
     </tbody>
@@ -918,13 +912,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         phx-click="toggle_file_warnings"
         phx-value-run={@run.id}
         aria-expanded={to_string(@open?)}
-        class="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-control px-3 text-[13px] font-semibold text-strong hover:bg-canvas"
+        class="inline-flex min-h-9 items-center gap-1 rounded-full bg-warning-bg px-2.5 text-[13px] font-semibold text-warning-fg hover:ring-1 hover:ring-warning-line"
       >
+        <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0" />
+        <span class="whitespace-nowrap">{length(@run.warnings || [])} warnings</span>
         <.icon
           name="hero-chevron-down"
-          class={["size-3.5 transition-transform", @open? && "rotate-180"]}
+          class={["size-3.5 shrink-0 transition-transform", @open? && "rotate-180"]}
         />
-        {length(@run.warnings || [])} warnings
       </button>
     <% else %>
       {file_status(@run)}
@@ -937,26 +932,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   attr :group, :map, required: true
   attr :version, :map, required: true
+  attr :row_id, :string, required: true
 
   defp warning_group(assigns) do
-    assigns = assign(assigns, :fix, warning_fix(assigns.group, assigns.version))
+    count = length(assigns.group.warnings)
+
+    assigns =
+      assigns
+      |> assign(:fix, warning_fix(assigns.group, assigns.version))
+      |> assign(:count_suffix, if(count > 1, do: " · #{count} warnings", else: ""))
 
     ~H"""
-    <div class="rounded-r-card border-l-4 border-warning-line bg-warning-bg/40 px-4 py-3">
-      <p class="text-sm font-semibold text-strong">
-        {warning_group_title(@group)}
-        <span class="font-normal text-muted">· {length(@group.warnings)} warnings</span>
+    <div class="rounded-r-card border-l-4 border-warning-line bg-white px-4 py-3">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4">
+        <p class="text-sm font-semibold text-strong">{warning_group_title(@group)}</p>
+        <.link
+          :if={@fix}
+          id={"#{@row_id}-warning-fix-#{@group.code}"}
+          navigate={elem(@fix, 1)}
+          class="inline-flex min-h-9 items-center text-[13px] font-semibold text-action underline"
+        >
+          {elem(@fix, 0)}
+        </.link>
+      </div>
+      <p :for={detail <- warning_group_details(@group)} class="mt-0.5 text-[13px] text-default">
+        {detail}
       </p>
-      <p class="mt-0.5 text-[13px] text-default">{warning_group_detail(@group)}</p>
-      <p class="mt-0.5 font-mono text-[12px] text-muted">{@group.code}</p>
-      <.link
-        :if={@fix}
-        id={"warning-fix-#{@group.code}"}
-        navigate={elem(@fix, 1)}
-        class="mt-1 inline-flex min-h-9 items-center text-[13px] font-semibold text-action underline"
-      >
-        {elem(@fix, 0)}
-      </.link>
+      <p class="mt-1 font-mono text-[12px] text-muted">{@group.code}{@count_suffix}</p>
     </div>
     """
   end
@@ -975,9 +977,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   end
 
   defp warning_group_title(%{code: "tods_file_omitted", warnings: warnings}) do
-    if Enum.any?(warnings, &(warning_detail(&1) =~ "vehicles.txt")),
-      do: "vehicles.txt was not included",
-      else: "A file was not included"
+    cond do
+      Enum.all?(warnings, &(warning_detail(&1) =~ "vehicles.txt")) ->
+        "vehicles.txt was not included"
+
+      length(warnings) > 1 ->
+        "#{length(warnings)} files were not included"
+
+      true ->
+        "A file was not included"
+    end
   end
 
   defp warning_group_title(%{code: "garage_stop_id_conflict"}),
@@ -986,7 +995,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp warning_group_title(%{code: code}),
     do: code |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
-  defp warning_group_detail(%{warnings: [first | _]}), do: warning_detail(first)
+  defp warning_group_details(%{warnings: warnings}) do
+    warnings |> Enum.map(&warning_detail/1) |> Enum.uniq()
+  end
 
   defp uncovered_trip_total(warnings) do
     warnings

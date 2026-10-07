@@ -100,7 +100,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_subscribed_ids, MapSet.new())
      |> assign(:files_clash_run, nil)
      |> assign(:files_match, %{})
-     |> assign(:files_open_warnings, nil)
+     |> assign(:files_shown_operations, MapSet.new())
+     |> assign(:files_served_run_id, nil)
+     |> assign(:files_open_warnings, MapSet.new())
      |> assign(:files_full_current?, false)
      |> AgentPanel.mount("feed_quality")
      |> stream_configure(:files, dom_id: &"export-file-#{&1.id}")
@@ -259,7 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              |> assign(:export_run, current)
              |> stream_insert(:files, current, at: 0)
              |> update_finished_band(current)
-             |> assign_files_match([current])
+             |> merge_files_match([current])
              |> refresh_feed_quality()}
 
           {:error, :busy} ->
@@ -328,7 +330,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_cursor, cursor_for(List.last(page)))
      |> assign(:files_empty?, false)
      |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
-     |> assign_files_match(page)
+     |> merge_files_match(page)
      |> stream(:files, page)}
   end
 
@@ -366,18 +368,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   def handle_event("dismiss_toast", _params, socket),
     do: {:noreply, assign(socket, :files_toast, nil)}
 
-  # A row's warning detail is a display toggle only. The row lives in a stream,
-  # so the affected run is re-inserted after the assign change or the open row
-  # would not repaint. A forged id resolves to no run and changes nothing.
+  # A row's warning detail is a display toggle only. Rows open independently, as
+  # the prototype's open map does, so toggling one row never closes another. The
+  # row lives in a stream, so the toggled run alone is re-inserted after the
+  # assign change or the open row would not repaint; no other row changed. A
+  # forged id resolves to no run and changes nothing.
   @impl Phoenix.LiveView
   def handle_event("toggle_file_warnings", %{"run" => run_id}, socket) do
     with {:ok, uuid} <- Ecto.UUID.cast(run_id),
          %{id: _} = run <- scoped_export_run(socket, uuid) do
-      open = if socket.assigns.files_open_warnings == run.id, do: nil, else: run.id
+      open_warnings =
+        if MapSet.member?(socket.assigns.files_open_warnings, run.id) do
+          MapSet.delete(socket.assigns.files_open_warnings, run.id)
+        else
+          MapSet.put(socket.assigns.files_open_warnings, run.id)
+        end
 
       {:noreply,
        socket
-       |> assign(:files_open_warnings, open)
+       |> assign(:files_open_warnings, open_warnings)
        |> stream_insert(:files, run)}
     else
       _refused -> {:noreply, socket}
@@ -507,7 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         %{} = run -> stream_insert(socket, :files, run)
         _ -> socket
       end
-      |> assign_files_match(List.wrap(changed_run))
+      |> refresh_files_match(changed_run)
 
     # A listed run that fails with a garage/stop clash now owns the card's
     # callout, the same as one already failed when the page mounted.
@@ -636,21 +645,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:files_cursor, cursor_for(List.last(page)))
     |> assign(:files_empty?, page == [])
     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
-    |> assign_files_match(page)
+    |> reset_files_match(page)
     |> stream(:files, page, reset: true)
   end
 
-  # The R3 match answer for each ready operations-only row on this page, keyed by
-  # run id. The served run is read once per Files load through the same trusted
-  # editor scope the publication section uses; the decision is ExportRuns' and
-  # never this page's (INV-2). A run that is not a ready operations-only run
-  # contributes no entry.
-  defp assign_files_match(socket, runs) do
-    served_run_id =
-      case FeedPublishing.served_run_id(publication_scope(socket), :full) do
-        {:ok, run_id} -> run_id
-        _other -> nil
-      end
+  # The R3 match answer for a freshly reset Files page. The stream is replaced,
+  # so the previous page's answers and the operations rows they described are
+  # replaced too; the served run is read once here through the same trusted
+  # editor scope the publication section uses. A run that is not a ready
+  # operations-only run contributes no entry.
+  defp reset_files_match(socket, runs) do
+    socket
+    |> assign(:files_match, %{})
+    |> assign(:files_shown_operations, MapSet.new())
+    |> merge_files_match(runs)
+  end
+
+  # One appended page (or one just-started row): add its answers to the displayed
+  # set. The decision is ExportRuns' and never this page's (INV-2).
+  defp merge_files_match(socket, runs) do
+    served_run_id = served_run_id(socket)
 
     matches =
       runs
@@ -666,8 +680,109 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> Enum.reject(fn {_id, match} -> is_nil(match) end)
       |> Map.new()
 
+    socket
+    |> assign(:files_match, Map.merge(socket.assigns.files_match, matches))
+    |> remember_shown_operations(runs)
+    |> put_served_run(served_run_id)
+  end
+
+  # A displayed operations-only answer is recomputed when its own row changes,
+  # when a full or operations run that could answer it changes, or when the
+  # served run this page read changes. Rows whose answer is removed or replaced
+  # are re-streamed so the rendered statement never outlives the decision it
+  # reports.
+  defp refresh_files_match(socket, changed_run) do
+    served_run_id = served_run_id(socket)
+    socket = remember_shown_operations(socket, changed_run)
+
+    recompute_ids =
+      cond do
+        served_run_id != socket.assigns.files_served_run_id ->
+          socket.assigns.files_shown_operations
+
+        is_nil(changed_run) ->
+          socket.assigns.files_shown_operations
+
+        changed_run.export_type in [:full, :operations] ->
+          socket.assigns.files_shown_operations
+
+        changed_run.export_type == :operations_only ->
+          MapSet.new([changed_run.id])
+
+        true ->
+          MapSet.new()
+      end
+
+    previous_matches = socket.assigns.files_match
+
+    matches =
+      Enum.reduce(recompute_ids, previous_matches, fn id, matches ->
+        case match_answer(socket, id, served_run_id) do
+          nil -> Map.delete(matches, id)
+          answer -> Map.put(matches, id, answer)
+        end
+      end)
+
+    changed_ids =
+      MapSet.filter(recompute_ids, fn id ->
+        Map.get(previous_matches, id) != Map.get(matches, id)
+      end)
+
+    socket
+    |> assign(:files_match, matches)
+    |> put_served_run(served_run_id)
+    |> restream_files(changed_ids)
+  end
+
+  # The current answer for one displayed row, or nil when the row is no longer a
+  # ready operations-only run and so must not keep a statement.
+  defp match_answer(socket, id, served_run_id) do
+    case scoped_export_run(socket, id) do
+      %{state: :ready, export_type: :operations_only} = run ->
+        ExportRuns.reference_match(
+          socket.assigns.current_organization.id,
+          run,
+          served_run_id
+        )
+
+      _ineligible ->
+        nil
+    end
+  end
+
+  defp restream_files(socket, ids) do
+    Enum.reduce(ids, socket, fn id, socket ->
+      case scoped_export_run(socket, id) do
+        %{} = run -> stream_insert(socket, :files, run)
+        nil -> socket
+      end
+    end)
+  end
+
+  defp remember_shown_operations(socket, runs) do
+    ids =
+      runs
+      |> List.wrap()
+      |> Enum.filter(&(&1.export_type == :operations_only))
+      |> MapSet.new(& &1.id)
+
+    assign(
+      socket,
+      :files_shown_operations,
+      MapSet.union(socket.assigns.files_shown_operations, ids)
+    )
+  end
+
+  defp served_run_id(socket) do
+    case FeedPublishing.served_run_id(publication_scope(socket), :full) do
+      {:ok, run_id} -> run_id
+      _other -> nil
+    end
+  end
+
+  defp put_served_run(socket, served_run_id) do
     assign(socket,
-      files_match: Map.merge(socket.assigns[:files_match] || %{}, matches),
+      files_served_run_id: served_run_id,
       files_full_current?: not is_nil(served_run_id)
     )
   end
@@ -675,11 +790,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp cursor_for(nil), do: nil
   defp cursor_for(%{inserted_at: inserted_at, id: id}), do: {inserted_at, id}
 
+  # A ready row is subscribed too when the R3 match reads it: a full/operations
+  # candidate's transition to expired, and an operations-only row's own expiry,
+  # change a displayed statement, so they must arrive as they happen.
   defp subscribe_listed_files(socket, runs) do
     Enum.reduce(runs, socket, fn run, acc ->
-      if run.state in [:pending, :building], do: subscribe_file_run(acc, run), else: acc
+      if run.state in [:pending, :building] or match_subject?(run),
+        do: subscribe_file_run(acc, run),
+        else: acc
     end)
   end
+
+  defp match_subject?(%{state: :ready, export_type: type})
+       when type in [:full, :operations, :operations_only],
+       do: true
+
+  defp match_subject?(_run), do: false
 
   # Reading a row and subscribing are not atomic. Subscribe to every active row
   # from the read first, then read those rows again: a transition before the
@@ -798,7 +924,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket
            |> stream_insert(:files, current, at: 0)
            |> update_finished_band(current)
-           |> assign_files_match([current])}
+           |> merge_files_match([current])}
 
         {:error, :busy} ->
           current = scoped_export_run(socket, run.id) || run
@@ -904,7 +1030,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       run={run}
                       version={@current_gtfs_version}
                       match={@files_match[run.id]}
-                      open?={@files_open_warnings == run.id}
+                      open?={MapSet.member?(@files_open_warnings, run.id)}
                       defaults={@export_defaults}
                       full_current?={@files_full_current?}
                     />

@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
   """
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query, only: [from: 2]
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -14,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
   alias GtfsPlanner.FeedPublishing
   alias GtfsPlanner.FeedPublishing.{Attempt, Publication}
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+  alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
@@ -76,12 +78,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
       assert has_element?(view, detail, "177 trips are not in a run")
       assert has_element?(view, detail, "· 2 warnings")
       assert has_element?(view, detail, "90 trips are not in a run for Weekday.")
+      assert has_element?(view, detail, "87 trips are not in a run for Saturday.")
       assert has_element?(view, detail, "tods_runs_uncovered")
       assert has_element?(view, detail, "Open runs")
 
       assert has_element?(
                view,
-               "#warning-fix-tods_runs_uncovered[href='/gtfs/#{context.version.id}/runs']"
+               "#export-file-#{run.id}-warning-fix-tods_runs_uncovered[href='/gtfs/#{context.version.id}/runs']"
              )
     end
 
@@ -130,6 +133,79 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
 
       assert has_element?(view, stale, "distance along the path")
       assert has_element?(view, stale, "equal time per stop")
+    end
+
+    test "shows every omitted file in a multi-file omission group", context do
+      run =
+        make_ready!(context.organization, context.version, :operations_only,
+          warnings: [
+            warning(
+              "tods_file_omitted",
+              "trips.txt was not included because this version has no movements."
+            ),
+            warning(
+              "tods_file_omitted",
+              "vehicles.txt was not included because this organization has no vehicles."
+            )
+          ]
+        )
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+      view |> element("#export-file-#{run.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      detail = "#export-file-#{run.id}-warnings-detail"
+
+      assert has_element?(view, detail, "2 files were not included")
+
+      assert has_element?(
+               view,
+               detail,
+               "trips.txt was not included because this version has no movements."
+             )
+
+      assert has_element?(
+               view,
+               detail,
+               "vehicles.txt was not included because this organization has no vehicles."
+             )
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-warning-fix-tods_file_omitted",
+               "Manage fleet"
+             )
+    end
+
+    test "rows keep their own open detail when another row is toggled", context do
+      first =
+        make_ready!(context.organization, context.version, :operations_only,
+          warnings: [warning("tods_runs_uncovered", "90 trips are not in a run for Weekday.")]
+        )
+
+      second =
+        make_ready!(context.organization, context.version, :operations_only,
+          warnings: [warning("tods_runs_uncovered", "87 trips are not in a run for Saturday.")]
+        )
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      view |> element("#export-file-#{first.id}-warnings") |> render_click()
+      view |> element("#export-file-#{second.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{first.id}-warnings[aria-expanded='true']")
+      assert has_element?(view, "#export-file-#{second.id}-warnings[aria-expanded='true']")
+      assert has_element?(view, "#export-file-#{first.id}-warnings-detail", "90 trips")
+      assert has_element?(view, "#export-file-#{second.id}-warnings-detail", "87 trips")
+
+      view |> element("#export-file-#{first.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{first.id}-warnings[aria-expanded='false']")
+      assert has_element?(view, "#export-file-#{second.id}-warnings[aria-expanded='true']")
+      refute has_element?(view, "#export-file-#{first.id}-warnings-detail")
+      assert has_element?(view, "#export-file-#{second.id}-warnings-detail", "87 trips")
     end
   end
 
@@ -230,6 +306,102 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
     end
   end
 
+  describe "live match refresh" do
+    test "a full file becoming ready replaces none and its expiry removes the match", context do
+      fingerprint = String.duplicate("a", 64)
+
+      run =
+        make_ready!(context.organization, context.version, :operations_only,
+          fingerprint: fingerprint
+        )
+
+      {full, generation, token} = building_run!(context.organization, context.version, :full)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-match",
+               "Doesn't match any full feed from the last 24 hours"
+             )
+
+      finish_ready!(context.organization, context.version, full, generation, token, fingerprint)
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{run.id}-match", "Matches network.zip")
+
+      backdate!(full, :artifact_expires_at)
+      assert ExportRuns.cleanup_expired(context.organization.id) == 1
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{full.id}", "Download expired")
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-match",
+               "Doesn't match any full feed from the last 24 hours"
+             )
+    end
+
+    test "a served full feed that appears while the page is open repaints the statement",
+         context do
+      fingerprint = String.duplicate("a", 64)
+
+      served =
+        make_ready!(context.organization, gtfs_version_fixture(context.organization.id), :full,
+          fingerprint: fingerprint
+        )
+
+      run =
+        make_ready!(context.organization, context.version, :operations_only,
+          fingerprint: fingerprint
+        )
+
+      {full, generation, token} = building_run!(context.organization, context.version, :full)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-match",
+               "Doesn't match any full feed from the last 24 hours"
+             )
+
+      serve_full!(context.organization, served.id)
+      finish_ready!(context.organization, context.version, full, generation, token, nil)
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-match",
+               "Matches the published full feed network.zip"
+             )
+    end
+
+    test "an operations-only row's expiry removes its statement", context do
+      fingerprint = String.duplicate("a", 64)
+
+      _file =
+        make_ready!(context.organization, context.version, :full, fingerprint: fingerprint)
+
+      run =
+        make_ready!(context.organization, context.version, :operations_only,
+          fingerprint: fingerprint
+        )
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      assert has_element?(view, "#export-file-#{run.id}-match", "Matches network.zip")
+
+      backdate!(run, :artifact_expires_at)
+      assert ExportRuns.cleanup_expired(context.organization.id) == 1
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{run.id}", "Download expired")
+      refute has_element?(view, "#export-file-#{run.id}-match")
+    end
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp export_path(version), do: "/gtfs/#{version.id}/export"
@@ -286,6 +458,31 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFileDetailTest do
       })
 
     ready
+  end
+
+  defp building_run!(organization, version, export_type) do
+    {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, export_type)
+    {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+    {run, generation, token}
+  end
+
+  defp finish_ready!(organization, version, run, generation, token, fingerprint) do
+    {:ok, artifact} =
+      ArtifactStorage.publish(organization.id, version.id, run.id, "network.zip", empty_zip())
+
+    {:ok, ready} =
+      ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+        main: artifact,
+        flex: nil,
+        reference_sha256: fingerprint
+      })
+
+    ready
+  end
+
+  defp backdate!(run, field) do
+    past = DateTime.add(DateTime.utc_now(), -3_600, :second)
+    Repo.update_all(from(r in Run, where: r.id == ^run.id), set: [{field, past}])
   end
 
   defp serve_full!(organization, run_id) do
