@@ -16,7 +16,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
-  alias GtfsPlanner.Validations.Evidence
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.GtfsVersionNavigation
   alias GtfsPlannerWeb.ProductSurfaces
@@ -33,7 +32,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       file_row: 1,
       files_card: 1,
       new_file: 1,
-      recent_checks: 1
+      public_address_card: 1
     ]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -52,15 +51,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @validation_permission_message "You no longer have permission to check this feed. " <>
                                    "Ask an organization administrator to restore your access."
 
-  @empty_feed_quality %{
-    relationship: "unknown",
-    selected_artifact: nil,
-    currentness: "unknown",
-    publication_status: "unsupported",
-    digest: nil,
-    preflight: []
-  }
-
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -78,7 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:operations_preview_started?, false)
      |> assign(:operations_preview_refreshed_run_id, nil)
      |> assign(:closure_count, 0)
-     |> assign(:export_run, nil)
+     |> assign(:selected_kind_busy?, false)
      |> assign(:export_notice, nil)
      |> assign(:export_defaults, nil)
      |> assign(:missing_summary, AsyncResult.loading())
@@ -89,7 +79,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_error, nil)
      |> assign(:recent_checks, [])
      |> assign(:publication, default_publication())
-     |> assign(:feed_quality, @empty_feed_quality)
+     |> assign(:publishing_enabled?, PublishingConfig.current() != :disabled)
+     |> assign(:public_addresses, [])
+     |> assign(:files_published_run_ids, MapSet.new())
+     |> assign(:files_loaded_ids, MapSet.new())
      |> assign(:files_cursor, nil)
      |> assign(:files_has_more?, false)
      |> assign(:files_empty?, true)
@@ -126,17 +119,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> assign(:export_notice, nil)
       |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
       |> assign(:export_defaults, ExportDefaults.get(organization_id))
-      |> refresh_export_run()
+      |> refresh_selected_kind_busy()
       |> load_files()
       |> refresh_file_inventory()
       |> assign_recent_checks()
       |> load_missing_summary()
       |> reset_publication()
       |> assign_publication()
+      |> refresh_publication_presentation()
 
     {:noreply,
      socket
-     |> refresh_feed_quality()
+     |> refresh_helper_context()
      |> ensure_operations_preview()}
   end
 
@@ -187,21 +181,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
-
-  # Re-reads the provider-independent readiness without touching any job or form
-  # draft, and rebinds the panel's snapshot to the section it just read. Defaults
-  # saved on the Export defaults page reach this page only through this read, so
-  # it reloads them first; a stale digest would otherwise stop every request.
-  @impl Phoenix.LiveView
-  def handle_event("feed_quality_refresh", _params, socket) do
-    defaults = ExportDefaults.get(socket.assigns.current_organization.id)
-
-    {:noreply,
-     socket
-     |> assign(:export_defaults, defaults)
-     |> assign(:include_flex, defaults.include_flex)
-     |> refresh_feed_quality()}
-  end
 
   @impl Phoenix.LiveView
   def handle_event("run_validation", _params, socket),
@@ -258,11 +237,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
             {:noreply,
              socket
-             |> assign(:export_run, current)
+             |> assign(:selected_kind_busy?, true)
              |> stream_insert(:files, current, at: 0)
              |> update_finished_band(current)
              |> merge_files_match([current])
-             |> refresh_feed_quality()}
+             |> refresh_helper_context()}
 
           {:error, :busy} ->
             current = scoped_export_run(socket, run.id) || run
@@ -276,12 +255,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           _other ->
             {:noreply,
              socket
-             |> refresh_export_run()
+             |> refresh_selected_kind_busy()
              |> assign(:export_notice, "The export couldn’t start. Try again.")}
         end
 
       {:error, :invalid_transition} ->
-        {:noreply, refresh_export_run(socket)}
+        {:noreply, refresh_selected_kind_busy(socket)}
 
       {:error, :busy} ->
         {:noreply, export_busy(socket)}
@@ -289,7 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {:error, :artifact_storage_unavailable} ->
         {:noreply,
          socket
-         |> refresh_export_run()
+         |> refresh_selected_kind_busy()
          |> assign(
            :export_notice,
            "The export couldn’t start: this server can’t write export files. Ask an administrator to check the export storage location."
@@ -298,7 +277,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       _ ->
         {:noreply,
          socket
-         |> refresh_export_run()
+         |> refresh_selected_kind_busy()
          |> assign(:export_notice, "The export couldn’t start. Try again.")}
     end
   end
@@ -331,6 +310,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_empty?, false)
      |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
      |> merge_files_match(page)
+     |> assign(
+       :files_loaded_ids,
+       MapSet.union(socket.assigns.files_loaded_ids, MapSet.new(Enum.map(page, & &1.id)))
+     )
      |> stream(:files, page)}
   end
 
@@ -401,6 +384,38 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # export type decide what is reviewed, and the command re-checks the membership
   # and the organization before it answers. A forged event can therefore only ask
   # for a review this page was already allowed to ask for.
+  # The row menu's Publish action binds the review to one explicitly chosen ready
+  # file. The id is cast and resolved inside this organization and version before
+  # any read, and only a ready full or pathways run may be reviewed.
+  @impl Phoenix.LiveView
+  def handle_event("publish_file", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{state: :ready, export_type: export_type} = run
+         when export_type in [:full, :pathways] <- scoped_export_run(socket, uuid),
+         channel when not is_nil(channel) <- publication_channel(export_type),
+         false <- PublishingConfig.current() == :disabled do
+      socket
+      |> reset_publication()
+      |> put_publication(%{
+        available?: true,
+        channel: channel,
+        slot: :main,
+        run: run,
+        current_address: Enum.find(socket.assigns.public_addresses, &(&1.channel == channel)),
+        notice: nil,
+        consent_form: consent_form(false)
+      })
+      |> start_publication_preview()
+      |> then(&{:noreply, &1})
+    else
+      _ ->
+        {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+    end
+  end
+
+  def handle_event("publish_file", _params, socket),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+
   @impl Phoenix.LiveView
   def handle_event("preview_publication", _params, socket) do
     publication = socket.assigns.publication
@@ -456,17 +471,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            ) do
         {:ok, publication_id} ->
           # The status band is the durable answer and it changes to "Publishing"
-          # here, so a second confirmation beside it would only repeat it.
+          # here, so a second confirmation beside it would only repeat it. The
+          # bound run is kept so the drawer's return focus still names its row.
+          published = socket.assigns.publication.run
+
           {:noreply,
            socket
-           |> put_publication(%{
-             preview: nil,
-             pending_id: nil,
-             notice: nil,
-             consent_form: consent_form(false),
-             publication_id: publication_id
-           })
-           |> refresh_publication_status()}
+           |> put_publication(%{publication_id: publication_id})
+           |> close_publication_review()
+           |> refresh_publication_status()
+           |> refresh_publication_presentation()
+           |> put_files_toast(published_toast(published), :done)}
 
         {:error, reason} ->
           {kind, title, detail} = publication_error(reason)
@@ -497,19 +512,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_info({:export_run_changed, run_id}, socket) do
-    # A newer export is a different file, so a review of the previous one belongs
-    # to a page the operator has left. The review is closed for the same reason a
-    # version switch closes it.
-    previous_run_id = socket.assigns.publication.run && socket.assigns.publication.run.id
-    changed_run = scoped_export_run(socket, run_id)
-    socket = refresh_export_run(socket)
-    current_run_id = socket.assigns.export_run && socket.assigns.export_run.id
+  def handle_event("public_address_copied", _params, socket),
+    do: {:noreply, put_files_toast(socket, "Address copied.", :done)}
 
-    socket =
-      if previous_run_id == current_run_id,
-        do: socket,
-        else: close_publication_review(socket)
+  @impl Phoenix.LiveView
+  def handle_event("public_address_copy_failed", _params, socket),
+    do:
+      {:noreply, put_files_toast(socket, "Couldn’t copy the address. Copy it by hand.", :refused)}
+
+  @impl Phoenix.LiveView
+  def handle_info({:export_run_changed, run_id}, socket) do
+    changed_run = scoped_export_run(socket, run_id)
+    socket = refresh_selected_kind_busy(socket)
 
     socket =
       case changed_run do
@@ -518,14 +532,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       end
       |> refresh_files_match(changed_run)
 
-    # A listed run that fails with a garage/stop clash now owns the card's
-    # callout, the same as one already failed when the page mounted.
+    # A listed run that fails with a garage/stop clash owns the card's callout. A
+    # ready operations-bearing run of the same kind is the corrected successor, so
+    # it clears the stale callout; unrelated full/pathways runs never clear it.
     socket =
-      if changed_run && changed_run.state == :failed &&
-           changed_run.failure_code == "garage_stop_id_conflict" do
-        assign(socket, :files_clash_run, changed_run)
-      else
-        socket
+      cond do
+        changed_run && changed_run.state == :failed &&
+            changed_run.failure_code == "garage_stop_id_conflict" ->
+          assign(socket, :files_clash_run, changed_run)
+
+        changed_run && changed_run.state == :ready &&
+          changed_run.export_type in @operations_kinds &&
+            clash_successor?(socket, changed_run) ->
+          assign(socket, :files_clash_run, nil)
+
+        true ->
+          socket
       end
 
     socket = update_finished_band(socket, changed_run)
@@ -534,7 +556,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      socket
      |> refresh_operations_preview_for_ready_run(changed_run)
      |> assign_publication()
-     |> refresh_feed_quality()}
+     |> refresh_publication_presentation()
+     |> refresh_helper_context()}
   end
 
   # The check the open review is waiting for finished. Building the review again is
@@ -604,7 +627,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign_persisted_validation_result(run)
     |> assign(:validating, false)
     |> assign(:validation_progress, nil)
-    |> refresh_feed_quality()
+    |> refresh_helper_context()
   end
 
   defp apply_validation_outcome(socket, %{status: "failed"}) do
@@ -646,6 +669,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:files_empty?, page == [])
     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
     |> reset_files_match(page)
+    |> assign(:files_loaded_ids, MapSet.new(Enum.map(page, & &1.id)))
     |> stream(:files, page, reset: true)
   end
 
@@ -855,14 +879,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  # A ready operations-bearing run of the same kind as the current callout is
+  # that clash's corrected successor.
+  defp clash_successor?(socket, %{export_type: export_type}) do
+    match?(%{export_type: ^export_type}, socket.assigns.files_clash_run)
+  end
+
   defp put_files_toast(socket, text, kind) do
     token = System.unique_integer([:positive, :monotonic])
     Process.send_after(self(), {:dismiss_toast, token}, 4_000)
     assign(socket, :files_toast, %{text: text, kind: kind, token: token})
   end
 
-  defp remember_started(socket, run),
-    do: assign(socket, :files_started_ids, MapSet.put(socket.assigns.files_started_ids, run.id))
+  defp published_toast(nil), do: "Full feed published."
+  defp published_toast(%{export_type: :pathways}), do: "Station pathways published."
+  defp published_toast(_run), do: "Full feed published."
+
+  defp remember_started(socket, run) do
+    socket
+    |> assign(:files_started_ids, MapSet.put(socket.assigns.files_started_ids, run.id))
+    |> assign(:files_loaded_ids, MapSet.put(socket.assigns.files_loaded_ids, run.id))
+  end
 
   defp forget_started(socket, run) do
     assign(socket, :files_started_ids, MapSet.delete(socket.assigns.files_started_ids, run.id))
@@ -1007,13 +1044,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                     operations_preview={@operations_preview}
                     missing_summary={@missing_summary}
                     defaults={@export_defaults}
-                    run={@export_run}
+                    busy?={@selected_kind_busy?}
                     notice={@export_notice}
                     closure_count={@closure_count}
                   />
                 </div>
-
-                <.publication_section publication={@publication} />
 
                 <.files_card
                   empty?={@files_empty?}
@@ -1033,32 +1068,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                       open?={MapSet.member?(@files_open_warnings, run.id)}
                       defaults={@export_defaults}
                       full_current?={@files_full_current?}
+                      publishing?={@publishing_enabled?}
+                      published?={MapSet.member?(@files_published_run_ids, run.id)}
                     />
                   </:files_list>
                 </.files_card>
               </div>
 
               <div class="grid min-w-0 gap-6">
-                <section
-                  id="feed-quality-evidence"
-                  class="rounded-card border border-control bg-white px-5 py-4"
-                >
-                  <h3 class="text-sm font-bold text-strong">Feed quality</h3>
-                  <p id="feed-quality-relationship" class="mt-1 text-[13px] text-default">
-                    {relationship_copy(@feed_quality)}
-                  </p>
-                  <p class="mt-1 text-[13px] text-muted">
-                    Currentness: {@feed_quality.currentness}. Publication: {@feed_quality.publication_status}.
-                  </p>
-                  <button
-                    id="feed-quality-refresh"
-                    type="button"
-                    phx-click="feed_quality_refresh"
-                    class="mt-2 text-[13px] font-semibold text-action"
-                  >
-                    Refresh check
-                  </button>
-                </section>
                 <.check_panel
                   validating?={@validating}
                   progress={@validation_progress}
@@ -1067,8 +1084,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   validation_run_id={@validation_run_id}
                   version={@current_gtfs_version}
                   include_flex={@include_flex}
+                  checks={@recent_checks}
                 />
-                <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
+                <.public_address_card
+                  :if={@publishing_enabled?}
+                  addresses={@public_addresses}
+                />
               </div>
             </div>
           </div>
@@ -1093,6 +1114,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             />
           </div>
         </div>
+        <.publication_section publication={@publication} />
       </div>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".ExportHelperFocus">
@@ -1418,9 +1440,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # describe one selection. Every change of the selected export, its checks, its
   # type or the saved defaults goes through here; `set_context` is a no-op while
   # the snapshot is unchanged and starts a fresh conversation when it moved.
-  defp refresh_feed_quality(socket) do
-    socket = assign(socket, :feed_quality, feed_quality_summary(socket))
 
+  defp refresh_helper_context(socket) do
     AgentPanel.set_context(socket, feed_quality_context(socket))
   end
 
@@ -1452,25 +1473,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          }) do
       {:ok, context} -> context
       {:error, _reason} -> Scope.context({:version, version_id})
-    end
-  end
-
-  # The section is provider-independent: it reads the same scoped Evidence the
-  # pack reads, and never starts, repairs or publishes anything.
-  defp feed_quality_summary(socket) do
-    case Evidence.readiness(feed_quality_scope(socket), socket.assigns.export_type, nil, :primary) do
-      {:ok, readiness} ->
-        %{
-          relationship: readiness.relationship,
-          selected_artifact: readiness.selected_artifact,
-          currentness: readiness.currentness,
-          publication_status: readiness.publication_status,
-          digest: readiness.digest,
-          preflight: readiness.preflight
-        }
-
-      {:error, _reason} ->
-        @empty_feed_quality
     end
   end
 
@@ -1562,21 +1564,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
-  defp relationship_copy(%{relationship: "checked"}),
-    do: "A completed check read these exact bytes."
-
-  defp relationship_copy(%{relationship: "different_bytes"}),
-    do: "A completed check read different bytes for this version."
-
-  defp relationship_copy(%{relationship: "different_profile"}),
-    do: "A completed check's profile differs from this selection."
-
-  defp relationship_copy(%{relationship: "unavailable"}),
-    do: "This export selection is not available."
-
-  defp relationship_copy(_summary),
-    do: "The check history cannot be compared to this selection yet."
-
   defp agent_review_label(%{command: {:feed_quality_export_options, _command}}),
     do: "Review options"
 
@@ -1586,20 +1573,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # so the page goes back to the export it was showing and says why.
   defp export_busy(socket) do
     socket
-    |> refresh_export_run()
+    |> refresh_selected_kind_busy()
     |> assign(:export_notice, @export_busy_message)
   end
 
-  defp refresh_export_run(socket) do
+  defp refresh_selected_kind_busy(socket) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
     export_run =
       ExportRuns.latest_for_version(organization_id, version_id, socket.assigns.export_type)
 
-    if export_run, do: subscribe_export_run(export_run)
-    assign(socket, :export_run, export_run)
+    assign(socket, :selected_kind_busy?, selected_kind_busy?(export_run))
   end
+
+  defp selected_kind_busy?(%{state: state}) when state in [:pending, :building], do: true
+  defp selected_kind_busy?(_run), do: false
 
   defp subscribe_export_run(run),
     do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
@@ -1629,6 +1618,86 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # The export type names the public channel this page is about, and the reviewed
   # artifact is the run's main one. Operations has no channel: the catalog owner
   # refuses that profile outright, so the page never offers the action.
+  # The server-owned Public address presentation. Only a channel the server reports
+  # `:current` is served; a pending, staging, switching or reconciling attempt is
+  # never shown as an address or as a Published row.
+  defp refresh_publication_presentation(socket) do
+    if PublishingConfig.current() == :disabled do
+      socket
+      |> assign(
+        publishing_enabled?: false,
+        public_addresses: [],
+        files_published_run_ids: MapSet.new()
+      )
+      |> put_publication(%{current_address: nil})
+    else
+      case FeedPublishing.status(publication_scope(socket)) do
+        {:ok, publications} ->
+          addresses =
+            publications
+            |> Enum.filter(&(&1.channel in [:full, :pathways] and &1.status == :current))
+            |> Enum.map(&address_row/1)
+            |> Enum.reject(&is_nil/1)
+
+          served_ids = MapSet.new(addresses, & &1.run_id)
+          previous = socket.assigns.files_published_run_ids
+
+          socket =
+            assign(socket,
+              publishing_enabled?: true,
+              public_addresses: addresses,
+              files_published_run_ids: served_ids
+            )
+            |> put_current_address(addresses)
+
+          if MapSet.equal?(served_ids, previous), do: socket, else: restream_loaded_files(socket)
+
+        {:error, _reason} ->
+          socket
+          |> assign(
+            publishing_enabled?: true,
+            public_addresses: [],
+            files_published_run_ids: MapSet.new()
+          )
+          |> put_publication(%{current_address: nil})
+      end
+    end
+  end
+
+  # The drawer's Replaces line reads the current address row matching the bound
+  # channel, or nil when that channel currently serves nothing.
+  defp put_current_address(socket, addresses) do
+    current = Enum.find(addresses, &(&1.channel == socket.assigns.publication.channel))
+    put_publication(socket, %{current_address: current})
+  end
+
+  defp address_row(%{active_attempt: %{private_snapshot: %{"source" => source}}} = publication) do
+    case source do
+      %{"run_id" => run_id} ->
+        %{
+          channel: publication.channel,
+          url: FeedPublishing.public_url(publication.namespace, publication.channel),
+          filename: Map.get(source, "filename"),
+          run_id: run_id,
+          served_at: publication.manifest_last_modified
+        }
+
+      _other ->
+        nil
+    end
+  end
+
+  defp address_row(_publication), do: nil
+
+  defp restream_loaded_files(socket) do
+    Enum.reduce(socket.assigns.files_loaded_ids, socket, fn id, acc ->
+      case scoped_export_run(acc, id) do
+        %{} = run -> stream_insert(acc, :files, run)
+        _other -> acc
+      end
+    end)
+  end
+
   defp publication_channel(:full), do: :full
   defp publication_channel(:pathways), do: :pathways
   defp publication_channel(_export_type), do: nil
@@ -1640,6 +1709,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       channel: nil,
       slot: :main,
       run: nil,
+      current_address: nil,
       preview: nil,
       pending_id: nil,
       publication_id: nil,
@@ -1669,15 +1739,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp assign_publication(socket) do
-    channel = publication_channel(socket.assigns.export_type)
-
-    if is_nil(channel) or PublishingConfig.current() == :disabled do
+    if PublishingConfig.current() == :disabled do
       assign(socket, :publication, default_publication())
     else
-      run = if(match?(%{state: :ready}, socket.assigns.export_run), do: socket.assigns.export_run)
+      publication = %{socket.assigns.publication | available?: true}
 
       socket
-      |> put_publication(%{available?: true, channel: channel, slot: :main, run: run})
+      |> assign(:publication, publication)
       |> refresh_publication_status()
     end
   end
@@ -1691,6 +1759,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       preview: nil,
       pending_id: nil,
       notice: nil,
+      current_address: nil,
       consent_form: consent_form(false)
     })
   end

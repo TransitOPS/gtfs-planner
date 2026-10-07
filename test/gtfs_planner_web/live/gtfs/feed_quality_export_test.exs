@@ -76,10 +76,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
     test "the ordinary route prepares a type through the real pack and selects it", context do
       view = export_view(context)
 
-      # The provider-independent section is present before any helper opens.
-      assert has_element?(view, "#feed-quality-evidence")
-      assert has_element?(view, "#feed-quality-relationship")
-      assert has_element?(view, "#feed-quality-refresh")
+      # The retired Feed quality card and "After you download" are gone; the
+      # helper is still offered.
+      refute has_element?(view, "#feed-quality-evidence")
+      refute render(view) =~ "After you download"
 
       refute has_element?(view, "#agent-panel")
 
@@ -202,7 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
       assert has_element?(view, "#export-type-operations[checked]")
       refute has_element?(view, "#agent-prepared-2")
       assert has_element?(view, "#agent-first-conversation")
-      assert has_element?(view, "#feed-quality-evidence")
+      refute has_element?(view, "#feed-quality-evidence")
 
       # Closing and reopening keeps the current conversation, not the old one.
       view |> element("#agent-panel-close") |> render_click()
@@ -219,28 +219,29 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
       view = export_view(context)
 
       assert selected_export_ref(view) == nil
-      assert render(element(view, "#feed-quality-relationship")) =~ "not available"
 
       first = ready_export_run(context)
       send(view.pid, {:export_run_changed, first.id})
+      _ = :sys.get_state(view.pid)
 
-      # The first export finished: the sentence now says the history cannot be
-      # compared (no check read these bytes), and the panel pins that export.
-      assert render(element(view, "#feed-quality-relationship")) =~ "cannot be compared"
+      # The panel pins the finished export.
       assert selected_export_ref(view) == first.id
 
       second = ready_export_run(context)
       send(view.pid, {:export_run_changed, second.id})
-      render(view)
+      _ = :sys.get_state(view.pid)
 
       assert selected_export_ref(view) == second.id
     end
 
-    test "Refresh check reloads defaults saved elsewhere so the helper opens again", context do
+    test "a native type patch reloads defaults saved elsewhere so the helper opens again",
+         context do
       view = export_view(context)
       stale_digest = defaults_digest(view)
 
-      # Defaults saved on the Export defaults page reach this page by no message.
+      # Defaults saved on the Export defaults page reach this page by no message;
+      # the page's own native type patch is the refresh that reloads them before
+      # the helper is used.
       assert {:ok, saved} =
                ExportDefaults.update(
                  context.organization.id,
@@ -248,7 +249,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedQualityExportTest do
                  %{"include_flex" => !context.defaults.include_flex}
                )
 
-      view |> element("#feed-quality-refresh") |> render_click()
+      view
+      |> element("#gtfs-export-form")
+      |> render_change(%{"export" => %{"type" => "operations"}})
+
+      assert_patch(view, "/gtfs/#{context.version.id}/export?type=operations")
 
       current_digest = defaults_digest(view)
       assert current_digest == FeedQuality.defaults_digest(saved)

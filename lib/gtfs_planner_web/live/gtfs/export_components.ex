@@ -19,7 +19,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publish_action: 1]
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
@@ -85,15 +84,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :operations_preview, :any, required: true
   attr :missing_summary, :any, default: nil
   attr :defaults, :map, default: nil
-  attr :run, :any, default: nil
+  attr :busy?, :boolean, default: false
   attr :notice, :string, default: nil
   attr :closure_count, :integer, default: 0
 
   def new_file(assigns) do
-    assigns =
-      assigns
-      |> assign(:busy?, operations_run_busy?(assigns.run))
-      |> assign(:cta_label, Map.fetch!(@export_cta, assigns.export_type))
+    assigns = assign(assigns, :cta_label, Map.fetch!(@export_cta, assigns.export_type))
 
     ~H"""
     <.form for={@form} id="gtfs-export-form" phx-change="select_export_type">
@@ -144,9 +140,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     </.form>
     """
   end
-
-  defp operations_run_busy?(%{state: state}) when state in [:pending, :building], do: true
-  defp operations_run_busy?(_run), do: false
 
   @doc """
   The export kind, split into the two audiences the prototype names: files for
@@ -818,6 +811,96 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     """
   end
 
+  @doc """
+  The Public address card: the permanent addresses this organization currently
+  serves, one row per current Full/Pathways channel. It carries no state and
+  makes no query; `ExportLive` passes the server-owned address rows in.
+  """
+  attr :addresses, :list, required: true
+
+  def public_address_card(assigns) do
+    ~H"""
+    <section id="public-address-card" class="rounded-card border border-subtle bg-white px-5 py-4">
+      <h2 class="text-base font-bold text-strong">Public address</h2>
+
+      <%= if @addresses == [] do %>
+        <p id="public-address-empty" class="mt-1 text-[13px] leading-relaxed text-default">
+          Not published yet. Publish a full feed from Files to give trip planners one address that always serves your latest feed.
+        </p>
+      <% else %>
+        <ul class="mt-2 grid gap-4">
+          <li
+            :for={address <- @addresses}
+            id={"public-address-" <> Atom.to_string(address.channel)}
+            class="grid min-w-0 gap-2"
+          >
+            <a
+              id={"public-address-url-" <> Atom.to_string(address.channel)}
+              href={address.url}
+              rel="noreferrer"
+              class="break-all font-mono text-[13px] leading-relaxed text-strong underline decoration-subtle underline-offset-2 hover:decoration-strong"
+            >
+              {address.url}
+            </a>
+            <.button
+              id={"public-address-copy-" <> Atom.to_string(address.channel)}
+              variant="secondary"
+              size="sm"
+              class="min-h-11 justify-self-start"
+              phx-hook=".PublicAddressCopy"
+              data-public-address-url={address.url}
+              data-public-address-channel={Atom.to_string(address.channel)}
+              aria-label={"Copy the " <> channel_label(address.channel) <> " address"}
+            >
+              <.icon name="hero-clipboard" class="size-4" /> Copy
+            </.button>
+            <p
+              id={"public-address-serving-" <> Atom.to_string(address.channel)}
+              class="text-[13px] text-muted"
+            >
+              Serving {address.filename || "the latest file"} since {format_served_at(
+                address.served_at
+              )}
+            </p>
+          </li>
+        </ul>
+      <% end %>
+
+      <.link
+        id="all-published-feeds"
+        navigate={~p"/settings/published-feeds"}
+        class="mt-3 inline-flex min-h-11 items-center text-[13px] font-semibold text-action hover:underline"
+      >
+        All published feeds
+      </.link>
+    </section>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".PublicAddressCopy">
+      export default {
+        mounted() {
+          this.el.addEventListener("click", () => this.copy())
+        },
+        async copy() {
+          try {
+            await navigator.clipboard.writeText(this.el.dataset.publicAddressUrl)
+            this.pushEvent("public_address_copied", { channel: this.el.dataset.publicAddressChannel })
+          } catch (_error) {
+            this.pushEvent("public_address_copy_failed", { channel: this.el.dataset.publicAddressChannel })
+          }
+        },
+      }
+    </script>
+    """
+  end
+
+  defp channel_label(:full), do: "Full feed"
+  defp channel_label(:pathways), do: "Station pathways"
+  defp channel_label(channel), do: to_string(channel)
+
+  defp format_served_at(nil), do: "an unknown time"
+  defp format_served_at(%DateTime{} = at), do: DisplayClock.format_datetime(at)
+  defp format_served_at(_at), do: "an unknown time"
+
   @doc "One Files row: identity, created time, status and the scoped action."
   attr :dom_id, :string, required: true
   attr :run, :map, required: true
@@ -826,6 +909,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :open?, :boolean, default: false
   attr :defaults, :map, default: nil
   attr :full_current?, :boolean, default: false
+  attr :publishing?, :boolean, default: false
+  attr :published?, :boolean, default: false
 
   def file_row(assigns) do
     ~H"""
@@ -864,13 +949,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               aria-label="Build progress"
             />
           <% else %>
-            <.file_status_cell run={@run} dom_id={@dom_id} open?={@open?} />
+            <.file_status_cell
+              run={@run}
+              dom_id={@dom_id}
+              open?={@open?}
+              published?={@published?}
+            />
           <% end %>
         </td>
         <td class="px-5 py-3 align-top text-right">
           <span class="inline-flex items-center gap-2">
             <.file_actions run={@run} version={@version} />
-            <.file_menu :if={file_menu?(@run)} run={@run} version={@version} />
+            <.file_menu
+              :if={file_menu?(@run, @publishing?)}
+              run={@run}
+              version={@version}
+              publishing?={@publishing?}
+            />
           </span>
         </td>
       </tr>
@@ -902,27 +997,36 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :run, :map, required: true
   attr :dom_id, :string, required: true
   attr :open?, :boolean, required: true
+  attr :published?, :boolean, default: false
 
   defp file_status_cell(assigns) do
     ~H"""
-    <%= if @run.state == :ready and ready_warnings?(@run) do %>
-      <button
-        type="button"
-        id={"#{@dom_id}-warnings"}
-        phx-click="toggle_file_warnings"
-        phx-value-run={@run.id}
-        aria-expanded={to_string(@open?)}
-        class="inline-flex min-h-9 items-center gap-1 rounded-full bg-warning-bg px-2.5 text-[13px] font-semibold text-warning-fg hover:ring-1 hover:ring-warning-line"
-      >
-        <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0" />
-        <span class="whitespace-nowrap">{length(@run.warnings || [])} warnings</span>
-        <.icon
-          name="hero-chevron-down"
-          class={["size-3.5 shrink-0 transition-transform", @open? && "rotate-180"]}
-        />
-      </button>
-    <% else %>
-      {file_status(@run)}
+    <%= cond do %>
+      <% @published? -> %>
+        <span
+          id={"#{@dom_id}-published"}
+          class="inline-flex min-h-9 items-center gap-1 rounded-full bg-success-bg px-2.5 text-[13px] font-semibold text-success-fg"
+        >
+          <.icon name="hero-check" class="size-3.5 shrink-0" /> Published
+        </span>
+      <% @run.state == :ready and ready_warnings?(@run) -> %>
+        <button
+          type="button"
+          id={"#{@dom_id}-warnings"}
+          phx-click="toggle_file_warnings"
+          phx-value-run={@run.id}
+          aria-expanded={to_string(@open?)}
+          class="inline-flex min-h-9 items-center gap-1 rounded-full bg-warning-bg px-2.5 text-[13px] font-semibold text-warning-fg hover:ring-1 hover:ring-warning-line"
+        >
+          <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0" />
+          <span class="whitespace-nowrap">{length(@run.warnings || [])} warnings</span>
+          <.icon
+            name="hero-chevron-down"
+            class={["size-3.5 shrink-0 transition-transform", @open? && "rotate-180"]}
+          />
+        </button>
+      <% true -> %>
+        {file_status(@run)}
     <% end %>
     """
   end
@@ -1123,13 +1227,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     """
   end
 
-  defp file_menu?(%{state: :ready} = run),
-    do: not is_nil(run.flex_artifact_key) or run.export_type == :full
-
-  defp file_menu?(_run), do: false
+  defp file_menu?(run, publishing?) do
+    run.state == :ready and
+      (not is_nil(run.flex_artifact_key) or run.export_type == :full or
+         (publishing? and run.export_type in [:full, :pathways]))
+  end
 
   attr :run, :map, required: true
   attr :version, :map, required: true
+  attr :publishing?, :boolean, default: false
 
   defp file_menu(assigns) do
     ~H"""
@@ -1139,6 +1245,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       class="relative inline-block text-left"
     >
       <summary
+        id={"export-file-#{@run.id}-menu-button"}
         aria-label="More actions"
         class="inline-flex size-11 cursor-pointer list-none items-center justify-center rounded-control border border-control text-default hover:bg-canvas [&::-webkit-details-marker]:hidden"
       >
@@ -1161,6 +1268,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         >
           Compare with another file
         </.link>
+        <.button
+          :if={@publishing? and @run.state == :ready and @run.export_type in [:full, :pathways]}
+          id={"export-file-#{@run.id}-publish"}
+          type="button"
+          phx-click="publish_file"
+          phx-value-run={@run.id}
+          class="block w-full min-h-11 px-4 py-2 text-left text-[13px] text-default hover:bg-canvas"
+        >
+          Publish to public address
+        </.button>
       </div>
     </details>
     """
@@ -1268,12 +1385,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :notice, :string, default: nil
   attr :defaults, :map, default: nil
 
-  # Publication is one more thing the operator may do with a ready file, so its
-  # opener sits in the same action row as Download. `publish?` is the server's
-  # answer, never the page's: an installation without publishing, or an
-  # operations file, passes false and the row is exactly what it was.
-  attr :publish?, :boolean, default: false
-
   def run_status(assigns) do
     view = status(assigns.run, assigns.export_type, assigns.version)
     warnings = if assigns.run, do: assigns.run.warnings || [], else: []
@@ -1348,7 +1459,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             run={@run}
             version={@version}
           />
-          <.publish_action :if={@publish?} />
         </div>
       </div>
 
@@ -1917,14 +2027,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :validation_run_id, :any, default: nil
   attr :version, :map, required: true
   attr :include_flex, :boolean, default: false
+  attr :checks, :list, default: []
 
   def check_panel(assigns) do
     ~H"""
-    <.result_section
-      id="export-check"
-      title="Check for problems"
-      lede="Runs the MobilityData GTFS Validator, the standard open-source checker for transit feeds, on this version’s data."
-    >
+    <section id="export-check" class="rounded-card border border-subtle bg-white">
+      <div class="flex items-center justify-between px-5 pt-5">
+        <h2 class="text-base font-bold text-strong">Feed check</h2>
+        <p class="text-[13px] text-muted">GTFS validator</p>
+      </div>
+
       <div
         id="export-check-body"
         tabindex="-1"
@@ -1950,30 +2062,41 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
               />
               <span id="check-phase">{phase_label(@progress.phase)}</span>
             </div>
-            <progress
+            <div
               id="check-progress"
-              class="progress progress-info mt-3 w-full"
-              value={@progress.percent}
-              max="100"
+              class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-subtle"
+              role="progressbar"
               aria-label="Check progress"
-            />
+            >
+              <div class="h-full w-1/3 animate-pulse rounded-full bg-info-fg"></div>
+            </div>
+            <p class="mt-2 text-[13px] leading-relaxed text-muted">
+              You can keep working; this page updates on its own.
+            </p>
           <% @result -> %>
-            <dl id="mobility-summary-metrics" class="grid grid-cols-3 gap-2.5">
+            <dl
+              id="mobility-summary-metrics"
+              class="grid grid-cols-3 gap-px overflow-hidden rounded-control border border-subtle bg-subtle"
+            >
               <div
                 :for={{key, label, count} <- check_tiles(@result.summary)}
                 data-count={key}
-                class={["rounded-control border px-3 py-2.5", tile_border(key, count)]}
+                class={["bg-white px-3 py-2.5", tile_border(key, count)]}
               >
                 <dt class="text-[13px]">{label}</dt>
-                <dd class="mt-0.5 font-display text-[28px] font-semibold leading-none tracking-[-0.03em] tabular-nums">
+                <dd class="mt-0.5 font-display text-[24px] font-semibold leading-none tracking-[-0.03em] tabular-nums">
                   {count}
                 </dd>
               </div>
             </dl>
 
-            <div class="mt-4">
-              <.verdict summary={@result.summary} />
-            </div>
+            <p id="check-verdict" class="mt-3 text-sm leading-relaxed text-default">
+              {verdict_copy(@result.summary)}
+            </p>
+
+            <p class="mt-1 text-[13px] leading-relaxed text-muted">
+              Checks read this version’s current data, not a downloaded file.
+            </p>
 
             <div class="mt-4 flex flex-wrap gap-2">
               <.button
@@ -1982,7 +2105,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
                 class="min-h-11 max-sm:flex-1"
                 navigate={~p"/gtfs/#{@version.id}/validation/#{@validation_run_id}"}
               >
-                View full results
+                View results
               </.button>
               <.button
                 id="reset-validation"
@@ -1993,9 +2116,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
                 Check again
               </.button>
             </div>
-            <p class="mt-3 text-[13px] leading-relaxed text-muted">
-              Checks read this version’s current data, not a downloaded file.
-            </p>
           <% true -> %>
             <p :if={is_nil(@error)} class="text-sm leading-relaxed text-default">
               Run a check before you send the file to trip planners, so you hear about problems first.
@@ -2024,7 +2144,72 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             </div>
         <% end %>
       </div>
-    </.result_section>
+
+      <details :if={@checks != []} id="recent-checks" class="group border-t border-subtle">
+        <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-5 text-sm font-semibold text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
+          <span>Earlier checks · {length(@checks)}</span>
+          <.icon
+            name="hero-chevron-down"
+            class="size-4 shrink-0 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none"
+          />
+        </summary>
+        <ul role="list">
+          <.check_row :for={check <- @checks} check={check} />
+        </ul>
+      </details>
+    </section>
+    """
+  end
+
+  # The compact verdict sentence: errors first, then warnings, then clean.
+  defp verdict_copy(%{errors: errors}) when errors > 0 do
+    "Fix #{errors} #{if errors == 1, do: "error", else: "errors"} before you share this feed. Trip planners may reject it."
+  end
+
+  defp verdict_copy(%{warnings: warnings}) when warnings > 0 do
+    "No errors. #{warnings} #{if warnings == 1, do: "warning", else: "warnings"} point to weak spots, but most trip planners still accept the feed."
+  end
+
+  defp verdict_copy(_summary),
+    do: "No errors or warnings. Information notices are optional to review."
+
+  attr :check, :map, required: true
+
+  defp check_row(assigns) do
+    ~H"""
+    <li
+      id={"recent-check-#{@check.id}"}
+      class="border-b border-subtle px-2 py-1 last:border-0"
+    >
+      <.link
+        navigate={@check.path}
+        class="group block rounded-control px-3 py-2 no-underline hover:bg-canvas"
+      >
+        <span class="block text-sm font-semibold text-action group-hover:underline">
+          {@check.title}
+        </span>
+        <span class="mt-0.5 block text-[13px] tabular-nums text-muted">
+          {DisplayClock.format_datetime(@check.started_at)}
+        </span>
+        <span
+          id={"recent-validation-counts-#{@check.id}"}
+          class="mt-1 block text-[13px] tabular-nums text-default"
+        >
+          <%= if @check.kind == :pathways_test do %>
+            {@check.errors} failed · {@check.warnings} couldn’t be checked · {@check.infos} passed
+          <% else %>
+            <span class={severity_class(:errors, @check.errors)}>
+              {@check.errors} {if @check.errors == 1, do: "error", else: "errors"}
+            </span>
+            ·
+            <span class={severity_class(:warnings, @check.warnings)}>
+              {@check.warnings} {if @check.warnings == 1, do: "warning", else: "warnings"}
+            </span>
+            · <span class="text-strong">{@check.infos} information</span>
+          <% end %>
+        </span>
+      </.link>
+    </li>
     """
   end
 
@@ -2058,34 +2243,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   defp tile_border("infos", count) when count > 0, do: "border-subtle bg-white text-strong"
   defp tile_border(_key, _count), do: "border-subtle bg-white text-muted"
-
-  attr :summary, :map, required: true
-
-  # Errors are violations of the GTFS reference, so they get the instruction;
-  # warnings are best-practice issues most trip planners still accept.
-  defp verdict(%{summary: %{errors: errors}} = assigns) when errors > 0 do
-    ~H"""
-    <.message id="check-verdict" kind="error" title="Fix the errors before you share this feed.">
-      Trip planners may reject a feed that has errors.
-    </.message>
-    """
-  end
-
-  defp verdict(%{summary: %{warnings: warnings}} = assigns) when warnings > 0 do
-    ~H"""
-    <.message id="check-verdict" kind="warning" title="No errors.">
-      Review the {@summary.warnings} {if @summary.warnings == 1, do: "warning", else: "warnings"}. They point to weak spots, but most trip planners still accept the feed.
-    </.message>
-    """
-  end
-
-  defp verdict(assigns) do
-    ~H"""
-    <.message id="check-verdict" kind="success" title="No errors or warnings.">
-      Information notices are optional to review.
-    </.message>
-    """
-  end
 
   @doc """
   The last five checks of any kind as a list, newest first: what ran, when, and

@@ -110,8 +110,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     html = view |> element("#start-export") |> render_click()
 
     refute html =~ "cannot write export files"
-    assert has_element?(view, "#export-run-status")
-    refute has_element?(view, "#export-empty-history")
+    assert has_element?(view, "#export-files-card")
+    refute has_element?(view, "#export-files-empty")
   end
 
   test "renders with a recent legacy pathways_tests run present", %{
@@ -145,9 +145,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     conn = log_in_user(conn, user, organization: organization)
     {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-    assert has_element?(view, "#export-empty-history")
-    assert has_element?(view, "#start-export", "Export feed")
-    refute has_element?(view, "#export-download-link")
+    assert has_element?(view, "#export-files-empty")
+    assert has_element?(view, "#start-export", "Export full feed")
+    refute has_element?(view, "#export-files-card [id$='-download']")
     refute has_element?(view, "#recent-checks")
   end
 
@@ -229,52 +229,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     end
   end
 
-  describe "export notices" do
-    test "a cancel with no export to cancel reports it in the status band", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
-
-      render_click(view, "cancel_export")
-
-      assert has_element?(view, "#export-run-status #export-notice", "couldn’t be cancelled")
-    end
-
-    test "a retry with no export to restart reports it in the status band", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
-
-      render_click(view, "retry_export")
-
-      assert has_element?(view, "#export-run-status #export-notice", "couldn’t be restarted")
-    end
-
-    test "the notice clears when the export type changes", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      gtfs_version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
-      render_click(view, "cancel_export")
-      assert has_element?(view, "#export-notice")
-
-      view |> form("#gtfs-export-form", export: %{type: "pathways"}) |> render_change()
-
-      refute has_element?(view, "#export-notice")
-    end
-  end
-
   describe "feed check" do
     setup :set_mox_global
     setup :verify_on_exit!
@@ -302,7 +256,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       release_validation(view)
 
       assert has_element?(view, "#mobility-summary-metrics [data-count=warnings]", "3")
-      assert has_element?(view, "#check-verdict", "Review the 3 warnings.")
+
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors. 3 warnings point to weak spots, but most trip planners still accept the feed."
+             )
 
       assert has_element?(
                view,
@@ -323,7 +282,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       view |> element("#run-validation") |> render_click()
       release_validation(view)
-      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors or warnings. Information notices are optional to review."
+             )
 
       view |> element("#reset-validation") |> render_click()
 
@@ -414,7 +378,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       release_validation(view)
 
-      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors or warnings. Information notices are optional to review."
+             )
     end
 
     test "ignores the outcome of a run it is not showing", %{
@@ -436,7 +404,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       release_validation(view)
 
-      assert has_element?(view, "#check-verdict", "Review the 2 warnings.")
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors. 2 warnings point to weak spots, but most trip planners still accept the feed."
+             )
     end
 
     test "refuses a check after the reader's editor role is revoked and starts no run", %{
@@ -517,7 +489,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       view |> element("#run-validation") |> render_click()
       release_validation(view)
 
-      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors or warnings. Information notices are optional to review."
+             )
+
       assert trip_times(File.read!(first_copy)) == @distance_times
 
       # Changing the default changes the next validation and no export that exists.
@@ -533,7 +510,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       view |> element("#run-validation") |> render_click()
       release_validation(view)
 
-      assert has_element?(view, "#check-verdict", "No errors or warnings.")
+      assert has_element?(
+               view,
+               "#check-verdict",
+               "No errors or warnings. Information notices are optional to review."
+             )
+
       assert trip_times(File.read!(second_copy)) == @even_times
 
       unchanged = Repo.get!(Run, prior.id)
@@ -626,11 +608,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
 
-      assert has_element?(
-               view,
-               "#recent-checks-title + p",
-               "1 of the last 2 checks reported errors, and 1 reported warnings."
-             )
+      assert has_element?(view, "#recent-checks summary", "Earlier checks · 2")
 
       assert has_element?(view, "#recent-validation-counts-#{failing.id}", "2 errors")
       assert has_element?(view, "#recent-validation-counts-#{failing.id}", "5 warnings")
@@ -710,7 +688,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       assert_patch(view, "/gtfs/#{version.id}/export?type=operations")
       assert has_element?(view, "#export-type-operations[checked]")
-      assert has_element?(view, "#operations-export-note")
+      assert has_element?(view, "#start-export", "Export feed with operations")
+
+      render_async(view)
 
       assert tods_inventory_rows(view) == [
                ["stops_supplement.txt", "2"],
@@ -733,19 +713,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       organization: organization,
       gtfs_version: version
     } do
-      assert {:ok, _run} =
+      assert {:ok, run} =
                ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
 
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=operations")
       assert has_element?(view, "#export-type-operations[checked]")
-      refute has_element?(view, "#export-empty-history")
-      assert has_element?(view, "#export-run-status")
+      assert has_element?(view, "#export-file-#{run.id}")
 
       {:ok, fallback_view, _html} = live(conn, "/gtfs/#{version.id}/export?type=bogus")
       assert has_element?(fallback_view, "#export-type-full[checked]")
-      assert has_element?(fallback_view, "#export-empty-history")
+      assert has_element?(fallback_view, "#export-file-#{run.id}")
     end
 
     test "starting an operations export publishes a downloadable ZIP with both TODS files", %{
@@ -766,7 +745,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       start_export_and_wait(view)
 
       assert %Run{state: :ready} = run = latest_operations_run(organization, version)
-      assert has_element?(view, "#export-download-link")
+      assert has_element?(view, "#export-file-#{run.id}-download")
 
       download = get(conn, "/gtfs/#{version.id}/export-runs/#{run.id}/download")
       assert download.status == 200
@@ -791,10 +770,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       start_export_and_wait(view)
 
-      assert %Run{state: :ready} = latest_operations_run(organization, version)
-      assert has_element?(view, "#export-warning-panel", "stops_supplement.txt was not included")
-      assert has_element?(view, "#export-warning-panel", "vehicles.txt was not included")
-      refute has_element?(view, "#export-conflict-panel")
+      assert %Run{state: :ready} = run = latest_operations_run(organization, version)
+
+      view |> element("#export-file-#{run.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-warnings-detail",
+               "stops_supplement.txt was not included"
+             )
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-warnings-detail",
+               "vehicles.txt was not included"
+             )
+
+      refute has_element?(view, "#export-garage-clash")
     end
 
     test "a garage/stop ID conflict is actionable and clears after the ID is corrected", %{
@@ -812,18 +805,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       start_export_and_wait(view)
 
       assert %Run{state: :failed, failure_code: "garage_stop_id_conflict"} =
+               failed =
                latest_operations_run(organization, version)
 
-      assert has_element?(view, "#export-conflict-panel")
-      assert has_element?(view, "#export-conflicts", "Main garage")
-      assert has_element?(view, "#export-conflicts", "Main Street")
+      assert has_element?(view, "#export-garage-clash")
+      assert has_element?(view, "#export-garage-clash-details", "Main garage")
+      assert has_element?(view, "#export-garage-clash-details", "Main Street")
 
       assert attribute_values(render(view), "#export-edit-garages", "href") == [
                "/gtfs/#{version.id}/settings/garages"
              ]
 
-      # The conflict detail belongs to the conflict panel only.
-      refute has_element?(view, "#export-warning-panel")
+      # The conflict detail belongs to the clash callout only.
+      refute has_element?(view, "#export-file-#{failed.id}-warnings")
 
       assert {:ok, _garage} =
                Operations.update_garage(
@@ -835,12 +829,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
                  }
                )
 
-      start_export_and_wait(view, "#retry-export")
+      start_export_and_wait(view, "#export-file-#{failed.id} button[phx-click='retry_file']")
 
-      assert %Run{state: :ready} = latest_operations_run(organization, version)
-      assert has_element?(view, "#export-download-link")
-      refute has_element?(view, "#export-conflict-panel")
-      refute has_element?(view, "#retry-export")
+      assert %Run{state: :ready} = run = latest_operations_run(organization, version)
+      assert has_element?(view, "#export-file-#{run.id}-download")
+      refute has_element?(view, "#export-garage-clash")
     end
   end
 
@@ -906,7 +899,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
         live(conn, "/gtfs/#{version.id}/export?type=operations")
 
       assert has_element?(operations_view, "#export-type-operations[checked]")
-      assert has_element?(operations_view, "#operations-export-note")
+      assert has_element?(operations_view, "#start-export", "Export feed with operations")
     end
   end
 
@@ -929,7 +922,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(
                view,
                "#export-pathways-closures-omitted",
-               "Pathways export leaves out 2 scheduled closures"
+               "2 scheduled closures are left out."
              )
 
       assert inventory_count(view, "stops.txt") == "4"
@@ -964,7 +957,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(
                view,
                "#export-pathways-closures-omitted",
-               "Pathways export leaves out 1 scheduled closure"
+               "1 scheduled closure is left out."
              )
     end
 
@@ -1003,15 +996,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=operations")
 
-      assert has_element?(view, "#operations-export-note")
+      assert has_element?(view, "#start-export", "Export feed with operations")
       refute has_element?(view, "#export-pathways-closures-omitted")
+
+      render_async(view)
+
       assert inventory_count(view, "pathway_evolutions.txt") == "1"
 
       start_export_and_wait(view)
 
-      assert %Run{state: :ready} = latest_operations_run(organization, version)
-      assert has_element?(view, "#export-warning-panel", "stops_supplement.txt was not included")
-      assert has_element?(view, "#export-warning-panel", "vehicles.txt was not included")
+      assert %Run{state: :ready} = run = latest_operations_run(organization, version)
+
+      view |> element("#export-file-#{run.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-warnings-detail",
+               "stops_supplement.txt was not included"
+             )
+
+      assert has_element?(
+               view,
+               "#export-file-#{run.id}-warnings-detail",
+               "vehicles.txt was not included"
+             )
+
       refute has_element?(view, "#export-pathways-closures-omitted")
     end
   end
@@ -1030,7 +1040,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
-      assert has_element?(view, "#export-missing-times", "Missing stop times: estimated")
       assert has_element?(view, "#export-missing-times", "2 times on 1 trip")
       assert has_element?(view, "#export-missing-times", "by distance along the path")
 
@@ -1044,12 +1053,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
                "/gtfs/#{version.id}/settings/export-defaults"
              ]
 
-      assert render(view)
-             |> LazyHTML.from_fragment()
-             |> LazyHTML.query("#export-missing-times")
-             |> LazyHTML.attribute("class")
-             |> hd()
-             |> String.contains?("bg-cyan-50")
+      assert has_element?(view, "#export-missing-times-link", "Change")
     end
 
     test "leaves the times blank in a warning tone when the defaults say so",
@@ -1070,21 +1074,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
-      assert has_element?(view, "#export-missing-times", "Missing stop times: left blank")
       assert has_element?(view, "#export-missing-times", "2 times on 1 trip go out blank")
 
-      assert has_element?(
-               view,
-               "#export-missing-times-link",
-               "Change in Export defaults"
-             )
-
-      assert render(view)
-             |> LazyHTML.from_fragment()
-             |> LazyHTML.query("#export-missing-times")
-             |> LazyHTML.attribute("class")
-             |> hd()
-             |> String.contains?("bg-warning-bg")
+      assert has_element?(view, "#export-missing-times-link", "Change")
     end
 
     test "says nothing can be estimated when every gapped trip is unfillable",
@@ -1127,19 +1119,31 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       assert run.estimate_missing_times == true
       assert run.estimate_method == :distance
-      mark_export_ready(run)
+      ready = mark_export_ready(run)
+
+      # A harmless warning opens the row detail, where the made-with line and the
+      # stale-settings line live.
+      {:ok, _} =
+        ready
+        |> Run.system_changeset(%{
+          warnings: [%{"code" => "harmless", "detail" => "Nothing to fix."}]
+        })
+        |> Repo.update()
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
+      view |> element("#export-file-#{ready.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
       assert has_element?(
                view,
-               "#export-run-missing-times",
-               "Estimated by distance along the path"
+               "#export-file-#{ready.id}-warnings-detail",
+               "missing stop times estimated by distance along the path"
              )
 
-      refute has_element?(view, "#export-stale-settings")
+      refute has_element?(view, "#export-file-#{ready.id}-stale-settings")
 
       assert {:ok, _} =
                ExportDefaults.update(organization.id, editor_fixture(organization), %{
@@ -1149,16 +1153,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, stale_view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(stale_view)
 
+      stale_view |> element("#export-file-#{ready.id}-warnings") |> render_click()
+      _ = :sys.get_state(stale_view.pid)
+
       assert has_element?(
                stale_view,
-               "#export-run-missing-times",
-               "Estimated by distance along the path"
+               "#export-file-#{ready.id}-warnings-detail",
+               "missing stop times estimated by distance along the path"
              )
 
       assert has_element?(
                stale_view,
-               "#export-stale-settings",
-               "Export defaults changed after this file was made"
+               "#export-file-#{ready.id}-stale-settings",
+               "Export again to use today's settings"
              )
     end
 
@@ -1179,13 +1186,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
 
       assert run.estimate_missing_times == false
       assert run.estimate_method == nil
-      mark_export_ready(run)
+      ready = mark_export_ready(run)
+
+      # A harmless warning opens the row detail; the made-with line reads the
+      # recorded blank choice.
+      {:ok, _} =
+        ready
+        |> Run.system_changeset(%{
+          warnings: [%{"code" => "harmless", "detail" => "Nothing to fix."}]
+        })
+        |> Repo.update()
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
-      assert heading_text(render(view), "#export-run-missing-times") == "Left blank"
+      view |> element("#export-file-#{ready.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#export-file-#{ready.id}-warnings-detail",
+               "missing stop times left blank"
+             )
     end
 
     test "a Pathways Studio organization sees the line", %{conn: conn} do
@@ -1196,7 +1219,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
-      assert has_element?(view, "#export-missing-times", "Missing stop times: estimated")
+      assert has_element?(view, "#export-missing-times")
     end
 
     test "missing_times_not_estimated warnings render through the warnings list",
@@ -1227,8 +1250,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
       render_async(view)
 
-      assert has_element?(view, "#export-warning-panel", "was left blank")
-      assert has_element?(view, "#export-warning-panel", "missing_times_not_estimated")
+      view |> element("#export-file-#{ready.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#export-file-#{ready.id}-warnings-detail", "was left blank")
+
+      assert has_element?(
+               view,
+               "#export-file-#{ready.id}-warnings-detail",
+               "missing_times_not_estimated"
+             )
     end
   end
 
@@ -1247,7 +1278,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(view, "#gtfs-tab-import[href='/gtfs/#{version.id}/import']")
       refute has_element?(view, "#gtfs-tab-import[aria-current='page']")
 
-      assert heading_text(html, "header h1") == "Export feed"
+      assert heading_text(html, "header h1") == "Export"
       assert has_element?(view, "#gtfs-export-form")
       assert has_element?(view, "#export-download-container")
     end
