@@ -93,7 +93,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
 
   `export_type` selects the checks that apply to the files the export contains.
   """
-  @spec run(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+  @spec run(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations | :operations_only) ::
           :ok | {:error, [issue()]}
   def run(organization_id, gtfs_version_id, export_type \\ :full) do
     case inspect_summary(organization_id, gtfs_version_id, export_type) do
@@ -114,7 +114,11 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   existing message states, with `unit: :timezones` naming what that number counts
   (not the agencies that use them).
   """
-  @spec inspect_summary(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+  @spec inspect_summary(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only
+        ) ::
           [summary()]
   def inspect_summary(organization_id, gtfs_version_id, export_type \\ :full) do
     export_type
@@ -124,6 +128,7 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
   end
 
   defp checks(:pathways), do: @pathway_checks
+  defp checks(:operations_only), do: []
   defp checks(_export_type), do: @pathway_checks ++ @feed_checks
 
   # A station (location_type 1) with a parent_station.

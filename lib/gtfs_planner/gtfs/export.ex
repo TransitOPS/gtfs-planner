@@ -146,7 +146,11 @@ defmodule GtfsPlanner.Gtfs.Export do
   `tods_file_omitted` warning, and a movement left out for want of a driving time
   is reported as a `tods_movements_omitted` warning rather than dropped silently.
   """
-  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+  @spec build_zip(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only
+        ) ::
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type) do
@@ -161,7 +165,12 @@ defmodule GtfsPlanner.Gtfs.Export do
   (including the default nil) writes stored rows unchanged. `run_id` is the
   option `build_zips/4` documents.
   """
-  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
+  @spec build_zip(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only,
+          keyword()
+        ) ::
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type, opts) do
@@ -221,7 +230,12 @@ defmodule GtfsPlanner.Gtfs.Export do
     artifact root is not configured or cannot be written
   - `{:error, reason}` for a version with nothing to export or a build failure
   """
-  @spec build_zips(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
+  @spec build_zips(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only,
+          keyword()
+        ) ::
           {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
   def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
     with {:ok, build_parent} <-
@@ -231,7 +245,9 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   defp build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts) do
-    include_flex = Keyword.get(opts, :include_flex, false) and export_type != :pathways
+    include_flex =
+      Keyword.get(opts, :include_flex, false) and export_type not in [:pathways, :operations_only]
+
     estimate = normalize_estimate(Keyword.get(opts, :estimate))
 
     temp_dir = generate_temp_dir(build_parent)
@@ -463,42 +479,39 @@ defmodule GtfsPlanner.Gtfs.Export do
          estimate,
          coords
        ) do
-    %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
-
-    conflict_rollback(
-      Operations.garage_stop_id_conflicts(organization_id, gtfs_version_id, garages)
-    )
-
-    garage_map = Map.new(garages, &{&1.garage_id, &1.name})
-    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
-
-    with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
-           export_files(
+    with {:ok, public_file_paths, tods_paths, warnings} <-
+           build_operations_files(
              temp_dir,
-             fare_specs(FileSpec.get_specs(:full), fares),
              organization_id,
              gtfs_version_id,
-             %{},
-             garage_map,
              mapper,
-             fare_opts(fares, estimate, coords)
+             estimate,
+             coords
            ) do
-      conflict_rollback(emitted_conflicts)
+      {:ok, create_zip_archive(public_file_paths ++ tods_paths, organization_id, gtfs_version_id),
+       warnings}
+    end
+  end
 
-      movements = movement_rows(organization_id, gtfs_version_id)
-
-      file_paths =
-        file_paths ++
-          export_tods_files(temp_dir, garages, vehicles) ++
-          export_movement_files(temp_dir, movements)
-
-      warnings =
-        movement_warnings(movements) ++
-          run_warnings(movements) ++
-          assignment_warnings(movements) ++
-          tods_omission_warnings(garages, vehicles) ++ missing_warnings
-
-      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
+  defp build_main(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         :operations_only,
+         mapper,
+         estimate,
+         coords
+       ) do
+    with {:ok, _public_file_paths, tods_paths, warnings} <-
+           build_operations_files(
+             temp_dir,
+             organization_id,
+             gtfs_version_id,
+             mapper,
+             estimate,
+             coords
+           ) do
+      {:ok, create_zip_archive(tods_paths, organization_id, gtfs_version_id), warnings}
     end
   end
 
@@ -525,6 +538,52 @@ defmodule GtfsPlanner.Gtfs.Export do
              fare_opts(fares, estimate, coords)
            ) do
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), missing_warnings}
+    end
+  end
+
+  defp build_operations_files(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         mapper,
+         estimate,
+         coords
+       ) do
+    %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
+
+    conflict_rollback(
+      Operations.garage_stop_id_conflicts(organization_id, gtfs_version_id, garages)
+    )
+
+    garage_map = Map.new(garages, &{&1.garage_id, &1.name})
+    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
+
+    with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
+           export_files(
+             temp_dir,
+             fare_specs(FileSpec.get_specs(:full), fares),
+             organization_id,
+             gtfs_version_id,
+             %{},
+             garage_map,
+             mapper,
+             fare_opts(fares, estimate, coords)
+           ) do
+      conflict_rollback(emitted_conflicts)
+
+      movements = movement_rows(organization_id, gtfs_version_id)
+
+      tods_paths =
+        export_tods_files(temp_dir, garages, vehicles) ++
+          export_movement_files(temp_dir, movements)
+
+      warnings =
+        movement_warnings(movements) ++
+          run_warnings(movements) ++
+          assignment_warnings(movements) ++
+          tods_omission_warnings(garages, vehicles) ++ missing_warnings
+
+      {:ok, file_paths, tods_paths, warnings}
     end
   end
 
