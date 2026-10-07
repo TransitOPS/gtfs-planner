@@ -50,6 +50,11 @@ const FREQUENCY = {
 };
 const UNCHANGED = { left: "Unchanged service A", right: "Unchanged service B" };
 const LARGE = { left: "Large network A", right: "Large network B" };
+const NATIVE_SIZE = { left: "Native size A", right: "Native size B" };
+const CHART_EXTREMA = {
+  left: "Chart extrema earlier",
+  right: "Chart extrema candidate",
+};
 const EXPIRING = "Expiring export";
 
 const VIEWPORTS = [
@@ -256,6 +261,80 @@ async function exportCapture(page, name, viewport) {
   });
 }
 
+async function exportFullPageCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    fullPage: true,
+  });
+}
+
+async function exportElementCapture(locator, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await locator.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+  });
+}
+
+async function dateChartLayout(page) {
+  return page.locator("#comparison-per-date li").evaluateAll((entries) =>
+    entries.map((entry) => {
+      const value = entry.querySelector("span:first-child").getBoundingClientRect();
+      const plot = entry.querySelector("div[aria-hidden=true]").getBoundingClientRect();
+      const bar = entry.querySelector("div[style]")?.getBoundingClientRect() ?? null;
+      const date = entry.querySelector("span:last-child").getBoundingClientRect();
+
+      return {
+        label: entry.getAttribute("aria-label"),
+        valueBottom: value.bottom,
+        plotTop: plot.top,
+        plotBottom: plot.bottom,
+        barTop: bar?.top ?? null,
+        barBottom: bar?.bottom ?? null,
+        dateTop: date.top,
+      };
+    }),
+  );
+}
+
+async function captureLowerResult(page, viewport) {
+  const structural = page.locator("#comparison-structural");
+  if (!(await structural.evaluate((element) => element.open))) {
+    await structural.locator("summary").click();
+  }
+  await expect(structural).toHaveJSProperty("open", true);
+
+  const rows = page.locator("#comparison-rows");
+  await rows.scrollIntoViewIfNeeded();
+  await rows.evaluate((element, mobile) => {
+    element.scrollLeft = mobile ? element.scrollWidth - element.clientWidth : 0;
+  }, viewport.width < 640);
+
+  if (viewport.width < 640) {
+    await expect
+      .poll(() => rows.evaluate((element) => element.scrollLeft))
+      .toBeGreaterThan(0);
+  }
+
+  await exportElementCapture(
+    rows,
+    "compare-result-table-scrolled",
+    viewport,
+  );
+  await exportElementCapture(
+    page.locator("#comparison-result"),
+    "compare-result-lower",
+    viewport,
+  );
+
+  await page.locator("#comparison-exclusions").scrollIntoViewIfNeeded();
+  await exportCapture(page, "compare-result-footer", viewport);
+}
+
 /**
  * Expires one seeded retained export in the journey's own throwaway database, so
  * the page has listed a file that is no longer retained when the comparison
@@ -362,6 +441,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
         await expect(bodyFitsViewport(page)).resolves.toBe(true);
         await page.locator("#comparison-result").scrollIntoViewIfNeeded();
         await exportCapture(page, "compare-result", captureViewport);
+        await captureLowerResult(page, captureViewport);
       }
 
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -580,6 +660,80 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
   });
 });
 
+test.describe("native comparison limits and chart geometry", () => {
+  test("native size refusal keeps the selected files and dates at both viewports", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const chosen = await (async () => {
+      await openExport(page, VIEWPORTS[0]);
+      return chooseFiles(page, NATIVE_SIZE);
+    })();
+
+    await page.locator("#comparison-start").click();
+    await expect(page.locator("#comparison-status-title")).toHaveText(
+      "The comparison couldn’t finish",
+      { timeout: 60_000 },
+    );
+    await expect(page.locator("#comparison-status")).toContainText(
+      "These files are too large to compare",
+    );
+    await expect(page.locator("#comparison-status")).toContainText(
+      "200,000 exact departures",
+    );
+    await expect(page.locator("#comparison-results")).toHaveCount(0);
+    await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
+    expect(await chosenValues(page)).toEqual(chosen);
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      expect(await chosenValues(page)).toEqual(chosen);
+      await expect(bodyFitsViewport(page)).resolves.toBe(true);
+      await exportFullPageCapture(page, "compare-refused", viewport);
+    }
+  });
+
+  test("positive and negative extrema stay between their value and date labels", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openExport(page, VIEWPORTS[0]);
+    await compare(page, CHART_EXTREMA);
+
+    await expect(page.locator("#comparison-date-2026-11-25")).toContainText("+1");
+    await expect(page.locator("#comparison-date-2026-11-26")).toContainText("−1");
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await page.locator("#comparison-per-date").scrollIntoViewIfNeeded();
+
+      const extrema = (await dateChartLayout(page)).filter(({ label }) =>
+        label?.includes("1 trip"),
+      );
+      expect(extrema).toHaveLength(2);
+
+      for (const entry of extrema) {
+        expect(entry.barTop).toBeGreaterThanOrEqual(entry.plotTop);
+        expect(entry.barBottom).toBeLessThanOrEqual(entry.plotBottom);
+        expect(entry.barTop).toBeGreaterThan(entry.valueBottom);
+        expect(entry.barBottom).toBeLessThan(entry.dateTop);
+      }
+
+      await exportElementCapture(
+        page.locator("#comparison-per-date"),
+        "compare-chart-extrema",
+        viewport,
+      );
+    }
+  });
+});
+
 test.describe("helper limits, failure and replacement", () => {
   for (const viewport of VIEWPORTS) {
     test(`a comparison too large for the helper keeps the native result at ${viewport.width}x${viewport.height}`, async ({
@@ -619,7 +773,7 @@ test.describe("helper limits, failure and replacement", () => {
         });
         await expect(bodyFitsViewport(page)).resolves.toBe(true);
         await notice.scrollIntoViewIfNeeded();
-        await exportCapture(page, "compare-refused", captureViewport);
+        await exportCapture(page, "compare-helper-refused", captureViewport);
       }
 
       await page.setViewportSize({ width: viewport.width, height: viewport.height });

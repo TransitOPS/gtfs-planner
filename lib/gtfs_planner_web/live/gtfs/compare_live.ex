@@ -62,7 +62,8 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     unavailable: @comparison_unavailable_notice,
     invalid_window: @comparison_window_notice,
     unsupported_profile: @comparison_profile_notice,
-    unsupported_size: "Those exports are larger than a comparison can read.",
+    unsupported_size:
+      "These files are too large to compare. A comparison reads at most 100,000 rows and 200,000 exact departures per file. Choose fewer dates and compare again.",
     malformed_csv:
       "One of those files has a table that isn’t valid CSV, so nothing was compared.",
     invalid_archive: "One of those files isn’t a readable feed archive, so nothing was compared.",

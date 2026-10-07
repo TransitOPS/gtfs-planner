@@ -155,6 +155,12 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       assert has_element?(view, "#comparison-date-2026-11-23", "−1")
       assert has_element?(view, "#comparison-date-2026-11-23", "Nov 23")
       assert "Nov 23: lose 1 trip" in per_date_labels(view)
+
+      # The chart reserves one 20px half for either sign inside its 44px plot.
+      # An extremum therefore cannot extend into the value or date labels.
+      assert view
+             |> element("#comparison-date-2026-11-23 div[style='height: 20px']")
+             |> has_element?()
     end
 
     test "an out-of-service window is incomplete, never the No differences card", context do

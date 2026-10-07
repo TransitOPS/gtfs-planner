@@ -235,12 +235,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
           </section>
         <% end %>
 
-        <%= if @status == :refused and @notice do %>
-          <.callout id="comparison-refused" kind="error" title="The comparison couldn’t finish">
-            <p class="text-[13px] leading-relaxed">{@notice}</p>
-          </.callout>
-        <% end %>
-
         <%= if @no_change? do %>
           <section
             id="comparison-nochange"
@@ -1073,9 +1067,11 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 
-  # One value per date, so the chart scales to its own window: the tallest bar
-  # is 44px and every other bar keeps its proportion, with a floor so a small
-  # change stays visible. A date whose value is nil draws no bar, only "—".
+  # One value per date, so the chart scales to its own window. Each sign owns
+  # one half of the 44px plot, with 2px kept clear at the outer edge: even an
+  # extremum cannot paint over the value above or the date below. Every other
+  # bar keeps its proportion, with a floor so a small change stays visible. A
+  # date whose value is nil draws no bar, only "—".
   defp per_date_max(entries) do
     entries
     |> Enum.map(&abs(&1.value || 0))
@@ -1083,7 +1079,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   end
 
   defp per_date_bar_height(value, max) when is_integer(value) and max > 0,
-    do: max(div(abs(value) * 44, max), 3)
+    do: max(div(abs(value) * 20, max), 3)
 
   defp per_date_bar_height(_value, _max), do: 0
 
