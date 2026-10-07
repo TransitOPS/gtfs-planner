@@ -13,12 +13,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     * a preview leaves `trips`, `block_attributes`, `roster_lines`,
       `roster_line_days`, `trip_runs` and `operators` at the counts it found them,
       including on every refusal;
-    * 3,000 distinct trips are admitted and the 3,001st is refused as
-      `{:too_large, 3001}`;
+    * schedules above the former 3,000-trip cap are previewed in full;
     * a trip in two day types is given one block ID, and a new block invalid on any
       affected day loses all of its new moves rather than half of them;
     * a block's trip running on a date outside the selected range is part of the
-      block: it is counted against the bound, and it decides whether a new move
+      block: it decides whether a new move
       onto that block is valid;
     * an existing block is preserved, and nothing a preview proposes is written;
     * a garage of another organization, a staging version, an organization with no
@@ -34,7 +33,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
   same rows reordered, because `preview/2` reads its own rows and cannot be handed
   an order.
 
-  The 3,001-trip case writes its trips with `Repo.insert_all/3` inside this test's
+  The large-schedule case writes its trips with `Repo.insert_all/3` inside this test's
   SQL Sandbox transaction, which rolls them back.
 
   Run with:
@@ -226,65 +225,27 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     end
   end
 
-  describe "the admission bound" do
-    test "3,000 distinct trips are admitted and the 3,001st is refused" do
+  describe "large schedules" do
+    test "previews all 8,574 trips without a fixed admission cap" do
       world = tods_world_fixture()
       {organization_id, version_id, audit, inputs} = bulk_scope(world)
+      bulk_day(organization_id, version_id, 8_574)
 
-      bulk_day(organization_id, version_id, 3_000)
-
-      # Admitted and answered: every trip is counted and every one of them is
-      # reported rather than dropped, which is what "inside the bound" means. The
-      # bulk trips carry no stop times, so the generator holds each as
-      # `:unplottable` instead of inventing a chain for it.
-      assert {:ok, at_bound} = TodsGenerator.preview(audit, inputs)
-      assert length(at_bound.exclusions) == 3_000
-      assert Enum.uniq(Enum.map(at_bound.exclusions, & &1.reason)) == [:unplottable]
-
-      insert_chunked!(GtfsPlanner.Gtfs.Trip, [bulk_trip(organization_id, version_id, "B3001")])
-
-      # One trip over the bound refuses the whole scope and costs no candidate.
-      assert {:error, {:too_large, 3001}} = TodsGenerator.preview(audit, inputs)
+      assert {:ok, preview} = TodsGenerator.preview(audit, inputs)
+      assert length(preview.exclusions) == 8_574
+      assert Enum.uniq(Enum.map(preview.exclusions, & &1.reason)) == [:unplottable]
     end
 
-    test "a touched block's out-of-range companion is counted before the bound" do
+    test "completes touched blocks beyond the selected dates on a large schedule" do
       world = tods_world_fixture()
       {organization_id, version_id, audit, inputs} = bulk_scope(world)
-
-      bulk_day(organization_id, version_id, 2_998)
+      bulk_day(organization_id, version_id, 3_000)
       block_with_out_of_range_companion!(organization_id, version_id)
 
-      # The range holds 2,999 of these trips; completing the block one of them is
-      # in reaches its December trip, which is the 3,000th.
-      assert {:ok, _at_bound} = TodsGenerator.preview(audit, inputs)
-
-      insert_chunked!(GtfsPlanner.Gtfs.Trip, [bulk_trip(organization_id, version_id, "B3001")])
-
-      # The 3,001st distinct trip is the one the range's own dates do not hold: a
-      # count of the selected dates alone would see 3,000 and admit it.
-      assert {:error, {:too_large, 3001}} = TodsGenerator.preview(audit, inputs)
-    end
-
-    test "a trip in two day types is counted once against the bound" do
-      world = tods_world_fixture(extra_trips: [weekday_trip()])
-      day_types = day_types(world)
-
-      assert {:ok, inputs} = candidate_inputs(world, day_types)
-
-      # The fixture's weekday trip is in both day types' rows, so the union is
-      # smaller than the sum of the two lists and is what the bound counts.
-      union = TodsGenerator.distinct_trip_count(inputs.rows_by_day_type)
-
-      # Every trip of a day type is also in the other one when both day types run
-      # the weekday service, so the summed row lists double-count and the union
-      # does not: the difference is exactly the size of that overlap.
-      summed = inputs.rows_by_day_type |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
-
-      # Both day types run the weekday service, so their row lists hold the same
-      # trips and the union is half the sum.
-      assert length(day_type_keys(inputs)) == 2
-      assert summed == union * 2
-      assert union < sum_trip_count(day_types, inputs)
+      assert {:ok, preview} = TodsGenerator.preview(audit, inputs)
+      assert "BCOMP" in preview.preserved_block_ids
+      # The selected companion is also unplottable; its December partner is preserved.
+      assert length(preview.exclusions) == 3_001
     end
   end
 
@@ -565,7 +526,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
 
       {organization_id, version_id, audit, inputs} = bulk_scope(world)
       bulk_day(organization_id, version_id, 3_001)
-      assert {:error, {:too_large, 3001}} = TodsGenerator.preview(audit, inputs)
+      assert {:ok, _preview} = TodsGenerator.preview(audit, inputs)
       assert planning_row_counts(world) == before
     end
   end
@@ -629,8 +590,6 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
       "representative_week" => Date.to_iso8601(monday)
     })
   end
-
-  defp day_type_keys(%{rows_by_day_type: rows}), do: rows |> Map.keys() |> Enum.sort()
 
   defp candidate_inputs(world, day_types) do
     Blocking.candidate_input(
@@ -720,14 +679,6 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     |> Enum.sort()
   end
 
-  defp sum_trip_count(day_types, inputs) do
-    day_types
-    |> Enum.map(fn day_type ->
-      inputs.rows_by_day_type |> Map.fetch!(day_type.key) |> length()
-    end)
-    |> Enum.sum()
-  end
-
   defp reverse_rows(%{rows_by_day_type: rows} = inputs),
     do: %{
       inputs
@@ -749,11 +700,11 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     }
   end
 
-  # --- the bound's own scope --------------------------------------------------
+  # --- the large schedule's scope --------------------------------------------------
 
   # A version of its own, so the bulk day is the whole scope and nothing the shared
   # world built is counted with it. The garage is the world's, because a version
-  # with no garage is refused before the bound is ever reached.
+  # with no garage is refused before composition.
   defp bulk_scope(world) do
     version = gtfs_version_fixture(world.organization.id, %{name: "Bulk"})
 
@@ -798,9 +749,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.BlockPlanTest do
     ])
   end
 
-  # Trips with no stop times, so the bound is proved on the count rather than on
-  # what a 3,000-trip chain would compose. The generator still reads every one of
-  # them and reports each; it cannot place them, and it says so per trip.
+  # Missing stop times exercise complete reporting independently of block chaining.
   defp bulk_day(organization_id, version_id, count) do
     trips = Enum.map(1..count, &bulk_trip(organization_id, version_id, "B#{&1}"))
 

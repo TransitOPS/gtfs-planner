@@ -2546,8 +2546,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   must not replace a manual assignment. Any write or audit the transaction refuses
   rolls the caller's whole transaction back with its reason, so a generation's
   blocks, attribute rows, trip audits and relief marks commit together or not at
-  all. The trip audits and the 500-row write batches are `write_plan!/2`'s, shared
-  with `apply_block_plan/3` rather than reimplemented here.
+  all. The trip audits and the 500-row write batches share `write_plan!/3` with
+  `apply_block_plan/3`. Generation audits carry each row's own trip ID under the
+  shared operation ID; the generation receipt holds the complete changed-trip
+  list. This avoids repeating the whole schedule in every audit row.
 
   Returns the bare result map the caller's transaction wraps: the audit
   `operation_id` (nil when no trip moved), the changed trip UUIDs and the relief
@@ -2575,10 +2577,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       generation_moves!(organization_id, version_id, Map.get(block_delta, :assignments, %{}))
 
     result =
-      write_plan!(audit, %{
-        moves: moves,
-        attribute_rows: generation_attribute_rows(Map.get(block_delta, :blocks, []))
-      })
+      write_plan!(
+        audit,
+        %{
+          moves: moves,
+          attribute_rows: generation_attribute_rows(Map.get(block_delta, :blocks, []))
+        },
+        :trip
+      )
 
     %{
       operation_id: result.operation_id,
@@ -2753,7 +2759,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # log per moved trip sharing one operation ID. A count mismatch is a row
   # this transaction expected and did not find, so the whole plan rolls back rather
   # than leaving part of it written.
-  defp write_plan!(%AuditContext{} = audit, plan) do
+  defp write_plan!(%AuditContext{} = audit, plan, audit_scope \\ :operation) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
     moves = plan.moves
@@ -2781,7 +2787,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           move.to,
           snapshots,
           operation_id,
-          changed_ids
+          if(audit_scope == :trip, do: [move.trip.id], else: changed_ids)
         )
       end)
 

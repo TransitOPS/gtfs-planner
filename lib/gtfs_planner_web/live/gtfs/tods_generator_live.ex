@@ -414,17 +414,6 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
 
   defp preview_failure(:missing_garages), do: @missing_garages_status
 
-  defp preview_failure({:too_large, count}) do
-    %{
-      kind: "error",
-      role: "alert",
-      title: "The schedule is too large to generate from.",
-      body:
-        "These dates hold #{Wording.count_noun(count, "trip")}, above the bound this tool admits. " <>
-          "Choose a shorter date range."
-    }
-  end
-
   # The read boundary's own refusals, which `Export.with_read_snapshot/1` answers
   # outside the plan's: its transaction deadline, and the rollback it reports on
   # the same boundary.
@@ -561,17 +550,6 @@ defmodule GtfsPlannerWeb.Gtfs.TodsGeneratorLive do
       title: "Add a garage first.",
       body:
         "Nothing was saved: generation places vehicles and operators at this organization's garages."
-    }
-  end
-
-  defp save_failure({:too_large, count}) do
-    %{
-      kind: "error",
-      role: "alert",
-      title: "The schedule is too large to generate from.",
-      body:
-        "Nothing was saved: these dates now hold #{Wording.count_noun(count, "trip")}, above the " <>
-          "bound this tool admits. Choose a shorter date range and preview again."
     }
   end
 
