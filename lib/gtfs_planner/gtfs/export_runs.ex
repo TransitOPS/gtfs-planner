@@ -713,6 +713,108 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     |> Repo.all()
   end
 
+  @doc """
+  Lists the organization's retained export runs for one version, newest first.
+
+  Every state is included, so a pending or failed run is listed beside a ready
+  one; only the retention window filters the answer. The keyset position is the
+  same `(inserted_at, id)` cursor `list_comparable/2` uses.
+  """
+  @spec list_files(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: [Run.t()]
+  def list_files(organization_id, version_id, opts \\ []) do
+    position = Keyword.get(opts, :after)
+    limit = Keyword.get(opts, :limit, 25)
+
+    from(r in Run,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
+          r.inserted_at >= ago(^artifact_ttl_seconds(), "second"),
+      order_by: [desc: r.inserted_at, asc: r.id],
+      limit: ^limit
+    )
+    |> after_position(position)
+    |> Repo.all()
+  end
+
+  @doc """
+  Classifies an `:operations_only` run's reference against the served run.
+
+  R3's precedence: the served publication's run is `{:published, served}` when
+  both fingerprints are present and equal; otherwise a retained `:ready`
+  `:full` or `:operations` run with the same fingerprint is `{:file, file}`;
+  otherwise `:published_unknown` when a served run exists without a fingerprint;
+  otherwise `:none`. A run that is not a ready `:operations_only` run with a
+  fingerprint answers `nil`.
+  """
+  @spec reference_match(Ecto.UUID.t(), Run.t(), Ecto.UUID.t() | nil) ::
+          {:published, Run.t()}
+          | {:file, Run.t()}
+          | :published_unknown
+          | :none
+          | nil
+  def reference_match(
+        _organization_id,
+        %Run{state: state, export_type: export_type},
+        _served_run_id
+      )
+      when state != :ready or export_type != :operations_only,
+      do: nil
+
+  def reference_match(
+        _organization_id,
+        %Run{gtfs_reference_sha256: fingerprint},
+        _served_run_id
+      )
+      when not is_binary(fingerprint),
+      do: nil
+
+  def reference_match(organization_id, %Run{} = run, served_run_id) do
+    fingerprint = run.gtfs_reference_sha256
+    served = served_run(organization_id, served_run_id)
+
+    # The file query runs only when the published branch did not match, so a
+    # served run that already owns this fingerprint costs no second read.
+    cond do
+      fingerprint_match?(served, fingerprint) ->
+        {:published, served}
+
+      file = matching_file(organization_id, run.gtfs_version_id, fingerprint) ->
+        {:file, file}
+
+      served != nil and is_nil(served.gtfs_reference_sha256) ->
+        :published_unknown
+
+      true ->
+        :none
+    end
+  end
+
+  defp fingerprint_match?(%Run{gtfs_reference_sha256: served_fingerprint}, fingerprint)
+       when is_binary(served_fingerprint),
+       do: served_fingerprint == fingerprint
+
+  defp fingerprint_match?(_served, _fingerprint), do: false
+
+  defp served_run(_organization_id, nil), do: nil
+
+  defp served_run(organization_id, served_run_id) do
+    from(r in Run, where: r.organization_id == ^organization_id and r.id == ^served_run_id)
+    |> Repo.one()
+  end
+
+  defp matching_file(organization_id, version_id, fingerprint) do
+    from(r in Run,
+      where:
+        r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id and
+          r.state == :ready and r.export_type in [:full, :operations] and
+          r.gtfs_reference_sha256 == ^fingerprint,
+      where: r.artifact_expires_at >= fragment("CURRENT_TIMESTAMP"),
+      order_by: [desc: r.inserted_at, asc: r.id],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   # The ordering is `(inserted_at DESC, id ASC)`, so the keyset predicate keeps
   # both directions: rows older than the position, and the later ids sharing
   # exactly its insert timestamp.
