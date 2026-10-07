@@ -1493,7 +1493,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
   """
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
-  attr :active_tab, :atom, values: [:export, :import], default: :export
+  attr :active_tab, :atom, values: [:export, :compare, :import], default: :export
 
   def gtfs_sub_nav(assigns) do
     ~H"""
@@ -1511,6 +1511,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
             aria-current={@active_tab == :export && "page"}
           >
             Export
+          </.link>
+          <.link
+            id="gtfs-tab-compare"
+            navigate={"/gtfs/#{@gtfs_version_id}/compare"}
+            class={sub_nav_link_class(@active_tab == :compare)}
+            aria-current={@active_tab == :compare && "page"}
+          >
+            Compare
           </.link>
           <.link
             id="gtfs-tab-import"

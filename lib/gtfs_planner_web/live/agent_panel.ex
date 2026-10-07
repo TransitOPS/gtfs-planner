@@ -869,7 +869,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
          :ok <- Scope.authorized_context(scope),
          :ok <- Pack.authorize_context(Map.fetch!(Agents.packs(), scope.pack_id), scope),
          version_id when is_binary(version_id) <- panel_version_id(socket) do
-      ~p"/gtfs/#{version_id}/export"
+      ~p"/gtfs/#{version_id}/compare"
     else
       _other -> nil
     end

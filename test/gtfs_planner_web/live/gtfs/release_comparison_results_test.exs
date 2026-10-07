@@ -1,11 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
   @moduledoc """
   Focused evidence for CL-9/FH-9: the completed native comparison renders its
-  differences, its uncertainty and its explicit scope on the ordinary Export
-  page, and a large native result stays inspectable through stream paging.
+  differences, its uncertainty and its explicit scope on the Compare page, and a
+  large native result stays inspectable through stream paging.
 
-  Every case drives the production path: the routed `/gtfs/:version_id/export`
-  page, `ExportLive`'s own events, and a real `ReleaseComparison.Runner` reading
+  Every case drives the production path: the routed `/gtfs/:version_id/compare`
+  page, `CompareLive`'s own events, and a real `ReleaseComparison.Runner` reading
   real published artifacts through the real reader, projection, matching,
   service and comparison code. No result is manufactured and nothing is injected
   into the LiveView.
@@ -717,7 +717,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
 
   defp view(%{conn: conn, user: user, organization: organization, version: version}) do
     {:ok, view, _html} =
-      live(log_in_user(conn, user, organization: organization), "/gtfs/#{version.id}/export")
+      live(log_in_user(conn, user, organization: organization), "/gtfs/#{version.id}/compare")
 
     view
   end

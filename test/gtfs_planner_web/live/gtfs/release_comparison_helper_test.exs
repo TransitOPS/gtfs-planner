@@ -1,10 +1,9 @@
 defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
   @moduledoc """
-  Focused evidence for CL-12/FH-12: the comparison helper on the ordinary Export
-  page, from the native form to the evidence card, and the scoped link it may
-  render.
+  Focused evidence for CL-12/FH-12: the comparison helper on the Compare page,
+  from the native form to the evidence card, and the scoped link it may render.
 
-  Every case drives the production path. The routed `/gtfs/:version_id/export`
+  Every case drives the production path. The routed `/gtfs/:version_id/compare`
   page runs a real `ReleaseComparison.Runner` over two retained ZIPs published
   through `ExportRuns`/`ArtifactStorage`, the page freezes the delivered result
   through the shared snapshot seam, `AgentPanel` binds that context, and
@@ -94,7 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
     }
   end
 
-  describe "the ordinary journey from the Export form to the evidence card" do
+  describe "the ordinary journey from the Compare form to the evidence card" do
     test "an editor compares two files, opens the helper and reads the server's answer",
          context do
       view = view(context)
@@ -148,10 +147,10 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       # unresolved stop matches keep it incomplete.
       assert has_element?(view, "#agent-entry-2 [data-evidence-completeness='incomplete']")
 
-      # The one resource is this comparison, and it links to this Export page and
-      # nowhere else. No historical identifier became a link.
+      # The one resource is this comparison, and it links to this Compare page
+      # and nowhere else. No historical identifier became a link.
       assert [link] = card |> fragment() |> query_attributes("a", "href")
-      assert link == "/gtfs/#{context.host.id}/export"
+      assert link == "/gtfs/#{context.host.id}/compare"
       refute card =~ "/routes/"
       refute card =~ "R2X"
 
@@ -160,75 +159,38 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert has_element?(view, "#comparison-exact-delta", "-1")
     end
 
-    test "the Export page mounts one panel that offers both helpers", context do
+    test "Compare mounts only the comparison helper, and Export mounts only the feed quality helper",
+         context do
       view = view(context)
       assigns = socket_assigns(view)
 
-      assert assigns.agent_pack_id == "feed_quality"
-      assert assigns.agent_allowed_packs == ["feed_quality", "release_comparison"]
+      assert assigns.agent_allowed_packs == ["release_comparison"]
+      assert assigns.agent_pack_id == "release_comparison"
       refute has_element?(view, "#export-helper-mode")
 
-      compare!(view, context.left, context.right)
+      {:ok, export_view, _html} =
+        live(
+          log_in_user(build_conn(), context.user, organization: context.organization),
+          "/gtfs/#{context.host.id}/export"
+        )
 
-      html = render(view)
-      assert query_count(fragment(html), "#agent-helper-open") == 1
-      assert query_count(fragment(html), "#comparison-helper-open") == 1
-      assert query_count(fragment(html), "[phx-hook$='ExportHelperFocus']") == 1
-      assert has_element?(view, "#export-helper-mode-feed_quality[aria-pressed='true']")
-      assert has_element?(view, "#export-helper-mode-release_comparison[aria-pressed='false']")
+      export_assigns = socket_assigns(export_view)
+      assert export_assigns.agent_allowed_packs == ["feed_quality"]
+      assert export_assigns.agent_pack_id == "feed_quality"
+      refute has_element?(export_view, "#export-helper-mode")
+      refute has_element?(export_view, "#export-comparison-form")
     end
   end
 
-  describe "one panel serves the feed quality and the comparison helpers" do
-    test "switching binds each helper only to the context it owns", context do
-      {view, comparison_pid} = open_helper(context)
-      comparison_context = socket_assigns(view).agent_context
-
-      assert socket_assigns(view).agent_pack_id == "release_comparison"
-      assert %{source_snapshot: %{kind: "release_comparison"}} = comparison_context
-
-      view |> element("#export-helper-mode-feed_quality") |> render_click()
-
-      assigns = socket_assigns(view)
-      assert assigns.agent_pack_id == "feed_quality"
-      assert assigns.agent_open?
-      assert %{source_snapshot: %{kind: "feed_quality"}} = assigns.agent_context
-      assert is_pid(assigns.agent_session) and assigns.agent_session != comparison_pid
-      assert element(view, "#agent-panel") |> render() =~ "Feed quality helper"
-      assert has_element?(view, "#agent-first-conversation")
-      assert query_count(fragment(render(view)), "#agent-panel") == 1
-
-      # The comparison conversation was only released, so the same copy reaches
-      # the same conversation again, with the comparison's own context.
-      view |> element("#export-helper-mode-release_comparison") |> render_click()
-
-      assert socket_assigns(view).agent_pack_id == "release_comparison"
-      assert socket_assigns(view).agent_context == comparison_context
-      assert session_pid(view) == comparison_pid
-      assert element(view, "#agent-panel") |> render() =~ "Comparison helper"
-    end
-
-    test "a feed quality refresh leaves the comparison helper's context bound", context do
-      {view, pid} = open_helper(context)
-      comparison_context = socket_assigns(view).agent_context
-
-      view |> element("#feed-quality-refresh") |> render_click()
-
-      assert socket_assigns(view).agent_pack_id == "release_comparison"
-      assert socket_assigns(view).agent_context == comparison_context
-      assert session_pid(view) == pid
-    end
-
-    test "a forged selection cannot bind a helper that has nothing to read", context do
+  describe "the single helper this page mounts" do
+    test "a forged open with no admitted comparison changes nothing", context do
       view = view(context)
       before_context = socket_assigns(view).agent_context
 
-      render_hook(view, "export_helper_mode", %{"pack" => "release_comparison"})
-      render_hook(view, "export_helper_mode", %{"pack" => "alerts"})
       render_hook(view, "comparison_helper_open", %{})
 
       assigns = socket_assigns(view)
-      assert assigns.agent_pack_id == "feed_quality"
+      assert assigns.agent_pack_id == "release_comparison"
       assert assigns.agent_context == before_context
       refute assigns.agent_open?
     end
@@ -360,7 +322,6 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       assert render(view) =~ "The helper is unavailable right now"
       refute has_element?(view, "[data-evidence-kind]")
 
-      assert has_element?(view, "#export-workspace")
       assert has_element?(view, "#export-comparison-form")
       assert has_element?(view, "#comparison-results")
       assert has_element?(view, "#comparison-exact-delta", "-1")
@@ -423,19 +384,14 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
 
       refute has_element?(view, "#agent-panel")
       refute has_element?(view, "#comparison-helper-open")
-      refute has_element?(view, "#export-helper-mode")
       refute has_element?(view, "#comparison-results")
 
-      # The panel falls back to the feed quality helper and its own context, so
-      # nothing of the released copy is left bound.
+      # There is no other helper to fall back to: the panel closes, keeps the one
+      # pack this page mounts, and clears its context and session so nothing of
+      # the released copy is left bound.
       assert socket_assigns(view).comparison_context == nil
-      assert socket_assigns(view).agent_pack_id == "feed_quality"
-
-      refute match?(
-               %{source_snapshot: %{kind: "release_comparison"}},
-               socket_assigns(view).agent_context
-             )
-
+      assert socket_assigns(view).agent_pack_id == "release_comparison"
+      assert socket_assigns(view).agent_context == nil
       assert socket_assigns(view).agent_session == nil
 
       # The editor's new choice is the draft now on the form.
@@ -492,7 +448,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
           assistant_entry(10, "Current.", [evidence(context, resources: [resource(digest)])])}}
       )
 
-      assert_link(view, "#agent-evidence-10-1", "/gtfs/#{version_id}/export")
+      assert_link(view, "#agent-evidence-10-1", "/gtfs/#{version_id}/compare")
 
       # A digest of another comparison - stale after a narrowing, or foreign - and
       # a historical route identifier from the compared files stay plain text.
@@ -512,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
       stale_card = view |> element("#agent-evidence-11-1") |> render()
       assert stale_card |> fragment() |> query_attributes("a", "href") == []
       assert stale_card =~ "no link for this reference"
-      refute stale_card =~ "/export"
+      refute stale_card =~ "/compare"
 
       # An answer read under another version never reaches the screen at all.
       foreign = evidence(context, resources: [resource(digest)], version_id: Ecto.UUID.generate())
@@ -541,7 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
     {:ok, view, _html} =
       live(
         log_in_user(build_conn(), context.user, organization: context.organization),
-        "/gtfs/#{context.host.id}/export"
+        "/gtfs/#{context.host.id}/compare"
       )
 
     view
@@ -667,7 +623,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
         assistant_entry(10, "Before.", [evidence(context, resources: [resource(digest)])])}}
     )
 
-    assert_link(view, "#agent-evidence-10-1", "/gtfs/#{context.host.id}/export")
+    assert_link(view, "#agent-evidence-10-1", "/gtfs/#{context.host.id}/compare")
 
     change.()
 
@@ -693,9 +649,6 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonHelperTest do
 
   defp query_attributes(document, selector, name),
     do: document |> LazyHTML.query(selector) |> attribute_values(name)
-
-  defp query_count(fragment, selector),
-    do: fragment |> LazyHTML.query(selector) |> Enum.to_list() |> length()
 
   defp fragment(html), do: LazyHTML.from_fragment(html)
 
