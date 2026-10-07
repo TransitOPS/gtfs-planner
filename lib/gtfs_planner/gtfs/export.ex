@@ -1167,22 +1167,29 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       ids = Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}})
 
+      # `ids` is absent when no day type survived `collect/4` — with no day type
+      # there is no service and no movement to name, and nothing to refer back
+      # to. The default keeps a run row's lookup of a service or a movement
+      # trip from raising on a version whose movements produced no file.
+      run_rows =
+        RunsTodsExport.rows(%{
+          day_types: movements.day_types,
+          run_days: run_days,
+          ids: ids,
+          garages_by_id: movements.garages_by_id
+        })
+
       trips_in_run = count_trips_in_run(run_days)
-      trips_total = trips_in_run + count_uncovered_trips(run_days)
+
+      # The uncovered contribution is read off the same run rows `run_warnings/1`
+      # warns about, so the preview's gap and its `tods_runs_uncovered` warnings
+      # are one count. `day_uncovered/2` reports nothing for an uncut day type,
+      # which is what keeps an uncut version at 0/0.
+      trips_total = trips_in_run + Enum.sum(Enum.map(run_rows.uncovered, & &1.trips))
 
       %{
         rows: rows,
-        # `ids` is absent when no day type survived `collect/4` — with no day type
-        # there is no service and no movement to name, and nothing to refer back
-        # to. The default keeps a run row's lookup of a service or a movement
-        # trip from raising on a version whose movements produced no file.
-        run_rows:
-          RunsTodsExport.rows(%{
-            day_types: movements.day_types,
-            run_days: run_days,
-            ids: ids,
-            garages_by_id: movements.garages_by_id
-          }),
+        run_rows: run_rows,
         # The planned assignments, expanded over the very `movements` and
         # `run_days` the run rows were just built from and hung on the very
         # `service_ids` those rows used, so `employee_run_dates.txt` can never
@@ -1214,15 +1221,6 @@ defmodule GtfsPlanner.Gtfs.Export do
     |> Enum.filter(&(&1.runs != []))
     |> Enum.flat_map(& &1.runs)
     |> Enum.flat_map(& &1.pieces)
-    |> Enum.flat_map(& &1.trips)
-    |> length()
-  end
-
-  defp count_uncovered_trips(run_days) do
-    run_days
-    |> Map.values()
-    |> Enum.filter(&(&1.runs != []))
-    |> Enum.flat_map(& &1.uncovered)
     |> Enum.flat_map(& &1.trips)
     |> length()
   end
