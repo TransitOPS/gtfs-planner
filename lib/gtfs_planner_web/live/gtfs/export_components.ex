@@ -736,9 +736,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       </div>
 
       <div class="mt-3 overflow-x-auto">
-        <table class="w-full min-w-[760px] border-collapse text-left text-sm">
-          <thead>
-            <tr>
+        <table
+          id="export-files-rows"
+          phx-update="stream"
+          class="w-full min-w-[760px] border-collapse text-left text-sm"
+        >
+          <thead id="export-files-head">
+            <tr id="export-files-head-row">
               <th
                 scope="col"
                 class="border-b border-subtle px-5 py-2.5 text-[13px] font-[650] text-default"
@@ -802,52 +806,257 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :dom_id, :string, required: true
   attr :run, :map, required: true
   attr :version, :map, required: true
+  attr :match, :any, default: nil
+  attr :open?, :boolean, default: false
+  attr :defaults, :map, default: nil
+  attr :full_current?, :boolean, default: false
 
   def file_row(assigns) do
     ~H"""
-    <tr id={@dom_id} class="border-b border-subtle last:border-0">
-      <th scope="row" class="px-5 py-3 align-top font-normal">
-        <span class="font-semibold text-strong">{file_label(@run)}</span>
-        <span
-          :if={@run.export_type in [:operations, :operations_only]}
-          class="ml-2 rounded-full bg-warning-bg px-2 py-0.5 text-[12px] font-semibold text-warning-fg"
-        >
-          Private
-        </span>
-        <span :if={@run.state == :ready} class="mt-0.5 block font-mono text-[12px] text-muted">
-          {ready_file_meta(@run)}
-        </span>
-      </th>
-      <td class="px-5 py-3 align-top text-[13px] tabular-nums text-muted">
-        <span class="block">{DisplayClock.format_datetime(@run.inserted_at)}</span>
-        <span :if={@run.state == :ready} class="mt-0.5 block text-[12px]">
-          Until {DisplayClock.format_datetime(@run.artifact_expires_at)}
-        </span>
-      </td>
-      <td class="px-5 py-3 align-top text-[13px] text-default">
-        <%= if @run.state == :building and is_nil(@run.cancel_requested_at) do %>
-          <span class="block font-semibold text-strong">Building…</span>
-          <span class="mt-1 block text-[12px] text-muted">
-            Started {DisplayClock.format_datetime(@run.started_at || @run.inserted_at)}
+    <tbody id={@dom_id} class="border-b border-subtle last:border-0">
+      <tr>
+        <th scope="row" class="px-5 py-3 align-top font-normal">
+          <span class="font-semibold text-strong">{file_label(@run)}</span>
+          <span
+            :if={@run.export_type in [:operations, :operations_only]}
+            class="ml-2 rounded-full bg-warning-bg px-2 py-0.5 text-[12px] font-semibold text-warning-fg"
+          >
+            Private
           </span>
-          <progress
-            id={"#{@dom_id}-progress"}
-            class="progress progress-info mt-1.5 block h-1.5 w-full"
-            aria-label="Build progress"
+          <span :if={@run.state == :ready} class="mt-0.5 block font-mono text-[12px] text-muted">
+            {ready_file_meta(@run)}
+          </span>
+        </th>
+        <td class="px-5 py-3 align-top text-[13px] tabular-nums text-muted">
+          <span class="block">{DisplayClock.format_datetime(@run.inserted_at)}</span>
+          <span :if={@run.state == :ready} class="mt-0.5 block text-[12px]">
+            Until {DisplayClock.format_datetime(@run.artifact_expires_at)}
+          </span>
+        </td>
+        <td class="px-5 py-3 align-top text-[13px] text-default">
+          <%= if @run.state == :building and is_nil(@run.cancel_requested_at) do %>
+            <span class="block font-semibold text-strong">Building…</span>
+            <span class="mt-1 block text-[12px] text-muted">
+              Started {DisplayClock.format_datetime(@run.started_at || @run.inserted_at)}
+            </span>
+            <progress
+              id={"#{@dom_id}-progress"}
+              class="progress progress-info mt-1.5 block h-1.5 w-full"
+              aria-label="Build progress"
+            />
+          <% else %>
+            <.file_status_cell run={@run} dom_id={@dom_id} open?={@open?} />
+          <% end %>
+        </td>
+        <td class="px-5 py-3 align-top text-right">
+          <span class="inline-flex items-center gap-2">
+            <.file_actions run={@run} version={@version} />
+            <.file_menu :if={file_menu?(@run)} run={@run} version={@version} />
+          </span>
+        </td>
+      </tr>
+
+      <tr :if={@open? and ready_warnings?(@run)}>
+        <td colspan="4" class="px-5 pb-4">
+          <div id={"#{@dom_id}-warnings-detail"} class="grid gap-2">
+            <.warning_group
+              :for={group <- warning_groups(@run.warnings)}
+              group={group}
+              version={@version}
+            />
+            <p class="mt-1 text-[12px] text-muted">{made_with(@run)}</p>
+            <p
+              :if={stale_missing_times?(@run, @defaults)}
+              id={"#{@dom_id}-stale-settings"}
+              class="text-[12px] text-muted"
+            >
+              {stale_detail(@run, @defaults)}
+            </p>
+          </div>
+        </td>
+      </tr>
+
+      <tr :if={@match}>
+        <td colspan="4" class="px-5 pb-4">
+          <.match_line
+            id={"#{@dom_id}-match"}
+            match={@match}
+            full_current?={@full_current?}
           />
-        <% else %>
-          {file_status(@run)}
-        <% end %>
-      </td>
-      <td class="px-5 py-3 align-top text-right">
-        <span class="inline-flex items-center gap-2">
-          <.file_actions run={@run} version={@version} />
-          <.file_menu :if={file_menu?(@run)} run={@run} version={@version} />
-        </span>
-      </td>
-    </tr>
+        </td>
+      </tr>
+    </tbody>
     """
   end
+
+  attr :run, :map, required: true
+  attr :dom_id, :string, required: true
+  attr :open?, :boolean, required: true
+
+  defp file_status_cell(assigns) do
+    ~H"""
+    <%= if @run.state == :ready and ready_warnings?(@run) do %>
+      <button
+        type="button"
+        id={"#{@dom_id}-warnings"}
+        phx-click="toggle_file_warnings"
+        phx-value-run={@run.id}
+        aria-expanded={to_string(@open?)}
+        class="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-control px-3 text-[13px] font-semibold text-strong hover:bg-canvas"
+      >
+        <.icon
+          name="hero-chevron-down"
+          class={["size-3.5 transition-transform", @open? && "rotate-180"]}
+        />
+        {length(@run.warnings || [])} warnings
+      </button>
+    <% else %>
+      {file_status(@run)}
+    <% end %>
+    """
+  end
+
+  defp ready_warnings?(%{state: :ready, warnings: warnings}), do: warnings not in [nil, []]
+  defp ready_warnings?(_run), do: false
+
+  attr :group, :map, required: true
+  attr :version, :map, required: true
+
+  defp warning_group(assigns) do
+    assigns = assign(assigns, :fix, warning_fix(assigns.group, assigns.version))
+
+    ~H"""
+    <div class="rounded-r-card border-l-4 border-warning-line bg-warning-bg/40 px-4 py-3">
+      <p class="text-sm font-semibold text-strong">
+        {warning_group_title(@group)}
+        <span class="font-normal text-muted">· {length(@group.warnings)} warnings</span>
+      </p>
+      <p class="mt-0.5 text-[13px] text-default">{warning_group_detail(@group)}</p>
+      <p class="mt-0.5 font-mono text-[12px] text-muted">{@group.code}</p>
+      <.link
+        :if={@fix}
+        id={"warning-fix-#{@group.code}"}
+        navigate={elem(@fix, 1)}
+        class="mt-1 inline-flex min-h-9 items-center text-[13px] font-semibold text-action underline"
+      >
+        {elem(@fix, 0)}
+      </.link>
+    </div>
+    """
+  end
+
+  defp warning_groups(warnings) do
+    warnings
+    |> Enum.group_by(&warning_code/1)
+    |> Enum.map(fn {code, grouped} -> %{code: code, warnings: grouped} end)
+  end
+
+  defp warning_group_title(%{code: "tods_runs_uncovered", warnings: warnings}) do
+    case uncovered_trip_total(warnings) do
+      0 -> "Some trips are not in a run"
+      total -> "#{total} trips are not in a run"
+    end
+  end
+
+  defp warning_group_title(%{code: "tods_file_omitted", warnings: warnings}) do
+    if Enum.any?(warnings, &(warning_detail(&1) =~ "vehicles.txt")),
+      do: "vehicles.txt was not included",
+      else: "A file was not included"
+  end
+
+  defp warning_group_title(%{code: "garage_stop_id_conflict"}),
+    do: "Garage IDs clash with stop IDs"
+
+  defp warning_group_title(%{code: code}),
+    do: code |> to_string() |> String.replace("_", " ") |> String.capitalize()
+
+  defp warning_group_detail(%{warnings: [first | _]}), do: warning_detail(first)
+
+  defp uncovered_trip_total(warnings) do
+    warnings
+    |> Enum.map(fn warning ->
+      case Regex.run(~r/^(\d+) trips are not in a run/, warning_detail(warning)) do
+        [_, count] -> String.to_integer(count)
+        _no_match -> 0
+      end
+    end)
+    |> Enum.sum()
+  end
+
+  defp warning_fix(%{code: "tods_runs_uncovered"}, version),
+    do: {"Open runs", ~p"/gtfs/#{version.id}/runs"}
+
+  defp warning_fix(%{code: "tods_file_omitted", warnings: warnings}, version) do
+    if Enum.any?(warnings, &(warning_detail(&1) =~ "vehicles.txt")),
+      do: {"Manage fleet", ~p"/gtfs/#{version.id}/settings/fleet"}
+  end
+
+  defp warning_fix(%{code: "garage_stop_id_conflict"}, version),
+    do: {"Manage garages", ~p"/gtfs/#{version.id}/settings/garages"}
+
+  defp warning_fix(_group, _version), do: nil
+
+  defp made_with(run) do
+    parts = [missing_times_made_with(run) | flex_made_with(run)]
+    "Made with: " <> Enum.join(parts, " · ")
+  end
+
+  defp missing_times_made_with(run) do
+    case recorded_missing_times(run) do
+      "Estimated by distance along the path" ->
+        "missing stop times estimated by distance along the path"
+
+      "Estimated by equal time per stop" ->
+        "missing stop times estimated by equal time per stop"
+
+      _other ->
+        "missing stop times left blank"
+    end
+  end
+
+  defp flex_made_with(%{flex_artifact_key: key}) when is_binary(key),
+    do: ["flex services in a separate file"]
+
+  defp flex_made_with(_run), do: []
+
+  attr :id, :string, required: true
+  attr :match, :any, required: true
+  attr :full_current?, :boolean, required: true
+
+  defp match_line(assigns) do
+    {tone, icon, text} = match_copy(assigns.match, assigns.full_current?)
+    assigns = assign(assigns, tone: tone, icon: icon, text: text)
+
+    ~H"""
+    <p id={@id} class={["flex items-start gap-1.5 text-[13px] font-semibold", @tone]}>
+      <.icon name={@icon} class="mt-0.5 size-3.5 shrink-0" />
+      <span>{@text}</span>
+    </p>
+    """
+  end
+
+  defp match_copy({:published, run}, _full_current?),
+    do:
+      {"text-success-fg", "hero-check",
+       "Matches the published full feed #{run.artifact_filename}"}
+
+  defp match_copy({:file, run}, _full_current?),
+    do: {"text-success-fg", "hero-check", "Matches #{run.artifact_filename}"}
+
+  defp match_copy(:published_unknown, _full_current?) do
+    {"text-warning-fg", "hero-exclamation-triangle",
+     "No full feed from the last 24 hours matches. The published feed can't be checked because it was published before matching was added."}
+  end
+
+  defp match_copy(:none, true),
+    do:
+      {"text-warning-fg", "hero-exclamation-triangle",
+       "Doesn't match the published feed or any full feed from the last 24 hours"}
+
+  defp match_copy(:none, false),
+    do:
+      {"text-warning-fg", "hero-exclamation-triangle",
+       "Doesn't match any full feed from the last 24 hours"}
 
   attr :run, :map, required: true
   attr :version, :map, required: true

@@ -99,6 +99,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_toast, nil)
      |> assign(:files_subscribed_ids, MapSet.new())
      |> assign(:files_clash_run, nil)
+     |> assign(:files_match, %{})
+     |> assign(:files_open_warnings, nil)
+     |> assign(:files_full_current?, false)
      |> AgentPanel.mount("feed_quality")
      |> stream_configure(:files, dom_id: &"export-file-#{&1.id}")
      |> stream(:files, [])}
@@ -298,6 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_empty?, false)
      |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
      |> subscribe_listed_files(page)
+     |> assign_files_match(page)
      |> stream(:files, page)}
   end
 
@@ -334,6 +338,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @impl Phoenix.LiveView
   def handle_event("dismiss_toast", _params, socket),
     do: {:noreply, assign(socket, :files_toast, nil)}
+
+  # A row's warning detail is a display toggle only. The row lives in a stream,
+  # so the affected run is re-inserted after the assign change or the open row
+  # would not repaint. A forged id resolves to no run and changes nothing.
+  @impl Phoenix.LiveView
+  def handle_event("toggle_file_warnings", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} = run <- scoped_export_run(socket, uuid) do
+      open = if socket.assigns.files_open_warnings == run.id, do: nil, else: run.id
+
+      {:noreply,
+       socket
+       |> assign(:files_open_warnings, open)
+       |> stream_insert(:files, run)}
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_file_warnings", _params, socket), do: {:noreply, socket}
 
   # -- Static publication --------------------------------------------------
 
@@ -456,6 +480,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         %{} = run -> stream_insert(socket, :files, run)
         _ -> socket
       end
+      |> assign_files_match(List.wrap(changed_run))
 
     # A listed run that fails with a garage/stop clash now owns the card's
     # callout, the same as one already failed when the page mounted.
@@ -590,7 +615,40 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:files_empty?, page == [])
     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
     |> subscribe_listed_files(page)
+    |> assign_files_match(page)
     |> stream(:files, page, reset: true)
+  end
+
+  # The R3 match answer for each ready operations-only row on this page, keyed by
+  # run id. The served run is read once per Files load through the same trusted
+  # editor scope the publication section uses; the decision is ExportRuns' and
+  # never this page's (INV-2). A run that is not a ready operations-only run
+  # contributes no entry.
+  defp assign_files_match(socket, runs) do
+    served_run_id =
+      case FeedPublishing.served_run_id(publication_scope(socket), :full) do
+        {:ok, run_id} -> run_id
+        _other -> nil
+      end
+
+    matches =
+      runs
+      |> Enum.filter(&(&1.state == :ready and &1.export_type == :operations_only))
+      |> Map.new(fn run ->
+        {run.id,
+         ExportRuns.reference_match(
+           socket.assigns.current_organization.id,
+           run,
+           served_run_id
+         )}
+      end)
+      |> Enum.reject(fn {_id, match} -> is_nil(match) end)
+      |> Map.new()
+
+    assign(socket,
+      files_match: Map.merge(socket.assigns[:files_match] || %{}, matches),
+      files_full_current?: not is_nil(served_run_id)
+    )
   end
 
   defp cursor_for(nil), do: nil
@@ -739,14 +797,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   version={@current_gtfs_version}
                 >
                   <:files_list>
-                    <tbody id="export-files-rows" phx-update="stream">
-                      <.file_row
-                        :for={{dom_id, run} <- @streams.files}
-                        dom_id={dom_id}
-                        run={run}
-                        version={@current_gtfs_version}
-                      />
-                    </tbody>
+                    <.file_row
+                      :for={{dom_id, run} <- @streams.files}
+                      dom_id={dom_id}
+                      run={run}
+                      version={@current_gtfs_version}
+                      match={@files_match[run.id]}
+                      open?={@files_open_warnings == run.id}
+                      defaults={@export_defaults}
+                      full_current?={@files_full_current?}
+                    />
                   </:files_list>
                 </.files_card>
               </div>
