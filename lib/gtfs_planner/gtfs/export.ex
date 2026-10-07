@@ -247,6 +247,61 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
+  @doc """
+  Derives the operations export's file counts, runs and trips without building
+  a ZIP (R7).
+
+  One derivation: the trips-in-a-run count and the `tods_runs_uncovered`
+  warnings both come from the same `Runs.derive_version/3` structures, so this
+  preview cannot disagree with the ZIP the same version would build. Every TODS
+  file appears with its data-row count, including a file the build would omit as
+  empty, which appears with `0`.
+  """
+  @spec operations_preview(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok,
+           %{
+             files: [{String.t(), non_neg_integer()}],
+             runs: non_neg_integer(),
+             trips_in_run: non_neg_integer(),
+             trips_total: non_neg_integer(),
+             warnings: [warning()]
+           }}
+          | {:error, term()}
+  def operations_preview(organization_id, gtfs_version_id) do
+    with_read_snapshot(fn ->
+      %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
+      movements = movement_rows(organization_id, gtfs_version_id)
+      run_events = movements.run_rows.run_events
+
+      files = [
+        {Tods.stops_supplement_spec().filename, length(garages)},
+        {Tods.vehicles_spec().filename, length(vehicles)},
+        {Tods.calendar_dates_supplement_spec().filename, length(movements.rows.calendar_dates)},
+        {Tods.routes_supplement_spec().filename, length(movements.rows.routes)},
+        {Tods.trips_supplement_spec().filename, length(movements.rows.trips)},
+        {Tods.stop_times_supplement_spec().filename, length(movements.rows.stop_times)},
+        {Tods.run_events_spec().filename, length(run_events)},
+        {Tods.employee_run_dates_spec().filename, length(employee_run_date_rows(movements))}
+      ]
+
+      runs = run_events |> Enum.map(& &1.run_id) |> Enum.uniq() |> length()
+
+      warnings =
+        movement_warnings(movements) ++
+          run_warnings(movements) ++
+          assignment_warnings(movements) ++
+          tods_omission_warnings(garages, vehicles)
+
+      %{
+        files: files,
+        runs: runs,
+        trips_in_run: movements.trips_in_run,
+        trips_total: movements.trips_total,
+        warnings: warnings
+      }
+    end)
+  end
+
   defp build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts) do
     include_flex =
       Keyword.get(opts, :include_flex, false) and export_type not in [:pathways, :operations_only]
@@ -1112,6 +1167,9 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       ids = Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}})
 
+      trips_in_run = count_trips_in_run(run_days)
+      trips_total = trips_in_run + count_uncovered_trips(run_days)
+
       %{
         rows: rows,
         # `ids` is absent when no day type survived `collect/4` — with no day type
@@ -1134,6 +1192,8 @@ defmodule GtfsPlanner.Gtfs.Export do
         # version that has never been rostered (AC-23).
         assignment_rows:
           assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids),
+        trips_in_run: trips_in_run,
+        trips_total: trips_total,
         published?: true
       }
     else
@@ -1141,9 +1201,30 @@ defmodule GtfsPlanner.Gtfs.Export do
         rows: empty_movement_rows(),
         run_rows: %{run_events: [], left_out: 0, uncovered: []},
         assignment_rows: nil,
+        trips_in_run: 0,
+        trips_total: 0,
         published?: false
       }
     end
+  end
+
+  defp count_trips_in_run(run_days) do
+    run_days
+    |> Map.values()
+    |> Enum.filter(&(&1.runs != []))
+    |> Enum.flat_map(& &1.runs)
+    |> Enum.flat_map(& &1.pieces)
+    |> Enum.flat_map(& &1.trips)
+    |> length()
+  end
+
+  defp count_uncovered_trips(run_days) do
+    run_days
+    |> Map.values()
+    |> Enum.filter(&(&1.runs != []))
+    |> Enum.flat_map(& &1.uncovered)
+    |> Enum.flat_map(& &1.trips)
+    |> length()
   end
 
   # `Rosters.export_roster/4` composes the roster from the movements and runs
