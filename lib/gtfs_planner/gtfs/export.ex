@@ -545,7 +545,10 @@ defmodule GtfsPlanner.Gtfs.Export do
              estimate,
              coords
            ) do
-      {:ok, create_zip_archive(tods_paths, organization_id, gtfs_version_id), warnings}
+      {:ok,
+       create_zip_archive(tods_paths, organization_id, gtfs_version_id,
+         include_extensions: false
+       ), warnings}
     end
   end
 
@@ -1373,8 +1376,11 @@ defmodule GtfsPlanner.Gtfs.Export do
     end)
   end
 
-  # Creates ZIP archive from file paths and returns binary
-  defp create_zip_archive(file_paths, organization_id, gtfs_version_id) do
+  # Creates ZIP archive from file paths and returns binary. Every profile
+  # appends the extensions entries (diagram coordinates, stop levels, images)
+  # except operations-only, whose ZIP holds exactly the TODS members of its
+  # operations build and no other file (R1).
+  defp create_zip_archive(file_paths, organization_id, gtfs_version_id, opts \\ []) do
     # Convert file paths to charlist tuples for :zip.create
     files =
       Enum.map(file_paths, fn path ->
@@ -1384,7 +1390,12 @@ defmodule GtfsPlanner.Gtfs.Export do
       end)
 
     # Append extensions entries (diagram coordinates, stop levels, images)
-    files = files ++ extensions_zip_entries(organization_id, gtfs_version_id)
+    files =
+      if Keyword.get(opts, :include_extensions, true) do
+        files ++ extensions_zip_entries(organization_id, gtfs_version_id)
+      else
+        files
+      end
 
     # Create ZIP in memory, with explicit error handling
     case :zip.create(~c"gtfs.zip", files, [:memory]) do

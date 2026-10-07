@@ -9,11 +9,14 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsOnlyTest do
   """
   use GtfsPlanner.DataCase, async: false
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.FileSpec
+  alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Operations.Tods
 
   import GtfsPlanner.FlexFixtures
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.RunsFixtures
@@ -21,17 +24,28 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsOnlyTest do
 
   describe "the operations-only ZIP" do
     test "carries exactly the operations build's TODS members, byte for byte" do
-      %{organization: organization, version: version} = runs_version_fixture()
+      world = runs_version_fixture()
+      put_diagram_extensions!(world)
 
       {:ok, operations, _operations_warnings} =
-        Export.build_zip(organization.id, version.id, :operations)
+        Export.build_zip(world.organization.id, world.version.id, :operations)
 
       {:ok, only, _only_warnings} =
-        Export.build_zip(organization.id, version.id, :operations_only)
+        Export.build_zip(world.organization.id, world.version.id, :operations_only)
 
       operations_entries = zip_entries(operations)
       only_entries = zip_entries(only)
 
+      # The fixture's diagram data reaches the operations build, so the member
+      # checks below reject extension entries that leak into operations-only.
+      assert Map.has_key?(operations_entries, "_pathways_extensions.json")
+
+      assert Map.has_key?(
+               operations_entries,
+               "_pathways_extensions/diagrams/#{world.relief_stop_id}/floor.png"
+             )
+
+      assert Map.keys(only_entries) -- tods_filenames() == []
       assert only_entries == Map.take(operations_entries, tods_filenames())
       assert Map.has_key?(only_entries, "stops_supplement.txt")
       assert Map.has_key?(only_entries, "trips_supplement.txt")
@@ -93,6 +107,47 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsOnlyTest do
                  include_flex: true
                )
     end
+  end
+
+  # The operations file-writing body never reads diagram data, but the shared
+  # ZIP helper appends the extension entries to every archive. One coordinate
+  # plus one referenced floorplan makes the operations build carry
+  # `_pathways_extensions.json` and the image, so the member checks reject both
+  # when they leak into an operations-only ZIP.
+  defp put_diagram_extensions!(world) do
+    stop =
+      Gtfs.get_stop_by_stop_id(world.organization.id, world.version.id, world.relief_stop_id)
+
+    {:ok, _stop} = put_stop_diagram_coordinate(stop, %{x: 50.5, y: 25.0})
+
+    level = level_fixture(world.organization.id, world.version.id, %{level_id: "L1"})
+
+    {:ok, _stop_level} =
+      insert_stop_level(%{
+        stop_id: stop.id,
+        level_id: level.id,
+        organization_id: world.organization.id,
+        gtfs_version_id: world.version.id,
+        diagram_filename: "floor.png"
+      })
+
+    uploads_path = Application.fetch_env!(:gtfs_planner, :uploads_path)
+
+    image_dir =
+      Path.join([
+        uploads_path,
+        "diagrams",
+        world.organization.id,
+        world.version.id,
+        PathSafety.stop_storage_dir(world.relief_stop_id)
+      ])
+
+    File.mkdir_p!(image_dir)
+    File.write!(Path.join(image_dir, "floor.png"), "fake png data")
+
+    on_exit(fn ->
+      File.rm_rf!(Path.join([uploads_path, "diagrams", world.organization.id, world.version.id]))
+    end)
   end
 
   defp tods_filenames do
