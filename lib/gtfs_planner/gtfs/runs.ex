@@ -464,10 +464,12 @@ defmodule GtfsPlanner.Gtfs.Runs do
     assigns = Enum.filter(moves, & &1.to)
     unassigns = Enum.reject(moves, & &1.to)
 
-    if assigns != [] do
+    # Keep each statement below PostgreSQL's parameter ceiling; all batches
+    # remain inside the caller's transaction.
+    for batch <- Enum.chunk_every(assigns, @write_batch) do
       Repo.insert_all(
         TripRun,
-        Enum.map(assigns, fn move ->
+        Enum.map(batch, fn move ->
           %{
             organization_id: organization_id,
             gtfs_version_id: gtfs_version_id,

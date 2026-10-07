@@ -28,8 +28,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
     * The scope is completed before anything is composed from it. Every trip
       sharing a block with a trip of a selected day type joins the read, and every
       day type those trips run on joins the set the checks read, so a block is a
-      whole block and not the part of it the range happened to hold. The trip
-      count of the admission bound is the count of that completed scope. Only the
+      whole block and not the part of it the range happened to hold. Only the
       selected day types are days work is composed *on*; the wider set decides
       whether what was composed is valid there (AC-3, AC-5).
 
@@ -37,8 +36,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
 
   `{:error, :forbidden}` for a revoked or absent editor, `{:error, :not_found}`
   for a foreign or unusable version, `{:error, :missing_garages}` when the
-  organization holds no usable garage, `{:error, {:too_large, count}}` above the
-  3,000-distinct-trip admission bound, and `{:error, changeset}` for anything
+  organization holds no usable garage, and `{:error, changeset}` for anything
   `TodsGenerator.Input` refuses.
 
   A garage UUID belonging to another organization, or to no one, is refused as a
@@ -97,15 +95,6 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
-  # The admission bound of AC-3, and the same number `Blocking.suggest_blocks/4`
-  # refuses a day type above. The count is of *distinct trips* in the completed
-  # scope, not of day types or blocks: a trip shared by a weekday and a Saturday is
-  # one trip however many days it runs, and counting it twice would refuse a
-  # schedule inside the bound. A block's trip on a date outside the selected range
-  # is counted too — completing the block is what makes the count the generator's
-  # actual input.
-  @max_distinct_trips 3_000
-
   @type preview :: %{
           normalized_inputs: map(),
           source_fingerprint: String.t(),
@@ -156,8 +145,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
              Ecto.Changeset.t()
              | :forbidden
              | :not_found
-             | :missing_garages
-             | {:too_large, non_neg_integer()}}
+             | :missing_garages}
   def preview(%AuditContext{} = audit, params) do
     with :ok <- Authorization.authorize_editor(audit),
          :ok <- require_usable_version(audit),
@@ -296,42 +284,16 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   """
   @spec plan_from_inputs(AuditContext.t(), [map()], map(), map(), Ecto.UUID.t()) ::
           {:ok, {Plan.t(), map()}}
-          | {:error, {:too_large, non_neg_integer()}}
   def plan_from_inputs(%AuditContext{} = audit, day_types, inputs, input, garage_id) do
-    count = distinct_trip_count(inputs.rows_by_day_type)
+    source = source(audit, day_types, inputs, input, garage_id)
+    candidate = Plan.block_candidate(source, input)
 
-    if count > @max_distinct_trips do
-      {:error, {:too_large, count}}
-    else
-      source = source(audit, day_types, inputs, input, garage_id)
-      candidate = Plan.block_candidate(source, input)
-
-      {:ok,
-       {Plan.with_roster(
-          Plan.with_runs(candidate, source, Map.fetch!(source, :input)),
-          source,
-          Map.fetch!(source, :input)
-        ), source}}
-    end
-  end
-
-  @doc """
-  Returns the number of distinct trips the completed scope holds.
-
-  A trip on two day types is counted once: it is one trip however many days it
-  runs, and counting it twice would refuse a schedule inside the bound. The rows
-  are the ones `Blocking.candidate_input/3` completed, so a block's trip running
-  on a date outside the selected range is counted too — it is one more trip the
-  generator has to account for, not a smaller scope.
-  """
-  @spec distinct_trip_count(%{optional(String.t()) => [map()]}) :: non_neg_integer()
-  def distinct_trip_count(rows_by_day_type) do
-    rows_by_day_type
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.map(& &1.id)
-    |> Enum.uniq()
-    |> length()
+    {:ok,
+     {Plan.with_roster(
+        Plan.with_runs(candidate, source, Map.fetch!(source, :input)),
+        source,
+        Map.fetch!(source, :input)
+      ), source}}
   end
 
   # The candidate arrives composed: all three stages are composed in
@@ -573,19 +535,15 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
 
   @typedoc """
   Every refusal `apply/2` can answer with: a refused business input, a revoked or
-  absent editor, a foreign or unusable version, a missing garage or an over-bound
-  scope the attempt's own re-read answers, a source that no longer matches the
-  reviewed fingerprint, a scoped request already completed with a different input,
+  absent editor, a foreign or unusable version, a missing garage, a source that no
+  longer matches the reviewed fingerprint, a scoped request already completed with a different input,
   a candidate with nothing to add, three exhausted attempts, a change log the
   transaction refused, or a write that failed for a reason no retry can fix.
 
-  Two of them are the preview's own admission refusals, because an attempt re-reads
-  the source through the same loader and candidate composition the preview uses: a
-  range admitted when it was previewed can lose the organization's last garage
-  (`:missing_garages`) or grow past the 3,000-distinct-trip bound
-  (`{:too_large, count}`) before it is saved. `{:audit_failed, reason}` is the moved
-  trips' change log, which the block writer rolls back to its caller as its own
-  documented refusal.
+  An attempt re-reads the source through the same loader and candidate composition
+  the preview uses, so it can report `:missing_garages` if the organization's last
+  garage disappears before save. `{:audit_failed, reason}` is the moved trips'
+  change log, which the block writer rolls back to its caller.
   """
   @type apply_error ::
           Ecto.Changeset.t()
@@ -598,7 +556,6 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
           | :busy
           | {:audit_failed, term()}
           | :write_failed
-          | {:too_large, non_neg_integer()}
 
   @doc """
   Applies one reviewed preview once and returns its completed receipt.
@@ -625,12 +582,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator do
   failure or deadlock is retried; anything else is reported, and an exception is
   logged and answered `:write_failed` instead of escaping to the caller.
 
-  That re-read is the preview's own loader and candidate composition, so the two
-  admission refusals a preview answers arrive here too: `:missing_garages` when the
-  organization holds no usable garage, and `{:too_large, count}` when the completed
-  scope is above the admission bound. They are members of the refusal union,
-  because a range admitted when it was previewed can be above the bound by the time
-  it is saved. A change log of the moved trips that the transaction refuses is
+  That re-read is the preview's own loader and candidate composition, so a missing
+  garage is refused here too. A change log the transaction refuses is
   `{:audit_failed, reason}`, the reason the block writer's own plan reports it with.
   """
   @spec apply(AuditContext.t(), map()) :: {:ok, TodsGeneration.t()} | {:error, apply_error()}

@@ -57,6 +57,33 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ApplyTest do
   @moduletag timeout: 120_000
 
   describe "applying a reviewed preview" do
+    test "trip audits retain one shared operation without repeating the whole scope" do
+      world =
+        roster_world_fixture(
+          extra_trips: [
+            {"gen-a", "WK", "RIV", "RIV", "04:00:00", "04:30:00"},
+            {"gen-b", "WK", "RIV", "RIV", "05:00:00", "05:30:00"}
+          ]
+        )
+
+      assert {:ok, preview} = roster_preview(world)
+      assert map_size(preview.assignments) == 2
+      assert {:ok, receipt} = apply_preview(world, preview, Ecto.UUID.generate())
+
+      logs =
+        Repo.all(
+          from l in ChangeLog,
+            where: l.gtfs_version_id == ^world.version.id and l.entity_type == "trip"
+        )
+
+      assert length(logs) == 2
+      assert Enum.all?(logs, &(&1.changed_fields["affected_trip_ids"] == [&1.entity_id]))
+      assert [_operation_id] = Enum.uniq(Enum.map(logs, & &1.changed_fields["operation_id"]))
+
+      assert Enum.sort(receipt.created_ids["changed_trip_ids"]) ==
+               Enum.sort(Map.keys(preview.assignments))
+    end
+
     test "a selected fallback garage has the same depot travel before and after save" do
       world = world()
       settings = Blocking.get_settings(world.organization.id, world.version.id)
