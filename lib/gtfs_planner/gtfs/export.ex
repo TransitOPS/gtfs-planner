@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   require Logger
 
   @default_snapshot_timeout_ms 600_000
+  @reference_filenames ~w(routes.txt trips.txt stops.txt stop_times.txt calendar.txt calendar_dates.txt)
 
   @type warning :: %{
           code: String.t(),
@@ -224,7 +225,7 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   ## Returns
 
-  - `{:ok, %{main: zip | nil, flex: zip | nil}, warnings}` on success
+  - `{:ok, %{main: zip | nil, flex: zip | nil, reference_sha256: digest | nil}, warnings}` on success
   - `{:error, :snapshot_timeout}` when the snapshot deadline passed
   - `{:error, :artifact_storage_unavailable}` when `run_id` is given and the
     artifact root is not configured or cannot be written
@@ -236,7 +237,9 @@ defmodule GtfsPlanner.Gtfs.Export do
           :full | :pathways | :operations | :operations_only,
           keyword()
         ) ::
-          {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
+          {:ok, %{main: binary() | nil, flex: binary() | nil, reference_sha256: String.t() | nil},
+           [warning()]}
+          | {:error, term()}
   def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
     with {:ok, build_parent} <-
            build_parent(organization_id, gtfs_version_id, Keyword.get(opts, :run_id)) do
@@ -296,7 +299,13 @@ defmodule GtfsPlanner.Gtfs.Export do
 
           main_zip = main_zip(main_result, flex_entries)
 
-          {%{main: main_zip, flex: flex_zip}, main_warnings(main_result) ++ flex_warnings}
+          reference_sha256 =
+            if export_type == :pathways or is_nil(main_zip),
+              do: nil,
+              else: reference_sha256(temp_dir)
+
+          {%{main: main_zip, flex: flex_zip, reference_sha256: reference_sha256},
+           main_warnings(main_result) ++ flex_warnings}
         end)
 
       case result do
@@ -313,6 +322,31 @@ defmodule GtfsPlanner.Gtfs.Export do
       File.rm_rf(temp_dir)
       File.rm_rf(flex_dir)
       if build_parent, do: File.rmdir(build_parent)
+    end
+  end
+
+  # R2's reference fingerprint: the six files a release note's reference is read
+  # from, hashed in the fixed order above. A missing file contributes no bytes
+  # but is still named, so adding or removing a file changes the digest.
+  defp reference_sha256(temp_dir) do
+    digest =
+      Enum.reduce(@reference_filenames, :crypto.hash_init(:sha256), fn name, state ->
+        bytes = read_reference_file(temp_dir, name)
+
+        state
+        |> :crypto.hash_update(name <> "\n" <> Integer.to_string(byte_size(bytes)) <> "\n")
+        |> :crypto.hash_update(bytes)
+      end)
+
+    digest
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp read_reference_file(temp_dir, name) do
+    case File.read(Path.join(temp_dir, name)) do
+      {:ok, bytes} -> bytes
+      {:error, _reason} -> ""
     end
   end
 
