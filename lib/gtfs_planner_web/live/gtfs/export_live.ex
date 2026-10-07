@@ -50,6 +50,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   @validation_busy_message "Another validation is running. Try again when it finishes."
   @validation_permission_message "You no longer have permission to check this feed. " <>
                                    "Ask an organization administrator to restore your access."
+  @publication_poll_interval_ms 1_000
+  @publication_poll_attempts 90
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -470,18 +472,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              confirm_errors?: confirm_errors?
            ) do
         {:ok, publication_id} ->
-          # The status band is the durable answer and it changes to "Publishing"
-          # here, so a second confirmation beside it would only repeat it. The
-          # bound run is kept so the drawer's return focus still names its row.
+          # Acceptance queues durable intent; it does not mean the serving layer
+          # has switched. Keep a bounded observer while this LiveView is open so
+          # the row/address refresh only from durable current state and a durable
+          # failure is surfaced without relying on an export-run broadcast.
           published = socket.assigns.publication.run
+          poll_token = make_ref()
 
           {:noreply,
            socket
-           |> put_publication(%{publication_id: publication_id})
+           |> put_publication(%{
+             publication_id: publication_id,
+             poll_token: poll_token
+           })
            |> close_publication_review()
            |> refresh_publication_status()
            |> refresh_publication_presentation()
-           |> put_files_toast(published_toast(published), :done)}
+           |> schedule_publication_poll(@publication_poll_attempts)
+           |> put_files_toast(publication_queued_toast(published), :info)}
 
         {:error, reason} ->
           {kind, title, detail} = publication_error(reason)
@@ -610,6 +618,60 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       when event in [:validation_completed, :validation_failed] do
     {:noreply, socket}
   end
+
+  # Static delivery is owned by the background publisher and has no export-run
+  # transition to wake this page. Poll only the intent this LiveView queued,
+  # stop on a durable terminal state, and bound the observer to 90 seconds.
+  @impl Phoenix.LiveView
+  def handle_info(
+        {:publication_status_poll, publication_id, poll_token, remaining},
+        %{
+          assigns: %{
+            publication: %{
+              publication_id: publication_id,
+              poll_token: poll_token
+            }
+          }
+        } = socket
+      ) do
+    socket =
+      socket
+      |> refresh_publication_status()
+      |> refresh_publication_presentation()
+
+    case socket.assigns.publication.status.kind do
+      "success" ->
+        published = socket.assigns.publication.run
+
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast(published_toast(published), :done)}
+
+      "error" ->
+        detail = socket.assigns.publication.status.detail
+
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast("Publication failed. #{detail}", :refused)}
+
+      _non_terminal when remaining > 1 ->
+        {:noreply, schedule_publication_poll(socket, remaining - 1)}
+
+      _non_terminal ->
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast(
+           "Publication is still in progress. Refresh this page to check again.",
+           :info
+         )}
+    end
+  end
+
+  def handle_info({:publication_status_poll, _publication_id, _poll_token, _remaining}, socket),
+    do: {:noreply, socket}
 
   # The toast's dismiss timer carries its token, so a timer set for an earlier
   # toast cannot clear a later one.
@@ -894,6 +956,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp published_toast(nil), do: "Full feed published."
   defp published_toast(%{export_type: :pathways}), do: "Station pathways published."
   defp published_toast(_run), do: "Full feed published."
+
+  defp publication_queued_toast(%{export_type: :pathways}),
+    do: "Station pathways queued for publication."
+
+  defp publication_queued_toast(_run), do: "Full feed queued for publication."
+
+  defp schedule_publication_poll(socket, remaining) do
+    publication = socket.assigns.publication
+
+    Process.send_after(
+      self(),
+      {
+        :publication_status_poll,
+        publication.publication_id,
+        publication.poll_token,
+        remaining
+      },
+      @publication_poll_interval_ms
+    )
+
+    socket
+  end
 
   defp remember_started(socket, run) do
     socket
@@ -1636,7 +1720,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           addresses =
             publications
             |> Enum.filter(&(&1.channel in [:full, :pathways] and &1.status == :current))
-            |> Enum.map(&address_row/1)
+            |> Enum.map(&address_row(&1, publication_scope(socket)))
             |> Enum.reject(&is_nil/1)
 
           served_ids = MapSet.new(addresses, & &1.run_id)
@@ -1671,9 +1755,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     put_publication(socket, %{current_address: current})
   end
 
-  defp address_row(%{active_attempt: %{private_snapshot: %{"source" => source}}} = publication) do
-    case source do
-      %{"run_id" => run_id} ->
+  defp address_row(
+         %{active_attempt: %{private_snapshot: %{"source" => source}}} = publication,
+         scope
+       ) do
+    case FeedPublishing.served_run_id(scope, publication.channel) do
+      {:ok, run_id} when is_binary(run_id) ->
         %{
           channel: publication.channel,
           url: FeedPublishing.public_url(publication.namespace, publication.channel),
@@ -1682,12 +1769,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           served_at: publication.manifest_last_modified
         }
 
-      _other ->
+      _not_served ->
         nil
     end
   end
 
-  defp address_row(_publication), do: nil
+  defp address_row(_publication, _scope), do: nil
 
   defp restream_loaded_files(socket) do
     Enum.reduce(socket.assigns.files_loaded_ids, socket, fn id, acc ->
@@ -1713,6 +1800,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       preview: nil,
       pending_id: nil,
       publication_id: nil,
+      poll_token: nil,
       consent_form: consent_form(false),
       notice: nil,
       status: not_published_status()
@@ -1758,6 +1846,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> put_publication(%{
       preview: nil,
       pending_id: nil,
+      publication_id: nil,
+      poll_token: nil,
       notice: nil,
       current_address: nil,
       consent_form: consent_form(false)

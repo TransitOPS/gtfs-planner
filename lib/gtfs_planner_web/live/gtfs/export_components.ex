@@ -1001,16 +1001,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   defp file_status_cell(assigns) do
     ~H"""
-    <%= cond do %>
-      <% @published? -> %>
+    <%= if @published? or (@run.state == :ready and ready_warnings?(@run)) do %>
+      <span class="inline-flex flex-wrap items-center gap-2">
         <span
+          :if={@published?}
           id={"#{@dom_id}-published"}
           class="inline-flex min-h-9 items-center gap-1 rounded-full bg-success-bg px-2.5 text-[13px] font-semibold text-success-fg"
         >
           <.icon name="hero-check" class="size-3.5 shrink-0" /> Published
         </span>
-      <% @run.state == :ready and ready_warnings?(@run) -> %>
         <button
+          :if={@run.state == :ready and ready_warnings?(@run)}
           type="button"
           id={"#{@dom_id}-warnings"}
           phx-click="toggle_file_warnings"
@@ -1025,8 +1026,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             class={["size-3.5 shrink-0 transition-transform", @open? && "rotate-180"]}
           />
         </button>
-      <% true -> %>
-        {file_status(@run)}
+      </span>
+    <% else %>
+      {file_status(@run)}
     <% end %>
     """
   end
@@ -2256,40 +2258,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     ~H"""
     <.result_section id="recent-checks" title="Recent checks" lede={recent_summary(@checks)}>
       <ul role="list">
-        <li
-          :for={check <- @checks}
-          id={"recent-check-#{check.id}"}
-          class="border-b border-subtle px-2 py-1 last:border-0"
-        >
-          <.link
-            navigate={check.path}
-            class="group block rounded-control px-3 py-2 no-underline hover:bg-canvas"
-          >
-            <span class="block text-sm font-semibold text-action group-hover:underline">
-              {check.title}
-            </span>
-            <span class="mt-0.5 block text-[13px] tabular-nums text-muted">
-              {DisplayClock.format_datetime(check.started_at)}
-            </span>
-            <span
-              id={"recent-validation-counts-#{check.id}"}
-              class="mt-1 block text-[13px] tabular-nums text-default"
-            >
-              <%= if check.kind == :pathways_test do %>
-                {check.errors} failed · {check.warnings} couldn’t be checked · {check.infos} passed
-              <% else %>
-                <span class={severity_class(:errors, check.errors)}>
-                  {check.errors} {if check.errors == 1, do: "error", else: "errors"}
-                </span>
-                ·
-                <span class={severity_class(:warnings, check.warnings)}>
-                  {check.warnings} {if check.warnings == 1, do: "warning", else: "warnings"}
-                </span>
-                · <span class="text-strong">{check.infos} information</span>
-              <% end %>
-            </span>
-          </.link>
-        </li>
+        <.check_row :for={check <- @checks} check={check} />
       </ul>
     </.result_section>
     """

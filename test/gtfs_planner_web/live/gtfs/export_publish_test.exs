@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
   alias GtfsPlanner.FeedPublishing
   alias GtfsPlanner.FeedPublishing.Config
   alias GtfsPlanner.FeedPublishing.HTTPBoundary
+  alias GtfsPlanner.FeedPublishing.Manifest
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
@@ -191,7 +192,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
       # Checked consent succeeds.
       view |> form("#feed-publish-consent") |> render_submit()
       _ = :sys.get_state(view.pid)
-      assert has_element?(view, "#export-toast-text", "Full feed published.")
+      assert has_element?(view, "#export-toast-text", "Full feed queued for publication.")
     end
   end
 
@@ -223,8 +224,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
   end
 
   describe "successful confirmation" do
-    test "confirming writes, closes the drawer and shows the kind toast", context do
-      run = ready_run(context)
+    test "polling observes serving completion and keeps warnings available", context do
+      run = ready_run(context, warnings: [warning()])
       _report = seed_report(context, run)
 
       {:ok, view, _html} = live(conn(context), export_path(context))
@@ -238,23 +239,76 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
 
       _ = :sys.get_state(view.pid)
 
-      assert has_element?(view, "#export-toast-text", "Full feed published.")
+      assert has_element?(view, "#export-toast-text", "Full feed queued for publication.")
       refute has_element?(view, "#feed-publish-review")
+      assert has_element?(view, "#export-file-#{run.id}-warnings")
+      refute has_element?(view, "#export-file-#{run.id}-published")
 
       # Advance the real publisher loopback so the channel genuinely serves the
-      # file, then refresh the page: the row says Published and the Public
-      # address card names the served file. Pending bytes are never shown served.
+      # file. The production polling message, not an unrelated export-run
+      # broadcast, refreshes the row and Public address card.
       publication_id = :sys.get_state(view.pid).socket.assigns.publication.publication_id
       assert is_binary(publication_id)
       assert {:ok, :current} = FeedPublishing.advance(publication_id)
 
-      broadcast_export_run_changed(run.id)
-      _ = :sys.get_state(view.pid)
+      poll_publication(view)
 
+      assert has_element?(view, "#export-toast-text", "Full feed published.")
       assert has_element?(view, "#export-file-#{run.id}-published", "Published")
+      assert has_element?(view, "#export-file-#{run.id}-warnings", "1 warnings")
       assert has_element?(view, "#public-address-card")
       assert has_element?(view, "#public-address-url-full")
       assert has_element?(view, "#public-address-serving-full")
+
+      view |> element("#export-file-#{run.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+      assert has_element?(view, "#export-file-#{run.id}-warnings-detail", "Build warning")
+    end
+
+    test "a current published run still exposes its warnings on initial mount", context do
+      run = ready_run(context, warnings: [warning()])
+      _report = seed_report(context, run)
+      publish_run!(context, run)
+
+      {:ok, view, _html} = live(conn(context), export_path(context))
+
+      assert has_element?(view, "#export-file-#{run.id}-published", "Published")
+      assert has_element?(view, "#export-file-#{run.id}-warnings", "1 warnings")
+
+      view |> element("#export-file-#{run.id}-warnings") |> render_click()
+      _ = :sys.get_state(view.pid)
+      assert has_element?(view, "#export-file-#{run.id}-warnings-detail", "Build warning")
+    end
+
+    test "polling exposes a durable publication failure", context do
+      run = ready_run(context)
+      _report = seed_report(context, run)
+
+      {:ok, view, _html} = live(conn(context), export_path(context))
+
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
+      _ = :sys.get_state(view.pid)
+      view |> form("#feed-publish-consent") |> render_submit()
+      state = :sys.get_state(view.pid)
+
+      publication_id = state.socket.assigns.publication.publication_id
+      scope = publication_scope(context)
+      {:ok, publications} = FeedPublishing.status(scope)
+      publication = Enum.find(publications, &(&1.id == publication_id))
+
+      HTTPBoundary.put_object(
+        Manifest.key(publication.namespace.prefix, :full),
+        "manifest owned by another publisher",
+        etag: ~s("foreign")
+      )
+
+      assert {:error, :blocked} = FeedPublishing.advance(publication_id)
+
+      poll_publication(view)
+
+      assert has_element?(view, "#export-toast-text", "Publication failed.")
+      refute has_element?(view, "#export-file-#{run.id}-published")
+      refute has_element?(view, "#public-address-url-full")
     end
   end
 
@@ -272,6 +326,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
 
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, export_type)
     {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+
+    warnings = Keyword.get(opts, :warnings, [])
+
+    if warnings != [] do
+      {:ok, _run} =
+        ExportRuns.persist_warnings(organization.id, run.id, generation, token, warnings)
+    end
 
     {:ok, main} =
       ArtifactStorage.publish(
@@ -315,6 +376,45 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
     Phoenix.PubSub.broadcast(GtfsPlanner.PubSub, Validations.topic(run_id), {event, run_id})
   end
 
+  defp publish_run!(context, run) do
+    scope = publication_scope(context)
+    {:ok, preview} = FeedPublishing.preview_static(scope, run.id, :main)
+
+    {:ok, publication_id} =
+      FeedPublishing.publish_static(scope, preview.token, preview.destination_revision)
+
+    assert {:ok, :current} = FeedPublishing.advance(publication_id)
+    publication_id
+  end
+
+  defp publication_scope(context) do
+    %{
+      organization_id: context.organization.id,
+      actor_id: context.user.id,
+      gtfs_version_id: context.version.id
+    }
+  end
+
+  defp poll_publication(view) do
+    publication = :sys.get_state(view.pid).socket.assigns.publication
+
+    send(
+      view.pid,
+      {
+        :publication_status_poll,
+        publication.publication_id,
+        publication.poll_token,
+        1
+      }
+    )
+
+    _ = :sys.get_state(view.pid)
+  end
+
+  defp warning do
+    %{"code" => "build_warning", "detail" => "Build warning needs attention."}
+  end
+
   defp zip_bytes(members) do
     dir = Path.join(System.tmp_dir!(), "export-publish-zip-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -325,14 +425,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportPublishTest do
     bytes = File.read!(path)
     File.rm_rf!(dir)
     bytes
-  end
-
-  defp broadcast_export_run_changed(run_id) do
-    Phoenix.PubSub.broadcast(
-      GtfsPlanner.PubSub,
-      ExportRuns.topic(run_id),
-      {:export_run_changed, run_id}
-    )
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:gtfs_planner, key)

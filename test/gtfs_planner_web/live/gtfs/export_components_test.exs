@@ -493,7 +493,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
       html = check_html(%{validating?: true, progress: %{phase: :validating, percent: 55}})
 
       assert text(html, "#check-phase") == "Running the checker…"
-      assert attribute(html, "#check-progress", "value") == ["55"]
+      assert attribute(html, "#check-progress", "role") == ["progressbar"]
+      assert attribute(html, "#check-progress", "value") == []
       assert count(html, "#run-validation") == 0
     end
 
@@ -506,21 +507,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
     test "tells the reader to fix errors before sharing when the check found any" do
       html = check_html(%{result: result(2, 4, 7)})
 
-      assert text(html, "#check-verdict") =~ "Fix the errors before you share this feed."
+      assert text(html, "#check-verdict") =~ "Fix 2 errors before you share this feed."
       assert text(html, "#mobility-summary-metrics [data-count=errors]") =~ "2"
     end
 
     test "says most trip planners still accept a feed with only warnings" do
       html = check_html(%{result: result(0, 3, 7)})
 
-      assert text(html, "#check-verdict") =~ "Review the 3 warnings."
+      assert text(html, "#check-verdict") =~ "No errors. 3 warnings point to weak spots"
       assert text(html, "#check-verdict") =~ "most trip planners still accept the feed"
     end
 
     test "uses the singular for one warning" do
       html = check_html(%{result: result(0, 1, 0)})
 
-      assert text(html, "#check-verdict") =~ "Review the 1 warning."
+      assert text(html, "#check-verdict") =~ "No errors. 1 warning"
     end
 
     test "reports a clean check and offers both follow-up actions as secondary" do
