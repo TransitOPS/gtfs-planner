@@ -36,7 +36,12 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
                      )
   @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
 
-  @spec create_pending(Ecto.UUID.t(), Ecto.UUID.t(), actor(), :full | :pathways | :operations) ::
+  @spec create_pending(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          actor(),
+          :full | :pathways | :operations | :operations_only
+        ) ::
           {:ok, Run.t()} | {:error, term()}
   def create_pending(organization_id, version_id, actor, export_type)
       when export_type in @export_types do
@@ -590,7 +595,11 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   # A run closed by `fail_unstarted/3` built nothing, so it does not replace the
   # export the page was showing.
-  @spec latest_for_version(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+  @spec latest_for_version(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only
+        ) ::
           Run.t() | nil | {:error, :invalid_export_type}
   def latest_for_version(organization_id, version_id, export_type)
       when export_type in @export_types do

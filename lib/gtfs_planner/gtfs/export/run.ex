@@ -7,7 +7,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions.GtfsVersion
 
-  @export_types [:full, :pathways, :operations]
+  @export_types [:full, :pathways, :operations, :operations_only]
   @states [:pending, :building, :ready, :failed, :interrupted, :cancelled, :expired]
   @phases [:preflight, :packaging, :publishing, :cleanup]
   @terminal_states [:ready, :failed, :interrupted, :cancelled, :expired]
@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     field :artifact_key, :string
     field :artifact_filename, :string
     field :artifact_sha256, :string
+    field :gtfs_reference_sha256, :string
     field :artifact_size_bytes, :integer
     field :artifact_expires_at, :utc_datetime_usec
     field :flex_artifact_key, :string
@@ -80,6 +81,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
       :artifact_key,
       :artifact_filename,
       :artifact_sha256,
+      :gtfs_reference_sha256,
       :artifact_size_bytes,
       :artifact_expires_at,
       :flex_artifact_key,
@@ -152,6 +154,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     |> validate_number(:artifact_size_bytes, greater_than_or_equal_to: 0)
     |> validate_number(:flex_artifact_size_bytes, greater_than_or_equal_to: 0)
     |> validate_digest(:artifact_sha256)
+    |> validate_digest(:gtfs_reference_sha256)
     |> validate_digest(:flex_artifact_sha256)
     |> validate_ready_artifact()
   end

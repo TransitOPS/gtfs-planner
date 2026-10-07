@@ -80,5 +80,79 @@ defmodule GtfsPlanner.Gtfs.Export.RunTest do
       assert errors_on(oversized).artifact_key
       assert errors_on(oversized).artifact_filename
     end
+
+    test "persists the operations_only export type admitted by the widened constraint", %{
+      run: run
+    } do
+      assert {:ok, inserted} =
+               Repo.insert(
+                 Run.system_changeset(%Run{}, %{
+                   export_type: :operations_only,
+                   state: :pending,
+                   organization_id: run.organization_id,
+                   gtfs_version_id: run.gtfs_version_id
+                 })
+               )
+
+      assert inserted.export_type == :operations_only
+      assert Repo.reload(inserted).export_type == :operations_only
+    end
+
+    test "still persists every admitted export type", %{run: run} do
+      for export_type <- [:full, :pathways, :operations, :operations_only] do
+        assert {:ok, inserted} =
+                 Repo.insert(
+                   Run.system_changeset(%Run{}, %{
+                     export_type: export_type,
+                     state: :pending,
+                     organization_id: run.organization_id,
+                     gtfs_version_id: run.gtfs_version_id
+                   })
+                 )
+
+        assert inserted.export_type == export_type
+      end
+    end
+
+    test "rejects an export type outside the named state check", %{run: run} do
+      now = DateTime.utc_now()
+
+      assert_raise Postgrex.Error, ~r/gtfs_export_runs_state_check/, fn ->
+        Ecto.Adapters.SQL.query!(
+          Repo,
+          """
+          INSERT INTO gtfs_export_runs
+            (id, export_type, state, organization_id, gtfs_version_id, inserted_at, updated_at)
+          VALUES ($1, 'bogus', 'pending', $2, $3, $4, $5)
+          """,
+          [
+            Ecto.UUID.dump!(Ecto.UUID.generate()),
+            Ecto.UUID.dump!(run.organization_id),
+            Ecto.UUID.dump!(run.gtfs_version_id),
+            now,
+            now
+          ]
+        )
+      end
+    end
+
+    test "public changeset never casts the reference digest", %{run: run} do
+      changeset = Run.changeset(run, %{gtfs_reference_sha256: String.duplicate("a", 64)})
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_field(changeset, :gtfs_reference_sha256) == nil
+    end
+
+    test "system changeset validates the reference digest like the artifact digest", %{run: run} do
+      invalid = Run.system_changeset(run, %{gtfs_reference_sha256: "abc"})
+
+      refute invalid.valid?
+      assert errors_on(invalid).gtfs_reference_sha256
+
+      valid = Run.system_changeset(run, %{gtfs_reference_sha256: String.duplicate("a", 64)})
+
+      assert valid.valid?
+      assert Ecto.Changeset.get_field(valid, :gtfs_reference_sha256) == String.duplicate("a", 64)
+    end
   end
 end
