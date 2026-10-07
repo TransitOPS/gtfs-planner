@@ -45,6 +45,7 @@ defmodule GtfsPlanner.FeedPublishing do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Validations.ValidationRun
+  alias GtfsPlanner.Values
 
   @preview_salt "feed_publishing.static_preview"
   @preview_max_age 900
@@ -200,6 +201,57 @@ defmodule GtfsPlanner.FeedPublishing do
       _ -> {:error, :forbidden}
     end
   end
+
+  @doc """
+  Returns the export run a channel currently serves, or `nil` when none is served.
+
+  Served run has one owner: the publication row's active attempt is the only
+  source of this answer, so it is never inferred from the current export runs or
+  from a caller's value. A channel whose publication is not `:current`, has no
+  active attempt, or whose frozen `run_id` is missing or not a UUID answers
+  `nil`.
+
+  ## Examples
+
+      iex> served_run_id(scope, :full)
+      {:ok, "44444444-4444-4444-4444-444444444444"}
+
+      iex> served_run_id(scope_without_membership, :full)
+      {:error, :forbidden}
+  """
+  @spec served_run_id(map(), :full | :pathways) ::
+          {:ok, Ecto.UUID.t() | nil} | {:error, :forbidden}
+  def served_run_id(scope, channel) when channel in [:full, :pathways] do
+    with :ok <- Authorization.authorize_editor(scope),
+         {:ok, organization_id} <- cast_organization_id(scope) do
+      publication =
+        Repo.one(
+          from(publication in Publication,
+            where:
+              publication.organization_id == ^organization_id and
+                publication.channel == ^channel,
+            preload: [:active_attempt]
+          )
+        )
+
+      {:ok, served_run_id(publication)}
+    else
+      _ -> {:error, :forbidden}
+    end
+  end
+
+  # The run frozen when the attempt was queued, read only from the served
+  # attempt's private snapshot. A publication that is not current, or a run id
+  # that is absent or malformed, serves no run this module can name.
+  defp served_run_id(%Publication{
+         status: :current,
+         active_attempt: %Attempt{private_snapshot: %{"source" => %{"run_id" => run_id}}}
+       })
+       when is_binary(run_id) do
+    if Values.uuid?(run_id), do: run_id, else: nil
+  end
+
+  defp served_run_id(_publication), do: nil
 
   @doc """
   Returns the permanent public URL one channel of a claimed namespace serves.
