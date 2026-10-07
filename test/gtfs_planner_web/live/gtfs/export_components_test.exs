@@ -311,7 +311,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
         ])
 
       assert text(html, "#export-metrics") =~ "Routes"
-      assert text(html, "#export-metrics") =~ "Stations"
+      assert text(html, "#export-metrics") =~ "Stops"
+      refute text(html, "#export-metrics") =~ "Stations"
       assert text(html, "#export-metrics") =~ "1,386"
       assert count(html, "#export-metrics > div") == 4
     end
@@ -374,12 +375,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponentsTest do
       assert text(html, "#export-metrics") =~ "No run work to reconcile"
     end
 
-    test "shows a skeleton while the preview loads and a fallback when it fails" do
-      loading = contents_html(:operations_only, [], %{loading: true})
-      failed = contents_html(:operations_only, [], %{loading: false, ok?: false, failed: :error})
+    test "shows unknown inventory states while either operations preview loads or fails" do
+      for export_type <- [:operations, :operations_only] do
+        loading = contents_html(export_type, [{"routes.txt", 14}], %{loading: true})
 
-      assert count(loading, "[id$='-loading']") == 4
-      assert text(failed, "#export-metrics") =~ "Couldn’t count"
+        failed =
+          contents_html(export_type, [{"routes.txt", 14}], %{
+            loading: false,
+            ok?: false,
+            failed: :error
+          })
+
+        assert count(loading, "[id$='-loading']") > 0
+        assert text(loading, "#export-files summary") =~ "Counting files in the ZIP"
+        assert text(loading, "#export-inventory-loading") =~ "Counting the files and records"
+        refute text(loading, "#export-files") =~ "nothing left out"
+        refute count(loading, "#export-empty-inventory") > 0
+
+        assert text(failed, "#export-metrics") =~ "Couldn’t count"
+        assert text(failed, "#export-files summary") =~ "File count unavailable"
+        assert text(failed, "#export-inventory-unavailable") =~ "couldn’t be counted"
+        refute text(failed, "#export-files") =~ "files in the ZIP"
+        refute text(failed, "#export-files") =~ "nothing left out"
+        refute count(failed, "#export-empty-inventory") > 0
+      end
     end
 
     test "shows three counts for a pathways export" do

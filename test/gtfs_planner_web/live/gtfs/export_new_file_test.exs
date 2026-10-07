@@ -257,24 +257,18 @@ defmodule GtfsPlannerWeb.Gtfs.ExportNewFileTest do
       refute_received {:preview_query, 2, _pid}
       assert :counters.get(counter, 1) == 1
     end
-  end
 
-  describe "the preview fallback" do
-    setup :committed_pool
-
-    test "a snapshot deadline shows Couldn’t count and keeps the export enabled", context do
+    test "a ready operations broadcast refreshes the preview while Full is selected", context do
       %{repo: repo} = context
       committed = committed_world()
 
-      previous = Application.fetch_env(:gtfs_planner, :export_snapshot_timeout_ms)
-      Application.put_env(:gtfs_planner, :export_snapshot_timeout_ms, 200)
-
-      on_exit(fn ->
-        case previous do
-          {:ok, value} -> Application.put_env(:gtfs_planner, :export_snapshot_timeout_ms, value)
-          :error -> Application.delete_env(:gtfs_planner, :export_snapshot_timeout_ms)
-        end
-      end)
+      {:ok, run} =
+        ExportRuns.create_pending(
+          committed.organization.id,
+          committed.version.id,
+          %{id: committed.user.id, email: committed.user.email},
+          :operations_only
+        )
 
       {:ok, view, _html} =
         live(
@@ -282,34 +276,110 @@ defmodule GtfsPlannerWeb.Gtfs.ExportNewFileTest do
           export_path(committed.version) <> "?type=full"
         )
 
-      # The connected LiveView, and therefore the preview task it spawns, reads
-      # through the dedicated committed pool rather than the shared sandbox
-      # connection, so the deadline closes only the dedicated connection.
       bind_liveview_repo(view, repo)
+      render_change(view, "select_export_type", %{"export" => %{"type" => "operations_only"}})
+      _ = render_async(view, 2_000)
+      assert has_element?(view, "#export-tile-garages", "0")
 
-      _counter = attach_preview_barrier(:deadline)
+      render_change(view, "select_export_type", %{"export" => %{"type" => "full"}})
+      garage_fixture(committed.organization.id)
 
+      ready = mark_ready(run)
+      send(view.pid, {:export_run_changed, ready.id})
+      _ = :sys.get_state(view.pid)
+
+      _ = render_async(view, 2_000)
       render_change(view, "select_export_type", %{"export" => %{"type" => "operations_only"}})
 
-      task =
-        receive do
-          {:preview_query, 1, task} -> task
-        after
-          15_000 -> flunk("the preview never reached its run query")
-        end
+      assert has_element?(view, "#export-tile-garages", "1")
+      assert has_element?(view, "#export-inventory tbody tr", "stops_supplement.txt 1")
+    end
+  end
 
-      # Let the deadline pass before releasing the held query, so the snapshot
-      # transaction is already closed when the preview resumes.
-      Process.send_after(task, :resume, 600)
+  describe "the preview fallback" do
+    setup :committed_pool
+    setup :short_snapshot_deadline
 
-      html = render_async(view, 2_000)
-      assert count(html, "#export-metrics [id$='-error']") == 4
-      assert has_element?(view, "#export-tile-garages-error", "Couldn’t count")
-      refute has_element?(view, "#start-export[disabled]")
+    test "a combined operations timeout discloses an unavailable inventory", context do
+      assert_snapshot_deadline_inventory(context, "operations", 3)
+    end
+
+    test "an operations-only timeout discloses an unavailable inventory", context do
+      assert_snapshot_deadline_inventory(context, "operations_only", 4)
     end
   end
 
   # -- committed pool ---------------------------------------------------------
+
+  defp assert_snapshot_deadline_inventory(context, export_type, error_tiles) do
+    committed = committed_world()
+
+    {:ok, view, _html} =
+      live(
+        log_in_user(context.conn, committed.user, organization: committed.organization),
+        export_path(committed.version) <> "?type=full"
+      )
+
+    # The connected LiveView, and therefore the preview task it spawns, reads
+    # through the dedicated committed pool rather than the shared sandbox
+    # connection, so the deadline closes only the dedicated connection.
+    bind_liveview_repo(view, context.repo)
+
+    _counter = attach_preview_barrier({:deadline, export_type})
+
+    render_change(view, "select_export_type", %{"export" => %{"type" => export_type}})
+
+    task =
+      receive do
+        {:preview_query, 1, task} -> task
+      after
+        15_000 -> flunk("the preview never reached its run query")
+      end
+
+    # Let the deadline pass before releasing the held query, so the snapshot
+    # transaction is already closed when the preview resumes.
+    Process.send_after(task, :resume, 600)
+
+    html = render_async(view, 2_000)
+    assert count(html, "#export-metrics [id$='-error']") == error_tiles
+    assert has_element?(view, "#export-tile-garages-error", "Couldn’t count")
+    assert has_element?(view, "#export-files summary", "File count unavailable")
+    assert has_element?(view, "#export-inventory-unavailable", "couldn’t be counted")
+    refute has_element?(view, "#export-files", "nothing left out")
+    refute has_element?(view, "#export-empty-inventory")
+    refute has_element?(view, "#start-export[disabled]")
+  end
+
+  defp mark_ready(run) do
+    now = DateTime.utc_now()
+
+    run
+    |> Run.system_changeset(%{
+      state: :ready,
+      started_at: DateTime.add(now, -1, :second),
+      finished_at: now,
+      artifact_key: "exports/#{run.id}.zip",
+      artifact_filename: "tods-#{run.id}.zip",
+      artifact_sha256: String.duplicate("a", 64),
+      artifact_size_bytes: 1,
+      artifact_expires_at: DateTime.add(now, 3_600, :second)
+    })
+    |> Repo.update!()
+  end
+
+  defp short_snapshot_deadline(_context) do
+    previous = Application.fetch_env(:gtfs_planner, :export_snapshot_timeout_ms)
+    Application.put_env(:gtfs_planner, :export_snapshot_timeout_ms, 200)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, :export_snapshot_timeout_ms, value)
+        :error -> Application.delete_env(:gtfs_planner, :export_snapshot_timeout_ms)
+      end
+    end)
+
+    :ok
+  end
 
   # Bind the connected LiveView process (and the preview task it later spawns)
   # to the dedicated committed pool. `:sys.replace_state/2` runs the callback in

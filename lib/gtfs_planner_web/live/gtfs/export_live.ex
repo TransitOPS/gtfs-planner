@@ -391,11 +391,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_info({:export_run_changed, _run_id}, socket) do
+  def handle_info({:export_run_changed, run_id}, socket) do
     # A newer export is a different file, so a review of the previous one belongs
     # to a page the operator has left. The review is closed for the same reason a
     # version switch closes it.
     previous_run_id = socket.assigns.publication.run && socket.assigns.publication.run.id
+    changed_run = scoped_export_run(socket, run_id)
     socket = refresh_export_run(socket)
     current_run_id = socket.assigns.export_run && socket.assigns.export_run.id
 
@@ -406,7 +407,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
     {:noreply,
      socket
-     |> refresh_operations_preview_for_ready_run()
+     |> refresh_operations_preview_for_ready_run(changed_run)
      |> assign_publication()
      |> refresh_feed_quality()}
   end
@@ -869,8 +870,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # A newly ready operations-bearing run can change the counts the preview read
   # before that run, so the preview is derived once more. The refreshed run's id
   # is recorded, so a repeat broadcast for the same run never starts another task.
-  defp refresh_operations_preview_for_ready_run(socket) do
-    case socket.assigns.export_run do
+  defp refresh_operations_preview_for_ready_run(socket, changed_run) do
+    case changed_run do
       %{state: :ready, export_type: export_type, id: run_id}
       when export_type in @operations_kinds ->
         if socket.assigns.operations_preview_refreshed_run_id == run_id do
@@ -884,6 +885,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       _other ->
         socket
     end
+  end
+
+  defp scoped_export_run(socket, run_id) do
+    ExportRuns.get_for_version(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      run_id
+    )
   end
 
   defp export_actor(socket) do

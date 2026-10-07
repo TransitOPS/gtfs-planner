@@ -284,13 +284,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     base = assigns.file_inventory
     preview = operations_state(assigns.operations_preview)
 
-    inventory = contents_inventory(assigns.export_type, base, preview)
+    {inventory_status, inventory} = contents_inventory(assigns.export_type, base, preview)
     included = Enum.count(inventory, fn {_file, count} -> count > 0 end)
     left_out = length(inventory) - included
 
     assigns =
       assigns
       |> assign(:version_label, version_label(assigns.version))
+      |> assign(:inventory_status, inventory_status)
       |> assign(:inventory, inventory)
       |> assign(:included, included)
       |> assign(:left_out, left_out)
@@ -381,14 +382,22 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         class="group mt-3 rounded-control border border-subtle"
       >
         <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-control px-4 text-sm font-semibold text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
-          <span>
-            {@included} {if @included == 1, do: "file", else: "files"} in the ZIP
-            <span class="font-normal text-muted">
-              · {if @left_out > 0,
-                do: "#{@left_out} empty #{if @left_out == 1, do: "table", else: "tables"} left out",
-                else: "nothing left out"}
-            </span>
-          </span>
+          <%= case @inventory_status do %>
+            <% :ready -> %>
+              <span>
+                {@included} {if @included == 1, do: "file", else: "files"} in the ZIP
+                <span class="font-normal text-muted">
+                  · {if @left_out > 0,
+                    do:
+                      "#{@left_out} empty #{if @left_out == 1, do: "table", else: "tables"} left out",
+                    else: "nothing left out"}
+                </span>
+              </span>
+            <% :loading -> %>
+              <span id="export-inventory-counting">Counting files in the ZIP…</span>
+            <% :error -> %>
+              <span id="export-inventory-count-unavailable">File count unavailable</span>
+          <% end %>
           <.icon
             name="hero-chevron-down"
             class="size-4 shrink-0 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none"
@@ -402,7 +411,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
           aria-label="Files in this export"
           class="max-h-[400px] overflow-auto border-t border-subtle"
         >
-          <table :if={@inventory != []} class="w-full border-collapse text-left text-sm">
+          <table
+            :if={@inventory_status == :ready and @inventory != []}
+            class="w-full border-collapse text-left text-sm"
+          >
             <thead>
               <tr>
                 <th
@@ -449,11 +461,25 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             </tbody>
           </table>
           <p
-            :if={@inventory == []}
+            :if={@inventory_status == :ready and @inventory == []}
             id="export-empty-inventory"
             class="px-4 py-3 text-sm text-muted"
           >
             This export type has no tables to package yet.
+          </p>
+          <p
+            :if={@inventory_status == :loading}
+            id="export-inventory-loading"
+            class="px-4 py-3 text-sm text-muted"
+          >
+            Counting the files and records for this export…
+          </p>
+          <p
+            :if={@inventory_status == :error}
+            id="export-inventory-unavailable"
+            class="px-4 py-3 text-sm text-muted"
+          >
+            The file inventory couldn’t be counted. You can still export this file.
           </p>
         </div>
 
@@ -477,14 +503,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp operations_state(%{ok?: true, result: result}), do: {:ok, result}
   defp operations_state(_other), do: :error
 
-  defp contents_inventory(:operations_only, _base, {:ok, preview}), do: preview.files
-  defp contents_inventory(:operations_only, _base, _not_ok), do: []
+  defp contents_inventory(:operations_only, _base, {:ok, preview}), do: {:ready, preview.files}
+  defp contents_inventory(:operations_only, _base, :loading), do: {:loading, []}
+  defp contents_inventory(:operations_only, _base, :error), do: {:error, []}
 
   defp contents_inventory(:operations, base, {:ok, preview}),
-    do: merge_inventory(base, preview.files)
+    do: {:ready, merge_inventory(base, preview.files)}
 
-  defp contents_inventory(:operations, base, _not_ok), do: base
-  defp contents_inventory(_kind, base, _preview), do: base
+  defp contents_inventory(:operations, _base, :loading), do: {:loading, []}
+  defp contents_inventory(:operations, _base, :error), do: {:error, []}
+  defp contents_inventory(_kind, base, _preview), do: {:ready, base}
 
   defp merge_inventory(base, extra) do
     (base ++ extra)
@@ -637,7 +665,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     do: [
       {"Routes", "routes.txt"},
       {"Trips", "trips.txt"},
-      {"Stations", "stops.txt"},
+      {"Stops", "stops.txt"},
       {"Calendars", "calendar.txt"}
     ]
 
