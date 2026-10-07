@@ -797,10 +797,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   defp served_run(_organization_id, nil), do: nil
 
-  defp served_run(organization_id, served_run_id) do
-    from(r in Run, where: r.organization_id == ^organization_id and r.id == ^served_run_id)
-    |> Repo.one()
-  end
+  defp served_run(organization_id, served_run_id),
+    do: get_scoped_run(organization_id, served_run_id)
 
   defp matching_file(organization_id, version_id, fingerprint) do
     from(r in Run,
