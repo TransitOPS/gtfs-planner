@@ -695,7 +695,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
 
   def files_card(assigns) do
     ~H"""
-    <section id="export-files-card" class="rounded-card border border-subtle bg-white">
+    <section
+      id="export-files-card"
+      aria-labelledby="files-h"
+      class="min-w-0 max-w-full rounded-card border border-subtle bg-white"
+    >
+      <.finished_band :if={@finished_run} run={@finished_run} version={@version} />
+
       <div class="flex items-center justify-between px-5 pt-5">
         <h2 id="files-h" class="text-base font-bold text-strong">Files</h2>
         <p class="text-[13px] text-muted">Kept for 24 hours</p>
@@ -709,8 +715,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       >
         {@notice}
       </p>
-
-      <.finished_band :if={@finished_run} run={@finished_run} version={@version} />
 
       <div
         :if={@clash_run}
@@ -735,7 +739,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         </.link>
       </div>
 
-      <div class="mt-3 overflow-x-auto">
+      <div
+        :if={!@empty?}
+        id="export-files-scroll"
+        class="mt-3 max-w-full overflow-x-auto"
+      >
         <table
           id="export-files-rows"
           phx-update="stream"
@@ -773,9 +781,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         </table>
       </div>
 
-      <p :if={@empty?} id="export-files-empty" class="px-5 py-6 text-sm text-muted">
-        No files from the last 24 hours.
-      </p>
+      <div
+        :if={@empty?}
+        id="export-files-empty"
+        class="m-5 mt-3 rounded-card border border-dashed border-control bg-canvas px-5 py-8 text-center"
+      >
+        <.icon name="hero-document" class="mx-auto size-7 text-muted" />
+        <p class="mt-2 text-sm font-semibold text-strong">No files from the last 24 hours</p>
+        <p class="mt-1 text-[13px] text-muted">
+          Files you export appear here to download, publish or compare.
+        </p>
+      </div>
 
       <div :if={@has_more?} class="border-t border-subtle px-5 py-3">
         <.button
@@ -1147,30 +1163,31 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     <div
       id="export-finished"
       role="status"
-      class="mx-5 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-card border border-subtle bg-canvas px-4 py-3"
+      class="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-subtle bg-soft px-5 py-4 text-cyan-800"
     >
-      <div class="min-w-0">
-        <p class="text-sm font-semibold text-strong">{file_label(@run)} is ready.</p>
-        <p class="mt-0.5 text-[13px] text-muted">{finished_meta(@run)}</p>
+      <.icon name="hero-check-circle" class="size-5 shrink-0 text-cyan-700" />
+      <div class="min-w-0 flex-1">
+        <p class="text-sm font-semibold">{file_label(@run)} is ready.</p>
+        <p class="mt-0.5 text-[13px]">{finished_meta(@run)}</p>
       </div>
       <span class="inline-flex items-center gap-2">
         <.link
           id="export-download-link"
           navigate={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download"}
-          class="inline-flex min-h-11 items-center font-semibold text-action hover:underline"
+          class="btn btn-primary min-h-10 gap-1.5"
         >
-          Download file
+          <.icon name="hero-arrow-down-tray" class="size-4" /> Download file
         </.link>
-        <.button
+        <button
           id="export-finished-dismiss"
           type="button"
           phx-click="dismiss_finished"
-          variant="quiet"
-          size="sm"
-          class="min-h-11"
+          aria-label="Dismiss finished export"
+          title="Dismiss"
+          class="grid size-11 place-items-center rounded-control transition-colors hover:bg-white/60"
         >
-          Dismiss
-        </.button>
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
       </span>
     </div>
     """

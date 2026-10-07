@@ -106,6 +106,30 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
   end
 
   describe "live run changes" do
+    test "reconciles a listed nonselected run that finishes just before subscription", context do
+      {building, generation, token} =
+        building_run!(context.organization, context.version, :operations_only)
+
+      put_lifecycle_observer(fn
+        :before_subscribe, %{id: id} when id == building.id ->
+          mark_ready!(
+            context.organization,
+            context.version,
+            building,
+            generation,
+            token
+          )
+
+        _stage, _run ->
+          :ok
+      end)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      assert has_element?(view, "#export-file-#{building.id}-download")
+      refute has_element?(view, "#export-file-#{building.id}", "Building…")
+    end
+
     test "a listed building run marked ready through the real path shows Download", context do
       {building, generation, token} = building_run!(context.organization, context.version)
 
@@ -122,6 +146,42 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
   end
 
   describe "the finished band" do
+    test "the first export replaces the prototype empty state and reconciles an instant finish",
+         context do
+      owner = self()
+
+      put_lifecycle_observer(fn
+        :before_start, run ->
+          ready = finish_pending_run!(context.organization, context.version, run)
+          send(owner, {:instant_export_ready, ready.id})
+
+        _stage, _run ->
+          :ok
+      end)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      assert has_element?(view, "#export-files-empty .hero-document")
+
+      assert has_element?(
+               view,
+               "#export-files-empty",
+               "Files you export appear here to download, publish or compare."
+             )
+
+      refute has_element?(view, "#export-files-rows")
+
+      render_click(view, "start_export")
+      assert_receive {:instant_export_ready, run_id}
+
+      refute has_element?(view, "#export-files-empty")
+      assert has_element?(view, "#export-file-#{run_id}-download")
+      assert has_element?(view, "#export-finished .hero-check-circle")
+      assert has_element?(view, "#export-finished + div #files-h")
+      assert has_element?(view, "#export-download-link.btn-primary")
+      assert has_element?(view, "#export-finished-dismiss[aria-label='Dismiss finished export']")
+    end
+
     test "a run started here that becomes ready shows the band; a listed run does not", context do
       # A listed run that another session made ready belongs to the list, not the
       # band.
@@ -143,6 +203,101 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
 
       assert has_element?(view, "#export-finished")
       assert has_element?(view, "#export-finished #export-download-link")
+    end
+
+    test "dismissal survives a ready download broadcast", context do
+      owner = self()
+
+      put_lifecycle_observer(fn
+        :before_start, run ->
+          ready = finish_pending_run!(context.organization, context.version, run)
+          send(owner, {:instant_export_ready, ready.id})
+
+        _stage, _run ->
+          :ok
+      end)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+      render_click(view, "start_export")
+      assert_receive {:instant_export_ready, run_id}
+      assert has_element?(view, "#export-finished")
+
+      render_click(view, "dismiss_finished")
+      refute has_element?(view, "#export-finished")
+
+      assert {:ok, claim} =
+               ExportRuns.claim_download(context.organization.id, context.version.id, run_id)
+
+      assert :ok =
+               ExportRuns.complete_download(
+                 context.organization.id,
+                 context.version.id,
+                 run_id,
+                 claim.claim_id
+               )
+
+      _ = :sys.get_state(view.pid)
+      refute has_element?(view, "#export-finished")
+    end
+
+    test "a ready-to-expired transition clears the band and download", context do
+      owner = self()
+
+      put_lifecycle_observer(fn
+        :before_start, run ->
+          ready = finish_pending_run!(context.organization, context.version, run)
+          send(owner, {:instant_export_ready, ready.id})
+
+        _stage, _run ->
+          :ok
+      end)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+      render_click(view, "start_export")
+      assert_receive {:instant_export_ready, run_id}
+      assert has_element?(view, "#export-finished")
+
+      Run
+      |> Repo.get!(run_id)
+      |> backdate!(:artifact_expires_at)
+
+      assert ExportRuns.cleanup_expired(context.organization.id) == 1
+      _ = :sys.get_state(view.pid)
+
+      refute has_element?(view, "#export-finished")
+      refute has_element?(view, "#export-file-#{run_id}-download")
+      assert has_element?(view, "#export-file-#{run_id}", "Download expired")
+    end
+  end
+
+  describe "retry ordering" do
+    test "a successful retry is prepended, retains older rows and reconciles an instant finish",
+         context do
+      older = ready_run!(context.organization, context.version)
+      failed = failed_run!(context.organization, context.version, "build_failed")
+      owner = self()
+
+      put_lifecycle_observer(fn
+        :before_start, run ->
+          ready = finish_pending_run!(context.organization, context.version, run)
+          send(owner, {:instant_retry_ready, ready.id})
+
+        _stage, _run ->
+          :ok
+      end)
+
+      {:ok, view, _html} = live(context.conn, export_path(context.version))
+
+      view
+      |> element("#export-file-#{failed.id} button[phx-click='retry_file']")
+      |> render_click()
+
+      assert_receive {:instant_retry_ready, retry_id}
+
+      assert [^retry_id, failed_id, older_id | _rest] = visible_file_ids(view)
+      assert failed_id == to_string(failed.id)
+      assert older_id == to_string(older.id)
+      assert has_element?(view, "#export-file-#{retry_id}-download")
     end
   end
 
@@ -286,6 +441,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
     pending_run!(organization, version, export_type)
   end
 
+  defp finish_pending_run!(organization, version, run) do
+    {:ok, building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
+    mark_ready!(organization, version, building, generation, token)
+  end
+
   # Creates a pending run and claims it, returning the building run with the
   # generation and token the ready transition fences on.
   defp pending_run!(organization, version, export_type) do
@@ -368,6 +528,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
   defp backdate!(run, field) do
     past = DateTime.add(DateTime.utc_now(), -3_600, :second)
     Repo.update_all(from(r in Run, where: r.id == ^run.id), set: [{field, past}])
+  end
+
+  defp put_lifecycle_observer(observer) do
+    previous = Application.fetch_env(:gtfs_planner, :export_files_lifecycle_observer)
+    Application.put_env(:gtfs_planner, :export_files_lifecycle_observer, observer)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} ->
+          Application.put_env(:gtfs_planner, :export_files_lifecycle_observer, value)
+
+        :error ->
+          Application.delete_env(:gtfs_planner, :export_files_lifecycle_observer)
+      end
+    end)
   end
 
   defp empty_zip do

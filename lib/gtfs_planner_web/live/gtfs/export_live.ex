@@ -233,24 +233,51 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     version = socket.assigns.current_gtfs_version
     socket = assign(socket, :export_notice, nil)
 
-    with {:ok, run} <-
-           ExportRuns.create_pending(
-             organization_id,
-             version.id,
-             export_actor(socket),
-             socket.assigns.export_type
-           ),
-         :ok <- subscribe_export_run(run),
-         :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply,
-       socket
-       |> subscribe_file_run(run)
-       |> assign(:export_run, run)
-       |> remember_started(run)
-       |> stream_insert(:files, run, at: 0)
-       |> assign(:files_finished_run, nil)
-       |> refresh_feed_quality()}
-    else
+    case ExportRuns.create_pending(
+           organization_id,
+           version.id,
+           export_actor(socket),
+           socket.assigns.export_type
+         ) do
+      {:ok, run} ->
+        socket =
+          socket
+          |> subscribe_file_run(run)
+          |> remember_started(run)
+          |> stream_insert(:files, run, at: 0)
+          |> assign(:files_empty?, false)
+          |> assign(:files_finished_run, nil)
+
+        files_lifecycle_checkpoint(:before_start, run)
+
+        case ExportRunner.ensure_started(organization_id, run) do
+          :ok ->
+            current = scoped_export_run(socket, run.id) || run
+
+            {:noreply,
+             socket
+             |> assign(:export_run, current)
+             |> stream_insert(:files, current, at: 0)
+             |> update_finished_band(current)
+             |> assign_files_match([current])
+             |> refresh_feed_quality()}
+
+          {:error, :busy} ->
+            current = scoped_export_run(socket, run.id) || run
+
+            {:noreply,
+             socket
+             |> stream_insert(:files, current, at: 0)
+             |> update_finished_band(current)
+             |> export_busy()}
+
+          _other ->
+            {:noreply,
+             socket
+             |> refresh_export_run()
+             |> assign(:export_notice, "The export couldn’t start. Try again.")}
+        end
+
       {:error, :invalid_transition} ->
         {:noreply, refresh_export_run(socket)}
 
@@ -293,6 +320,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       )
 
     {page, rest} = Enum.split(rows, @files_page_size)
+    {socket, page} = subscribe_and_reconcile_listed_files(socket, page)
 
     {:noreply,
      socket
@@ -300,7 +328,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:files_cursor, cursor_for(List.last(page)))
      |> assign(:files_empty?, false)
      |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
-     |> subscribe_listed_files(page)
      |> assign_files_match(page)
      |> stream(:files, page)}
   end
@@ -492,13 +519,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         socket
       end
 
-    socket =
-      if changed_run && changed_run.state == :ready &&
-           MapSet.member?(socket.assigns.files_started_ids, changed_run.id) do
-        assign(socket, :files_finished_run, changed_run)
-      else
-        socket
-      end
+    socket = update_finished_band(socket, changed_run)
 
     {:noreply,
      socket
@@ -608,13 +629,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
     rows = ExportRuns.list_files(organization_id, version_id, limit: @files_page_size + 1)
     {page, rest} = Enum.split(rows, @files_page_size)
+    {socket, page} = subscribe_and_reconcile_listed_files(socket, page)
 
     socket
     |> assign(:files_has_more?, rest != [])
     |> assign(:files_cursor, cursor_for(List.last(page)))
     |> assign(:files_empty?, page == [])
     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
-    |> subscribe_listed_files(page)
     |> assign_files_match(page)
     |> stream(:files, page, reset: true)
   end
@@ -660,6 +681,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end)
   end
 
+  # Reading a row and subscribing are not atomic. Subscribe to every active row
+  # from the read first, then read those rows again: a transition before the
+  # subscription is present in the second read, while a later transition is
+  # delivered through PubSub.
+  defp subscribe_and_reconcile_listed_files(socket, runs) do
+    socket = subscribe_listed_files(socket, runs)
+
+    current =
+      Enum.map(runs, fn run ->
+        if run.state in [:pending, :building],
+          do: scoped_export_run(socket, run.id) || run,
+          else: run
+      end)
+
+    {socket, current}
+  end
+
   # A listed run is subscribed once per LiveView, so a type patch that reloads
   # the same page never doubles its broadcasts; a started or retried run is
   # remembered the same way.
@@ -667,6 +705,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     if MapSet.member?(socket.assigns.files_subscribed_ids, run.id) do
       socket
     else
+      files_lifecycle_checkpoint(:before_subscribe, run)
       subscribe_export_run(run)
 
       assign(
@@ -699,22 +738,81 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   defp remember_started(socket, run),
     do: assign(socket, :files_started_ids, MapSet.put(socket.assigns.files_started_ids, run.id))
 
+  defp forget_started(socket, run) do
+    assign(socket, :files_started_ids, MapSet.delete(socket.assigns.files_started_ids, run.id))
+  end
+
+  # A completion consumes its started-here marker. That makes dismissal sticky
+  # across later ready metadata broadcasts, while a non-ready transition clears
+  # an on-screen band for the file that is no longer downloadable.
+  defp update_finished_band(socket, nil), do: socket
+
+  defp update_finished_band(socket, run) do
+    finished_run = socket.assigns.files_finished_run
+    finished_id = finished_run && finished_run.id
+
+    cond do
+      finished_id == run.id and run.state == :ready ->
+        assign(socket, :files_finished_run, run)
+
+      finished_id == run.id ->
+        socket
+        |> assign(:files_finished_run, nil)
+        |> forget_started(run)
+
+      run.state == :ready and MapSet.member?(socket.assigns.files_started_ids, run.id) ->
+        socket
+        |> assign(:files_finished_run, run)
+        |> forget_started(run)
+
+      run.state in [:failed, :interrupted, :cancelled, :expired] ->
+        forget_started(socket, run)
+
+      true ->
+        socket
+    end
+  end
+
   defp retry_file(socket, %{"run" => run_id}) do
     organization_id = socket.assigns.current_organization.id
 
     with {:ok, uuid} <- Ecto.UUID.cast(run_id),
          %{id: _} <- scoped_export_run(socket, uuid),
-         {:ok, run} <- ExportRuns.retry(organization_id, uuid),
-         :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply,
-       socket
-       |> subscribe_file_run(run)
-       |> remember_started(run)
-       |> stream_insert(:files, run)
-       |> assign(:files_notice, nil)
-       |> assign(:files_finished_run, nil)}
+         {:ok, run} <- ExportRuns.retry(organization_id, uuid) do
+      socket =
+        socket
+        |> subscribe_file_run(run)
+        |> remember_started(run)
+        |> stream_insert(:files, run, at: 0)
+        |> assign(:files_empty?, false)
+        |> assign(:files_notice, nil)
+        |> assign(:files_finished_run, nil)
+
+      files_lifecycle_checkpoint(:before_start, run)
+
+      case ExportRunner.ensure_started(organization_id, run) do
+        :ok ->
+          current = scoped_export_run(socket, run.id) || run
+
+          {:noreply,
+           socket
+           |> stream_insert(:files, current, at: 0)
+           |> update_finished_band(current)
+           |> assign_files_match([current])}
+
+        {:error, :busy} ->
+          current = scoped_export_run(socket, run.id) || run
+
+          {:noreply,
+           socket
+           |> stream_insert(:files, current, at: 0)
+           |> update_finished_band(current)
+           |> export_busy()}
+
+        _other ->
+          {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+      end
     else
-      {:error, :busy} -> {:noreply, export_busy(socket)}
       _ -> {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
     end
   end
@@ -738,7 +836,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
       </:sub_header>
 
-      <div id="export-page" class="ds-page">
+      <div id="export-page" class="ds-page min-w-0 max-w-full">
         <.header>
           Export
           <:actions>
@@ -759,9 +857,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <div
           id="export-helper-focus"
           phx-hook=".ExportHelperFocus"
-          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+          class={[
+            "min-w-0 max-w-full lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
         >
-          <div class={@agent_open? && "hidden lg:block"}>
+          <div class={["min-w-0 max-w-full", @agent_open? && "hidden lg:block"]}>
             <div
               id="export-download-container"
               class={[
@@ -1376,6 +1477,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp subscribe_export_run(run),
     do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
+
+  # Tests use this observer to move a durable run at the exact subscription or
+  # worker-start boundary. It is unset in application environments.
+  defp files_lifecycle_checkpoint(stage, run) do
+    case Application.get_env(:gtfs_planner, :export_files_lifecycle_observer) do
+      observer when is_function(observer, 2) -> observer.(stage, run)
+      _other -> :ok
+    end
+  end
 
   # The version's missing-times count loads apart from the file list, so a
   # large version never blocks the page; the pre-run line reads it when ready.
