@@ -192,11 +192,57 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       view = compare!(view(context), left, right)
 
       # A route present on one side only cannot be totalled across the feed, so
-      # the page states the reason instead of showing "no change".
+      # the page renders the cell as "—" and states the reason, never as 0.
       assert has_element?(view, "#comparison-totals-unknown", "was not measured")
       assert has_element?(view, "#comparison-total-reasons", "no proven match")
-      refute has_element?(view, "#comparison-scheduled-delta")
-      refute has_element?(view, "#comparison-exact-delta")
+      assert has_element?(view, "#comparison-scheduled-delta", "—")
+      assert has_element?(view, "#comparison-exact-delta", "—")
+      refute has_element?(view, "#comparison-scheduled-delta", "0")
+      refute has_element?(view, "#comparison-exact-delta", "0")
+    end
+
+    test "a nil exact total renders — with its reasons", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-exact-delta", "—")
+      assert has_element?(view, "#comparison-totals-unknown", "shown as —")
+      assert has_element?(view, "#comparison-total-reasons", "no proven match")
+    end
+
+    test "an incomplete result renders the incomplete badge with reasons", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-completeness", "Incomplete")
+      assert has_element?(view, "#comparison-completeness-reasons")
+    end
+
+    test "a date with an unmapped group renders — in the bars", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-date-#{@from}", "—")
+    end
+
+    test "a complete result with no differences renders the No differences card", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), full_week_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-nochange", "No differences")
+      assert has_element?(view, "#comparison-nochange", "same service")
     end
 
     test "unreadable rows are disclosed as unknowns with their source, and never as zero service",

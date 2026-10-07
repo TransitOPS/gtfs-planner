@@ -165,6 +165,41 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLiveTest do
     end
   end
 
+  describe "the comparison form states" do
+    test "a range over 62 dates renders the error and starts no comparison", context do
+      %{conn: conn, user: user, organization: organization, version: version} = context
+      publish_run!(organization, version, left_zip())
+      publish_run!(organization, version, right_zip())
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
+
+      render_change(view, "select_comparison", %{
+        "comparison" => %{"from" => "2026-10-12", "to" => "2027-01-12"}
+      })
+
+      assert has_element?(view, "#comparison-window-note", "Choose 62 dates or fewer")
+      assert has_element?(view, "#comparison-window-note", "93")
+      refute has_element?(view, "#comparison-progress")
+      refute has_element?(view, "#comparison-status-title", "Comparing exports")
+    end
+
+    test "no comparable choices renders the empty state linking to the full export", context do
+      %{conn: conn, user: user, organization: organization, version: version} = context
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
+
+      assert has_element?(view, "#comparison-empty")
+      assert has_element?(view, "#comparison-empty", "Export full feed")
+
+      assert has_element?(
+               view,
+               "#comparison-export-full[href='/gtfs/#{version.id}/export?type=full']"
+             )
+    end
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp compare_path(version), do: "/gtfs/#{version.id}/compare"

@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   alias GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext
   alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
   alias GtfsPlannerWeb.AgentPanel
+  alias GtfsPlannerWeb.Gtfs.ComparePresentation
   alias GtfsPlannerWeb.GtfsVersionNavigation
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
@@ -49,6 +50,10 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   ]
   @comparison_scope_notice "Choose at least one route and one date to narrow this comparison."
   @comparison_scope_invalid_notice "Those routes or dates aren’t part of this comparison."
+
+  # The change kinds a kind chip may filter to. An unknown value is ignored, so
+  # a forged event can never name a kind this page does not render.
+  @comparison_change_kinds [:added, :removed, :count_changed, :timing_changed, :frequency_changed]
 
   @comparison_unavailable_notice "Those exports aren’t available to compare."
   @comparison_window_notice "Enter both dates, with the last date on or after the first."
@@ -87,7 +92,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
      |> assign(:comparison_coordinator, nil)
      |> assign(:comparison_monitor, nil)
      |> assign(:comparison_result, nil)
-     |> assign(:comparison_view, nil)
+     |> assign_comparison_view(nil)
      |> assign(:comparison_scope, nil)
      |> assign(:comparison_scope_form, comparison_scope_form(%{}))
      |> assign(:comparison_scope_notice, nil)
@@ -318,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
       result ->
         {:noreply,
          socket
-         |> assign(:comparison_view, result.comparison)
+         |> assign_comparison_view(result.comparison)
          |> assign(:comparison_scope, nil)
          |> assign(:comparison_scope_notice, nil)
          |> assign(:comparison_scope_form, comparison_scope_form(%{}))
@@ -348,6 +353,19 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
      |> cancel_comparison()
      |> reset_comparison()}
   end
+
+  # A kind chip narrows the rendered route table only; it never changes the
+  # held result. An unknown value leaves the filter untouched rather than
+  # naming a kind this page does not render.
+  @impl Phoenix.LiveView
+  def handle_event("filter_comparison_kind", %{"kind" => value}, socket) do
+    case comparison_kind_filter(value) do
+      {:ok, filter} -> {:noreply, assign(socket, :comparison_kind_filter, filter)}
+      :ignore -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("filter_comparison_kind", _params, socket), do: {:noreply, socket}
 
   defp start_coordinator(socket, selection, draft) do
     request_ref = System.unique_integer([:positive])
@@ -406,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
         # than the one that was read.
         |> assign(:comparison_chosen, compared_rows(socket, result))
         |> assign(:comparison_notice, nil)
-        |> assign(:comparison_view, result.comparison)
+        |> assign_comparison_view(result.comparison)
         |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
         |> stream_comparison(result.comparison)
         # Only the complete comparison attaches on its own. A narrowed scope is
@@ -818,7 +836,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
     case Compare.narrow(result.comparison, selection) do
       {:ok, view} ->
         socket
-        |> assign(:comparison_view, view)
+        |> assign_comparison_view(view)
         |> assign(:comparison_scope, selection)
         |> assign(:comparison_scope_notice, nil)
         |> assign(:comparison_inspected, nil)
@@ -829,7 +847,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
       # rows and the helper's copy keep describing the same result.
       {:error, :invalid_scope} ->
         socket
-        |> assign(:comparison_view, result.comparison)
+        |> assign_comparison_view(result.comparison)
         |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
         |> assign(:comparison_scope, nil)
         |> assign(:comparison_inspected, nil)
@@ -863,9 +881,46 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
   # A comparison that no longer exists shows no result: the full native result,
   # the narrowed view, every stream and the page positions all go together, so
   # a reopened comparison cannot inherit a previous one.
-  defp reset_comparison_view(socket) do
+  # The derived R6 presentation values travel with the view they describe, so a
+  # narrowing, a completion and a cleared scope all publish them together and a
+  # kind filter is dropped whenever a new view attaches or the comparison closes.
+  defp assign_comparison_view(socket, nil) do
     socket
     |> assign(:comparison_view, nil)
+    |> assign(:comparison_per_date, nil)
+    |> assign(:comparison_day_classes, nil)
+    |> assign(:comparison_conclusion, nil)
+    |> assign(:comparison_kind_counts, nil)
+    |> assign(:comparison_kind_filter, nil)
+  end
+
+  defp assign_comparison_view(socket, view) do
+    per_date = ComparePresentation.per_date(view)
+
+    socket
+    |> assign(:comparison_view, view)
+    |> assign(:comparison_per_date, per_date)
+    |> assign(:comparison_day_classes, ComparePresentation.day_classes(per_date))
+    |> assign(:comparison_conclusion, ComparePresentation.conclusion(view))
+    |> assign(:comparison_kind_counts, ComparePresentation.kind_counts(view))
+    |> assign(:comparison_kind_filter, nil)
+  end
+
+  defp comparison_kind_filter(""), do: {:ok, nil}
+  defp comparison_kind_filter("all"), do: {:ok, nil}
+
+  defp comparison_kind_filter(value) when is_binary(value) do
+    case Enum.find(@comparison_change_kinds, &(Atom.to_string(&1) == value)) do
+      nil -> :ignore
+      kind -> {:ok, kind}
+    end
+  end
+
+  defp comparison_kind_filter(_value), do: :ignore
+
+  defp reset_comparison_view(socket) do
+    socket
+    |> assign_comparison_view(nil)
     |> assign(:comparison_scope, nil)
     |> assign(:comparison_scope_form, comparison_scope_form(%{}))
     |> assign(:comparison_scope_notice, nil)
@@ -986,6 +1041,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                 status={@comparison_status}
                 notice={@comparison_notice}
                 result={@comparison_result}
+                version_id={@current_gtfs_version.id}
               />
 
               <.comparison_helper
@@ -1005,6 +1061,11 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
                 inspected={@comparison_inspected}
                 page={@comparison_page}
                 true_totals={@comparison_true_totals}
+                kind_filter={@comparison_kind_filter}
+                per_date={@comparison_per_date}
+                day_classes={@comparison_day_classes}
+                conclusion={@comparison_conclusion}
+                kind_counts={@comparison_kind_counts}
               >
                 <:differences_list>
                   <div id="comparison-rows" phx-update="stream" class="divide-y divide-subtle">

@@ -19,16 +19,20 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   import GtfsPlannerWeb.ResultComponents, only: [result_section: 1, tone_badge: 1]
 
   alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
+  alias GtfsPlannerWeb.Components.RouteIdentity
+  alias GtfsPlannerWeb.Gtfs.ComparePresentation
 
   @doc """
   Compare two retained full feed files over one explicit date range.
 
   The form names both sides and the window, and starts nothing by itself: the
   draft is `%{"left_run_id", "right_run_id", "from", "to"}` and
-  `.CompareLive` owns the events, the choices and the running comparison. The two
-  run selectors carry a prompt and never a default, and the date range starts
-  blank: a comparison always compares two named files over dates the editor
-  chose.
+  `.CompareLive` owns the events, the choices and the running comparison. The
+  file selects DO carry server-provided defaults — `apply_comparison_defaults/3`
+  supplies newest-file-right and second-newest-left — which must be distinguished
+  from the dates the server leaves empty for the editor to enter: the window
+  starts blank and a comparison always compares two named files over dates the
+  editor chose.
 
   `choices` is `%{rows: [row], next_cursor: String.t() | nil}` for the page the
   server listed. A run the editor chose on an earlier page is still an option
@@ -53,6 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   attr :status, :atom, required: true
   attr :notice, :string, default: nil
   attr :result, :map, default: nil
+  attr :version_id, :string, required: true
 
   def comparison(assigns) do
     assigns =
@@ -60,6 +65,10 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       |> assign(:options, Enum.map(assigns.choices.rows, &{run_label(&1), to_string(&1.run_id)}))
       |> assign(:running?, assigns.status in [:running, :cancelling])
       |> assign(:view, comparison_view(assigns.status, assigns.chosen, assigns.result))
+      |> assign(:window_dates, comparison_window_dates(assigns.form))
+      |> assign(:too_long?, comparison_too_long?(assigns.form))
+      |> assign(:empty?, length(assigns.choices.rows) < 2)
+      |> assign(:no_change?, no_change?(assigns.status, assigns.result))
 
     ~H"""
     <div id="export-comparison" class="px-5 py-5">
@@ -73,33 +82,56 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
           <legend class="text-[13px] font-semibold text-strong">
             Which two files do you want to compare?
           </legend>
-          <div class="mt-2.5 grid gap-3 sm:grid-cols-2">
+          <div class="mt-2.5 grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
             <.input
               field={@form[:left_run_id]}
               type="select"
               id="comparison-left"
-              label="Earlier export"
-              prompt="Choose an export"
+              label="Earlier file"
+              prompt="Choose a file"
               options={@options}
             />
+            <span class="hidden pb-2.5 text-muted sm:block" aria-hidden="true">
+              <.icon name="hero-arrow-right" class="size-4" />
+            </span>
             <.input
               field={@form[:right_run_id]}
               type="select"
               id="comparison-right"
-              label="Candidate export"
-              prompt="Choose an export"
+              label="Newer file"
+              prompt="Choose a file"
               options={@options}
             />
           </div>
         </fieldset>
 
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <.input field={@form[:from]} type="date" id="comparison-from" label="From" />
-          <.input field={@form[:to]} type="date" id="comparison-to" label="To" />
+        <div class="mt-3 flex flex-wrap items-end gap-3">
+          <.input
+            field={@form[:from]}
+            type="date"
+            id="comparison-from"
+            label="From"
+            class={@too_long? && "border-error-line"}
+          />
+          <span class="pb-2.5 text-[13px] text-muted">to</span>
+          <.input
+            field={@form[:to]}
+            type="date"
+            id="comparison-to"
+            label="To"
+            class={@too_long? && "border-error-line"}
+          />
         </div>
 
-        <p id="comparison-window-note" class="mt-2 text-[13px] leading-relaxed text-muted">
-          The same dates are compared on both sides. One comparison covers at most 62 dates.
+        <p
+          id="comparison-window-note"
+          class={[
+            "mt-2 text-[13px] leading-relaxed",
+            @too_long? && "font-semibold text-error-fg",
+            !@too_long? && "text-muted"
+          ]}
+        >
+          {window_note(@window_dates, @too_long?)}
         </p>
 
         <div class="mt-4 flex flex-wrap items-center gap-2 max-sm:w-full max-sm:[&>*]:flex-1">
@@ -109,7 +141,7 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
             class="min-h-11"
             phx-click={JS.focus(to: "#comparison-status-title")}
           >
-            Compare exports
+            Compare files
           </.button>
           <.button
             :if={@status == :cancelling}
@@ -166,9 +198,113 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       </.form>
 
       <.comparison_status view={@view} notice={@notice} />
+
+      <%= if @running? do %>
+        <section
+          id="comparison-progress"
+          class="mt-4 rounded-card border border-subtle bg-white px-5 py-5"
+        >
+          <div class="h-1.5 overflow-hidden rounded-full bg-info-bg">
+            <div class="h-full w-1/3 rounded-full bg-info-fg motion-safe:animate-pulse" />
+          </div>
+          <p class="mt-3 text-sm font-semibold text-strong">
+            Comparing service on {window_date_count(@window_dates)} dates…
+          </p>
+          <p class="text-[13px] text-muted">Usually under a minute.</p>
+        </section>
+      <% end %>
+
+      <%= if @status == :refused and @notice do %>
+        <.callout id="comparison-refused" kind="error" title="The comparison couldn’t finish">
+          <p class="text-[13px] leading-relaxed">{@notice}</p>
+        </.callout>
+      <% end %>
+
+      <%= if @empty? do %>
+        <section
+          id="comparison-empty"
+          class="mt-4 rounded-card border border-subtle bg-white px-6 py-10 text-center"
+        >
+          <.icon name="hero-arrows-right-left" class="mx-auto size-8 text-muted" />
+          <p class="mt-3 text-base font-semibold text-strong">
+            Comparing needs two full feed files from the last 24 hours
+          </p>
+          <p class="mt-1 text-sm text-muted">
+            You have {length(@choices.rows)}. Export the version you want to compare against.
+          </p>
+          <.link
+            id="comparison-export-full"
+            navigate={~p"/gtfs/#{@version_id}/export?type=full"}
+            class="mt-5 inline-flex min-h-11 items-center justify-center rounded-control bg-strong px-4 py-2.5 text-sm font-[650] text-white no-underline hover:bg-strong/90"
+          >
+            Export full feed
+          </.link>
+        </section>
+      <% end %>
+
+      <%= if @no_change? do %>
+        <section
+          id="comparison-nochange"
+          class="mt-4 rounded-card border border-subtle bg-white px-5 py-5"
+        >
+          <span class="inline-flex items-center gap-1 rounded-badge bg-success-bg px-2 py-0.5 text-[12px] font-semibold text-success-fg">
+            <.icon name="hero-check" class="size-3.5" /> No differences
+          </span>
+          <h2 class="mt-2 font-display text-[26px] leading-tight text-strong">
+            Riders get the same service from both files.
+          </h2>
+          <p class="mt-1 text-sm text-default">
+            Every route has the same service on all {window_date_count(@window_dates)} dates.
+          </p>
+          <p class="mt-3 text-[12px] text-muted">
+            Not compared: fares, station pathways and flex services.
+          </p>
+        </section>
+      <% end %>
     </div>
     """
   end
+
+  defp comparison_window_dates(form) do
+    from = form[:from].value
+    to = form[:to].value
+
+    with true <- is_binary(from) and from != "",
+         true <- is_binary(to) and to != "",
+         {:ok, from_date} <- Date.from_iso8601(from),
+         {:ok, to_date} <- Date.from_iso8601(to),
+         false <- Date.compare(from_date, to_date) == :gt do
+      {Date.diff(to_date, from_date) + 1, from_date, to_date}
+    else
+      _ -> nil
+    end
+  end
+
+  defp comparison_too_long?(form) do
+    case comparison_window_dates(form) do
+      {count, _from, _to} -> count > 62
+      nil -> false
+    end
+  end
+
+  defp window_note(nil, _too_long?),
+    do: "The same dates are compared on both sides. One comparison covers at most 62 dates."
+
+  defp window_note({count, _from, _to}, true),
+    do: "Choose 62 dates or fewer. This range has #{count}."
+
+  defp window_note({count, from, to}, false),
+    do:
+      "#{count} dates · #{format_date_range(%{from: from, to: to})} · both files have service on every date"
+
+  defp window_date_count(nil), do: "the chosen"
+  defp window_date_count({count, _from, _to}), do: count
+
+  defp no_change?(:completed, %{comparison: comparison}) do
+    comparison.effective_changes == [] and comparison.structural_changes == []
+  end
+
+  defp no_change?(_status, _result), do: false
 
   attr :view, :map, required: true
   attr :notice, :string, default: nil
@@ -375,6 +511,11 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   attr :inspected, :map, default: nil
   attr :page, :map, required: true
   attr :true_totals, :map, required: true
+  attr :kind_filter, :atom, default: nil
+  attr :per_date, :any, default: nil
+  attr :day_classes, :any, default: nil
+  attr :conclusion, :any, default: nil
+  attr :kind_counts, :any, default: nil
 
   # Each list is passed in as a slot because only the template that owns a
   # stream may iterate it. A stream consumed anywhere else renders its first
@@ -386,6 +527,10 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   slot :unknowns_list, required: true
 
   def comparison_results(assigns) do
+    per_date = assigns.per_date || []
+    kind_counts = assigns.kind_counts || %{}
+    kind_filter = assigns.kind_filter
+
     assigns =
       assigns
       |> assign(:window, assigns.view.window)
@@ -394,6 +539,12 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
       |> assign(:totals, assigns.view.totals)
       |> assign(:completeness, assigns.view.completeness)
       |> assign(:omitted, omitted_units(assigns.view.exclusions))
+      |> assign(:per_date, per_date)
+      |> assign(:day_classes, assigns.day_classes || [])
+      |> assign(:conclusion, assigns.conclusion || %{changed: 0, compared: 0})
+      |> assign(:kind_counts, kind_counts)
+      |> assign(:kind_counts_list, kind_counts_list(kind_counts))
+      |> assign(:route_rows, ComparePresentation.route_rows(assigns.view, kind_filter))
 
     ~H"""
     <div id="comparison-results" class="grid gap-6">
@@ -412,43 +563,112 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
             Both files were compared over the same dates, {format_date_range(@window)}.
           </p>
 
+          <div id="comparison-verdict">
+            <h2 id="verdict-h" class="font-display text-[26px] leading-tight text-strong">
+              {@conclusion.changed} of {@conclusion.compared} routes change.
+            </h2>
+            <p
+              :if={@day_classes != []}
+              id="comparison-day-classes"
+              class="mt-1 text-sm text-default"
+            >
+              {day_class_sentence(@day_classes)}
+            </p>
+          </div>
+
+          <div id="comparison-per-date">
+            <p class="text-[13px] font-semibold text-strong">Scheduled trips by date</p>
+            <ul class="mt-1.5 flex flex-wrap gap-1.5">
+              <li
+                :for={entry <- @per_date}
+                id={"comparison-date-#{Date.to_iso8601(entry.date)}"}
+                class="rounded-control border border-subtle bg-canvas px-2 py-1 text-[12px] tabular-nums text-strong"
+              >
+                {date_bar_value(entry.value)}
+              </li>
+            </ul>
+          </div>
+
+          <div id="comparison-kind-chips" class="flex flex-wrap gap-2">
+            <.kind_chip
+              id="comparison-kind-all"
+              label={"All #{@true_totals.comparison_differences}"}
+              kind="all"
+              pressed={is_nil(@kind_filter)}
+            />
+            <.kind_chip
+              :for={{kind, count} <- @kind_counts_list}
+              id={"comparison-kind-#{kind}"}
+              label={"#{change_kind(kind)} #{count}"}
+              kind={kind}
+              pressed={@kind_filter == kind}
+            />
+          </div>
+
+          <div id="comparison-routes">
+            <p class="text-[13px] font-semibold text-strong">By route</p>
+            <p :if={@route_rows == []} class="mt-1.5 text-[13px] text-muted">
+              No changes match this filter.
+            </p>
+            <div class="mt-1.5 grid gap-2">
+              <div
+                :for={row <- @route_rows}
+                id={route_row_id(row)}
+                class="rounded-control border border-subtle bg-white px-4 py-3"
+              >
+                <div class="flex flex-wrap items-center gap-2">
+                  <RouteIdentity.route_badge
+                    size="compact"
+                    title={row.route}
+                    route={route_badge_route(row.route)}
+                  />
+                  <span class="text-sm font-semibold text-strong">{change_kind(row.kind)}</span>
+                  <span class="text-[13px] text-muted">{route_row_dates(row)}</span>
+                </div>
+                <p class="mt-1 text-[13px] text-muted">{route_row_delta(row)}</p>
+              </div>
+            </div>
+          </div>
+
           <div id="comparison-totals">
             <p class="text-[13px] font-semibold text-strong">Totals across the compared routes</p>
-            <%= if @totals.exact_count_delta == nil do %>
-              <p id="comparison-totals-unknown" class="mt-1.5 text-sm leading-relaxed text-default">
-                A whole-feed total was not measured, so none is shown. The comparison found:
-              </p>
-              <ul
-                id="comparison-total-reasons"
-                class="mt-1.5 grid gap-1 text-[13px] leading-relaxed text-default"
-              >
-                <li :for={reason <- @totals.reasons} data-reason={reason}>
-                  {totals_reason(reason)}
-                </li>
-              </ul>
-            <% else %>
-              <dl class="mt-1.5 grid grid-cols-2 gap-3">
-                <div class="rounded-control border border-subtle bg-canvas px-3 py-2.5">
-                  <dt class="text-[13px] text-muted">Scheduled trips</dt>
-                  <dd
-                    id="comparison-scheduled-delta"
-                    class="mt-0.5 font-display text-[26px] font-semibold leading-none tabular-nums"
-                  >
-                    {signed(@totals.scheduled_count_delta)}
-                  </dd>
-                </div>
-                <div class="rounded-control border border-subtle bg-canvas px-3 py-2.5">
-                  <dt class="text-[13px] text-muted">Exact departures</dt>
-                  <dd
-                    id="comparison-exact-delta"
-                    class="mt-0.5 font-display text-[26px] font-semibold leading-none tabular-nums"
-                  >
-                    {signed(@totals.exact_count_delta)}
-                  </dd>
-                </div>
-              </dl>
-              <p class="mt-1.5 text-[13px] text-muted">{measured_units_label(@totals)}</p>
-            <% end %>
+            <dl class="mt-1.5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <.total_cell
+                id="comparison-scheduled-delta"
+                label="Scheduled trips"
+                value={@totals.scheduled_count_delta}
+              />
+              <.total_cell
+                id="comparison-exact-delta"
+                label="Departures at stops"
+                value={@totals.exact_count_delta}
+              />
+              <.total_cell
+                id="comparison-routes-changed"
+                label="Routes changed"
+                value={@conclusion.changed}
+              />
+              <.total_cell id="comparison-stops-changed" label="Stops" value={nil} />
+            </dl>
+            <p
+              :if={@totals.scheduled_count_delta == nil}
+              id="comparison-totals-unknown"
+              class="mt-1.5 text-sm leading-relaxed text-default"
+            >
+              A whole-feed total was not measured, so it is shown as —. The comparison found:
+            </p>
+            <ul
+              :if={@totals.reasons != []}
+              id="comparison-total-reasons"
+              class="mt-1.5 grid gap-1 text-[13px] leading-relaxed text-default"
+            >
+              <li :for={reason <- @totals.reasons} data-reason={reason}>
+                {totals_reason(reason)}
+              </li>
+            </ul>
+            <p :if={@totals.scheduled_count_delta != nil} class="mt-1.5 text-[13px] text-muted">
+              {measured_units_label(@totals)}
+            </p>
 
             <p
               :if={@true_totals.comparison_unknowns > 0}
@@ -802,6 +1022,102 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
 
   defp last_shown(%{offset: offset, limit: limit}, true_total),
     do: min(offset + limit, true_total)
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+
+  defp total_cell(assigns) do
+    ~H"""
+    <div class="rounded-control border border-subtle bg-canvas px-3 py-2.5">
+      <dt class="text-[13px] text-muted">{@label}</dt>
+      <dd id={@id} class="mt-0.5 font-display text-[26px] font-semibold leading-none tabular-nums">
+        {total_value(@value)}
+      </dd>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :kind, :string, required: true
+  attr :pressed, :boolean, required: true
+
+  defp kind_chip(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click="filter_comparison_kind"
+      phx-value-kind={@kind}
+      aria-pressed={to_string(@pressed)}
+      class={[
+        "min-h-9 rounded-full border px-3 py-1.5 text-[13px] font-semibold",
+        @pressed && "border-strong bg-strong text-white",
+        !@pressed && "border-subtle bg-white text-strong hover:bg-canvas"
+      ]}
+    >
+      {@label}
+    </button>
+    """
+  end
+
+  defp total_value(nil), do: "—"
+  defp total_value(value), do: signed(value)
+
+  defp date_bar_value(nil), do: "—"
+  defp date_bar_value(value), do: signed(value)
+
+  defp kind_counts_list(counts) do
+    for kind <- [:count_changed, :timing_changed, :added, :removed, :frequency_changed],
+        count = Map.get(counts, kind, 0),
+        count > 0,
+        do: {kind, count}
+  end
+
+  defp day_class_sentence(classes) do
+    classes
+    |> Enum.map(fn %{class: class, value: value} ->
+      "#{day_class_name(class)} #{signed_phrase(value)}."
+    end)
+    |> Enum.join(" ")
+  end
+
+  defp day_class_name(:weekdays), do: "Weekdays"
+  defp day_class_name(:saturdays), do: "Saturdays"
+  defp day_class_name(:sundays), do: "Sundays"
+
+  defp signed_phrase(nil), do: "are not measured"
+  defp signed_phrase(0), do: "are unchanged"
+  defp signed_phrase(value) when value > 0, do: "gain #{value} trips"
+  defp signed_phrase(value), do: "lose #{abs(value)} trips"
+
+  defp route_row_dates(%{dates: dates}) when is_list(dates) and dates != [] do
+    Enum.map_join(dates, ", ", &Date.to_iso8601/1)
+  end
+
+  defp route_row_dates(_row), do: "All compared dates"
+
+  defp route_row_delta(%{delta: %{scheduled_count: count}}), do: "trips #{signed(count)}"
+  defp route_row_delta(_row), do: ""
+
+  defp route_row_id(row) do
+    "comparison-route-#{row.kind}-#{route_key_part(row.route)}-#{row.direction_id}"
+  end
+
+  defp route_key_part(nil), do: "unnamed"
+
+  defp route_key_part(route),
+    do: route |> to_string() |> String.replace(~r/[^A-Za-z0-9_-]/, "-")
+
+  defp route_badge_route(route) do
+    %{
+      route_id: route,
+      route_short_name: route,
+      route_color: nil,
+      route_text_color: nil
+    }
+  end
 
   # The narrowing form only ever offers route pairs and dates this very result
   # proved, so a selection cannot name something the comparison never found.
