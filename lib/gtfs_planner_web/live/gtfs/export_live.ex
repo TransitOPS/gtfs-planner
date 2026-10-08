@@ -223,43 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
            socket.assigns.export_type
          ) do
       {:ok, run} ->
-        socket =
-          socket
-          |> subscribe_file_run(run)
-          |> remember_started(run)
-          |> stream_insert(:files, run, at: 0)
-          |> assign(:files_empty?, false)
-          |> assign(:files_finished_run, nil)
-
-        files_lifecycle_checkpoint(:before_start, run)
-
-        case ExportRunner.ensure_started(organization_id, run) do
-          :ok ->
-            current = scoped_export_run(socket, run.id) || run
-
-            {:noreply,
-             socket
-             |> assign(:selected_kind_busy?, true)
-             |> stream_insert(:files, current, at: 0)
-             |> update_finished_band(current)
-             |> merge_files_match([current])
-             |> refresh_helper_context()}
-
-          {:error, :busy} ->
-            current = scoped_export_run(socket, run.id) || run
-
-            {:noreply,
-             socket
-             |> stream_insert(:files, current, at: 0)
-             |> update_finished_band(current)
-             |> export_busy()}
-
-          _other ->
-            {:noreply,
-             socket
-             |> refresh_selected_kind_busy()
-             |> assign(:export_notice, "The export couldn’t start. Try again.")}
-        end
+        {:noreply, start_export_run(socket, organization_id, run)}
 
       {:error, :invalid_transition} ->
         {:noreply, refresh_selected_kind_busy(socket)}
@@ -528,6 +492,43 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     do:
       {:noreply, put_files_toast(socket, "Couldn’t copy the address. Copy it by hand.", :refused)}
 
+  defp start_export_run(socket, organization_id, run) do
+    socket =
+      socket
+      |> subscribe_file_run(run)
+      |> remember_started(run)
+      |> stream_insert(:files, run, at: 0)
+      |> assign(:files_empty?, false)
+      |> assign(:files_finished_run, nil)
+
+    files_lifecycle_checkpoint(:before_start, run)
+
+    case ExportRunner.ensure_started(organization_id, run) do
+      :ok ->
+        current = scoped_export_run(socket, run.id) || run
+
+        socket
+        |> assign(:selected_kind_busy?, true)
+        |> stream_insert(:files, current, at: 0)
+        |> update_finished_band(current)
+        |> merge_files_match([current])
+        |> refresh_helper_context()
+
+      {:error, :busy} ->
+        current = scoped_export_run(socket, run.id) || run
+
+        socket
+        |> stream_insert(:files, current, at: 0)
+        |> update_finished_band(current)
+        |> export_busy()
+
+      _other ->
+        socket
+        |> refresh_selected_kind_busy()
+        |> assign(:export_notice, "The export couldn’t start. Try again.")
+    end
+  end
+
   @impl Phoenix.LiveView
   def handle_info({:export_run_changed, run_id}, socket) do
     changed_run = scoped_export_run(socket, run_id)
@@ -543,20 +544,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     # A listed run that fails with a garage/stop clash owns the card's callout. A
     # ready operations-bearing run of the same kind is the corrected successor, so
     # it clears the stale callout; unrelated full/pathways runs never clear it.
-    socket =
-      cond do
-        changed_run && changed_run.state == :failed &&
-            changed_run.failure_code == "garage_stop_id_conflict" ->
-          assign(socket, :files_clash_run, changed_run)
-
-        changed_run && changed_run.state == :ready &&
-          changed_run.export_type in @operations_kinds &&
-            clash_successor?(socket, changed_run) ->
-          assign(socket, :files_clash_run, nil)
-
-        true ->
-          socket
-      end
+    socket = update_files_clash_run(socket, changed_run)
 
     socket = update_finished_band(socket, changed_run)
 
@@ -929,15 +917,29 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp clash_run(runs, existing) do
+    if existing != nil do
+      existing
+    else
+      Enum.find(
+        runs,
+        &(&1.state == :failed and &1.failure_code == "garage_stop_id_conflict")
+      )
+    end
+  end
+
+  defp update_files_clash_run(socket, changed_run) do
     cond do
-      existing != nil ->
-        existing
+      changed_run && changed_run.state == :failed &&
+          changed_run.failure_code == "garage_stop_id_conflict" ->
+        assign(socket, :files_clash_run, changed_run)
+
+      changed_run && changed_run.state == :ready &&
+        changed_run.export_type in @operations_kinds &&
+          clash_successor?(socket, changed_run) ->
+        assign(socket, :files_clash_run, nil)
 
       true ->
-        Enum.find(
-          runs,
-          &(&1.state == :failed and &1.failure_code == "garage_stop_id_conflict")
-        )
+        socket
     end
   end
 
@@ -1715,36 +1717,40 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       )
       |> put_publication(%{current_address: nil})
     else
-      case FeedPublishing.status(publication_scope(socket)) do
-        {:ok, publications} ->
-          addresses =
-            publications
-            |> Enum.filter(&(&1.channel in [:full, :pathways] and &1.status == :current))
-            |> Enum.map(&address_row(&1, publication_scope(socket)))
-            |> Enum.reject(&is_nil/1)
+      refresh_enabled_publication_presentation(socket)
+    end
+  end
 
-          served_ids = MapSet.new(addresses, & &1.run_id)
-          previous = socket.assigns.files_published_run_ids
+  defp refresh_enabled_publication_presentation(socket) do
+    case FeedPublishing.status(publication_scope(socket)) do
+      {:ok, publications} ->
+        addresses =
+          publications
+          |> Enum.filter(&(&1.channel in [:full, :pathways] and &1.status == :current))
+          |> Enum.map(&address_row(&1, publication_scope(socket)))
+          |> Enum.reject(&is_nil/1)
 
-          socket =
-            assign(socket,
-              publishing_enabled?: true,
-              public_addresses: addresses,
-              files_published_run_ids: served_ids
-            )
-            |> put_current_address(addresses)
+        served_ids = MapSet.new(addresses, & &1.run_id)
+        previous = socket.assigns.files_published_run_ids
 
-          if MapSet.equal?(served_ids, previous), do: socket, else: restream_loaded_files(socket)
-
-        {:error, _reason} ->
-          socket
-          |> assign(
+        socket =
+          assign(socket,
             publishing_enabled?: true,
-            public_addresses: [],
-            files_published_run_ids: MapSet.new()
+            public_addresses: addresses,
+            files_published_run_ids: served_ids
           )
-          |> put_publication(%{current_address: nil})
-      end
+          |> put_current_address(addresses)
+
+        if MapSet.equal?(served_ids, previous), do: socket, else: restream_loaded_files(socket)
+
+      {:error, _reason} ->
+        socket
+        |> assign(
+          publishing_enabled?: true,
+          public_addresses: [],
+          files_published_run_ids: MapSet.new()
+        )
+        |> put_publication(%{current_address: nil})
     end
   end
 

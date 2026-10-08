@@ -303,9 +303,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   defp build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts) do
-    include_flex =
-      Keyword.get(opts, :include_flex, false) and export_type not in [:pathways, :operations_only]
-
+    include_flex = include_flex?(export_type, opts)
     estimate = normalize_estimate(Keyword.get(opts, :estimate))
 
     temp_dir = generate_temp_dir(build_parent)
@@ -378,6 +376,10 @@ defmodule GtfsPlanner.Gtfs.Export do
       File.rm_rf(flex_dir)
       if build_parent, do: File.rmdir(build_parent)
     end
+  end
+
+  defp include_flex?(export_type, opts) do
+    Keyword.get(opts, :include_flex, false) and export_type not in [:pathways, :operations_only]
   end
 
   # R2's reference fingerprint: the six files a release note's reference is read

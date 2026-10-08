@@ -466,13 +466,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportFilesTest do
 
   defp mark_ready!(organization, version, run, generation \\ nil, token \\ nil) do
     {generation, token} =
-      cond do
-        is_integer(generation) and is_binary(token) ->
-          {generation, token}
-
-        true ->
-          claimed = Repo.get!(Run, run.id)
-          {claimed.lease_generation, claimed.lease_token}
+      if is_integer(generation) and is_binary(token) do
+        {generation, token}
+      else
+        claimed = Repo.get!(Run, run.id)
+        {claimed.lease_generation, claimed.lease_token}
       end
 
     {:ok, artifact} =

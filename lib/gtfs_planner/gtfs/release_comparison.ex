@@ -249,7 +249,7 @@ defmodule GtfsPlanner.Gtfs.ReleaseComparison do
   Callers remain responsible for resolving the run through an authorized,
   organization-scoped comparison lookup before using this pure projection.
   """
-  @spec choice_row(%Run{}) :: map()
+  @spec choice_row(Run.t()) :: map()
   def choice_row(%Run{} = run) do
     run
     |> artifact_identity()

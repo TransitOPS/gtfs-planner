@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Export.RunTest do
   use GtfsPlanner.DataCase, async: true
 
+  alias Ecto.Adapters.SQL
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.VersionsFixtures
@@ -118,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.Export.RunTest do
       now = DateTime.utc_now()
 
       assert_raise Postgrex.Error, ~r/gtfs_export_runs_state_check/, fn ->
-        Ecto.Adapters.SQL.query!(
+        SQL.query!(
           Repo,
           """
           INSERT INTO gtfs_export_runs

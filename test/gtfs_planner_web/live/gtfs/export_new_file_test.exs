@@ -95,13 +95,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportNewFileTest do
           :counters.put(counter, 1, count)
           send(parent, {:preview_query, count, self()})
 
-          if block? and count == 1 do
-            receive do
-              :resume -> :ok
-            after
-              30_000 -> :ok
-            end
-          end
+          maybe_wait_for_preview_resume(block?, count)
         end
       end,
       {parent, counter, block?}
@@ -110,6 +104,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportNewFileTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
     counter
   end
+
+  defp maybe_wait_for_preview_resume(true, 1) do
+    receive do
+      :resume -> :ok
+    after
+      30_000 -> :ok
+    end
+  end
+
+  defp maybe_wait_for_preview_resume(_block?, _count), do: :ok
 
   describe "the grouped kind choice" do
     test "a Pathways product hides the vendor fieldset and falls back to Full", context do

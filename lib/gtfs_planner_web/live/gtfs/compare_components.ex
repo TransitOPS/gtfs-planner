@@ -1250,11 +1250,9 @@ defmodule GtfsPlannerWeb.Gtfs.CompareComponents do
   end
 
   defp day_class_sentence(classes) do
-    classes
-    |> Enum.map(fn %{class: class, value: value} ->
+    Enum.map_join(classes, " ", fn %{class: class, value: value} ->
       "#{day_class_name(class)} #{signed_phrase(value)}."
     end)
-    |> Enum.join(" ")
   end
 
   defp day_class_name(:weekdays), do: "Weekdays"
