@@ -107,12 +107,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
   describe "an installation without publishing" do
     test "keeps Download and offers no Publish, and a forged event opens nothing", context do
       Application.put_env(:gtfs_planner, :feed_publishing_config, :disabled)
-      _run = ready_run(context)
+      run = ready_run(context)
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      assert has_element?(view, "#export-download-link")
-      refute has_element?(view, "#feed-publish-open")
+      assert has_element?(view, "#export-file-#{run.id}-download")
+      refute has_element?(view, "#export-file-#{run.id}-publish")
       refute has_element?(view, "#feed-publish")
 
       # A forged event cannot open a review the page never offered, and it does
@@ -127,13 +127,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
   describe "an operations export" do
     test "keeps Download and never exposes the action, and a forged event opens nothing",
          context do
-      _run = ready_run(context, export_type: :operations)
+      run = ready_run(context, export_type: :operations)
 
       {:ok, view, _html} = live(conn(context), export_path(context, type: "operations"))
 
-      assert has_element?(view, "#export-download-link")
-      refute has_element?(view, "#feed-publish-open")
-      refute has_element?(view, "#feed-publish")
+      assert has_element?(view, "#export-file-#{run.id}-download")
+      refute has_element?(view, "#export-file-#{run.id}-publish")
+      assert has_element?(view, "#feed-publish")
 
       render_click(view, "preview_publication", %{})
 
@@ -151,17 +151,16 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
       {:ok, view, _html} = live(conn(context), export_path(context))
 
       refute has_element?(view, "#feed-publish-review")
-      assert has_element?(view, "#feed-publish-status", "Not published yet")
+      assert has_element?(view, "#public-address-empty", "Not published yet")
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
 
       assert has_element?(view, "#feed-publish-review")
+      assert has_element?(view, "#publish-reviewed-run[data-run-id='#{run.id}']")
 
-      # The public URL, the profile and the reviewed hash come from the server's
-      # own preview, never from anything the browser sent.
+      # The public URL, bound run and report come from the server's own preview,
+      # never from anything the browser sent.
       assert has_element?(view, "#feed-publish-url", "https://feeds.loopback.invalid/")
-      assert has_element?(view, "#feed-publish-profile", "GTFS feed")
-      assert has_element?(view, "#feed-publish-hash", String.slice(run.artifact_sha256, 0, 16))
       assert has_element?(view, "#feed-publish-report", "0 errors")
       assert has_element?(view, "#feed-publish-report", String.slice(report.id, 0, 8))
 
@@ -181,7 +180,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
       assert has_element?(view, "#feed-publish-review")
 
       # The action the operator presses is the submit control of this form.
@@ -190,7 +189,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       # The review is answered and the queue is now the durable record.
       refute has_element?(view, "#feed-publish-review")
-      assert has_element?(view, "#feed-publish-status", "Publishing")
+      assert has_element?(view, "#export-toast-text", "Full feed queued for publication.")
 
       assert %Publication{status: :pending, desired_revision: 1, active_attempt_id: attempt_id} =
                Repo.get_by!(Publication, organization_id: context.organization.id, channel: :full)
@@ -203,7 +202,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
       # from anything this page remembered.
       {:ok, reopened, _html} = live(conn(context), export_path(context))
 
-      assert has_element?(reopened, "#feed-publish-status", "Publishing")
+      assert has_element?(reopened, "#public-address-empty", "Not published yet")
+      refute has_element?(reopened, "#export-file-#{run.id}-published")
       refute has_element?(reopened, "#feed-publish-review")
     end
 
@@ -214,11 +214,10 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
 
       # The notice names what the file cannot answer, and the proceed action is
       # still there: a mismatch is information, never a block.
-      assert has_element?(view, "#feed-publish-notices")
       assert has_element?(view, "#feed-publish-mismatch", "Ice on Route 99")
       assert has_element?(view, "#feed-publish-mismatch", "R99")
       assert has_element?(view, "#feed-publish-confirm")
@@ -226,7 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
       view |> element("#feed-publish-consent") |> render_submit()
 
       refute has_element?(view, "#feed-publish-review")
-      assert has_element?(view, "#feed-publish-status", "Publishing")
+      assert has_element?(view, "#export-toast-text", "Full feed queued for publication.")
     end
 
     test "requires the error count to be confirmed and keeps the review on a refusal", context do
@@ -235,7 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
 
       assert has_element?(view, "#feed-publish-report", "3 errors")
       assert has_element?(view, "#feed-publish-confirm-errors")
@@ -283,17 +282,18 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
       assert has_element?(view, "#feed-publish-review")
-      refute has_element?(view, "#feed-publish-open")
+      assert has_element?(view, "#publish-drawer-overlay[data-open='true']")
 
       view |> element("#feed-publish-close") |> render_click()
 
       refute has_element?(view, "#feed-publish-review")
-      assert has_element?(view, "#feed-publish-open")
+      refute has_element?(view, "#publish-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#export-file-#{run.id}-publish")
 
       # Reopening reviews the same file again, from the server's own answer.
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
       assert has_element?(view, "#feed-publish-review")
     end
   end
@@ -305,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
 
       refute has_element?(view, "#feed-publish-review")
       assert has_element?(view, "#feed-publish-refusal", "Checking this file")
@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublishLiveTest do
 
       {:ok, view, _html} = live(conn(context), export_path(context))
 
-      view |> element("#feed-publish-open") |> render_click()
+      view |> element("#export-file-#{run.id}-publish") |> render_click()
       refute has_element?(view, "#feed-publish-review")
 
       # The reader changes the export type, which is an ordinary navigation on

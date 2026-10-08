@@ -14,6 +14,8 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   @warning_keys ~w(code detail file entity_type)a
   @max_string 4_096
 
+  @type t :: %__MODULE__{}
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "gtfs_export_runs" do

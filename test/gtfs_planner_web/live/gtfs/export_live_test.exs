@@ -929,6 +929,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert inventory_count(view, "pathways.txt") == "2"
       refute inventory_count(view, "pathway_evolutions.txt")
 
+      assert has_element?(view, "#export-choose-full[type=button]")
       view |> element("#export-choose-full") |> render_click()
 
       assert_patch(view, "/gtfs/#{version.id}/export?type=full")

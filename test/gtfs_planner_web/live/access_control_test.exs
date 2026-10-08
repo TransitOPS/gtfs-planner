@@ -173,7 +173,20 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
       {:ok, view, _html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/export")
 
-      assert has_element?(view, "h1", "Export feed")
+      assert has_element?(view, "#export-page h1", "Export")
+    end
+
+    test "editor can access compare", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      add_role(user, organization, [:pathways_studio_editor])
+
+      {:ok, view, _html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/compare")
+
+      assert has_element?(view, "#compare-page h1", "Compare files")
     end
   end
 

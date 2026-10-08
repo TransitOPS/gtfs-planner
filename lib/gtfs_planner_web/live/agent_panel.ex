@@ -281,7 +281,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   attaches to the new context's session immediately; a refused one keeps its
   notice, and the panel's own `agent_*` events stay attached either way.
   """
-  @spec set_context(Phoenix.LiveView.Socket.t(), Scope.resource_context()) ::
+  @spec set_context(Phoenix.LiveView.Socket.t(), Scope.resource_context() | nil) ::
           Phoenix.LiveView.Socket.t()
   def set_context(socket, context) do
     if context == socket.assigns[:agent_context] do

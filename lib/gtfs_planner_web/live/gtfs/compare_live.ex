@@ -205,11 +205,6 @@ defmodule GtfsPlannerWeb.Gtfs.CompareLive do
 
       {:error, reason} when is_atom(reason) ->
         {:noreply, refuse_comparison(socket, draft, reason)}
-
-      # A selection this page cannot make sense of is refused like any other,
-      # never rendered and never allowed to reach a claim.
-      _unexpected ->
-        {:noreply, refuse_comparison(socket, draft, :unavailable)}
     end
   end
 

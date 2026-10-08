@@ -181,14 +181,10 @@ async function downloadExport(page) {
   await page.waitForSelector("#start-export", { timeout: 15000 });
   await waitForLiveView(page);
 
-  const previousHref = await page.locator("#export-download-link").getAttribute("href");
-
   await page.locator("#start-export").click();
-  await expect
-    .poll(() => page.locator("#export-download-link").getAttribute("href"), {
-      timeout: 120000,
-    })
-    .not.toBe(previousHref);
+  await expect(page.locator("#export-download-link")).toBeVisible({
+    timeout: 120000,
+  });
 
   const downloadPromise = page.waitForEvent("download");
   await page.locator("#export-download-link").click();

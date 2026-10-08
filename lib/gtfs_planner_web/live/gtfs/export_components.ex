@@ -241,6 +241,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
         <p>The full feed includes them.</p>
         <.button
           id="export-choose-full"
+          type="button"
           variant="secondary"
           class="mt-2 min-h-11"
           phx-click={
@@ -1217,6 +1218,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
       </.button>
       <.button
         :if={@run.state in [:failed, :interrupted, :cancelled, :expired]}
+        id={"export-file-#{@run.id}-retry"}
         type="button"
         phx-click={if @run.state == :failed, do: "retry_file", else: "export_again_file"}
         phx-value-run={@run.id}
