@@ -1877,11 +1877,9 @@ test.describe("exchange", () => {
     const notice = page.locator("#export-pathways-closures-omitted");
     await expect(notice).toBeVisible();
     await expect(notice).toContainText(
-      `Pathways export leaves out ${count} scheduled closures`,
+      `${count} scheduled closures are left out.`,
     );
-    await expect(notice).toContainText(
-      "Choose Full export to include closures and their calendars.",
-    );
+    await expect(notice).toContainText("The full feed includes them.");
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await page.screenshot({
@@ -1980,7 +1978,7 @@ test.describe("exchange", () => {
 
     // The durable run reaches its ready artifact through the real runner.
     await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator("#export-run-status")).toContainText("Ready to download");
+    await expect(page.locator("#export-finished")).toContainText("is ready.");
     await expect(page.locator("#export-files")).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
   });
@@ -4843,22 +4841,10 @@ test.describe("journey", () => {
         .filter({ hasText: "pathway_evolutions.txt" }),
     ).toHaveCount(1);
 
-    // An earlier case's ready export can already render this link, so the
-    // journey waits for its own run's href and ready status before downloading
-    // the archive this moment wrote.
-    const previousDownloadHref = (await page.locator("#export-download-link").count())
-      ? await page.locator("#export-download-link").getAttribute("href")
-      : null;
-
+    // The finished band belongs to the export started on this page.
     await page.locator("#start-export").click();
-    await expect
-      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
-        timeout: 60_000,
-      })
-      .not.toBe(previousDownloadHref);
-    await expect(page.locator("#export-run-status")).toContainText(
-      "Ready to download",
-    );
+    await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator("#export-finished")).toContainText("is ready.");
 
     const downloadPromise = page.waitForEvent("download");
     await page.locator("#export-download-link").click();

@@ -273,16 +273,21 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   # A version without fixed routes answers the flex zip as the whole feed (R15),
   # so those bytes take the primary artifact slot under the flex file's name.
-  defp publish_artifacts(run, %{main: nil, flex: flex}) when is_binary(flex) do
+  defp publish_artifacts(run, %{main: nil, flex: flex} = zips) when is_binary(flex) do
     with {:ok, artifact} <- publish(run, flex_filename(run), flex) do
-      {:ok, %{main: artifact, flex: nil}}
+      {:ok, %{main: artifact, flex: nil, reference_sha256: Map.get(zips, :reference_sha256)}}
     end
   end
 
   defp publish_artifacts(run, %{main: main} = zips) when is_binary(main) do
-    with {:ok, main_artifact} <- publish(run, "gtfs-#{run.id}.zip", main),
+    with {:ok, main_artifact} <- publish(run, main_filename(run), main),
          {:ok, flex_artifact} <- publish_flex(run, Map.get(zips, :flex)) do
-      {:ok, %{main: main_artifact, flex: flex_artifact}}
+      {:ok,
+       %{
+         main: main_artifact,
+         flex: flex_artifact,
+         reference_sha256: Map.get(zips, :reference_sha256)
+       }}
     end
   end
 
@@ -294,6 +299,10 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
     do: publish(run, flex_filename(run), flex_bytes)
 
   defp flex_filename(run), do: "gtfs-flex-#{run.id}.zip"
+
+  defp main_filename(run) do
+    if run.export_type == :operations_only, do: "tods-#{run.id}.zip", else: "gtfs-#{run.id}.zip"
+  end
 
   defp publish(run, filename, zip_bytes) do
     ArtifactStorage.publish(

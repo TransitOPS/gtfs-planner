@@ -2,12 +2,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationComponents do
   @moduledoc """
   The Export page's static publication review, on the application design system.
 
-  Publishing is a two-step consent. `publish_action/1` is the opener shown beside
-  Download once the file is ready, and `publication_section/1` is the review that
-  answers it: the permanent public URL, the emitted profile, the reviewed hash, the
-  archive inventory and the check report behind one primary Publish action. The same
-  section carries the channel's durable state, so a queued, current or failed
-  publication is still visible after the operator navigates away and back.
+  Publishing is a two-step consent. `publication_section/1` is the row-bound
+  drawer host that answers a Files row's Publish action: the permanent public
+  address, the emitted profile, the check report and the archive inventory behind
+  one primary Publish action. The component carries no state and runs no query:
+  `ExportLive` owns the bound run, the events and the command calls, and every
+  value shown is one the server put in its own preview.
 
   The components carry no state and run no queries: `ExportLive` owns the events,
   the command calls and the data. Nothing here decides what may be published - the
@@ -17,76 +17,104 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationComponents do
 
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, drawer_scroll: 1, message: 1]
 
-  @profile_labels %{static: "GTFS feed", flex: "GTFS-Flex feed", pathways: "GTFS pathways files"}
-
-  @doc """
-  The Publish opener, shown beside Download when the file is ready to review.
-
-  `busy?` covers the states where the operator already has a review to answer: one
-  is open, or the check bound to this file is still running.
-  """
-  attr :busy?, :boolean, default: false
-
-  def publish_action(assigns) do
-    ~H"""
-    <.button
-      :if={not @busy?}
-      id="feed-publish-open"
-      variant="secondary"
-      class="min-h-11"
-      phx-click="preview_publication"
-    >
-      <.icon name="hero-globe-alt" class="size-4" /> Publish feed
-    </.button>
-    """
-  end
+  alias GtfsPlanner.Gtfs.DisplayClock
 
   @doc """
-  The publication status band and, while one is open, the review that answers it.
-
-  `publication` is `ExportLive`'s own map: `:available?` says the installation and
-  the selected export type can publish at all, `:status` is the durable channel
-  state, `:notice` is a refused action's message, and `:preview` is the server's
-  review of the selected file.
+  The row-bound publication drawer host. `ExportLive` passes its own `publication`
+  map in; nothing here queries or decides what may be published.
   """
   attr :publication, :map, required: true
 
   def publication_section(assigns) do
+    run = assigns.publication.run
+
+    assigns =
+      assigns
+      |> assign(:run, run)
+      |> assign(:drawer_open?, not is_nil(run) and drawer_open?(assigns.publication))
+      |> assign(:drawer_title, drawer_title(run))
+      |> assign(:return_focus_id, if(run, do: "export-file-#{run.id}-menu-button", else: nil))
+
     ~H"""
-    <div :if={@publication.available?} id="feed-publish" class="mt-5 grid gap-4">
-      <div
-        id="feed-publish-status"
-        aria-live="polite"
-        class="rounded-card border border-subtle bg-canvas px-4 py-3.5"
+    <div :if={@publication.available?} id="feed-publish">
+      <.drawer
+        id="publish-drawer"
+        chrome="planner"
+        open={@drawer_open?}
+        title={@drawer_title}
+        initial_focus={:heading}
+        return_focus_id={@return_focus_id}
+        on_close="close_publication_review"
       >
-        <.message
-          id="feed-publish-status-message"
-          kind={@publication.status.kind}
-          title={@publication.status.title}
+        <:lede :if={@run}>
+          {@run.artifact_filename || "File"} · {DisplayClock.format_datetime(@run.inserted_at)}
+        </:lede>
+
+        <.form
+          for={@publication.consent_form}
+          id="feed-publish-consent"
+          phx-change="consent_publication"
+          phx-submit="confirm_publication"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          {@publication.status.detail}
-        </.message>
-      </div>
+          <.drawer_scroll>
+            <span id="publish-reviewed-run" data-run-id={@run && @run.id}></span>
 
-      <div id="feed-publish-notices" aria-live="polite" class="grid gap-3 empty:hidden">
-        <.message
-          :if={@publication.notice}
-          id="feed-publish-refusal"
-          kind={@publication.notice.kind}
-          title={@publication.notice.title}
-        >
-          {@publication.notice.detail}
-        </.message>
+            <div :if={@publication.pending_id} id="feed-publish-checking" class="grid gap-3">
+              <p class="text-sm font-semibold text-strong">Checking this file…</p>
+              <progress class="progress progress-info w-full" aria-label="Check progress" />
+            </div>
 
-        <.mismatch_notice :if={@publication.preview} preview={@publication.preview} />
-      </div>
+            <.message
+              :if={@publication.notice}
+              id="feed-publish-refusal"
+              kind={@publication.notice.kind}
+              title={@publication.notice.title}
+            >
+              {@publication.notice.detail}
+            </.message>
 
-      <.review :if={@publication.preview} publication={@publication} />
+            <.mismatch_notice :if={@publication.preview} preview={@publication.preview} />
+            <.review_body :if={@publication.preview} publication={@publication} />
+
+            <.input
+              :if={@publication.preview && @publication.preview.errors_count > 0}
+              field={@publication.consent_form[:confirm_errors]}
+              type="checkbox"
+              id="feed-publish-confirm-errors"
+              label={consent_label(@publication.preview.errors_count)}
+            />
+          </.drawer_scroll>
+
+          <.drawer_footer>
+            <.button
+              id="feed-publish-close"
+              type="button"
+              variant="quiet"
+              class="min-h-11"
+              phx-click="close_publication_review"
+            >
+              Close review
+            </.button>
+            <.button id="feed-publish-confirm" class="min-h-11">
+              <.icon name="hero-globe-alt" class="size-4" /> Publish feed
+            </.button>
+          </.drawer_footer>
+        </.form>
+      </.drawer>
     </div>
     """
   end
+
+  defp drawer_open?(publication) do
+    not is_nil(publication.preview) or not is_nil(publication.pending_id) or
+      not is_nil(publication.notice)
+  end
+
+  defp drawer_title(%{export_type: :pathways}), do: "Publish station pathways"
+  defp drawer_title(_run), do: "Publish full feed"
 
   attr :preview, :map, required: true
 
@@ -110,51 +138,33 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationComponents do
 
   attr :publication, :map, required: true
 
-  defp review(assigns) do
+  defp review_body(assigns) do
     assigns = assign(assigns, :preview, assigns.publication.preview)
 
     ~H"""
-    <section
-      id="feed-publish-review"
-      aria-labelledby="feed-publish-review-title"
-      class="rounded-card border border-subtle bg-canvas px-5 py-4"
-    >
-      <h3
-        id="feed-publish-review-title"
-        tabindex="-1"
-        class="text-base font-bold leading-snug text-strong"
-      >
-        Review before publishing
-      </h3>
-      <p class="mt-1 max-w-[64ch] text-sm leading-relaxed text-default">
-        This is the file and the check report the public feed will be served from. Anyone with
-        the link can download it.
-      </p>
+    <div id="feed-publish-review" class="grid gap-4">
+      <dl class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
+        <dt class="text-muted">Public address</dt>
+        <dd id="feed-publish-url" class="break-all text-strong">{@preview.destination_url}</dd>
 
-      <dl class="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
-        <dt class="text-muted">Public URL</dt>
-        <dd id="feed-publish-url" class="break-all text-strong">
-          {@preview.destination_url}
-        </dd>
+        <dt class="text-muted">Replaces</dt>
+        <dd id="feed-publish-replaces" class="text-strong">{replaces_label(@publication)}</dd>
 
-        <dt class="text-muted">Profile</dt>
-        <dd id="feed-publish-profile" class="text-strong">
-          {profile_label(@preview.profile)}
-        </dd>
-
-        <dt class="text-muted">Reviewed file</dt>
-        <dd id="feed-publish-hash" class="text-strong">
-          <span class="font-mono text-[13px]">{short_hash(@preview.artifact_sha256)}</span>
-          <span class="text-muted">{" · " <> size_label(@preview.size_bytes)}</span>
-        </dd>
-
-        <dt class="text-muted">Check report</dt>
+        <dt class="text-muted">Check of this file</dt>
         <dd id="feed-publish-report" class="text-strong">
           {report_label(@preview)}
+          <.link
+            :if={@preview.report_id}
+            id="feed-publish-report-link"
+            navigate={~p"/gtfs/#{@publication.run.gtfs_version_id}/validation/#{@preview.report_id}"}
+            class="ml-2 font-semibold text-action hover:underline"
+          >
+            View report
+          </.link>
         </dd>
       </dl>
 
-      <div class="mt-5">
+      <div>
         <h4 id="feed-publish-inventory-title" class="text-[13px] font-semibold text-strong">
           In the file ({length(@preview.inventory)} entries)
         </h4>
@@ -166,56 +176,26 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationComponents do
         </ul>
       </div>
 
-      <.form
-        for={@publication.consent_form}
-        id="feed-publish-consent"
-        phx-change="consent_publication"
-        phx-submit="confirm_publication"
-        class="mt-5 grid gap-3"
-      >
-        <.input
-          :if={@preview.errors_count > 0}
-          field={@publication.consent_form[:confirm_errors]}
-          type="checkbox"
-          id="feed-publish-confirm-errors"
-          label={consent_label(@preview.errors_count)}
-        />
-
-        <div class="flex flex-wrap items-center gap-2">
-          <.button id="feed-publish-confirm" class="min-h-11">
-            <.icon name="hero-globe-alt" class="size-4" /> Publish feed
-          </.button>
-        </div>
-      </.form>
-
-      <div class="mt-3">
-        <.button
-          id="feed-publish-close"
-          variant="quiet"
-          class="min-h-11"
-          phx-click="close_publication_review"
-        >
-          Close review
-        </.button>
-      </div>
-    </section>
+      <p class="text-[13px] leading-relaxed text-muted">
+        Trip planners pick up the new file the next time they read this address. Google reads it at least once a week.
+      </p>
+    </div>
     """
   end
 
-  defp profile_label(profile), do: Map.get(@profile_labels, profile, to_string(profile))
-
-  defp short_hash(hash) when is_binary(hash) and byte_size(hash) > 16,
-    do: String.slice(hash, 0, 16) <> "…"
-
-  defp short_hash(hash), do: to_string(hash)
-
-  defp size_label(nil), do: "size not recorded"
-
-  defp size_label(bytes) when is_integer(bytes) do
-    "#{bytes} bytes"
+  defp replaces_label(%{current_address: %{filename: filename} = address})
+       when is_binary(filename) do
+    "Replaces #{filename}" <> served_since_text(address.served_at)
   end
 
-  defp size_label(_bytes), do: "size not recorded"
+  defp replaces_label(_publication), do: "Nothing. This is the first publish."
+
+  defp served_since_text(nil), do: ""
+
+  defp served_since_text(%DateTime{} = at),
+    do: " (served since #{DisplayClock.format_datetime(at)})"
+
+  defp served_since_text(_at), do: ""
 
   defp report_label(%{report_id: report_id, errors_count: errors, warnings_count: warnings}) do
     "#{errors} errors, #{warnings} warnings · check #{String.slice(to_string(report_id), 0, 8)}"

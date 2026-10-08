@@ -12,12 +12,15 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.{Run, Worker}
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Repo
 
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.RunsFixtures
   import GtfsPlanner.VersionsFixtures
 
   @actor %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
@@ -117,6 +120,67 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
     assert %Run{state: :failed, failure_code: "artifact_capacity_exceeded", artifact_key: nil} =
              Repo.get!(Run, run.id)
+  end
+
+  test "an operations-only run publishes tods-<run id>.zip with a fingerprint and no flex" do
+    world = runs_version_fixture()
+
+    {:ok, _defaults} =
+      ExportDefaults.update(world.organization.id, editor_fixture(world.organization), %{
+        include_flex: true
+      })
+
+    {:ok, run} =
+      ExportRuns.create_pending(world.organization.id, world.version.id, @actor, :operations_only)
+
+    {:ok, claimed, generation, token} = ExportRuns.claim(world.organization.id, run.id, :build)
+
+    assert run.include_flex == false
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert ready.artifact_filename == "tods-#{run.id}.zip"
+    assert ready.flex_artifact_key == nil
+    assert ready.gtfs_reference_sha256 =~ ~r/\A[0-9a-f]{64}\z/
+  end
+
+  test "a full run stores a 64-hex fingerprint and a pathways run stores nil" do
+    world = runs_version_fixture()
+
+    {:ok, full_run} =
+      ExportRuns.create_pending(world.organization.id, world.version.id, @actor, :full)
+
+    {:ok, full_claimed, full_generation, full_token} =
+      ExportRuns.claim(world.organization.id, full_run.id, :build)
+
+    assert :ok =
+             Worker.build(full_claimed, full_generation, full_token, ExportRuns.topic(full_run))
+
+    full_ready = Repo.get!(Run, full_run.id)
+
+    assert full_ready.state == :ready
+    assert full_ready.gtfs_reference_sha256 =~ ~r/\A[0-9a-f]{64}\z/
+
+    {:ok, pathways_run} =
+      ExportRuns.create_pending(world.organization.id, world.version.id, @actor, :pathways)
+
+    {:ok, pathways_claimed, pathways_generation, pathways_token} =
+      ExportRuns.claim(world.organization.id, pathways_run.id, :build)
+
+    assert :ok =
+             Worker.build(
+               pathways_claimed,
+               pathways_generation,
+               pathways_token,
+               ExportRuns.topic(pathways_run)
+             )
+
+    pathways_ready = Repo.get!(Run, pathways_run.id)
+
+    assert pathways_ready.state == :ready
+    assert pathways_ready.gtfs_reference_sha256 == nil
   end
 
   test "no exportable data closes with a durable preflight/package failure" do

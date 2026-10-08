@@ -2780,19 +2780,39 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       snapshots = Schedules.trip_audit_snapshots(organization_id, version_id, structs)
       operation_id = Ecto.UUID.generate()
 
-      Enum.each(moves, fn move ->
-        audit_change!(
-          audit,
-          Map.fetch!(trips, move.trip.id),
-          move.to,
-          snapshots,
-          operation_id,
-          if(audit_scope == :trip, do: [move.trip.id], else: changed_ids)
-        )
-      end)
+      audit_plan_changes!(
+        audit,
+        moves,
+        trips,
+        snapshots,
+        operation_id,
+        audit_scope,
+        changed_ids
+      )
 
       %{operation_id: operation_id, changed_trip_ids: changed_ids}
     end
+  end
+
+  defp audit_plan_changes!(
+         audit,
+         moves,
+         trips,
+         snapshots,
+         operation_id,
+         audit_scope,
+         changed_ids
+       ) do
+    Enum.each(moves, fn move ->
+      audit_change!(
+        audit,
+        Map.fetch!(trips, move.trip.id),
+        move.to,
+        snapshots,
+        operation_id,
+        if(audit_scope == :trip, do: [move.trip.id], else: changed_ids)
+      )
+    end)
   end
 
   # Grouped by destination because one plan places its trips on several blocks, and

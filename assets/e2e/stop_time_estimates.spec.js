@@ -291,8 +291,9 @@ for (const viewport of VIEWPORTS) {
     await page.goto(`/gtfs/${versionId}/export`);
     await waitForLiveView(page);
     await expect(page.locator("#export-missing-times-loading")).toBeHidden({ timeout: 20000 });
+    await expect(page.locator("#export-missing-times")).toContainText("4 times on 1 trip");
     await expect(page.locator("#export-missing-times")).toContainText(
-      "Missing stop times: estimated.",
+      "by distance along the path, marked as approximate",
     );
     await expect(page.locator("#export-missing-times")).toContainText("1 trip");
 

@@ -1,5 +1,27 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { bodyFitsViewport } from "./browser_helpers";
+
+// The export-UX capture surface this package's step 16 owns. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+// The two exact Step 16 capture viewports.
+const CAPTURE_VIEWPORTS = [
+  { label: "1440", width: 1440, height: 1000 },
+  { label: "320", width: 320, height: 800 },
+];
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    fullPage: true,
+  });
+}
 
 const USER = {
   email: "diagram-test@gtfs-planner.test",
@@ -222,30 +244,35 @@ test.describe("durable import and export browser journeys", () => {
 
     await openRoute(page, "export");
     await selectVersion(page, "Browser E2E Version");
-    const oldDownloadHref = await page
-      .locator("#export-download-link")
-      .getAttribute("href");
+
+    // The seeded ready row is the stable, version-scoped download owner.
+    const rowDownload = page.locator("#export-files-card [id$='-download']").first();
+    await expect(rowDownload).toBeVisible({ timeout: 30_000 });
+    const oldDownloadHref = await rowDownload.getAttribute("href");
+
     await page.locator("#start-export").click();
-    await expect
-      .poll(
-        () => page.locator("#export-download-link").getAttribute("href"),
-        { timeout: 30_000 },
-      )
-      .not.toBe(oldDownloadHref);
+
+    // A run started in this LiveView owns the finished band.
+    const finishedDownload = page.locator("#export-finished #export-download-link");
+    await expect(finishedDownload).toBeVisible({ timeout: 30_000 });
+    await expect(finishedDownload).not.toHaveAttribute("href", oldDownloadHref);
+
+    const newHref = await finishedDownload.getAttribute("href");
+    const newRunId = newHref.match(/\/export-runs\/([^/]+)\/download$/)[1];
+
+    // After a reload the finished band is gone (current-LiveView ownership); the
+    // version-scoped row is the download owner.
     await page.reload();
-    await expect(page.locator("#export-download-link")).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(page.locator("#export-download-link")).not.toHaveAttribute(
-      "href",
-      oldDownloadHref,
-    );
+    const reloadedRow = page.locator(`#export-file-${newRunId}-download`);
+    await expect(reloadedRow).toBeVisible({ timeout: 30_000 });
+    await expect(reloadedRow).toHaveAttribute("href", newHref);
+    await expect(page.locator("#export-finished")).toHaveCount(0);
 
     const responsePromise = page.waitForResponse((response) =>
       /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),
     );
     const downloadPromise = page.waitForEvent("download");
-    await page.locator("#export-download-link").click();
+    await reloadedRow.click();
     const [response, download] = await Promise.all([
       responsePromise,
       downloadPromise,
@@ -273,7 +300,7 @@ test.describe("durable import and export browser journeys", () => {
 
     await expect(page.locator("#mobility-summary-metrics")).toBeVisible();
     await expect(page.locator("#check-verdict")).toContainText(
-      "Review the 1 warning.",
+      "No errors. 1 warning points to weak spots, but most trip planners still accept the feed.",
     );
     await expect(page.locator("#recent-checks")).toBeVisible();
 
@@ -341,13 +368,18 @@ test.describe("durable import and export browser journeys", () => {
 
     await openRoute(page, "export");
     await selectVersion(page, "Catalog Routes Only Version");
-    await expect(page.locator("#export-warning-panel")).toBeVisible();
-    await expect(page.locator("#export-warning-panel")).toContainText(
-      "browser_preflight_warning",
+
+    const warningsToggle = page.locator("#export-files-card [id$='-warnings']").first();
+    await expect(warningsToggle).toBeVisible();
+    const warningRowId = (await warningsToggle.getAttribute("id")).replace(
+      /-warnings$/,
+      "",
     );
-    await expect(page.locator("#export-warning-panel")).toContainText(
-      "route-reference-",
-    );
+    await warningsToggle.click();
+    const warningDetail = page.locator(`#${warningRowId}-warnings-detail`);
+    await expect(warningDetail).toBeVisible();
+    await expect(warningDetail).toContainText("browser_preflight_warning");
+    await expect(warningDetail).toContainText("route-reference-");
     await expectNoHorizontalOverflow(page);
   });
 
@@ -402,10 +434,15 @@ test.describe("durable import and export browser journeys", () => {
       await expect(page.locator("#export-workspace")).toBeVisible();
       await page.locator("#export-files summary").click();
       await expect(page.locator("#export-inventory")).toBeVisible();
-      await expect(page.locator("#export-download-link")).toBeVisible();
+
+      const rowDownload = page
+        .locator("#export-files-card [id$='-download']")
+        .first();
+
+      await expect(rowDownload).toBeVisible();
       await expectKeyboardAccess(page, "#export-type-full");
       await expectKeyboardAccess(page, "#start-export");
-      await expectMinimumTargetSize(page, "#export-download-link");
+      await expectMinimumTargetSize(page, "#export-files-card [id$='-download']");
 
       await page.locator("#export-type-pathways").check();
       await expect(page.locator("#export-type-pathways")).toBeChecked();
@@ -425,7 +462,8 @@ test.describe("durable import and export browser journeys", () => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openRoute(page, "export");
     await selectVersion(page, "Catalog Routes Only Version");
-    const downloadLink = page.locator("#export-download-link");
+
+    const downloadLink = page.locator("#export-files-card [id$='-download']").first();
 
     await expect(downloadLink).toBeVisible();
     await expect(downloadLink).toHaveAttribute(
@@ -433,7 +471,9 @@ test.describe("durable import and export browser journeys", () => {
       /\/export-runs\/[^/]+\/download$/,
     );
     await page.reload();
-    await expect(downloadLink).toBeVisible();
+    await expect(
+      page.locator("#export-files-card [id$='-download']").first(),
+    ).toBeVisible();
 
     const responsePromise = page.waitForResponse((response) =>
       /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),
@@ -457,5 +497,95 @@ test.describe("durable import and export browser journeys", () => {
     );
     await expect(page.locator("[phx-hook='DownloadHook']")).toHaveCount(0);
     expect(await page.content()).not.toContain("data:application/zip;base64,");
+  });
+
+  test("operations data only exports a tods- file with a match line and opens its warnings at 320px", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 320, height: 568 });
+    await openRoute(page, "export");
+
+    // Step 12's zero/zero state is not a coverage ratio: with no runs and no
+    // trips to cut, the tile says there is no run work to reconcile.
+    await selectVersion(page, "Browser E2E Version");
+    await page.locator("#export-type-operations_only").check();
+    await expect(page.locator("#export-tile-runs")).toContainText("0");
+    await expect(page.locator("#export-tile-trips_in_run")).toContainText(
+      "No run work to reconcile",
+    );
+    await expect(page.locator("#export-tile-trips_in_run")).not.toContainText(
+      "0 of 0",
+    );
+
+    await selectVersion(page, "Browser Runs Version");
+    await page.locator("#export-type-full").check();
+    await expect(page.locator("#export-type-full")).toBeChecked();
+
+    // export-ready: the default full ready state.
+    for (const viewport of CAPTURE_VIEWPORTS) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expectNoHorizontalOverflow(page);
+      await exportCapture(page, "export-ready", viewport);
+    }
+
+    await page.setViewportSize({ width: 320, height: 568 });
+    await expectKeyboardAccess(page, "#export-type-operations_only");
+    await page.locator("#export-type-operations_only").check();
+    await expect(page.locator("#export-type-operations_only")).toBeChecked();
+    await expectMinimumTargetSize(page, "#start-export");
+    await page.locator("#start-export").click();
+
+    await expect(page.locator("#export-finished")).toBeVisible({
+      timeout: 60_000,
+    });
+
+    // The download goes through the run's own attachment path, and the finished
+    // band holds it.
+    const download = page.locator("#export-finished #export-download-link");
+    await expect(download).toBeVisible();
+    await expect(download).toHaveAttribute(
+      "href",
+      /\/export-runs\/[^/]+\/download$/,
+    );
+    await expectMinimumTargetSize(page, "#export-finished #export-download-link");
+
+    const runId = (await download.getAttribute("href")).match(
+      /\/export-runs\/([^/]+)\/download$/,
+    )[1];
+
+    // The Files row names the operations-only artifact tods-<run id>.zip and
+    // carries its R3 match statement.
+    await expect(page.locator(`#export-file-${runId}`)).toContainText("tods-");
+    await expect(page.locator(`#export-file-${runId}-match`)).toBeVisible();
+
+    // export-ops: the selected operations-only state, once it is ready.
+    for (const viewport of CAPTURE_VIEWPORTS) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expectNoHorizontalOverflow(page);
+      await exportCapture(page, "export-ops", viewport);
+    }
+
+    const toggle = page.locator(`#export-file-${runId}-warnings`);
+    await expect(toggle).toBeVisible();
+
+    // export-warnings: the open grouped warnings detail.
+    for (const viewport of CAPTURE_VIEWPORTS) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expectKeyboardAccess(page, `#export-file-${runId}-warnings`);
+      await toggle.click();
+      await expect(
+        page.locator(`#export-file-${runId}-warnings-detail`),
+      ).toBeVisible();
+      await page.locator("#export-files-scroll").evaluate((element) => {
+        element.scrollLeft = 0;
+      });
+      await expectNoHorizontalOverflow(page);
+      await exportCapture(page, "export-warnings", viewport);
+      await toggle.click();
+      await expect(
+        page.locator(`#export-file-${runId}-warnings-detail`),
+      ).toHaveCount(0);
+    }
   });
 });

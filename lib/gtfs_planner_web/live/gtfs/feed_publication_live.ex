@@ -58,7 +58,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedPublicationLive do
     "full" => "Full feed export",
     "flex" => "Flex feed export",
     "pathways" => "Pathways export",
-    "operations" => "Operations export"
+    "operations" => "Operations export",
+    "operations_only" => "Operations data export"
   }
 
   @impl Phoenix.LiveView
