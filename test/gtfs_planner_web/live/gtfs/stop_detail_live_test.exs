@@ -709,7 +709,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
 
       {:ok, diagram_view, _html} = live(conn, expected_href, on_error: :warn)
 
-      assert has_element?(diagram_view, "#station-sub-nav h1", "Slash Station")
+      assert has_element?(diagram_view, "#station-title", "Slash Station")
     end
   end
 

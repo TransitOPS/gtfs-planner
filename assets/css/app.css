@@ -3102,6 +3102,7 @@ dialog[role="alertdialog"][open] > div > div {
 
 /* Station navigation shares the application grid. The title and modes remain
    available in focus mode; the global header and navigation disappear. */
+html:has(#diagram-page) { scrollbar-gutter: auto; }
 #diagram-page #diagram-action-strip { padding-inline: 1rem; }
 #diagram-page #station-title { font-size: 22px; }
 #diagram-page #diagram-station-identity {
@@ -3157,6 +3158,9 @@ dialog[role="alertdialog"][open] > div > div {
   visibility: visible;
   transform: translateX(0);
 }
+/* Keep rows scrolled into view below the sticky search field. */
+#diagram-page #points-panel,
+#diagram-page #pathways-panel { scroll-padding-top: 58px; }
 #diagram-page #plan-hint { top: 76px; }
 #diagram-page #map-alignment-tools {
   top: 76px;
@@ -3180,6 +3184,22 @@ dialog[role="alertdialog"][open] > div > div {
   #diagram-page #diagram-workspace[data-panel-open="true"] #plan-view-controls { right: 408px; }
 }
 @media (max-width: 900px) {
+  /* The wrapped application header leaves too little canvas height for the
+     contents list. Let the open panel use the viewport as a dismissible sheet. */
+  #diagram-page #diagram-workspace[data-panel-open="true"] {
+    position: relative;
+    z-index: 40;
+  }
+  #diagram-page #diagram-workspace[data-panel-open="true"] #workspace-body {
+    z-index: 40;
+    overflow: visible;
+  }
+  #diagram-page #side-panel {
+    position: fixed;
+    top: 16px;
+    bottom: 16px;
+    z-index: 40;
+  }
   #diagram-page #diagram-station-identity { max-width: 100%; }
   #diagram-page #diagram-mode-controls { width: 100%; }
   #diagram-page #diagram-mode { min-width: 0; }
