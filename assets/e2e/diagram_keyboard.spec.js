@@ -278,8 +278,7 @@ test.describe("Diagram focus indicator", () => {
   }) => {
     // Tab to a stop in the canvas overlay
     await page.locator("#diagram-canvas-wrapper").click();
-    await page.keyboard.press("Tab");
-    await page.waitForTimeout(300);
+    await tabUntilFocused(page, "#diagram-overlay g[data-stop-id][tabindex]");
 
     // Check that the focused element is within the overlay
     const inOverlay = await page.evaluate(() => {
