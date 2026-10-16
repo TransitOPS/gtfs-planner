@@ -16,6 +16,8 @@ locals {
     GEOAPIFY_API_KEY                    = var.geoapify_api_key
     OPENROUTER_API_KEY                  = var.openrouter_api_key
     OPENROUTER_MODEL                    = var.openrouter_model
+    AGENT_ORG_DAILY_ATTEMPTS            = 500
+    AGENT_ACTOR_DAILY_ATTEMPTS          = 200
   }
 }
 
