@@ -726,6 +726,102 @@ describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
   });
 });
 
+describe("DiagramCanvasHook — starting a point drag", () => {
+  let hook;
+  let hitTarget;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+    ({ hitTarget } = makeStopGroup(canvas.overlay));
+    hook.clientPointToSvg = (x, y) => ({ x, y });
+  });
+
+  afterEach(() => {
+    hook.destroyed();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function press(extra = {}) {
+    hitTarget.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 50, clientY: 50, ...extra
+    }));
+  }
+
+  it("moves immediately without waiting for a hold and submits the drop", () => {
+    press();
+    hook.handleMouseMove({ clientX: 60, clientY: 55 });
+
+    expect(hook.dragging.groupEl.getAttribute("transform")).toBe("translate(10, 5)");
+    expect(hook.pushEvent).toHaveBeenCalledWith("drag_start", { id: "STOP_1" });
+    hook.handleMouseUp({});
+    expect(hook.pushEvent).toHaveBeenCalledWith("drag_end", { id: "STOP_1", x: 60, y: 55 });
+    vi.advanceTimersByTime(300);
+    expect(hook.dragging).toBeNull();
+  });
+
+  it("keeps a quick click with small pointer movement available for editing", () => {
+    press();
+    hook.handleMouseMove({ clientX: 52, clientY: 51 });
+    hook.handleMouseUp({});
+    vi.advanceTimersByTime(300);
+
+    expect(hook.dragging).toBeNull();
+    expect(hook.pushEvent).not.toHaveBeenCalledWith("drag_start", expect.anything());
+    expect(hook._suppressNextClick).toBe(false);
+  });
+
+  it("still starts a held point and Escape cancels without saving", () => {
+    press();
+    vi.advanceTimersByTime(200);
+    expect(hook.dragging.stopId).toBe("STOP_1");
+    hook.handleMouseMove({ clientX: 60, clientY: 55 });
+    hook.handleDocumentKeyDown({ key: "Escape" });
+    hook.handleMouseUp({});
+
+    expect(hook.dragging).toBeNull();
+    expect(hook.pushEvent).toHaveBeenCalledWith("drag_cancel", {});
+    expect(hook.pushEvent).not.toHaveBeenCalledWith("drag_end", expect.anything());
+  });
+
+  it("leaves Shift-drag available for panning", () => {
+    press({ shiftKey: true });
+    vi.advanceTimersByTime(300);
+    expect(hook.isPanning).toBe(true);
+    expect(hook.dragCandidate).toBeNull();
+    expect(hook.dragging).toBeNull();
+  });
+
+  it("drags a point beneath a journal marker while keeping a quick marker click", () => {
+    const group = makeJournalGroup(hook.overlay);
+    const originalElementsFromPoint = document.elementsFromPoint;
+    document.elementsFromPoint = () => [group, hitTarget];
+
+    try {
+      group.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 50, clientY: 50
+      }));
+      hook.handleMouseUp({});
+      expect(hook._suppressNextClick).toBe(false);
+
+      group.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 50, clientY: 50
+      }));
+      hook.handleMouseMove({ clientX: 60, clientY: 55 });
+      hook.handleMouseUp({});
+      expect(hook.pushEvent).toHaveBeenCalledWith("drag_end", { id: "STOP_1", x: 60, y: 55 });
+      expect(hook._suppressNextClick).toBe(true);
+    } finally {
+      if (originalElementsFromPoint === undefined) delete document.elementsFromPoint;
+      else document.elementsFromPoint = originalElementsFromPoint;
+    }
+  });
+});
+
 describe("DiagramCanvasHook — dragging a stop stays within the floorplan coordinate range", () => {
   let hook;
   let overlay;

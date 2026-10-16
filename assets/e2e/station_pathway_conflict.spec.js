@@ -2,9 +2,10 @@ import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { VIEWPORTS, bodyFitsViewport } from "./browser_helpers";
-import { loginAndGoToDiagram } from "./station_diagram_helpers";
+import { loginAndGoToDiagram, openDiagramPanel } from "./station_diagram_helpers";
 
 async function openPathway(page) {
+  await openDiagramPanel(page);
   await page.locator("#panel-tab-pathways").click();
   const row = page.locator("#pathways-table li").filter({ hasText: "BROWSER_PW_ELEVATOR" });
   await expect(row).toBeVisible();

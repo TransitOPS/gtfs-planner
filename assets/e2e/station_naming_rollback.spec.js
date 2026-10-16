@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { VIEWPORTS, bodyFitsViewport } from "./browser_helpers";
-import { loginAndGoToDiagram } from "./station_diagram_helpers";
+import { loginAndGoToDiagram, openDiagramPanel } from "./station_diagram_helpers";
 
 test("a stop ID changed by another editor refreshes the naming preview", async ({ browser, baseURL }) => {
   const firstContext = await browser.newContext({ baseURL });
@@ -22,6 +22,7 @@ test("a stop ID changed by another editor refreshes the naming preview", async (
     await expect(first.locator("#naming-drawer-overlay")).toHaveAttribute("data-open", "true");
     await expect(first.locator("#naming-row-BROWSER_STOP_A")).toBeVisible();
 
+    await openDiagramPanel(second);
     const stopRow = second.locator("#child-stops-table li").filter({ hasText: "BROWSER_STOP_A" });
     await expect(stopRow).toBeVisible();
     await stopRow.locator("button[phx-click='edit_child_stop']").click();

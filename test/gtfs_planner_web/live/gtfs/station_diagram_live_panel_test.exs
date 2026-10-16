@@ -102,6 +102,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
   end
 
   describe "tabs" do
+    test "opens on demand and closing the panel also closes the journal", %{view: view} do
+      assert has_element?(view, "#side-panel[inert][aria-hidden='true']")
+      view |> element("#diagram-panel-toggle") |> render_click()
+      assert has_element?(view, "#side-panel:not([inert])[aria-hidden='false']")
+
+      view |> element("#journal-trigger") |> render_click()
+      assert has_element?(view, "#station-journal-panel")
+      view |> element("#diagram-panel-close") |> render_click()
+
+      assert has_element?(view, "#side-panel[inert][aria-hidden='true']")
+      refute has_element?(view, "#station-journal-panel")
+      assert_push_event(view, "journal-focus", %{selector: "#diagram-panel-toggle"})
+
+      view |> element("#diagram-panel-toggle") |> render_click()
+      assert has_element?(view, "#points-panel:not([hidden])")
+      assert has_element?(view, "#journal-trigger[aria-expanded='false']")
+    end
+
     test "open on Points with the count on each tab", %{view: view} do
       assert has_element?(view, "#panel-tab-points[aria-selected='true']", "2")
       assert has_element?(view, "#panel-tab-pathways[aria-selected='false']", "1")
@@ -260,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
         view
         |> render()
         |> LazyHTML.from_fragment()
-        |> LazyHTML.query("#level-control button")
+        |> LazyHTML.query("#level-control-panel button")
         |> Enum.map(&(&1 |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim()))
 
       assert labels == ["Concourse", "Platform · No floorplan"]

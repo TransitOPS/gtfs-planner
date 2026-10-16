@@ -131,6 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> reset_drawer_journal()
      |> assign(:mode, :view)
      |> assign(:panel_tab, :points)
+     |> assign(:side_panel_open?, false)
      |> assign(:list_query, "")
      |> assign(:station_editing_status, nil)
      |> assign(:show_diagram_upload_drawer, false)
@@ -1019,207 +1020,200 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         available_versions={assigns[:available_versions] || []}
       >
         <:sub_header>
-          <%!-- The workspace below runs wider than the app header, so the station
-                header sits in its own band capped to the app header's width. --%>
-          <div id="station-header-band" class="border-b border-subtle bg-white">
-            <div class="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-              <StationWorkspace.station_header
-                compact
-                title={@station.stop_name || @station.stop_id}
+          <div id="station-header-band" class="border-b border-subtle bg-white px-4 sm:px-6 lg:px-8">
+            <div
+              id="station-sub-nav"
+              class="station-workspace-header ds-page mx-auto w-full max-w-7xl"
+            >
+              <StationWorkspace.station_navigation
                 stop_id={@station.stop_id}
                 gtfs_version_id={@current_gtfs_version.id}
                 active_tab={:diagram}
-              >
-                <:meta>
-                  Station · {if @levels == [],
-                    do: "No levels yet",
-                    else: Wording.count_noun(length(@levels), "level")}
-                </:meta>
-                <:actions>
-                  <.editing_presence_control
-                    station_editing_status={@station_editing_status}
-                    current_user={@current_user}
-                  />
-                </:actions>
-              </StationWorkspace.station_header>
+              />
             </div>
           </div>
-          <div class="mx-auto w-full max-w-[1800px] px-3 pb-4 pt-3 sm:px-5">
+          <div
+            id="diagram-workspace"
+            class="diagram-workspace flex min-h-0 flex-1 flex-col bg-white"
+            data-align={to_string(@mode == :map)}
+            data-panel-open={to_string(@side_panel_open?)}
+          >
+            <.diagram_action_strip
+              mode={@mode}
+              has_diagram={@has_diagram}
+              active_level_name={@active_level_name}
+              station={@station}
+              gtfs_version_id={@current_gtfs_version.id}
+              station_editing_status={@station_editing_status}
+              current_user={@current_user}
+            />
             <div
-              id="diagram-workspace"
-              class="diagram-workspace flex flex-col overflow-clip rounded-card border border-subtle bg-white"
-              data-align={to_string(@mode == :map)}
+              :if={@pathway_error}
+              id="pathways-table-error"
+              role="alert"
+              class="flex items-center gap-x-3 border-b border-error-line bg-error-bg px-3 py-1.5 text-sm font-[650] text-error-fg"
             >
-              <.diagram_action_strip
-                :if={@levels != []}
-                mode={@mode}
-                has_diagram={@has_diagram}
-                has_scale={scale_configured?(@active_stop_level)}
-                active_stop_level={@active_stop_level}
-                levels={@levels}
-                levels_with_floorplan={@levels_with_floorplan}
-                active_level={@active_level}
-                active_level_name={@active_level_name}
-                other_levels={@other_levels}
-                enabled_count={
-                  MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))
-                }
-                station={@station}
-              />
-              <div
-                :if={@pathway_error}
-                id="pathways-table-error"
-                role="alert"
-                class="flex items-center gap-x-3 border-b border-error-line bg-error-bg px-3 py-1.5 text-sm font-[650] text-error-fg"
-              >
-                <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
-                <span class="min-w-0">{@pathway_error}</span>
-              </div>
-              <section
-                id="floorplan-workspace"
-                tabindex="-1"
-                aria-labelledby="floorplan-workspace-heading"
-                class="flex min-h-0 flex-1 flex-col scroll-mt-16 focus-visible:outline-none"
-              >
-                <h2 id="floorplan-workspace-heading" class="sr-only">
-                  {if @mode == :map, do: "Align floorplan", else: "Floorplan workspace"}
-                </h2>
-                <div id="workspace-body" class="grid min-h-0 flex-1">
-                  <%= cond do %>
-                    <% @mode == :map -> %>
-                      <div id="map-canvas-wrapper" class="flex min-h-0 min-w-0 flex-col">
-                        <.map_canvas
+              <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+              <span class="min-w-0">{@pathway_error}</span>
+            </div>
+            <section
+              id="floorplan-workspace"
+              tabindex="-1"
+              aria-labelledby="floorplan-workspace-heading"
+              class="flex min-h-0 flex-1 flex-col scroll-mt-16 focus-visible:outline-none"
+            >
+              <h2 id="floorplan-workspace-heading" class="sr-only">
+                {if @mode == :map, do: "Align floorplan", else: "Floorplan workspace"}
+              </h2>
+              <div id="workspace-body" class="grid min-h-0 flex-1">
+                <.diagram_canvas_tools
+                  :if={@levels != []}
+                  mode={@mode}
+                  has_diagram={@has_diagram}
+                  has_scale={scale_configured?(@active_stop_level)}
+                  active_level={@active_level}
+                  active_level_name={@active_level_name}
+                  side_panel_open?={@side_panel_open?}
+                />
+                <%= cond do %>
+                  <% @mode == :map -> %>
+                    <div id="map-canvas-wrapper" class="flex min-h-0 min-w-0 flex-col">
+                      <.map_canvas
+                        station={@station}
+                        active_level={@active_level}
+                        active_stop_level={@active_stop_level}
+                        organization_id={@current_organization.id}
+                        gtfs_version_id={@current_gtfs_version.id}
+                        align_center_lat={
+                          @active_stop_level && @active_stop_level.floorplan_center_lat
+                        }
+                        align_center_lon={
+                          @active_stop_level && @active_stop_level.floorplan_center_lon
+                        }
+                        align_scale_mpp={@active_stop_level && @active_stop_level.floorplan_scale_mpp}
+                        align_rotation_deg={
+                          @active_stop_level && @active_stop_level.floorplan_rotation_deg
+                        }
+                        image_natural_width={@floorplan_image_w}
+                        image_natural_height={@floorplan_image_h}
+                        child_stops_total={@child_stops_total}
+                        child_stops_with_geo={@child_stops_with_geo}
+                        child_stops_with_floorplan={@child_stops_with_floorplan}
+                        anchor_count={@anchor_count}
+                        cross_level_pathway_total={@cross_level_pathway_total}
+                        cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
+                        other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
+                        map_generation={@map_generation}
+                        map_state={@map_state}
+                        alignment_preview={@alignment_preview}
+                        alignment_fit={@alignment_fit}
+                        alignment_unsaved?={@alignment_unsaved?}
+                        coordinate_review={@coordinate_review}
+                        review_transform={@review_transform}
+                        coordinate_review_status={@coordinate_review_status}
+                        coordinate_review_error={@coordinate_review_error}
+                      />
+                    </div>
+                  <% true -> %>
+                    <div id="canvas-col" class="flex min-h-0 min-w-0 flex-col">
+                      <div
+                        id="diagram-canvas-wrapper"
+                        class="relative min-h-0 min-w-0 flex-1"
+                      >
+                        <.diagram_canvas
                           station={@station}
                           active_level={@active_level}
                           active_stop_level={@active_stop_level}
+                          streams={@streams}
+                          active_point_id={@active_point_id}
+                          pending_xy={@pending_xy}
+                          selected_stop_id={@selected_stop_id}
+                          selected_from_stop={@selected_from_stop}
+                          mode={@mode}
+                          cross_level_badges_by_stop={@cross_level_badges_by_stop}
                           organization_id={@current_organization.id}
                           gtfs_version_id={@current_gtfs_version.id}
-                          align_center_lat={
-                            @active_stop_level && @active_stop_level.floorplan_center_lat
-                          }
-                          align_center_lon={
-                            @active_stop_level && @active_stop_level.floorplan_center_lon
-                          }
-                          align_scale_mpp={
-                            @active_stop_level && @active_stop_level.floorplan_scale_mpp
-                          }
-                          align_rotation_deg={
-                            @active_stop_level && @active_stop_level.floorplan_rotation_deg
-                          }
-                          image_natural_width={@floorplan_image_w}
-                          image_natural_height={@floorplan_image_h}
-                          child_stops_total={@child_stops_total}
-                          child_stops_with_geo={@child_stops_with_geo}
-                          child_stops_with_floorplan={@child_stops_with_floorplan}
-                          anchor_count={@anchor_count}
-                          cross_level_pathway_total={@cross_level_pathway_total}
-                          cross_level_pathway_with_geo={@cross_level_pathway_with_geo}
-                          other_levels_floorplan_count={MapSet.size(@other_levels_floorplan)}
-                          map_generation={@map_generation}
-                          map_state={@map_state}
-                          alignment_preview={@alignment_preview}
-                          alignment_fit={@alignment_fit}
-                          alignment_unsaved?={@alignment_unsaved?}
-                          coordinate_review={@coordinate_review}
-                          review_transform={@review_transform}
-                          coordinate_review_status={@coordinate_review_status}
-                          coordinate_review_error={@coordinate_review_error}
-                        />
-                      </div>
-                    <% true -> %>
-                      <div id="canvas-col" class="flex min-h-0 min-w-0 flex-col">
-                        <div
-                          id="diagram-canvas-wrapper"
-                          class="relative min-h-0 min-w-0 flex-1"
-                        >
-                          <.diagram_canvas
-                            station={@station}
-                            active_level={@active_level}
-                            active_stop_level={@active_stop_level}
-                            streams={@streams}
-                            active_point_id={@active_point_id}
-                            pending_xy={@pending_xy}
-                            selected_stop_id={@selected_stop_id}
-                            selected_from_stop={@selected_from_stop}
-                            mode={@mode}
-                            cross_level_badges_by_stop={@cross_level_badges_by_stop}
-                            organization_id={@current_organization.id}
-                            gtfs_version_id={@current_gtfs_version.id}
-                            ruler_point_a={@ruler_point_a}
-                            ruler_point_b={@ruler_point_b}
-                            scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
-                            scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
-                            measurement_enabled={@measurement_enabled}
-                            has_diagram={@has_diagram}
-                            upload={@uploads.diagram}
-                            upload_phase={@upload_phase}
-                            point_count={length(@child_stops_list)}
-                          />
-                        </div>
-                        <.workspace_status
-                          :if={@levels != []}
-                          mode={@mode}
-                          has_diagram={@has_diagram}
+                          ruler_point_a={@ruler_point_a}
+                          ruler_point_b={@ruler_point_b}
+                          scale_point_a={scale_point(@active_stop_level, :scale_point_a)}
+                          scale_point_b={scale_point(@active_stop_level, :scale_point_b)}
                           measurement_enabled={@measurement_enabled}
-                          has_scale={scale_configured?(@active_stop_level)}
-                          active_stop_level={@active_stop_level}
-                          scale_status={@scale_status}
-                          placement_status={@placement_status}
-                          naming_status={@naming_status}
+                          has_diagram={@has_diagram}
+                          upload={@uploads.diagram}
+                          upload_phase={@upload_phase}
+                          point_count={length(@child_stops_list)}
                         />
                       </div>
-                      <.side_panel
-                        :if={@levels != []}
-                        mode={@mode}
-                        active_level={@active_level}
-                        active_level_name={@active_level_name}
-                        has_diagram={@has_diagram}
-                        levels={@levels}
-                        child_stops_list={@child_stops_list}
-                        unassigned_child_stops={@unassigned_child_stops}
-                        pathways_list={@pathways_list}
-                        active_point_id={@active_point_id}
-                        panel_tab={@panel_tab}
-                        list_query={@list_query}
-                        stop_search_form={@stop_search_form}
-                        selected_from_stop={@selected_from_stop}
-                        journal_scope={@journal_scope}
-                        journal_entry_count={@journal_open_count + @journal_closed_count}
-                        journal_panel_open?={@journal_panel_open?}
-                      >
-                        <:journal>
-                          <.journal_panel
-                            :if={@journal_panel_open? && @journal_scope}
-                            journal_scope={@journal_scope}
-                            journal_target_scope={@journal_target_scope}
-                            journal_scoped_open_count={@journal_scoped_open_count}
-                            journal_scoped_closed_count={@journal_scoped_closed_count}
-                            journal_floorplan_entry_ids={@journal_floorplan_entry_ids}
-                            station_name={@station && @station.stop_name}
-                            journal_entries={@streams.journal_entries}
-                            journal_state={@journal_state}
-                            journal_loaded_once?={@journal_loaded_once?}
-                            journal_refresh_error?={@journal_refresh_error?}
-                            journal_open_count={@journal_open_count}
-                            journal_closed_count={@journal_closed_count}
-                            journal_visible_count={@journal_visible_count}
-                            journal_pending_new_ids={@journal_pending_new_ids}
-                            journal_new_entry_ids={@journal_new_entry_ids}
-                            journal_photo_viewer={@journal_photo_viewer}
-                            journal_authors={@journal_authors}
-                            journal_targets={@journal_targets}
-                            journal_local_times={@journal_local_times}
-                            journal_display_zone={@journal_display_zone}
-                            journal_now={@journal_now}
-                            journal_live_message={@journal_live_message}
-                            journal_error_message={@journal_error_message}
-                          />
-                        </:journal>
-                      </.side_panel>
-                  <% end %>
-                </div>
-              </section>
-            </div>
+                    </div>
+                    <.side_panel
+                      :if={@levels != []}
+                      mode={@mode}
+                      open?={@side_panel_open?}
+                      active_level={@active_level}
+                      active_level_name={@active_level_name}
+                      has_diagram={@has_diagram}
+                      levels={@levels}
+                      child_stops_list={@child_stops_list}
+                      unassigned_child_stops={@unassigned_child_stops}
+                      pathways_list={@pathways_list}
+                      active_point_id={@active_point_id}
+                      panel_tab={@panel_tab}
+                      list_query={@list_query}
+                      stop_search_form={@stop_search_form}
+                      selected_from_stop={@selected_from_stop}
+                      journal_scope={@journal_scope}
+                      journal_entry_count={@journal_open_count + @journal_closed_count}
+                      journal_panel_open?={@journal_panel_open?}
+                    >
+                      <:journal>
+                        <.journal_panel
+                          :if={@journal_panel_open? && @journal_scope}
+                          journal_scope={@journal_scope}
+                          journal_target_scope={@journal_target_scope}
+                          journal_scoped_open_count={@journal_scoped_open_count}
+                          journal_scoped_closed_count={@journal_scoped_closed_count}
+                          journal_floorplan_entry_ids={@journal_floorplan_entry_ids}
+                          station_name={@station && @station.stop_name}
+                          journal_entries={@streams.journal_entries}
+                          journal_state={@journal_state}
+                          journal_loaded_once?={@journal_loaded_once?}
+                          journal_refresh_error?={@journal_refresh_error?}
+                          journal_open_count={@journal_open_count}
+                          journal_closed_count={@journal_closed_count}
+                          journal_visible_count={@journal_visible_count}
+                          journal_pending_new_ids={@journal_pending_new_ids}
+                          journal_new_entry_ids={@journal_new_entry_ids}
+                          journal_photo_viewer={@journal_photo_viewer}
+                          journal_authors={@journal_authors}
+                          journal_targets={@journal_targets}
+                          journal_local_times={@journal_local_times}
+                          journal_display_zone={@journal_display_zone}
+                          journal_now={@journal_now}
+                          journal_live_message={@journal_live_message}
+                          journal_error_message={@journal_error_message}
+                        />
+                      </:journal>
+                    </.side_panel>
+                <% end %>
+              </div>
+            </section>
+            <.workspace_status
+              :if={@levels != []}
+              mode={@mode}
+              has_diagram={@has_diagram}
+              measurement_enabled={@measurement_enabled}
+              has_scale={scale_configured?(@active_stop_level)}
+              active_stop_level={@active_stop_level}
+              scale_status={@scale_status}
+              placement_status={@placement_status}
+              naming_status={@naming_status}
+              levels={@levels}
+              levels_with_floorplan={@levels_with_floorplan}
+              active_level={@active_level}
+              active_level_name={@active_level_name}
+              other_levels={@other_levels}
+              enabled_count={MapSet.size(MapSet.union(@other_levels_floorplan, @other_levels_stops))}
+            />
           </div>
         </:sub_header>
 
@@ -1383,7 +1377,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           on_confirm="confirm_diagram_replacement"
           on_cancel="cancel_diagram_replacement"
           pending={@upload_phase in [:validating, :probing_candidate, :committing]}
-          return_focus_id="diagram-more-trigger"
+          return_focus_id="floorplan-settings-trigger"
           described_by="diagram-replacement-confirmation-body"
         >
           Replacing this floorplan resets its scale. Its alignment and the positions of placed points stay.
@@ -1708,6 +1702,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("toggle_side_panel", _params, socket) do
+    if socket.assigns.side_panel_open? do
+      {:noreply,
+       socket
+       |> assign(:side_panel_open?, false)
+       |> close_journal_panel()
+       |> push_event("journal-focus", %{selector: "#diagram-panel-toggle"})}
+    else
+      {:noreply, assign(socket, :side_panel_open?, true)}
+    end
+  end
+
+  @impl true
   def handle_event("select_panel_tab", %{"tab" => tab}, socket)
       when tab in ["points", "pathways"] do
     {:noreply,
@@ -1758,6 +1765,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:ok, mode_atom} ->
         restore_mode_focus? = journal_mode_focus_transition?(socket, mode_atom)
 
+        panel_open? =
+          mode_atom != :map and
+            (socket.assigns.journal_panel_open? or socket.assigns.journal_restore_after_align?)
+
         socket =
           if socket.assigns.mode == :connect do
             assign(socket, :selected_from_stop, nil)
@@ -1769,6 +1780,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           socket
           |> transition_journal_mode(mode_atom)
           |> assign(:mode, mode_atom)
+          |> assign(:side_panel_open?, panel_open?)
           |> assign(:dragging_stop_id, nil)
           |> reset_reposition_state()
           |> assign(:pending_xy, nil)
@@ -4617,6 +4629,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          (not socket.assigns.journal_panel_open? or reason != :open) do
       socket
       |> assign(:journal_panel_open?, true)
+      |> assign(:side_panel_open?, true)
       |> assign(:journal_restore_after_align?, false)
       |> load_journal(:full, reason, filter,
         target_scope: target_scope,

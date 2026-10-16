@@ -20,6 +20,7 @@
 // Expected labels, counts and IDs are literal values from the seeded
 // browser fixtures, not values read out of the component under test.
 import { test, expect } from "@playwright/test";
+import { openDiagramPanel } from "./station_diagram_helpers";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -215,6 +216,7 @@ function exportPath(versionId, query = "") {
 // one of their rows is the ordinary route into the drawer that owns Delete
 // pathway, Delete stop and Remove from diagram.
 async function openPathwayDrawer(page, modeLabel) {
+  await openDiagramPanel(page);
   await page.locator("#panel-tab-pathways").click();
   await expect(page.locator("#pathways-table")).toBeVisible();
   await page
@@ -229,6 +231,7 @@ async function openPathwayDrawer(page, modeLabel) {
 }
 
 async function openChildStopDrawer(page, stopId) {
+  await openDiagramPanel(page);
   await page
     .locator("#child-stops-table li", { hasText: stopId })
     .locator("button")
@@ -2895,6 +2898,7 @@ test.describe("guards", () => {
       const versionId = await seededVersionId(page);
       await page.setViewportSize(DESKTOP);
       await page.goto(diagramPath(versionId, STATION));
+      await openDiagramPanel(page);
       await waitForLiveView(page);
 
       await expect(page.locator("#pathways-table li")).toHaveCount(3);
@@ -2979,6 +2983,7 @@ test.describe("guards", () => {
       ]) {
         await page.setViewportSize(viewport);
         await page.goto(diagramPath(versionId, STATION));
+        await openDiagramPanel(page);
         await waitForLiveView(page);
         await openPathwayDrawer(page, "Elevator");
         await page.locator("#delete-pathway-button").click();
@@ -2998,6 +3003,7 @@ test.describe("guards", () => {
       const versionId = await seededVersionId(page);
       await page.setViewportSize(DESKTOP);
       await page.goto(diagramPath(versionId, STATION));
+      await openDiagramPanel(page);
       await waitForLiveView(page);
 
       await openChildStopDrawer(page, "BROWSER_EVO_MEZZANINE");
@@ -3068,6 +3074,7 @@ test.describe("guards", () => {
       ]) {
         await page.setViewportSize(viewport);
         await page.goto(diagramPath(versionId, STATION));
+        await openDiagramPanel(page);
         await waitForLiveView(page);
         await openChildStopDrawer(page, "BROWSER_EVO_MEZZANINE");
         await page.locator("#delete-child-stop-button").click();

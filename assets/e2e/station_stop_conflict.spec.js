@@ -2,11 +2,12 @@ import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { VIEWPORTS, bodyFitsViewport } from "./browser_helpers";
-import { loginAndGoToDiagram } from "./station_diagram_helpers";
+import { loginAndGoToDiagram, openDiagramPanel } from "./station_diagram_helpers";
 
 const targetStop = "BROWSER_STOP_A";
 
 async function openStop(page) {
+  await openDiagramPanel(page);
   const row = page.locator(`#child-stops-table li:has-text('${targetStop}')`);
   await expect(row).toBeVisible();
   await row.locator("button[phx-click='edit_child_stop']").click();

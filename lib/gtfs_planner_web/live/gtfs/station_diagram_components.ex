@@ -4,6 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   Extracted from StationDiagramLive to improve modularity and readability.
   """
   use Phoenix.Component
+  use GtfsPlannerWeb, :verified_routes
 
   import GtfsPlannerWeb.CoreComponents
 
@@ -106,30 +107,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # Diagram Action Strip (the workspace toolbar)
   # ============================================================================
 
-  # One 56px row that holds what a mapper changes every few minutes, which
-  # level and what a click does, and the rare per-level and per-station tasks
-  # behind More. Counts live once, on the side panel's tabs.
+  # Station identity and modes stay together while editing. Navigation above
+  # this band can disappear without taking the mode switcher out of reach.
   attr :mode, :atom, required: true
   attr :has_diagram, :boolean, required: true
-  attr :has_scale, :boolean, default: false
-  attr :active_stop_level, :any, default: nil
-  attr :levels, :list, default: []
-  attr :levels_with_floorplan, :any, default: nil
-  attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
-  attr :other_levels, :list, default: []
-  attr :enabled_count, :integer, default: 0
   attr :station, :any, required: true
+  attr :gtfs_version_id, :string, required: true
+  attr :station_editing_status, :any, default: nil
+  attr :current_user, :any, required: true
 
   def diagram_action_strip(assigns) do
-    open_panel =
-      JS.toggle(to: "#diagram-more-panel")
-      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#diagram-more-trigger")
-
-    close_panel =
-      JS.hide(to: "#diagram-more-panel")
-      |> JS.set_attribute({"aria-expanded", "false"}, to: "#diagram-more-trigger")
-
     mode_options = [
       %{label: "Select", value: "view", icon: "hero-cursor-arrow-rays"},
       %{
@@ -138,192 +126,326 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         icon: "hero-map-pin",
         disabled: not assigns.has_diagram
       },
-      %{
-        label: "Connect",
-        value: "connect",
-        icon: "hero-link",
-        disabled: not assigns.has_diagram
-      },
+      %{label: "Connect", value: "connect", icon: "hero-link", disabled: not assigns.has_diagram},
       %{label: "Align", value: "map", icon: "hero-map", disabled: not assigns.has_diagram}
     ]
 
     assigns =
       assigns
-      |> assign(:open_panel, open_panel)
-      |> assign(:close_panel, close_panel)
       |> assign(:mode_options, mode_options)
-      |> assign(:level_tabs, sort_levels(assigns.levels))
+      |> assign(:station_menu_close, menu_close("#diagram-more-panel", "#diagram-more-trigger"))
 
     ~H"""
-    <div
-      id="diagram-action-strip"
-      class="relative z-20 flex min-h-[56px] flex-wrap items-stretch gap-x-3 border-b border-subtle px-2 sm:px-3"
-    >
-      <a
-        id="skip-to-floorplan"
-        href="#floorplan-workspace"
-        phx-click={JS.focus(to: "#floorplan-workspace")}
-        class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-40 focus:rounded-control focus:bg-action focus:px-3 focus:py-1.5 focus:text-sm focus:font-[650] focus:text-white focus:shadow-float"
+    <div id="diagram-action-strip" class="relative z-30 shrink-0 border-b border-subtle bg-canvas">
+      <div
+        id="diagram-title-row"
+        class="mx-auto flex min-h-20 w-full max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 py-3"
       >
-        Skip to floorplan
-      </a>
-
-      <span
-        :if={@mode in [:add, :connect, :map]}
-        id="diagram-station-name"
-        class="my-1.5 mr-1 inline-flex min-h-11 max-w-[14rem] items-center self-center text-[13px] font-semibold text-muted"
-      >
-        <span class="truncate">{@station.stop_name || @station.stop_id}</span>
-      </span>
-
-      <nav
-        id="level-control"
-        aria-label="Levels"
-        class="-mb-px flex min-w-0 max-w-full items-stretch overflow-x-auto"
-      >
-        <span class="flex shrink-0 items-center pr-2 text-[13px] text-muted">Level</span>
-        <button
-          :for={level <- @level_tabs}
-          id={"level-option-#{level.id}"}
-          type="button"
-          data-level-id={level.level_id}
-          aria-current={@active_level && level.id == @active_level.id && "true"}
-          phx-click={JS.push("switch_level", value: %{level_id: level.id})}
-          class={[
-            "-mb-px inline-flex min-h-[55px] shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 text-sm font-semibold",
-            "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
-            if(@active_level && level.id == @active_level.id,
-              do: "border-action text-action",
-              else: "border-transparent text-default hover:border-subtle hover:text-strong"
-            )
-          ]}
+        <a
+          id="skip-to-floorplan"
+          href="#floorplan-workspace"
+          phx-click={JS.focus(to: "#floorplan-workspace")}
+          class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-40 focus:rounded-control focus:bg-action focus:px-3 focus:py-1.5 focus:text-sm focus:font-semibold focus:text-white"
         >
-          {level.level_name || level.level_id}
-          <span
-            :if={not level_has_floorplan?(@levels_with_floorplan, level)}
-            class={[
-              "text-[12px] font-normal",
-              if(@active_level && level.id == @active_level.id, do: "text-action", else: "text-muted")
-            ]}
+          Skip to floorplan
+        </a>
+        <div id="diagram-station-identity" class="flex min-w-0 flex-wrap items-center gap-x-3">
+          <.link
+            id="station-back"
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops"}
+            class="inline-flex min-h-11 items-center gap-1 text-[13px] font-semibold text-muted hover:text-strong"
+            aria-label="Back to stops and stations"
           >
-            · No floorplan
-          </span>
-        </button>
-      </nav>
-
-      <div class="mx-1 hidden h-6 w-px shrink-0 self-center bg-subtle sm:block"></div>
-
-      <div class="my-1.5 self-center max-sm:hidden">
-        <.segmented_control
-          id="diagram-mode"
-          name="mode"
-          legend="Editing mode"
-          legend_class="sr-only"
-          options={@mode_options}
-          value={Atom.to_string(@mode)}
-          event="switch_mode"
-          appearance={:joined}
-          emphasis={:selection}
-        />
-      </div>
-
-      <p
-        :if={not @has_diagram}
-        id="diagram-mode-reason"
-        class="max-w-[22rem] self-center text-[12.5px] leading-snug text-muted max-sm:hidden"
-      >
-        Add point, Connect and Align need a floorplan on {@active_level_name}.
-      </p>
-
-      <div class="ml-auto flex items-center gap-1 self-center">
-        <.other_levels_panel
-          :if={@mode == :map and @has_diagram}
-          other_levels={@other_levels}
-          enabled_count={@enabled_count}
-        />
-
-        <div class="relative">
-          <button
-            id="diagram-more-trigger"
-            type="button"
-            class="flex min-h-11 items-center gap-1 rounded-control px-2.5 text-sm font-[650] text-strong hover:bg-canvas"
-            aria-expanded="false"
-            aria-controls="diagram-more-panel"
-            phx-click={@open_panel}
+            <.icon name="hero-chevron-left" class="size-4" /> <span class="max-sm:hidden">Stops</span>
+          </.link>
+          <span class="h-5 w-px bg-subtle" aria-hidden="true"></span>
+          <h1
+            id="station-title"
+            class="min-w-0 truncate text-[22px] font-semibold leading-tight tracking-tight text-strong"
+            title={@station.stop_name || @station.stop_id}
           >
-            <.icon name="hero-ellipsis-horizontal" class="size-4" /> More
-            <.icon name="hero-chevron-down" class="size-3.5 text-muted" />
-          </button>
-
-          <div
-            id="diagram-more-panel"
-            phx-click-away={@close_panel}
-            phx-window-keydown={@close_panel}
-            phx-key="escape"
-            style="display: none;"
-            class="absolute right-0 top-full z-40 mt-1 w-64 rounded-card border border-subtle bg-white p-1.5 shadow-float"
-          >
-            <p
-              :if={@active_level}
-              class="px-3 pb-1 pt-1.5 text-[12.5px] font-[650] text-muted"
-            >
-              {@active_level_name}
-            </p>
-            <button
-              :if={@active_level}
-              id="edit-level-action"
-              type="button"
-              class={menu_item_class()}
-              phx-click={@close_panel |> JS.push("open_edit_level")}
-            >
-              Edit level…
-            </button>
-            <button
-              :if={@active_level && @has_diagram}
-              id="replace-floorplan-action"
-              type="button"
-              class={menu_item_class()}
-              phx-click={@close_panel |> JS.push("open_diagram_upload_drawer")}
-            >
-              Replace floorplan…
-            </button>
-            <button
-              :if={@active_level && @has_diagram && @mode == :view}
-              id="set-scale-action"
-              type="button"
-              class={menu_item_class()}
-              phx-click={@close_panel |> JS.push("toggle_measurement")}
-            >
-              {if @has_scale, do: "Recalibrate scale", else: "Set scale"}
-            </button>
-            <div :if={@active_level} class="my-1 border-t border-subtle"></div>
-            <p class="px-3 pb-1 pt-1.5 text-[12.5px] font-[650] text-muted">Station</p>
-            <button
-              id="add-level-action"
-              type="button"
-              class={menu_item_class()}
-              phx-click={@close_panel |> JS.push("open_add_level")}
-            >
-              Add level…
-            </button>
-            <button
-              id="apply-naming-action"
-              type="button"
-              class={menu_item_class()}
-              phx-click={@close_panel |> JS.push("open_naming_drawer")}
-            >
-              Standardize stop IDs…
-            </button>
+            {@station.stop_name || @station.stop_id}
+          </h1>
+          <div :if={@station_editing_status} id="diagram-editing-presence">
+            <.editing_presence_control
+              station_editing_status={@station_editing_status}
+              current_user={@current_user}
+            />
           </div>
+          <div id="diagram-station-actions" class="relative">
+            <button
+              id="diagram-more-trigger"
+              type="button"
+              title="Station actions"
+              aria-label="Station actions"
+              aria-expanded="false"
+              aria-controls="diagram-more-panel"
+              phx-click={menu_toggle("#diagram-more-panel", "#diagram-more-trigger")}
+              class="inline-flex size-11 items-center justify-center rounded-control text-muted hover:bg-white hover:text-strong"
+            >
+              <.icon name="hero-ellipsis-horizontal" class="size-5" />
+            </button>
+            <div
+              id="diagram-more-panel"
+              phx-click-away={@station_menu_close}
+              phx-window-keydown={menu_dismiss("#diagram-more-panel", "#diagram-more-trigger")}
+              phx-key="escape"
+              style="display: none;"
+              class="absolute left-0 top-full z-40 mt-1 w-64 rounded-card border border-subtle bg-white p-1.5 shadow-float"
+            >
+              <p class="px-3 py-1.5 text-xs font-semibold text-muted">Station actions</p>
+              <button
+                :if={is_nil(@station_editing_status)}
+                id="mark-editing-button"
+                type="button"
+                class={menu_item_class()}
+                phx-click={
+                  @station_menu_close
+                  |> JS.focus(to: "#diagram-more-trigger")
+                  |> JS.push("set_station_editing_status")
+                }
+              >
+                Mark as editing
+              </button>
+              <button
+                id="add-level-action"
+                type="button"
+                class={menu_item_class()}
+                phx-click={
+                  @station_menu_close
+                  |> JS.focus(to: "#diagram-more-trigger")
+                  |> JS.push("open_add_level")
+                }
+              >
+                Add level…
+              </button>
+              <button
+                id="apply-naming-action"
+                type="button"
+                class={menu_item_class()}
+                phx-click={
+                  @station_menu_close
+                  |> JS.focus(to: "#diagram-more-trigger")
+                  |> JS.push("open_naming_drawer")
+                }
+              >
+                Standardize stop IDs…
+              </button>
+              <.link
+                id="station-details-action"
+                navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
+                class={menu_item_class()}
+              >
+                View station details
+              </.link>
+            </div>
+          </div>
+        </div>
+        <div id="diagram-mode-controls" class="ml-auto shrink-0">
+          <.segmented_control
+            id="diagram-mode"
+            name="mode"
+            legend="Editing mode"
+            legend_class="sr-only"
+            options={@mode_options}
+            value={Atom.to_string(@mode)}
+            event="switch_mode"
+            appearance={:joined}
+            emphasis={:selection}
+          />
+          <p :if={not @has_diagram} id="diagram-mode-reason" class="mt-1 max-w-md text-xs text-muted">
+            Add point, Connect and Align need a floorplan{if @active_level_name != "",
+              do: " on #{@active_level_name}"}.
+          </p>
         </div>
       </div>
     </div>
     """
   end
 
+  attr :mode, :atom, required: true
+  attr :has_diagram, :boolean, required: true
+  attr :has_scale, :boolean, default: false
+  attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :side_panel_open?, :boolean, default: false
+
+  def diagram_canvas_tools(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :settings_close,
+        menu_close("#floorplan-settings-panel", "#floorplan-settings-trigger")
+      )
+
+    ~H"""
+    <div :if={@active_level} id="diagram-floorplan-settings" class="absolute left-4 top-4 z-30">
+      <button
+        id="floorplan-settings-trigger"
+        type="button"
+        aria-expanded="false"
+        aria-controls="floorplan-settings-panel"
+        phx-click={menu_toggle("#floorplan-settings-panel", "#floorplan-settings-trigger")}
+        class="inline-flex min-h-11 items-center gap-2 rounded-control border border-subtle bg-white px-3 text-[13px] font-semibold text-default shadow-sm hover:bg-canvas"
+      >
+        <.icon name="hero-cog-6-tooth" class="size-4" /> Floorplan settings
+      </button>
+      <div
+        id="floorplan-settings-panel"
+        phx-click-away={@settings_close}
+        phx-window-keydown={menu_dismiss("#floorplan-settings-panel", "#floorplan-settings-trigger")}
+        phx-key="escape"
+        style="display: none;"
+        class="absolute left-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-32px)] rounded-card border border-subtle bg-white p-1.5 shadow-float"
+      >
+        <p class="px-3 py-1.5 text-xs font-semibold text-muted">{@active_level_name} · Floorplan</p>
+        <button
+          id="edit-level-action"
+          type="button"
+          class={menu_item_class()}
+          phx-click={
+            @settings_close
+            |> JS.focus(to: "#floorplan-settings-trigger")
+            |> JS.push("open_edit_level")
+          }
+        >
+          Edit level…
+        </button>
+        <button
+          :if={@has_diagram}
+          id="replace-floorplan-action"
+          type="button"
+          class={menu_item_class()}
+          phx-click={
+            @settings_close
+            |> JS.focus(to: "#floorplan-settings-trigger")
+            |> JS.push("open_diagram_upload_drawer")
+          }
+        >
+          Replace floorplan…
+        </button>
+        <button
+          :if={@has_diagram && @mode == :view}
+          id="set-scale-action"
+          type="button"
+          class={menu_item_class()}
+          phx-click={
+            @settings_close
+            |> JS.focus(to: "#floorplan-settings-trigger")
+            |> JS.push("toggle_measurement")
+          }
+        >
+          {if @has_scale, do: "Recalibrate scale", else: "Set scale"}
+        </button>
+      </div>
+    </div>
+    <button
+      :if={@mode != :map}
+      id="diagram-panel-toggle"
+      type="button"
+      aria-expanded={to_string(@side_panel_open?)}
+      aria-controls="side-panel"
+      phx-click="toggle_side_panel"
+      class={[
+        "absolute right-4 top-4 z-30 inline-flex min-h-11 items-center gap-2 rounded-control border border-subtle bg-white px-3 text-[13px] font-semibold shadow-sm hover:bg-canvas",
+        if(@side_panel_open?, do: "text-action", else: "text-default")
+      ]}
+    >
+      <.icon name="hero-view-columns" class="size-4" /> Contents
+    </button>
+    """
+  end
+
+  attr :levels, :list, required: true
+  attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :levels_with_floorplan, :any, default: nil
+
+  def diagram_level_control(assigns) do
+    close = menu_close("#level-control-panel", "#level-control-trigger")
+
+    assigns =
+      assigns |> assign(:level_tabs, sort_levels(assigns.levels)) |> assign(:level_close, close)
+
+    ~H"""
+    <div id="level-control" class="relative min-w-0">
+      <button
+        id="level-control-trigger"
+        type="button"
+        aria-expanded="false"
+        aria-controls="level-control-panel"
+        phx-click={menu_toggle("#level-control-panel", "#level-control-trigger")}
+        class="inline-flex min-h-11 max-w-full items-center gap-2 rounded-control px-2 text-[13px] text-default hover:bg-canvas"
+      >
+        <.icon name="hero-square-3-stack-3d" class="size-4 shrink-0 text-muted" />
+        <span class="text-muted max-sm:hidden">Level</span>
+        <span id="active-level-name" class="min-w-0 truncate font-semibold text-strong">
+          {@active_level_name}
+        </span>
+        <.icon name="hero-chevron-up" class="size-3.5 shrink-0 text-muted" />
+      </button>
+      <div
+        id="level-control-panel"
+        phx-click-away={@level_close}
+        phx-window-keydown={menu_dismiss("#level-control-panel", "#level-control-trigger")}
+        phx-key="escape"
+        style="display: none;"
+        class="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-64 max-w-[calc(100vw-32px)] overflow-y-auto rounded-card border border-subtle bg-white p-1.5 shadow-float"
+      >
+        <p class="px-3 py-1.5 text-xs font-semibold text-muted">Choose a level</p>
+        <button
+          :for={level <- @level_tabs}
+          id={"level-option-#{level.id}"}
+          type="button"
+          data-level-id={level.level_id}
+          aria-current={@active_level && level.id == @active_level.id && "true"}
+          phx-click={
+            @level_close
+            |> JS.push("switch_level", value: %{level_id: level.id})
+            |> JS.focus(to: "#level-control-trigger")
+          }
+          class={[
+            menu_item_class(),
+            @active_level && level.id == @active_level.id && "bg-selection text-action"
+          ]}
+        >
+          <span class="min-w-0 break-words">{level.level_name || level.level_id}</span>
+          <span
+            :if={not level_has_floorplan?(@levels_with_floorplan, level)}
+            class="text-xs text-muted"
+          >
+            · No floorplan
+          </span>
+          <.icon
+            :if={@active_level && level.id == @active_level.id}
+            name="hero-check"
+            class="ml-auto size-4 shrink-0"
+          />
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp menu_toggle(panel, trigger) do
+    JS.toggle(to: panel) |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: trigger)
+  end
+
+  defp menu_close(panel, trigger) do
+    JS.hide(to: panel) |> JS.set_attribute({"aria-expanded", "false"}, to: trigger)
+  end
+
+  defp menu_dismiss(panel, trigger) do
+    JS.focus(to: trigger <> "[aria-expanded='true']") |> menu_close(panel, trigger)
+  end
+
+  defp menu_close(js, panel, trigger) do
+    js |> JS.hide(to: panel) |> JS.set_attribute({"aria-expanded", "false"}, to: trigger)
+  end
+
   defp menu_item_class,
     do:
-      "flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas"
+      "flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm text-strong hover:bg-canvas"
 
   # Top floor first, the way a rider reads a station. A level without an index
   # sorts last so it never hides between two real floors.
@@ -352,9 +474,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # Workspace status bar and scale status
   # ============================================================================
 
-  # One message on the left, the level's scale on the right. The outcome of the
-  # last action replaces the mode hint; the canvas chip carries the instruction
-  # for Add point, Connect and setting the scale, so the line never repeats it.
+  # Persistent level selection and scale facts, with write outcomes retained
+  # between them. Instructions stay beside the active operation on the canvas.
   attr :mode, :atom, required: true
   attr :has_diagram, :boolean, required: true
   attr :measurement_enabled, :boolean, default: false
@@ -364,6 +485,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :placement_status, :any, default: nil
   attr :naming_status, :any, default: nil
 
+  attr :levels, :list, required: true
+  attr :levels_with_floorplan, :any, default: nil
+  attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :other_levels, :list, default: []
+  attr :enabled_count, :integer, default: 0
+
   def workspace_status(assigns) do
     facts = scale_facts(assigns.active_stop_level)
 
@@ -372,7 +500,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:scale_value, facts.value)
       |> assign(:scale_distance, facts.distance)
       |> assign(:plan_width, facts.width)
-      |> assign(:hint, mode_hint(assigns))
       |> assign(
         :outcomes,
         [
@@ -385,10 +512,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
     ~H"""
     <div
-      :if={@has_diagram or @outcomes != []}
       id="diagram-status-bar"
-      class="flex min-h-11 flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle bg-white px-3 py-1 text-[13px]"
+      class="relative z-30 flex min-h-14 shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle bg-white px-4 py-1 text-[13px]"
     >
+      <.diagram_level_control
+        levels={@levels}
+        levels_with_floorplan={@levels_with_floorplan}
+        active_level={@active_level}
+        active_level_name={@active_level_name}
+      />
+      <div :if={@mode == :map} id="diagram-other-levels-control">
+        <.other_levels_panel other_levels={@other_levels} enabled_count={@enabled_count} />
+      </div>
       <p
         :for={{id, event, message} <- @outcomes}
         id={id}
@@ -406,21 +541,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           Dismiss
         </button>
       </p>
-      <p
-        :if={@outcomes == [] && @hint}
-        id="mode-hint"
-        class="min-w-0 text-muted max-sm:hidden sm:truncate"
-      >
-        {@hint}
-      </p>
-      <p
-        :if={@outcomes == [] && @has_diagram}
-        id="mode-hint-phone"
-        class="min-w-0 text-muted sm:hidden"
-      >
-        Placing points and drawing pathways needs a larger screen.
-      </p>
-
       <div :if={@has_diagram} id="scale-control" class="ml-auto flex items-center gap-2">
         <.scale_control
           measurement_enabled={@measurement_enabled}
@@ -449,16 +569,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     do: meters |> Decimal.round(1) |> Decimal.normalize() |> Decimal.to_string(:normal)
 
   defp measured_distance(_stop_level), do: nil
-
-  defp mode_hint(%{has_diagram: false}), do: nil
-
-  defp mode_hint(%{mode: :view, measurement_enabled: true}),
-    do: "Mark two points a known distance apart, such as the width of a corridor."
-
-  defp mode_hint(%{mode: :view}),
-    do: "Click a point or pathway to edit it. Hold a point, then drag to move it."
-
-  defp mode_hint(_assigns), do: nil
 
   attr :measurement_enabled, :boolean, default: false
   attr :has_scale, :boolean, default: false
@@ -594,7 +704,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       on_close="close_diagram_upload_drawer"
       title={"Replace floorplan for #{@active_level_name}"}
       initial_focus={:first_field}
-      return_focus_id="diagram-more-trigger"
+      return_focus_id="floorplan-settings-trigger"
       class="max-w-[480px]"
     >
       <:lede>Replacing it resets the scale. Placed points and pathways stay where they are.</:lede>
@@ -3648,7 +3758,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-location-type={stop.location_type}
               data-center-x={cx}
               data-center-y={cy}
-              class="cursor-pointer"
+              class={
+                if @mode == :view and not @measurement_enabled,
+                  do: "cursor-grab",
+                  else: "cursor-pointer"
+              }
               phx-click="stop_clicked"
               phx-value-id={stop.id}
             />
@@ -3906,7 +4020,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(location_type) when location_type in [0, 2], do: 8
   defp stop_label_y_offset(_location_type), do: 10
 
-  defp stop_tooltip_text(:view, false), do: "Click to edit, hold to move"
+  defp stop_tooltip_text(:view, false), do: "Click to edit, drag to move"
   defp stop_tooltip_text(:view, true), do: "Editing disabled while measuring"
   defp stop_tooltip_text(:connect, _measurement_enabled), do: "Select stop to create pathway"
   defp stop_tooltip_text(_mode, _measurement_enabled), do: "Click to edit stop"
@@ -4359,7 +4473,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <p class="mt-3 text-[12.5px] font-[650] text-muted">Moving around</p>
         <ul class="mt-1.5 grid gap-1 text-[12.5px] text-default">
           <li>
-            Click a point or pathway to edit it. Hold a point, then drag to move it; Esc cancels.
+            Click a point or pathway to edit it. Drag a point to move it; Esc cancels.
           </li>
           <li>
             Shift-drag or middle-drag pans. Ctrl or Cmd + scroll zooms; scroll pans when zoomed in.
@@ -6897,11 +7011,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # Side Panel
   # ============================================================================
 
-  # The docked panel beside the plan: the level's points and pathways as lists,
+  # The collapsible panel beside the plan: the level's points and pathways as lists,
   # and the station journal, under one row of tabs. The tabs carry the only
   # counts on the page. Add point and Connect put a short card of instructions
   # above the lists; Align has no panel.
   attr :mode, :atom, required: true
+  attr :open?, :boolean, default: false
   attr :active_level, :any, default: nil
   attr :active_level_name, :string, default: ""
   attr :has_diagram, :boolean, default: false
@@ -6944,8 +7059,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     <aside
       id="side-panel"
       aria-label="Points, pathways and journal"
-      class="flex min-h-0 min-w-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+      aria-hidden={to_string(not @open?)}
+      inert={not @open?}
+      class="flex min-h-0 min-w-0 flex-col rounded-card border border-subtle bg-white shadow-float"
     >
+      <button
+        id="diagram-panel-close"
+        type="button"
+        phx-click="toggle_side_panel"
+        aria-label="Close contents"
+        class="flex min-h-11 shrink-0 items-center justify-end gap-1.5 border-b border-subtle px-3 text-sm font-semibold text-muted hover:bg-canvas"
+      >
+        <span class="mr-auto text-strong">Contents</span>
+        <.icon name="hero-x-mark" class="size-4" /> <span class="sr-only">Close contents</span>
+      </button>
       <div
         id="side-panel-tabs"
         role="tablist"

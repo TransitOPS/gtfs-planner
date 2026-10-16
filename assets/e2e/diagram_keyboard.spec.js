@@ -149,8 +149,12 @@ test.describe("Diagram mode switching via keyboard", () => {
       timeout: 3000,
     });
 
-    // Tab to the "Enter coordinates" button
+    // Open the collapsed panel with the keyboard, then enter coordinates.
+    await page.locator("#diagram-panel-toggle").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#diagram-panel-toggle")).toHaveAttribute("aria-expanded", "true");
     const coordBtn = page.locator("#keyboard-create-stop");
+    await expect(coordBtn).toBeVisible();
     await coordBtn.focus();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(500);
