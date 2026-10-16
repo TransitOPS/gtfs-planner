@@ -8333,7 +8333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~r/data-label-anchor-y="10(?:\.0)?"/
       assert html =~ ~r/data-label-offset-x="8"/
       assert html =~ ~r/text-anchor="start"/
-      assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "SCALE")
+      assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "Scale")
     end
 
     test "clear scale removes saved scale fields and returns establish action", %{

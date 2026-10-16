@@ -8,6 +8,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Repo
 
   # The workspace's docked panel and toolbar: what the level's points and
   # pathways look like as lists, how the panel narrows them, and what the
@@ -16,11 +18,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
     organization = organization_fixture()
     user = user_fixture()
 
-    Accounts.create_user_org_membership(%{
-      user_id: user.id,
-      organization_id: organization.id,
-      roles: ["pathways_studio_editor"]
-    })
+    {:ok, membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
 
     gtfs_version = gtfs_version_fixture(organization.id)
 
@@ -98,7 +101,84 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePanelTest do
     {:ok, view, _html} =
       live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-    %{view: view, north: north, stairs: stairs, pathway: pathway, empty_level: empty_level}
+    %{
+      view: view,
+      north: north,
+      stairs: stairs,
+      pathway: pathway,
+      empty_level: empty_level,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      membership: membership
+    }
+  end
+
+  describe "placing stops from Contents" do
+    # mix test test/gtfs_planner_web/live/gtfs/station_diagram_live_panel_test.exs --only contents_placement
+    @describetag :contents_placement
+
+    for {label, assigned?} <- [{"unassigned stop", false}, {"stop missing its position", true}] do
+      test "places an #{label} at the current floorplan center and keeps later positions", ctx do
+        stop =
+          stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+            stop_id: "PANEL_UNPLACED",
+            stop_name: "Unplaced platform",
+            location_type: 0,
+            parent_station: ctx.station.stop_id,
+            level_id: if(unquote(assigned?), do: ctx.level.level_id),
+            diagram_coordinate: nil
+          })
+
+        view = ctx.view
+        render_hook(view, "switch_level", %{"level_id" => ctx.level.id})
+        view |> element("#diagram-panel-toggle") |> render_click()
+
+        view
+        |> element("li[id$='#{stop.id}'] button[phx-click='edit_child_stop']")
+        |> render_click()
+
+        placed = Repo.get!(Stop, stop.id)
+        assert placed.level_id == ctx.level.level_id
+        assert placed.diagram_coordinate == %{"x" => 50.0, "y" => 50.0}
+        assert has_element?(view, "#child_stops-#{stop.id}")
+        refute has_element?(view, "#unassigned-stop-row-#{stop.id}")
+        assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+        refute has_element?(view, "#flash-error")
+
+        render_hook(view, "close_drawer", %{})
+        render_hook(view, "drag_start", %{"id" => stop.id})
+        render_hook(view, "drag_end", %{"id" => stop.id, "x" => 62.0, "y" => 41.0})
+        moved = Repo.get!(Stop, stop.id)
+        assert moved.diagram_coordinate == %{"x" => 62.0, "y" => 41.0}
+        view |> element("#child-stop-row-#{stop.id} button") |> render_click()
+        assert Repo.get!(Stop, stop.id).lock_version == moved.lock_version
+        assert has_element?(view, "#child-stop-form input[name='x'][value='62.0']")
+      end
+    end
+
+    test "refuses placement when membership was removed after the page opened", ctx do
+      stop =
+        stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+          stop_id: "PANEL_REFUSED",
+          stop_name: "Unplaced platform",
+          location_type: 0,
+          parent_station: ctx.station.stop_id,
+          diagram_coordinate: nil
+        })
+
+      render_hook(ctx.view, "switch_level", %{"level_id" => ctx.level.id})
+      {:ok, _} = Accounts.delete_user_org_membership(ctx.membership)
+
+      ctx.view |> element("#unassigned-stop-row-#{stop.id} button") |> render_click()
+
+      unchanged = Repo.get!(Stop, stop.id)
+      assert is_nil(unchanged.level_id)
+      assert is_nil(unchanged.diagram_coordinate)
+      assert unchanged.lock_version == stop.lock_version
+      assert has_element?(ctx.view, "#child-stop-outcome")
+    end
   end
 
   describe "tabs" do

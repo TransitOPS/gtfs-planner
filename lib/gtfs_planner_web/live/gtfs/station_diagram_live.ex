@@ -2201,7 +2201,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               |> assign(:journal_form_context, journal_context)
 
             :error ->
-              put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
+              place_unpositioned_child_stop(socket, stop)
           end
 
         nil ->
@@ -7039,6 +7039,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:stop_id_mode, :manual)
     |> assign(:child_stop_form, form)
     |> assign(:journal_form_context, nil)
+  end
+
+  # An unplaced list item needs a real point before it can be edited or dragged.
+  # Use the same scoped, revision-checked command as explicit repositioning.
+  defp place_unpositioned_child_stop(socket, stop) do
+    level = socket.assigns.active_level
+    stop_level = socket.assigns.active_stop_level
+
+    placeable? =
+      socket.assigns.mode == :view and not socket.assigns.measurement_enabled and
+        not is_nil(level) and not is_nil(stop_level) and
+        stop_level.diagram_filename not in [nil, ""] and
+        stop.level_id in [nil, "", level.level_id]
+
+    if placeable? do
+      point = %{x: 50.0, y: 50.0}
+      attrs = %{level_id: level.level_id, diagram_coordinate: %{"x" => point.x, "y" => point.y}}
+
+      case Stations.update_child_stop(socket.assigns.audit_ctx, stop.id, attrs, stop.lock_version) do
+        {:ok, placed_stop} ->
+          socket
+          |> close_journal_panel()
+          |> refresh_lists()
+          |> open_edit_sidebar(placed_stop, point)
+          |> assign(
+            :placement_status,
+            "Stop placed at the center of #{level.level_name || level.level_id}"
+          )
+
+        {:error, reason} ->
+          socket
+          |> open_edit_sidebar(stop, point)
+          |> assign_child_stop_outcome(reason, stop.stop_id)
+      end
+    else
+      put_flash(socket, :error, ~s(Stop "#{stop.stop_id}" has no diagram position))
+    end
   end
 
   defp stop_diagram_point(stop) do

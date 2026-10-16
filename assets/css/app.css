@@ -2918,20 +2918,19 @@ html:has(#route-details-save-bar:not([hidden])) {
 }
 
 #diagram-page [data-ruler-line],
-#diagram-page [data-ruler-endpoint],
-#diagram-page [data-ruler-label] {
+#diagram-page [data-ruler-endpoint] {
   stroke: var(--color-action) !important;
 }
 
 #diagram-page [data-ruler-label] {
   fill: var(--color-action) !important;
+  stroke: var(--diagram-label-halo) !important;
 }
 
 /* The saved scale reference is a dashed navy line; only a scale being marked
    takes the action colour. */
 #diagram-page [data-ruler-type="saved"] [data-ruler-line],
-#diagram-page [data-ruler-type="saved"] [data-ruler-endpoint],
-#diagram-page [data-ruler-type="saved"] [data-ruler-label] {
+#diagram-page [data-ruler-type="saved"] [data-ruler-endpoint] {
   stroke: var(--diagram-ruler) !important;
 }
 
@@ -2939,8 +2938,8 @@ html:has(#route-details-save-bar:not([hidden])) {
   fill: var(--diagram-ruler) !important;
 }
 
-#diagram-page [data-ruler-type="saved"] [data-ruler-line] {
-  stroke-dasharray: 0.9 0.6;
+#diagram-page [data-ruler-type="saved"] [data-ruler-casing] {
+  stroke: var(--diagram-label-halo) !important;
 }
 
 #diagram-page [data-journal-pin-body],

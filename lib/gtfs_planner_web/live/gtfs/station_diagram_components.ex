@@ -4223,7 +4223,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           |> assign(:mx, mid_x)
           |> assign(:my, mid_y)
           |> assign(:line_color, if(saved_label?, do: "#16a34a", else: "#f97316"))
-          |> assign(:label_text, if(saved_label?, do: "SCALE", else: "Measure"))
+          |> assign(:label_text, if(saved_label?, do: "Scale", else: "Measure"))
           |> assign(:saved_label?, saved_label?)
           |> assign(:label_anchor_x, label_anchor_x)
           |> assign(:label_anchor_y, label_anchor_y)
@@ -4249,6 +4249,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-base-stroke="12"
           />
           <line
+            :if={@saved_label?}
+            x1={@ax}
+            y1={@ay}
+            x2={@bx}
+            y2={@by}
+            stroke="#ffffff"
+            stroke-width="0.6"
+            stroke-linecap="round"
+            data-ruler-line="true"
+            data-ruler-casing="true"
+            data-base-stroke="6"
+          />
+          <line
             x1={@ax}
             y1={@ay}
             x2={@bx}
@@ -4256,7 +4269,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             stroke={@line_color}
             stroke-width="0.25"
             data-ruler-line="true"
-            data-base-stroke="2"
+            data-base-stroke={if @saved_label?, do: "3", else: "2"}
+            data-base-dash={if @saved_label?, do: "6,4"}
+            stroke-linecap="round"
           />
           <circle
             cx={@ax}
@@ -4292,7 +4307,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             stroke-width="0.16"
             paint-order="stroke fill"
             font-size="0.78"
-            font-weight="600"
+            font-weight="500"
             text-anchor={if @saved_label?, do: "start", else: "middle"}
             dominant-baseline="central"
             data-ruler-label="true"
@@ -7402,6 +7417,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <h3 class="px-3 pb-0.5 pt-4 text-[12.5px] font-[650] text-muted">
             Not placed on any level
           </h3>
+          <p :if={@has_diagram and @mode == :view} class="px-3 pb-3 text-xs text-muted">
+            Choose a stop to place it at the center of {@active_level_name}.
+          </p>
           <ul
             id="unassigned-stops-table"
             class="divide-y divide-subtle border-y border-subtle"
