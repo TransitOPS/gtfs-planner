@@ -352,7 +352,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       assert has_element?(
                view,
                "#closure-window-help",
-               "Service time, 24-hour. For 2 AM the next day, enter 26:00."
+               "Enter 10 or 10:00 for 10 AM. For 2 AM the next day, enter 26:00."
              )
 
       refute has_element?(view, "#closure-window-error")
@@ -748,7 +748,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
           "closure" => %{
             "pathway_id" => @punctuated_pathway_id,
             "service_id" => "CAL_DAILY",
-            "start_time" => "10:00",
+            "start_time" => "10",
             "end_time" => "11:30",
             "note" => "Morning inspection."
           }
@@ -789,6 +789,50 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
 
       assert reloaded |> row_ids() |> length() == 3
       assert has_element?(reloaded, "#closure-#{created.evolution.id}", "10:00–11:30")
+    end
+
+    test "leaving a time field expands hours and preserves overnight times and seconds", ctx do
+      %{station: station, daytime: daytime} = station_with_closures(ctx.organization, ctx.version)
+      conn = log_in_user(ctx.conn, ctx.user, organization: ctx.organization)
+      {:ok, view, _} = live(conn, evolutions_path(ctx.version, station.stop_id))
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{"start_time" => " 23 ", "end_time" => "26"})
+      assert has_element?(view, "#closure-start[value='23:00']")
+      assert has_element?(view, "#closure-end[value='26:00']")
+      assert Repo.get!(PathwayEvolution, daytime.id).start_time == daytime.start_time
+
+      change_editor(view, %{"start_time" => "23:00:15", "end_time" => "26:00:30"})
+      assert has_element?(view, "#closure-start[value='23:00:15']")
+      assert has_element?(view, "#closure-end[value='26:00:30']")
+    end
+
+    test "malformed times stay visible with one corrective error per field", ctx do
+      %{station: station} = station_with_closures(ctx.organization, ctx.version)
+      conn = log_in_user(ctx.conn, ctx.user, organization: ctx.organization)
+      {:ok, view, _} = live(conn, evolutions_path(ctx.version, station.stop_id))
+      view |> element("#new-closure") |> render_click()
+
+      view
+      |> form("#closure-form", %{
+        "closure" => %{
+          "pathway_id" => @punctuated_pathway_id,
+          "service_id" => "CAL_DAILY",
+          "start_time" => "oops",
+          "end_time" => "25:99"
+        }
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#closure-start[value='oops'][aria-invalid='true']")
+      assert has_element?(view, "#closure-end[value='25:99'][aria-invalid='true']")
+      assert has_element?(view, "#closure-window-error", "Enter a time like 10:00 or 25:00.")
+
+      assert Enum.count(
+               LazyHTML.query(LazyHTML.from_fragment(render(view)), "#closure-errors-list li")
+             ) == 2
+
+      refute has_element?(view, "#closure-window-error", "can't be blank")
     end
 
     test "an invalid window keeps the entered strings and marks the first invalid field",

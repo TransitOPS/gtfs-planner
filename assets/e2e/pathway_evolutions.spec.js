@@ -751,8 +751,12 @@ test.describe("authoring", () => {
 
       await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
       await page.selectOption("#closure-calendar", "CAL_DAILY");
-      await page.fill("#closure-start", "09:00");
-      await page.fill("#closure-end", "10:00");
+      await page.fill("#closure-start", "9");
+      await page.locator("#closure-start").blur();
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      await page.fill("#closure-end", "10");
+      await page.locator("#closure-end").blur();
+      await expect(page.locator("#closure-end")).toHaveValue("10:00");
       await page.fill("#closure-note", "Morning lift check.");
       await expect(page.locator("#closure-summary")).toContainText(
         "closes 09:00–10:00 on each service day of Every day service",

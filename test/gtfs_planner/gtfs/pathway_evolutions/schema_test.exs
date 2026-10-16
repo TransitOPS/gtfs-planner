@@ -177,6 +177,31 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutionSchemaTest do
       assert boundary_note.valid?
     end
 
+    test "reports invalid or required time errors once, including when editing", context do
+      attrs = %{pathway_id: "PW_1", service_id: "SVC_1", start_time: "bad", end_time: "25:99"}
+
+      assert errors_on(closure_changeset(context, attrs)) == %{
+               start_time: ["Enter a time like 10:00 or 25:00."],
+               end_time: ["Enter a time like 10:00 or 25:00."]
+             }
+
+      existing = %PathwayEvolution{
+        pathway_id: "PW_1",
+        service_id: "SVC_1",
+        start_time: 36_000,
+        end_time: 39_600
+      }
+
+      for blank <- ["", "   ", nil] do
+        changeset = PathwayEvolution.changeset(existing, %{start_time: blank, end_time: blank})
+        assert errors_on(changeset).start_time == ["can't be blank"]
+        assert errors_on(changeset).end_time == ["can't be blank"]
+      end
+
+      changeset = PathwayEvolution.changeset(existing, %{start_time: "bad", end_time: "09:00"})
+      assert errors_on(changeset) == %{start_time: ["Enter a time like 10:00 or 25:00."]}
+    end
+
     test "keeps an identifier with internal spaces distinct from its trimmed neighbour",
          context do
       spacey =

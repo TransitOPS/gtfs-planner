@@ -131,6 +131,22 @@ describe("CalendarEditor", () => {
   // =========================================================================
   // The guard stays closed for a clean element and for clicks it does not own
   // =========================================================================
+  describe("closure time shorthand", () => {
+    it("allows departure when an hour-only value matches the saved time", () => {
+      const root = buildRoot({dataset: {dirtyBaseline: JSON.stringify({"closure[start_time]": "10:00", "closure[end_time]": "25:00"})}});
+      const form = document.createElement("form");
+      form.innerHTML = '<input name="closure[start_time]" value="10"><input name="closure[end_time]" value="25">';
+      root.appendChild(form);
+      hook = mountHook(root);
+      expect(clickLink(root).defaultPrevented).toBe(false);
+      expect(hook.pushEvent).not.toHaveBeenCalled();
+
+      form.querySelector("input").value = "11";
+      expect(clickLink(root).defaultPrevented).toBe(true);
+      expect(hook.pushEvent).toHaveBeenCalledWith(CALENDAR_DEPART_EVENT, {path: DEPART_PATH});
+    });
+  });
+
   describe("clean element and unowned clicks", () => {
     it("pushes nothing and does not cancel a click when data-dirty is false", () => {
       const root = buildRoot({ dataset: { dirty: "false" } });
