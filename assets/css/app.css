@@ -2918,20 +2918,19 @@ html:has(#route-details-save-bar:not([hidden])) {
 }
 
 #diagram-page [data-ruler-line],
-#diagram-page [data-ruler-endpoint],
-#diagram-page [data-ruler-label] {
+#diagram-page [data-ruler-endpoint] {
   stroke: var(--color-action) !important;
 }
 
 #diagram-page [data-ruler-label] {
   fill: var(--color-action) !important;
+  stroke: var(--diagram-label-halo) !important;
 }
 
 /* The saved scale reference is a dashed navy line; only a scale being marked
    takes the action colour. */
 #diagram-page [data-ruler-type="saved"] [data-ruler-line],
-#diagram-page [data-ruler-type="saved"] [data-ruler-endpoint],
-#diagram-page [data-ruler-type="saved"] [data-ruler-label] {
+#diagram-page [data-ruler-type="saved"] [data-ruler-endpoint] {
   stroke: var(--diagram-ruler) !important;
 }
 
@@ -2939,8 +2938,8 @@ html:has(#route-details-save-bar:not([hidden])) {
   fill: var(--diagram-ruler) !important;
 }
 
-#diagram-page [data-ruler-type="saved"] [data-ruler-line] {
-  stroke-dasharray: 0.9 0.6;
+#diagram-page [data-ruler-type="saved"] [data-ruler-casing] {
+  stroke: var(--diagram-label-halo) !important;
 }
 
 #diagram-page [data-journal-pin-body],
@@ -3069,8 +3068,8 @@ dialog[role="alertdialog"][open] > div > div {
 
 /* ── station-diagram (design system) ──
    The Floorplans tab in the TransitOps application design system: a station
-   header capped to the app header's width, and a wide workspace under it that
-   holds the toolbar, the plan with its status bar, and the docked points,
+   header capped to the app header's width, and a full-width workspace that
+   holds the toolbar, the plan with its status bar, and the collapsible points,
    pathways and journal panel. `#diagram-page` carries `ds-page` for the shared
    field, button and focus grammar; everything below is specific to this screen.
    Marker colours come from `DiagramPalette` (`--diagram-*` on `#diagram-page`). */
@@ -3101,68 +3100,110 @@ dialog[role="alertdialog"][open] > div > div {
   margin-block: 0;
 }
 
-/* The compact station header names the station at 24px, 26px from sm. The
-   unlayered `.ds-page h1` size would beat a utility class, so it is set here. */
-#station-sub-nav[data-compact] h1 {
-  font-size: 24px;
+/* Station navigation shares the application grid. The title and modes remain
+   available in focus mode; the global header and navigation disappear. */
+#diagram-page #diagram-action-strip { padding-inline: 1rem; }
+#diagram-page #station-title { font-size: 22px; }
+#diagram-page #diagram-station-identity {
+  display: grid;
+  grid-template-columns: auto 1px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  flex: 0 1 auto;
+  max-width: calc(100% - 440px);
+}
+#diagram-page #diagram-station-actions { grid-column: 4; grid-row: 1; }
+#diagram-page #diagram-editing-presence { grid-column: 3 / -1; grid-row: 2; }
+#diagram-page #diagram-more-panel { left: auto; right: 0; }
+
+#diagram-page {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+#diagram-page #app-header,
+#diagram-page #station-header-band,
+#diagram-page #diagram-action-strip { flex-shrink: 0; }
+#diagram-page #sub-header-wrapper {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+#diagram-page #sub-header-wrapper > div,
+#diagram-page #sub-header-wrapper > div > div { display: contents; }
+#diagram-page #diagram-workspace { isolation: isolate; }
+#diagram-page #workspace-body {
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+#diagram-page #diagram-canvas-wrapper { min-height: 0; }
+#diagram-page #side-panel {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  width: 376px;
+  max-width: calc(100% - 32px);
+  overflow: hidden;
+  visibility: hidden;
+  transform: translateX(calc(100% + 16px));
+  transition: transform 200ms ease, visibility 200ms;
+}
+#diagram-page #diagram-workspace[data-panel-open="true"] #side-panel {
+  visibility: visible;
+  transform: translateX(0);
+}
+#diagram-page #plan-hint { top: 76px; }
+#diagram-page #map-alignment-tools {
+  top: 76px;
+  max-height: calc(100% - 92px);
+}
+#diagram-page #diagram-other-levels-control #other-levels-panel {
+  top: auto;
+  bottom: 100%;
+  left: 0;
+  right: auto;
+  margin-top: 0;
+  margin-bottom: 8px;
+  max-width: calc(100vw - 32px);
 }
 
 @media (min-width: 640px) {
-  #station-sub-nav[data-compact] h1 {
-    font-size: 26px;
-  }
+  #diagram-page #diagram-action-strip { padding-inline: 1.5rem; }
 }
-
-/* The workspace fills the viewport under the two headers (73px app header, 96px
-   station header, 28px of gutters); focus mode gives back the two headers. Below
-   1024px the plan and the panel stack and the page scrolls. */
-#diagram-page #diagram-workspace {
-  scroll-margin-top: 1rem;
-}
-
-#diagram-page #diagram-canvas-wrapper {
-  height: 62vw;
-  min-height: 300px;
-}
-
-#diagram-page #workspace-body {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 @media (min-width: 1024px) {
-  #diagram-page #diagram-workspace {
-    height: max(560px, calc(100dvh - 197px));
-  }
-
-  #diagram-page[data-immersive="true"] #diagram-workspace {
-    height: max(560px, calc(100dvh - 28px));
-  }
-
-  #diagram-page #workspace-body {
-    grid-template-columns: minmax(0, 1fr) 352px;
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  #diagram-page #diagram-canvas-wrapper {
-    height: auto;
-    min-height: 0;
-  }
-
-  #diagram-page #diagram-workspace[data-align="true"] #workspace-body,
-  #diagram-page #workspace-body:has(#no-level-state) {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  #diagram-page #diagram-action-strip { padding-inline: 2rem; }
+  #diagram-page #diagram-workspace[data-panel-open="true"] #plan-view-controls { right: 408px; }
 }
-
-@media (min-width: 1280px) {
-  #diagram-page #workspace-body {
-    grid-template-columns: minmax(0, 1fr) 376px;
-  }
-
-  #diagram-page #diagram-workspace[data-align="true"] #workspace-body,
-  #diagram-page #workspace-body:has(#no-level-state) {
-    grid-template-columns: minmax(0, 1fr);
-  }
+@media (max-width: 900px) {
+  #diagram-page #diagram-station-identity { max-width: 100%; }
+  #diagram-page #diagram-mode-controls { width: 100%; }
+  #diagram-page #diagram-mode { min-width: 0; }
+  #diagram-page #diagram-mode,
+  #diagram-page #diagram-mode > div { width: 100%; }
+  #diagram-page #diagram-mode label { flex: 1; }
+}
+@media (max-width: 639px) {
+  #diagram-page #station-title { font-size: 18px; }
+  #diagram-page #diagram-station-identity { width: 100%; }
+  #diagram-page #diagram-mode label { flex: 1 1 auto; padding-inline: 6px; gap: 4px; font-size: 12px; white-space: nowrap; }
+  #diagram-page #diagram-mode label span[class*="hero-"] { margin-right: 0; }
+  #diagram-page #diagram-status-bar { gap: 8px; }
+  #diagram-page #level-control { max-width: 55%; }
+  #diagram-page #level-control-trigger { gap: 6px; padding-inline: 0; font-size: 12px; }
+  #diagram-page #scale-control { min-width: 0; }
+  #diagram-page #diagram-more-panel { position: fixed; top: auto; left: 16px; right: 16px; width: auto; }
+}
+@media (max-width: 380px) {
+  #diagram-page #diagram-mode label { padding-inline: 5px; gap: 4px; font-size: 12px; }
+  #diagram-page #diagram-mode label span[class*="hero-"] { width: 14px; height: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #diagram-page #side-panel { transition: none; }
 }
 
 /* The operator's plan is background to the points and pathways drawn over it, so

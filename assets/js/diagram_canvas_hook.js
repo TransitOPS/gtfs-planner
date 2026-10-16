@@ -83,7 +83,7 @@ const MIN_ZOOM = 0.5;
 const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
 const DRAG_HOLD_MS = 200;
-const DRAG_THRESHOLD_UNITS = 2;
+const DRAG_THRESHOLD_PX = 5;
 const PAN_FRACTION = 0.25;
 const ZOOM_FACTOR = 1.5;
 
@@ -311,7 +311,7 @@ const DiagramCanvasHook = {
       return;
     }
 
-    if (!this.overlay || !this.isViewMode() || this.isMeasurementEnabled()) {
+    if (!this.overlay || !this.isViewMode() || this.isMeasurementEnabled() || e.shiftKey) {
       this.debugDrag("pointer down ignored: mode/overlay/measurement mismatch", {
         hasOverlay: Boolean(this.overlay),
         mode: this.overlay?.getAttribute("data-mode"),
@@ -325,7 +325,7 @@ const DiagramCanvasHook = {
       return;
     }
 
-    const hitTarget = this.pointAtPointer(e, STOP_HIT_TARGET);
+    const hitTarget = this.pointAtPointer(e, STOP_HIT_TARGET, { throughJournal: true });
     if (!hitTarget || !this.overlay.contains(hitTarget)) {
       this.debugDrag("pointer down ignored: not on stop hit target", { type: e.type });
       return;
@@ -361,7 +361,8 @@ const DiagramCanvasHook = {
       centerY,
       startSvgX: startPoint.x,
       startSvgY: startPoint.y,
-      movedTooFar: false,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
       holdTimer: null
     };
 
@@ -372,83 +373,76 @@ const DiagramCanvasHook = {
       startSvgY: candidate.startSvgY
     });
 
-    candidate.holdTimer = setTimeout(() => {
-      if (!this.dragCandidate || this.dragCandidate.stopId !== candidate.stopId) {
-        this.debugDrag("drag hold timer ignored: candidate changed", { stopId: candidate.stopId });
-        return;
-      }
+    candidate.holdTimer = setTimeout(() => this.startStopDrag(candidate), DRAG_HOLD_MS);
 
-      if (this.dragCandidate.movedTooFar) {
-        this.debugDrag("drag hold canceled: moved before threshold", { stopId: candidate.stopId });
-        this.cancelDragHold();
-        return;
-      }
+    this.dragCandidate = candidate;
+  },
 
-      const pathwayElements = [];
+  startStopDrag(candidate) {
+    if (this.dragCandidate !== candidate) return;
 
-      this.overlay
-        .querySelectorAll("#pathways-svg g[data-from-stop-id][data-to-stop-id]")
-        .forEach((pathwayGroup) => {
-          const fromStopId = pathwayGroup.getAttribute("data-from-stop-id");
-          const toStopId = pathwayGroup.getAttribute("data-to-stop-id");
-          const movesStart = fromStopId === candidate.stopId;
-          const movesEnd = toStopId === candidate.stopId;
+    const pathwayElements = [];
 
-          if (!movesStart && !movesEnd) {
+    this.overlay
+      .querySelectorAll("#pathways-svg g[data-from-stop-id][data-to-stop-id]")
+      .forEach((pathwayGroup) => {
+        const fromStopId = pathwayGroup.getAttribute("data-from-stop-id");
+        const toStopId = pathwayGroup.getAttribute("data-to-stop-id");
+        const movesStart = fromStopId === candidate.stopId;
+        const movesEnd = toStopId === candidate.stopId;
+
+        if (!movesStart && !movesEnd) {
+          return;
+        }
+
+        pathwayGroup.querySelectorAll("[x1][y1][x2][y2]").forEach((element) => {
+          const baseX1 = parseFloat(element.getAttribute("x1"));
+          const baseY1 = parseFloat(element.getAttribute("y1"));
+          const baseX2 = parseFloat(element.getAttribute("x2"));
+          const baseY2 = parseFloat(element.getAttribute("y2"));
+
+          if (
+            !Number.isFinite(baseX1) ||
+            !Number.isFinite(baseY1) ||
+            !Number.isFinite(baseX2) ||
+            !Number.isFinite(baseY2)
+          ) {
             return;
           }
 
-          pathwayGroup.querySelectorAll("[x1][y1][x2][y2]").forEach((element) => {
-            const baseX1 = parseFloat(element.getAttribute("x1"));
-            const baseY1 = parseFloat(element.getAttribute("y1"));
-            const baseX2 = parseFloat(element.getAttribute("x2"));
-            const baseY2 = parseFloat(element.getAttribute("y2"));
-
-            if (
-              !Number.isFinite(baseX1) ||
-              !Number.isFinite(baseY1) ||
-              !Number.isFinite(baseX2) ||
-              !Number.isFinite(baseY2)
-            ) {
-              return;
-            }
-
-            pathwayElements.push({
-              element,
-              movesStart,
-              movesEnd,
-              baseX1,
-              baseY1,
-              baseX2,
-              baseY2
-            });
+          pathwayElements.push({
+            element,
+            movesStart,
+            movesEnd,
+            baseX1,
+            baseY1,
+            baseX2,
+            baseY2
           });
         });
-
-      this.dragging = {
-        stopId: candidate.stopId,
-        groupEl: candidate.groupEl,
-        centerX: candidate.centerX,
-        centerY: candidate.centerY,
-        startSvgX: candidate.startSvgX,
-        startSvgY: candidate.startSvgY,
-        currentX: candidate.centerX,
-        currentY: candidate.centerY,
-        pathwayElements
-      };
-
-      this.hideTooltip();
-      this.dragging.groupEl.classList.add("dragging");
-      this._suppressNextClick = true;
-      this.debugDrag("drag started", {
-        stopId: candidate.stopId,
-        connectedPathSegments: pathwayElements.length
       });
-      this.pushEvent("drag_start", { id: candidate.stopId });
-      this.cancelDragHold();
-    }, DRAG_HOLD_MS);
 
-    this.dragCandidate = candidate;
+    this.dragging = {
+      stopId: candidate.stopId,
+      groupEl: candidate.groupEl,
+      centerX: candidate.centerX,
+      centerY: candidate.centerY,
+      startSvgX: candidate.startSvgX,
+      startSvgY: candidate.startSvgY,
+      currentX: candidate.centerX,
+      currentY: candidate.centerY,
+      pathwayElements
+    };
+
+    this.hideTooltip();
+    this.dragging.groupEl.classList.add("dragging");
+    this._suppressNextClick = true;
+    this.debugDrag("drag started", {
+      stopId: candidate.stopId,
+      connectedPathSegments: pathwayElements.length
+    });
+    this.pushEvent("drag_start", { id: candidate.stopId });
+    this.cancelDragHold();
   },
 
   handleWheel(e) {
@@ -522,10 +516,11 @@ const DiagramCanvasHook = {
   // clicks. The saved ruler is painted above everything, so a press on it
   // resolves to the point beneath it. `e` needs `target`, `clientX` and
   // `clientY`. Without elementsFromPoint the event target is the only candidate.
-  pointAtPointer(e, selector) {
+  pointAtPointer(e, selector, { throughJournal = false } = {}) {
     const direct = e.target.closest?.(selector);
 
-    if (!direct && !e.target.closest?.('[data-ruler-type="saved"]')) {
+    if (!direct && !e.target.closest?.('[data-ruler-type="saved"]') &&
+        !(throughJournal && e.target.closest?.('[data-journal-marker]'))) {
       return null;
     }
 
@@ -601,22 +596,15 @@ const DiagramCanvasHook = {
 
   handleMouseMove(e) {
     if (this.dragCandidate && !this.dragging) {
-      const point = this.clientPointToSvg(e.clientX, e.clientY);
+      const distance = Math.hypot(
+        e.clientX - this.dragCandidate.startClientX,
+        e.clientY - this.dragCandidate.startClientY
+      );
 
-      if (point) {
-        const dx = point.x - this.dragCandidate.startSvgX;
-        const dy = point.y - this.dragCandidate.startSvgY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance > DRAG_THRESHOLD_UNITS) {
-          this.debugDrag("drag hold canceled: moved too far", {
-            stopId: this.dragCandidate.stopId,
-            distance,
-            threshold: DRAG_THRESHOLD_UNITS
-          });
-          this.dragCandidate.movedTooFar = true;
-          this.cancelDragHold();
-        }
+      // A normal drag starts as soon as the pointer moves deliberately. The
+      // hold gesture also remains available; a quick click still opens editing.
+      if (distance > DRAG_THRESHOLD_PX) {
+        this.startStopDrag(this.dragCandidate);
       }
     }
 

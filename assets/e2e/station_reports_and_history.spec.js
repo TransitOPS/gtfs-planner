@@ -26,7 +26,7 @@ import {
   readPendingStates,
   watchPendingState,
 } from "./browser_helpers";
-import { selectSeededDiagramLevel } from "./station_diagram_helpers";
+import { selectSeededDiagramLevel, openDiagramPanel } from "./station_diagram_helpers";
 
 const EDITOR = {
   email: "diagram-test@gtfs-planner.test",
@@ -105,6 +105,7 @@ async function openDiagram(page) {
   // The diagram finishes wiring its canvas after connect; clicking a row before
   // that patch settles loses the event, so wait for the page to go quiet.
   await page.waitForLoadState("networkidle");
+  await openDiagramPanel(page);
   await page.waitForSelector("#child-stops-table", { timeout: 20000 });
   await selectSeededDiagramLevel(page);
   await expect(
@@ -796,7 +797,7 @@ test.describe("History tab keyboard contracts", () => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await openDiagram(page);
 
-    await page.locator("#diagram-more-trigger").click();
+    await page.locator("#floorplan-settings-trigger").click();
     await page.waitForSelector("#edit-level-action", {
       state: "visible",
       timeout: 10000,

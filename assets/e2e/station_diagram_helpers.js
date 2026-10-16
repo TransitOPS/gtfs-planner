@@ -43,9 +43,17 @@ export async function selectSeededDiagramLevel(page, levelId = "BROWSER_L1") {
 
   if ((await tab.getAttribute("aria-current")) === "true") return;
 
+  await page.locator("#level-control-trigger").click();
   await tab.click();
   await expect(tab).toHaveAttribute("aria-current", "true");
-  await expect(tab).toBeFocused();
+  await expect(page.locator("#level-control-trigger")).toBeFocused();
+}
+
+export async function openDiagramPanel(page) {
+  await page.locator(".phx-connected").waitFor({ state: "attached" });
+  const toggle = page.locator("#diagram-panel-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
 }
 
 export async function selectDiagramMode(page, mode) {

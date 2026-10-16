@@ -5,7 +5,7 @@ import { VIEWPORTS, bodyFitsViewport } from "./browser_helpers";
 import { loginAndGoToDiagram } from "./station_diagram_helpers";
 
 async function openLevel(page) {
-  await page.locator("#diagram-more-trigger").click();
+  await page.locator("#floorplan-settings-trigger").click();
   await page.locator("#edit-level-action").click();
   await expect(page.locator("#level-sidebar-overlay")).toHaveAttribute("data-open", "true");
 }

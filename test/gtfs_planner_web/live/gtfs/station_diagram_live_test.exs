@@ -4854,7 +4854,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#no-level-state", "This station has no levels yet")
-      assert has_element?(view, "#station-header-band", "Station · No levels yet")
+      assert has_element?(view, "#no-level-state")
+      assert has_element?(view, "#diagram-more-panel #add-level-action")
     end
   end
 
@@ -5752,7 +5753,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, hold to move'][tabindex='0'][role='button'][aria-label]"
+               "#child_stops-#{from_stop.id}[data-editable='stop'][data-tooltip='Click to edit, drag to move'][tabindex='0'][role='button'][aria-label]"
              )
 
       assert has_element?(
@@ -8332,7 +8333,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~r/data-label-anchor-y="10(?:\.0)?"/
       assert html =~ ~r/data-label-offset-x="8"/
       assert html =~ ~r/text-anchor="start"/
-      assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "SCALE")
+      assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "Scale")
     end
 
     test "clear scale removes saved scale fields and returns establish action", %{

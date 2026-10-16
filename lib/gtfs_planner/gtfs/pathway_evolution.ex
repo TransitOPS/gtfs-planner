@@ -92,8 +92,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
     pathway_evolution
     |> cast(attrs, [:pathway_id, :service_id, :start_time, :end_time, :note])
     |> trim_string_fields()
-    |> validate_required([:pathway_id, :service_id, :start_time, :end_time])
     |> add_service_time_errors(time_errors)
+    |> validate_required([:pathway_id, :service_id, :start_time, :end_time])
     |> validate_window_order()
     |> validate_length(:note, max: @max_note_length)
     |> unique_constraint(
@@ -116,7 +116,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
         # Blank and missing values fall through to validate_required/2's
         # "can't be blank" error instead of piling a parse error on top.
         {:ok, value} when is_nil(value) ->
-          {Map.delete(acc, key), errors}
+          {Map.put(acc, key, nil), errors}
 
         {:ok, value} when is_binary(value) ->
           normalize_service_time(acc, errors, field, key, value)
@@ -132,7 +132,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
   defp normalize_service_time(acc, errors, field, key, value) do
     case String.trim(value) do
       "" ->
-        {Map.delete(acc, key), errors}
+        {Map.put(acc, key, nil), errors}
 
       trimmed ->
         put_parsed_service_time(acc, errors, field, key, trimmed)
@@ -145,7 +145,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
         {Map.put(acc, key, seconds), errors}
 
       {:error, :invalid_time} ->
-        {Map.delete(acc, key), [{field, "is not a valid service time"} | errors]}
+        {Map.delete(acc, key), [{field, "Enter a time like 10:00 or 25:00."} | errors]}
     end
   end
 
@@ -159,7 +159,11 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
     start_time = get_field(changeset, :start_time)
     end_time = get_field(changeset, :end_time)
 
-    if is_integer(start_time) and is_integer(end_time) and end_time <= start_time do
+    valid_times? =
+      not Keyword.has_key?(changeset.errors, :start_time) and
+        not Keyword.has_key?(changeset.errors, :end_time)
+
+    if valid_times? and is_integer(start_time) and is_integer(end_time) and end_time <= start_time do
       add_error(
         changeset,
         :end_time,

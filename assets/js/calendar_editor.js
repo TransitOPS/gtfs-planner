@@ -13,13 +13,15 @@ window.addEventListener("popstate", event => activeEditor?.historyDeparture(even
 // server applies. Without that attribute the hook keeps its `data-dirty`
 // behaviour unchanged.
 const serviceTime = value => {
-  const match = /^(\d{1,3}):([0-5]?\d)(?::([0-5]?\d))?$/.exec(String(value ?? "").trim())
-  return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3] ?? 0) : null
+  const match = /^(\d+)(?::([0-5]\d)(?::([0-5]\d))?)?$/.exec(String(value ?? "").trim())
+  if (!match) return null
+  const seconds = Number(match[1]) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)
+  return seconds <= 2147483647 ? seconds : null
 }
 
 const comparableField = (name, value) => {
   const text = String(value ?? "").trim()
-  if (name.endsWith("start_time") || name.endsWith("end_time")) return serviceTime(text) ?? text
+  if (/(?:^|\[)(?:start_time|end_time)\]?$/.test(name)) return serviceTime(text) ?? text
   return text
 }
 

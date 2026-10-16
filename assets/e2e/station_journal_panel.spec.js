@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   loginAndGoToDiagram,
+  openDiagramPanel,
   selectDiagramMode,
 } from "./station_diagram_helpers.js";
 
@@ -29,6 +30,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 async function openJournal(page) {
   await loginAndGoToDiagram(page);
 
+  await openDiagramPanel(page);
   const trigger = page.locator("#journal-trigger");
   await expect(trigger).toBeVisible();
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -351,7 +353,7 @@ test("keeps scrolled rows stable and applies one identity-based pending entry", 
 });
 
 for (const width of [1280, 1440, 1920]) {
-  test(`docks the journal in the side panel and keeps minimum targets at ${width}px`, async ({ page }) => {
+  test(`floats the journal over the canvas and keeps minimum targets at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const panel = await openJournal(page);
     await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
@@ -371,10 +373,10 @@ for (const width of [1280, 1440, 1920]) {
       };
     });
 
-    // The journal fills the docked panel: 376px at 1280px and wider, less its 1px border.
+    // The journal fills the floating panel while the canvas keeps its full width.
     expect(layout.panelWidth).toBeGreaterThanOrEqual(350);
     expect(layout.panelWidth).toBeLessThanOrEqual(376);
-    expect(layout.canvasWidth).toBeLessThan(layout.workspaceWidth - 300);
+    expect(layout.canvasWidth).toBe(layout.workspaceWidth);
     expect(layout.listOverflowY).toBe("auto");
     expect(layout.bodyOverflow).toBeLessThanOrEqual(2);
 
@@ -766,6 +768,7 @@ test("Package 03 captures stable reference-governed screenshots", async ({ page 
     animations: "disabled",
   });
 
+  await openDiagramPanel(page);
   const trigger = page.locator("#journal-trigger");
   await trigger.click();
   const panel = page.locator("#station-journal-panel");
@@ -864,6 +867,7 @@ test("Package 04 production stop and pathway captures", async ({ page }) => {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(500);
 
+  await openDiagramPanel(page);
   await page.locator("#panel-tab-pathways").click();
   const pathwayLink = page.locator("#pathways-table button[phx-click=\"edit_pathway\"]").first();
   await expect(pathwayLink).toBeVisible({ timeout: 5000 });

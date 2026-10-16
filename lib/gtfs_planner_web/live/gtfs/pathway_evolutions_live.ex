@@ -275,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   def handle_event("validate_closure", %{"closure" => params}, socket) when is_map(params) do
-    {:noreply, assign_entered_params(socket, params)}
+    {:noreply, assign_entered_params(socket, normalize_closure_times(params))}
   end
 
   # The read-only service dates of the selected calendar. Opening it reads the
@@ -308,6 +308,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   def handle_event("preview_keys", _params, socket), do: {:noreply, socket}
 
   def handle_event("save_closure", %{"closure" => params}, socket) when is_map(params) do
+    params = normalize_closure_times(params)
+
     # The outcome of this attempt replaces whatever the editor said before it,
     # so a selection or creation line never sits beside a rejection.
     socket = assign(socket, :status_message, nil)
@@ -2159,6 +2161,28 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp format_service_time(seconds) when is_integer(seconds), do: service_time_value(seconds)
   defp format_service_time(_seconds), do: ""
 
+  # Accept hour-only shorthand in the editor, including on a direct submit.
+  # The feed parser stays strict, and invalid input stays visible for correction.
+  defp normalize_closure_times(params) do
+    Enum.reduce(["start_time", "end_time"], params, fn field, acc ->
+      case Map.fetch(acc, field) do
+        {:ok, value} when is_binary(value) ->
+          trimmed = String.trim(value)
+
+          candidate =
+            if Regex.match?(~r/\A[0-9]+\z/, trimmed), do: trimmed <> ":00", else: trimmed
+
+          case PathwayEvolution.parse_service_time(candidate) do
+            {:ok, seconds} -> Map.put(acc, field, format_service_time(seconds))
+            {:error, :invalid_time} -> acc
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
   # Opening the idle editor, a new form or an existing row resets every outcome
   # from the previous one, so a stale flag, a duplicate panel, a notice or a
   # pending guarded action can never outlive the row it described.
@@ -2185,7 +2209,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> reset_dates()
   end
 
-  # A form change keeps every entered string and re-checks the fields only once
+  # A form change keeps invalid text and re-checks the fields only once
   # the user has already been told about a problem, so a half-filled form never
   # shouts "can't be blank" at someone still typing. Duplicate and notice
   # outcomes belong to the submitted tuple and are dropped by any edit.
@@ -2353,10 +2377,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp field_id(:note), do: "closure-note"
   defp field_id(_base), do: nil
 
-  # The form renders the entered parameters verbatim: the changeset normalizes
-  # service times to seconds inside its own params, so rendering from the
-  # changeset would show "32400" where the reader typed "09:00". The changeset
-  # still owns the messages, which are attached to the parameters-only form.
+  # Render the editor's time strings, including expanded hours and unchanged
+  # invalid text. The changeset owns validation but stores integer seconds,
+  # which must not appear in these clock fields.
   defp closure_form(params, errors \\ []) do
     to_form(params, as: :closure, errors: errors)
   end
@@ -4087,7 +4110,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         </div>
       </div>
       <p id="closure-window-help" class="mt-1.5 text-[13px] text-muted">
-        Service time, 24-hour. For 2 AM the next day, enter 26:00.
+        Enter 10 or 10:00 for 10 AM. For 2 AM the next day, enter 26:00.
       </p>
       <p
         :if={@errors != []}

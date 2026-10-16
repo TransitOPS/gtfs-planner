@@ -679,7 +679,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
       assert has_element?(view, "#other-levels-panel[role='dialog']")
     end
 
-    test "action strip keeps the levels and marks Align as the current mode", %{
+    test "bottom bar keeps the levels and action strip marks Align as the current mode", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -695,7 +695,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveMapModeTest do
 
       render_hook(view, "switch_mode", %{"mode" => "map"})
 
-      assert has_element?(view, "#diagram-action-strip #level-control")
+      assert has_element?(view, "#diagram-status-bar #level-control")
       assert has_element?(view, "#diagram-action-strip #diagram-mode-option-map[checked]")
 
       refute has_element?(view, "#adjacent-overlay-toggle-group")

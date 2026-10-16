@@ -11,9 +11,8 @@ defmodule GtfsPlannerWeb.StationWorkspace do
   The header carries `station-sub-nav` and `station-tab-<view>` ids so the views
   stay reachable by the same hooks as the tab bar it replaces.
 
-  The floorplan editor fits its workspace to the viewport under the header, so it
-  passes `compact` to put the way back, the name and the identifier on one row
-  instead of three.
+  The floorplan editor reuses `station_navigation/1` above its own compact
+  title and editing controls.
   """
   use Phoenix.Component
   use GtfsPlannerWeb, :verified_routes
@@ -115,20 +114,38 @@ defmodule GtfsPlannerWeb.StationWorkspace do
           {render_slot(@actions)}
         </div>
       </div>
-      <nav :if={@tabs != []} aria-label="Station views" class="-mb-px overflow-x-auto">
-        <div class="flex min-w-max items-end gap-x-1">
-          <.link
-            :for={{tab, label, suffix} <- @tabs}
-            id={"station-tab-#{tab}"}
-            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}" <> suffix}
-            aria-current={@active_tab == tab && "page"}
-            class={tab_class(@active_tab == tab)}
-          >
-            {label}
-          </.link>
-        </div>
-      </nav>
+      <.station_navigation
+        :if={@tabs != []}
+        stop_id={@stop_id}
+        gtfs_version_id={@gtfs_version_id}
+        active_tab={@active_tab}
+      />
     </div>
+    """
+  end
+
+  @doc "The shared station-view navigation, also used above the floorplan editor."
+  attr :stop_id, :string, required: true
+  attr :gtfs_version_id, :any, required: true
+  attr :active_tab, :atom, default: :details
+
+  def station_navigation(assigns) do
+    assigns = assign(assigns, :tabs, @tabs)
+
+    ~H"""
+    <nav aria-label="Station views" class="-mb-px overflow-x-auto">
+      <div class="flex min-w-max items-end gap-x-1">
+        <.link
+          :for={{tab, label, suffix} <- @tabs}
+          id={"station-tab-#{tab}"}
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}" <> suffix}
+          aria-current={@active_tab == tab && "page"}
+          class={tab_class(@active_tab == tab)}
+        >
+          {label}
+        </.link>
+      </div>
+    </nav>
     """
   end
 

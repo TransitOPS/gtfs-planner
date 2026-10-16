@@ -901,11 +901,10 @@ test.describe("align workspace layout and interaction", () => {
 
     // The canvas holds the rotate and scale handles, and they are reached before
     // the tools panel, so no control over the map is keyboard-unreachable.
-    const fromMode = await collectTabOrder(page, "#diagram-mode-option-map", 6);
+    const fromMode = await collectTabOrder(page, "#diagram-mode-option-map", 5);
     expect(fromMode).toEqual([
       "diagram-mode-option-map",
-      "other-levels-button",
-      "diagram-more-trigger",
+      "floorplan-settings-trigger",
       "",
       "map-alignment-rotate-handle",
       "map-alignment-scale-handle",
