@@ -145,7 +145,7 @@ defmodule GtfsPlanner.Validations.Evidence do
 
   # The native export types, the shapes a stored or computed export profile may
   # take, and the number of completed checks a readiness read compares.
-  @export_types [:full, :pathways, :operations]
+  @export_types [:full, :pathways, :operations, :operations_only]
   @artifact_kinds [:primary, :flex]
   @profile_export_types ["full", "pathways", "operations"]
   @profile_artifact_kinds ["primary", "flex"]
@@ -627,7 +627,7 @@ defmodule GtfsPlanner.Validations.Evidence do
       schema_version: 1,
       export_type: to_string(type),
       include_flex:
-        defaults.include_flex and type != :pathways and
+        defaults.include_flex and type not in [:pathways, :operations_only] and
           ProductSurfaces.visible?(organization, :flex),
       artifact_kind: "primary",
       estimate_method: defaults_estimate_method(defaults)
@@ -655,7 +655,8 @@ defmodule GtfsPlanner.Validations.Evidence do
     end
   end
 
-  defp require_visible_export_type(organization, :operations) do
+  defp require_visible_export_type(organization, type)
+       when type in [:operations, :operations_only] do
     if ProductSurfaces.visible?(organization, :operations_export),
       do: :ok,
       else: {:error, :unavailable}

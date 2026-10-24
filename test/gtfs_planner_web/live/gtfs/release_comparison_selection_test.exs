@@ -1,11 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
   @moduledoc """
-  Focused evidence for CL-8/FH-8: an ordinary authenticated Export page reaches
+  Focused evidence for CL-8/FH-8: an ordinary authenticated Compare page reaches
   the real native comparison, and a replaced, closed or superseded request never
   wins.
 
-  Every case drives the production path: the routed `/gtfs/:version_id/export`
-  page, `ExportLive`'s own events, and `ReleaseComparison.start/4` through the
+  Every case drives the production path: the routed `/gtfs/:version_id/compare`
+  page, `CompareLive`'s own events, and `ReleaseComparison.start/4` through the
   real `GtfsPlanner.Gtfs.ReleaseComparison.Runner`, the real `ExportRuns`
   claim/receipt transitions and the real `ArtifactStorage`. The artifacts are
   the ones the native exporter produced through `Export.build_zip/3`; nothing is
@@ -72,13 +72,14 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
   end
 
   describe "the rendered form" do
-    test "names both sides and the date range, and defaults none of them", context do
+    test "defaults the newest comparable to the right and the second-newest to the left",
+         context do
       %{conn: conn, user: user, organization: organization, version: version} = context
       native_run!(organization, version, 1)
       native_run!(organization, version, 2)
 
       {:ok, view, html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       assert html =~ "export-comparison-form"
       assert html =~ "comparison-left"
@@ -88,19 +89,23 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       assert html =~ "comparison-start"
       assert html =~ "comparison-status"
 
-      # Both run selectors are labelled and offer a prompt rather than a
-      # pre-selected file, and the date range starts blank.
-      assert field_label(view, "select#comparison-left") == "Earlier export"
-      assert field_label(view, "select#comparison-right") == "Candidate export"
+      # Both run selectors are labelled, and the date range starts blank.
+      assert field_label(view, "select#comparison-left") == "Earlier file"
+      assert field_label(view, "select#comparison-right") == "Newer file"
       assert field_label(view, "input#comparison-from") == "From"
       assert field_label(view, "input#comparison-to") == "To"
 
-      # The prompt option is the only one that can carry the empty value, and
-      # neither side is silently defaulted to a real file.
-      assert selected_values(html, "select#comparison-left") == []
-      assert selected_values(html, "select#comparison-right") == []
+      # The prompt is still offered, but the page starts on a real default: the
+      # newest comparable file on the right and the second-newest on the left,
+      # in the production listing's own order. A default is a starting point,
+      # not a decision the editor can no longer change.
       assert fragment_values(html, "select#comparison-left option") |> List.first() == ""
       assert fragment_values(html, "select#comparison-right option") |> List.first() == ""
+
+      [newest, second | _rest] = ExportRuns.list_comparable(organization.id)
+
+      assert selected_run_ids(view, "comparison-left") == [to_string(second.id)]
+      assert selected_run_ids(view, "comparison-right") == [to_string(newest.id)]
 
       assert date_value(html, "input#comparison-from") == ""
       assert date_value(html, "input#comparison-to") == ""
@@ -131,7 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       pathways = pathways_run!(organization, gtfs_version_fixture(organization.id))
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       options = option_values(view, "select#comparison-left")
 
@@ -148,7 +153,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = native_run!(organization, gtfs_version_fixture(organization.id), 7)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       html =
         view
@@ -188,7 +193,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       native_run!(organization, version, 19)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       # The form submitted with no files chosen at all. Every cast refuses, and
       # the page must say so rather than the LiveView crashing on an answer it
@@ -203,14 +208,14 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       refute render(view) =~ "comparison-cancel"
     end
 
-    test "a refused window retains the entered dates and files, and the export form still works",
+    test "a refused window retains the entered dates and files",
          context do
       %{conn: conn, user: user, organization: organization, version: version} = context
       left = native_run!(organization, version, 8)
       right = native_run!(organization, gtfs_version_fixture(organization.id), 9)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       view
       |> form("form#export-comparison-form",
@@ -233,12 +238,10 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       assert date_value(render(view), "input#comparison-from") == @to
       assert date_value(render(view), "input#comparison-to") == @from
 
-      # Nothing was claimed, and the export form the page already had is intact.
+      # Nothing was claimed by the refused comparison.
       for run <- [left, right] do
         assert %Run{download_count: 0, download_claimed_until: nil} = Repo.get!(Run, run.id)
       end
-
-      assert has_element?(view, "form#gtfs-export-form")
     end
 
     test "a forged event carrying another organization's run acquires no claim", context do
@@ -252,7 +255,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
         native_run!(foreign_organization, gtfs_version_fixture(foreign_organization.id), 12)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       # Submitted through the real form exactly as a forged client event would:
       # a run id this page never listed, and an empty window. `render_submit/2`
@@ -290,7 +293,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = slow_run!(organization, gtfs_version_fixture(organization.id))
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       assert render(view) =~ "comparison-cancel"
@@ -323,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = native_run!(organization, gtfs_version_fixture(organization.id), 14)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       await_comparison(view)
@@ -344,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = slow_run!(organization, gtfs_version_fixture(organization.id))
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       render_click(view, "cancel_comparison")
@@ -359,10 +362,8 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       assert date_value(render(view), "input#comparison-from") == @from
       assert date_value(render(view), "input#comparison-to") == @to
 
-      # The export form and the check panel are untouched by a comparison
-      # cancellation: no export was cancelled, retried or started.
-      assert has_element?(view, "form#gtfs-export-form")
-      assert has_element?(view, "#export-run-status")
+      # The comparison stopped on its own; no export job was cancelled, retried
+      # or started by the comparison cancellation.
     end
 
     test "a forged second start while one is running keeps the first coordinator", context do
@@ -371,7 +372,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = slow_run!(organization, gtfs_version_fixture(organization.id))
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       assert render(view) =~ "comparison-cancel"
@@ -401,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       %{conn: conn, user: user, organization: organization, version: version} = context
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       # `Integer.parse/1` returns `{12, "abc"}` and `{5, ".5"}` for these.
       for limit <- ["12abc", "5.5", "-3x", "abc"] do
@@ -418,7 +419,11 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
 
       render_hook(view, "narrow_comparison", %{"comparison_scope" => ["not-a-map"]})
 
-      assert has_element?(view, "#comparison-status-title", "No comparison running")
+      # No files are listed, so the page is its empty state and no forged form
+      # event can make it render a comparison surface.
+      assert has_element?(view, "#comparison-empty")
+      refute has_element?(view, "#export-comparison-form")
+      refute has_element?(view, "#comparison-results")
     end
 
     test "closing and reopening does not adopt the previous request's result", context do
@@ -427,7 +432,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = native_run!(organization, gtfs_version_fixture(organization.id), 16)
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       await_comparison(view)
@@ -453,7 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
       right = slow_run!(organization, gtfs_version_fixture(organization.id))
 
       {:ok, view, _html} =
-        live(log_in_user(conn, user, organization: organization), export_path(version))
+        live(log_in_user(conn, user, organization: organization), compare_path(version))
 
       start_comparison(view, left, right)
       assert render(view) =~ "comparison-cancel"
@@ -480,7 +485,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonSelectionTest do
 
   # -- helpers ----------------------------------------------------------------
 
-  defp export_path(version), do: "/gtfs/#{version.id}/export"
+  defp compare_path(version), do: "/gtfs/#{version.id}/compare"
 
   defp comparison_pid(%Phoenix.LiveView.Socket{assigns: assigns}),
     do: Map.fetch!(assigns, :comparison_coordinator)

@@ -69,23 +69,32 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
 
     {:ok, main_view, _html} = live(log_in, "/gtfs/#{version.id}/export")
 
-    assert has_element?(main_view, "#export-download-link", "Download file")
-    refute has_element?(main_view, "#export-flex-download-link")
+    assert has_element?(main_view, "#export-file-#{main_run.id}-download", "Download file")
+    refute has_element?(main_view, "#export-file-#{main_run.id}-download-flex")
     refute main_run.flex_artifact_key
 
     flex_run = ready_run!(organization.id, version.id, "main zip bytes", "flex zip bytes")
 
     {:ok, flex_view, _html} = live(log_in, "/gtfs/#{version.id}/export")
 
-    assert attribute_values(render(flex_view), "#export-download-link", "href") == [
-             "/gtfs/#{version.id}/export-runs/#{flex_run.id}/download"
-           ]
+    assert attribute_values(render(flex_view), "#export-file-#{flex_run.id}-download", "href") ==
+             [
+               "/gtfs/#{version.id}/export-runs/#{flex_run.id}/download"
+             ]
 
-    assert attribute_values(render(flex_view), "#export-flex-download-link", "href") == [
+    assert attribute_values(
+             render(flex_view),
+             "#export-file-#{flex_run.id}-download-flex",
+             "href"
+           ) == [
              "/gtfs/#{version.id}/export-runs/#{flex_run.id}/download?file=flex"
            ]
 
-    assert has_element?(flex_view, "#export-flex-download-link", "Download flex file")
+    assert has_element?(
+             flex_view,
+             "#export-file-#{flex_run.id}-download-flex",
+             "Download flex file"
+           )
   end
 
   describe "flex validation" do

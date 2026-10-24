@@ -1,11 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
   @moduledoc """
   Focused evidence for CL-9/FH-9: the completed native comparison renders its
-  differences, its uncertainty and its explicit scope on the ordinary Export
-  page, and a large native result stays inspectable through stream paging.
+  differences, its uncertainty and its explicit scope on the Compare page, and a
+  large native result stays inspectable through stream paging.
 
-  Every case drives the production path: the routed `/gtfs/:version_id/export`
-  page, `ExportLive`'s own events, and a real `ReleaseComparison.Runner` reading
+  Every case drives the production path: the routed `/gtfs/:version_id/compare`
+  page, `CompareLive`'s own events, and a real `ReleaseComparison.Runner` reading
   real published artifacts through the real reader, projection, matching,
   service and comparison code. No result is manufactured and nothing is injected
   into the LiveView.
@@ -46,7 +46,6 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
   # 31 Dec holds 44 weekdays - comfortably more than one 25-row page.
   @long_from "2026-11-01"
   @long_to "2026-12-31"
-  @long_dates 44
 
   @trips 4
   @stops 5
@@ -137,14 +136,51 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       assert has_element?(view, "#comparison-scheduled-delta", "-5")
       assert has_element?(view, "#comparison-exact-delta", "-5")
 
-      # The difference itself names the route pair, the day and the loss.
+      # This result has no unreadable rows, so the unknown section does not
+      # exist at all rather than rendering empty.
+      refute has_element?(view, "#comparison-unknowns-section")
+
+      # The grouped row names the route pair, the change, the dates and the loss.
       assert has_element?(view, "#comparison-rows", "Trip count changed")
       assert has_element?(view, "#comparison-rows", "R1 → R1")
       assert has_element?(view, "#comparison-rows", "trips -1")
       assert has_element?(view, "#comparison-rows", @thursday)
 
-      # One row per changed date: all five weekdays lost the same trip.
-      assert has_element?(view, "#comparison-differences-title", "5")
+      # All five weekdays lost the same trip, so one group holds five changes.
+      assert has_element?(view, "#comparison-kind-all", "All 5")
+
+      # The per-date chart labels every bar with its date and its delta meaning,
+      # so no value is read without the date it belongs to.
+      assert has_element?(view, "#comparison-per-date", "Trip change by date")
+      assert has_element?(view, "#comparison-date-2026-11-23", "−1")
+      assert has_element?(view, "#comparison-date-2026-11-23", "Nov 23")
+      assert "Nov 23: lose 1 trip" in per_date_labels(view)
+
+      # The chart reserves one 20px half for either sign inside its 44px plot.
+      # An extremum therefore cannot extend into the value or date labels.
+      assert view
+             |> element("#comparison-date-2026-11-23 div[style='height: 20px']")
+             |> has_element?()
+    end
+
+    test "an out-of-service window is incomplete, never the No differences card", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), full_week_zip())
+
+      # Both files are identical, but a Sat–Sun window states no service at all,
+      # so the comparison is incomplete and may not promise identical service.
+      view = compare!(view(context), left, right, "2026-11-28", "2026-11-29")
+
+      refute has_element?(view, "#comparison-nochange")
+      assert has_element?(view, "#comparison-results")
+      assert has_element?(view, "#comparison-completeness", "Incomplete for this window")
+
+      assert has_element?(
+               view,
+               "#comparison-completeness-reasons",
+               "Neither file stated service"
+             )
     end
 
     test "a complete comparison with no differences says so, and is not confused with an incomplete one",
@@ -168,7 +204,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
 
       # An unmapped route cannot be totalled, so the same page shape reports a
       # reason instead of a zero.
-      refute has_element?(view, "#comparison-differences", "Service added")
+      refute has_element?(view, "#comparison-rows", "Service added")
 
       second =
         publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
@@ -181,7 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       assert has_element?(incomplete, "#comparison-completeness", "Incomplete for this window")
       assert has_element?(incomplete, "#comparison-structural", "Service added")
       assert has_element?(incomplete, "#comparison-unresolved", "no candidate on the other side")
-      refute has_element?(incomplete, "#comparison-differences", "Service added")
+      refute has_element?(incomplete, "#comparison-rows", "Service added")
     end
 
     test "an unmeasured total renders its reason, never a zero", context do
@@ -192,11 +228,62 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       view = compare!(view(context), left, right)
 
       # A route present on one side only cannot be totalled across the feed, so
-      # the page states the reason instead of showing "no change".
+      # the page renders the cell as "—" and states the reason, never as 0.
       assert has_element?(view, "#comparison-totals-unknown", "was not measured")
       assert has_element?(view, "#comparison-total-reasons", "no proven match")
-      refute has_element?(view, "#comparison-scheduled-delta")
-      refute has_element?(view, "#comparison-exact-delta")
+      assert has_element?(view, "#comparison-scheduled-delta", "—")
+      assert has_element?(view, "#comparison-exact-delta", "—")
+      refute has_element?(view, "#comparison-scheduled-delta", "0")
+      refute has_element?(view, "#comparison-exact-delta", "0")
+    end
+
+    test "a nil exact total renders — with its reasons", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-exact-delta", "—")
+      assert has_element?(view, "#comparison-totals-unknown", "shown as —")
+      assert has_element?(view, "#comparison-total-reasons", "no proven match")
+    end
+
+    test "an incomplete result renders the incomplete badge with reasons", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-completeness", "Incomplete")
+      assert has_element?(view, "#comparison-completeness-reasons")
+    end
+
+    test "a date with an unmapped group renders — in the bars", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), extra_route_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-date-#{@from}", "—")
+    end
+
+    test "a complete result with no differences renders the No differences card", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+      right = publish_run!(organization, gtfs_version_fixture(organization.id), full_week_zip())
+
+      view = compare!(view(context), left, right)
+
+      assert has_element?(view, "#comparison-nochange", "No differences")
+      assert has_element?(view, "#comparison-nochange", "same service")
+
+      # The no-change state is its own card, not the result card with empty
+      # sections; the form above it stays where the editor left it.
+      refute has_element?(view, "#comparison-result")
+      assert has_element?(view, "#export-comparison-form")
     end
 
     test "unreadable rows are disclosed as unknowns with their source, and never as zero service",
@@ -265,58 +352,61 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
   end
 
   describe "paging a large native result" do
-    test "streams pages of the differences and keeps the true total beside them", context do
+    test "streams pages of the structural disclosure and keeps the true total beside them",
+         context do
       %{organization: organization, version: version} = context
-      # One trip fewer over a 61-day window is one difference row per weekday,
-      # so the result really does hold more rows than one 25-row page shows.
-      left = publish_run!(organization, version, full_week_zip())
+      # Renaming a 30-stop fixture produces more structural rows than one 25-row
+      # page shows, so the streamed disclosure really does page.
+      left = publish_run!(organization, version, week_zip(stops: 30))
 
       right =
-        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+        publish_run!(
+          organization,
+          gtfs_version_fixture(organization.id),
+          week_zip(stops: 30, renamed: true)
+        )
 
-      view = compare!(view(context), left, right, @long_from, @long_to)
+      view = compare!(view(context), left, right)
+      total = length(held_view(view).structural_changes)
 
-      # Every list is a stream with its own DOM id, so a large result renders as
-      # a bounded page rather than thousands of rows.
-      for id <-
-            ~w(comparison-rows comparison-structural-rows comparison-unresolved-rows comparison-unknowns) do
-        assert has_element?(view, "##{id}[phx-update=stream]"), "missing streamed list #{id}"
-      end
+      assert total > 25
+
+      # Every list that has rows is a stream with its own DOM id, so a large
+      # result renders as a bounded page rather than thousands of rows.
+      assert has_element?(view, "#comparison-structural-rows[phx-update=stream]")
 
       # The counter is the whole collection, not the page, and the first page
       # shows only its own 25 rows.
       assert has_element?(
                view,
-               "#comparison-differences-paging",
-               "Showing 1–25 of #{@long_dates} differences"
+               "#comparison-structural-paging",
+               "Showing 1–25 of #{total} changes"
              )
 
-      assert has_element?(view, "#comparison-differences-next")
-      assert length(difference_row_ids(view)) == 25
+      assert has_element?(view, "#comparison-structural-next")
+      assert length(structural_row_ids(view)) == 25
 
       # Paging is deterministic: the next page is a different, disjoint slice of
-      # the same result and its counter states the same whole. 44 rows over two
-      # 25-row pages leaves 19 on the last one, so the counter is never asked to
-      # show a row the result does not hold.
-      first = difference_row_ids(view)
-      view |> element("#comparison-differences-next") |> render_click()
+      # the same result and its counter states the same whole.
+      first = structural_row_ids(view)
+      view |> element("#comparison-structural-next") |> render_click()
 
-      second = difference_row_ids(view)
+      second = structural_row_ids(view)
 
-      # The container now draws only the rows of the page it is on: the 19 this
+      # The container now draws only the rows of the page it is on: the rows this
       # result had not shown yet, and none of the first page's 25.
-      assert length(second) == 19
+      assert length(second) == total - 25
       assert first -- second == first
       assert second -- first == second
 
       assert has_element?(
                view,
-               "#comparison-differences-paging",
-               "Showing 26–44 of #{@long_dates}"
+               "#comparison-structural-paging",
+               "Showing 26–#{total} of #{total}"
              )
 
-      assert has_element?(view, "#comparison-differences-previous")
-      refute has_element?(view, "#comparison-differences-next")
+      assert has_element?(view, "#comparison-structural-previous")
+      refute has_element?(view, "#comparison-structural-next")
     end
 
     test "a forged paging event cannot read outside the comparison's own collections", context do
@@ -334,9 +424,9 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       # may raise, and none may change the page.
       for params <- [
             %{"collection" => "artifacts", "offset" => "0", "limit" => "25"},
-            %{"collection" => "differences", "offset" => "nonsense", "limit" => "25"},
-            %{"collection" => "differences", "offset" => "-5", "limit" => "25"},
-            %{"collection" => "differences", "offset" => "0", "limit" => "100000"}
+            %{"collection" => "structural", "offset" => "nonsense", "limit" => "25"},
+            %{"collection" => "structural", "offset" => "-5", "limit" => "25"},
+            %{"collection" => "structural", "offset" => "0", "limit" => "100000"}
           ] do
         render_click(view, "page_comparison", params)
         assert render(view) == before
@@ -345,23 +435,28 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
 
     test "an oversized page limit is clamped to the documented maximum", context do
       %{organization: organization, version: version} = context
-      left = publish_run!(organization, version, full_week_zip())
+      left = publish_run!(organization, version, week_zip(stops: 30))
 
       right =
-        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+        publish_run!(
+          organization,
+          gtfs_version_fixture(organization.id),
+          week_zip(stops: 30, renamed: true)
+        )
 
       view = compare!(view(context), left, right)
+      total = length(held_view(view).structural_changes)
 
       # A limit is a display choice, so an absurd one is clamped rather than
-      # refused. This result holds 5 rows, so the clamped page shows them all.
+      # refused. This result holds `total` rows, so the clamped page shows them all.
       render_click(view, "page_comparison", %{
-        "collection" => "comparison_differences",
+        "collection" => "comparison_structural",
         "offset" => "0",
         "limit" => "100000"
       })
 
-      assert length(difference_row_ids(view)) == 5
-      refute has_element?(view, "#comparison-differences-paging")
+      assert length(structural_row_ids(view)) == total
+      refute has_element?(view, "#comparison-structural-paging")
     end
   end
 
@@ -371,24 +466,67 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       left = publish_run!(organization, version, full_week_zip())
 
       right =
-        publish_run!(organization, gtfs_version_fixture(organization.id), one_trip_removed_zip())
+        publish_run!(organization, gtfs_version_fixture(organization.id), renamed_zip())
 
       view = compare!(view(context), left, right)
       refute has_element?(view, "#comparison-inspected")
 
       # The control is an ordinary button, so it is reachable and operable from
       # the keyboard without any custom key handling.
-      assert view |> element("#comparison-rows button") |> has_element?()
+      assert view |> element("#comparison-structural-rows button") |> has_element?()
 
-      view |> element(first_row_button(view, "differences")) |> render_click()
+      view |> element(first_row_button(view, "structural")) |> render_click()
 
       assert has_element?(view, "#comparison-inspected", "One row in full")
-      # The detail is this row's: its kind, its route pair, its date, its own
-      # counts and the physical rows of the admitted bytes it came from.
-      assert has_element?(view, "#comparison-inspected", "Trip count changed")
-      assert has_element?(view, "#comparison-inspected", "R1 → R1")
-      assert has_element?(view, "#comparison-inspected", @from)
-      assert has_element?(view, "#comparison-inspected", "trips.txt row")
+      # The detail is this row's: the rename it records and the physical rows of
+      # the admitted bytes it came from.
+      assert has_element?(view, "#comparison-inspected", "Renamed")
+      assert has_element?(view, "#comparison-inspected", ".txt row")
+
+      render_click(view, "close_comparison_detail")
+      refute has_element?(view, "#comparison-inspected")
+    end
+
+    test "a filtered grouped row inspects the timing and trip ids of both files", context do
+      %{organization: organization, version: version} = context
+      left = publish_run!(organization, version, full_week_zip())
+
+      right =
+        publish_run!(
+          organization,
+          gtfs_version_fixture(organization.id),
+          week_zip(trips: 3, shift_seconds: 300)
+        )
+
+      view = compare!(view(context), left, right)
+
+      # This result has no unreadable rows, so the unknown section does not
+      # exist at all rather than rendering empty.
+      refute has_element?(view, "#comparison-unknowns-section")
+
+      # The unfiltered table holds both groups: the removed trip and the moved
+      # departure times.
+      count_row = route_row_id(view, "Trip count changed")
+      timing_row = route_row_id(view, "Timing changed")
+      refute count_row == timing_row
+
+      # Filtering keeps only the timing group. A row the filter hides cannot be
+      # inspected, even with its real id.
+      view |> element("#comparison-kind-timing_changed") |> render_click()
+      assert route_row_ids(view) == [timing_row]
+
+      render_click(view, "inspect_comparison_route", %{"row" => count_row})
+      refute has_element?(view, "#comparison-inspected")
+
+      view |> element("##{timing_row}-inspect") |> render_click()
+
+      # The detail names the trip each file states and the timing it departed,
+      # so a timing summary can always be opened to its own evidence.
+      assert has_element?(view, "#comparison-inspected", "Timing changed")
+      assert has_element?(view, "#comparison-inspected", "T1")
+      assert has_element?(view, "#comparison-inspected", "01:00:00")
+      assert has_element?(view, "#comparison-inspected", "01:05:00")
+      assert has_element?(view, "#comparison-inspected", "later by 5 min")
 
       render_click(view, "close_comparison_detail")
       refute has_element?(view, "#comparison-inspected")
@@ -417,7 +555,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       view = compare!(view(context), left, right)
 
       render_click(view, "inspect_comparison_row", %{
-        "collection" => "differences",
+        "collection" => "structural",
         "row" => "../../etc/passwd"
       })
 
@@ -472,11 +610,9 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       # invalid, so LiveView stops pruning it and a narrowed scope leaves the
       # full comparison's rows on the page. Each empty state is a sibling.
       for container <-
-            ~w(comparison-rows comparison-structural-rows comparison-unresolved-rows comparison-unknowns) do
+            ~w(comparison-structural-rows comparison-unresolved-rows comparison-unknowns) do
         refute has_element?(view, "##{container} ##{container}-empty")
       end
-
-      refute has_element?(view, "#comparison-differences-empty")
     end
 
     test "narrowing to a date with no change drops the loss rather than keeping it", context do
@@ -493,9 +629,9 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       view = compare!(view(context), left, right)
 
       # The extra trip is the only thing that moved, so the whole comparison
-      # already shows exactly -1 and one difference.
+      # already shows exactly -1 and one difference group.
       assert has_element?(view, "#comparison-scheduled-delta", "-1")
-      assert has_element?(view, "#comparison-differences-title", "1")
+      assert has_element?(view, "#comparison-kind-all", "All 1")
 
       narrow!(view, ["R1/R1"], [@friday])
 
@@ -505,7 +641,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       assert has_element?(view, "#comparison-scheduled-delta", "no change")
       assert has_element?(view, "#comparison-exact-delta", "no change")
       assert has_element?(view, "#comparison-completeness", "Complete for this window")
-      refute has_element?(view, "#comparison-differences-paging")
+      assert has_element?(view, "#comparison-rows", "No changes match this filter")
     end
 
     test "clearing the scope restores the full comparison without recomputing it", context do
@@ -717,7 +853,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
 
   defp view(%{conn: conn, user: user, organization: organization, version: version}) do
     {:ok, view, _html} =
-      live(log_in_user(conn, user, organization: organization), "/gtfs/#{version.id}/export")
+      live(log_in_user(conn, user, organization: organization), "/gtfs/#{version.id}/compare")
 
     view
   end
@@ -741,7 +877,11 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
         has_element?(view, "#comparison-status-title", "couldn’t finish")
     end)
 
-    assert has_element?(view, "#comparison-results")
+    # A complete no-change result renders its own state card instead of the
+    # result card; every other terminal result renders the result.
+    assert has_element?(view, "#comparison-results") or
+             has_element?(view, "#comparison-nochange")
+
     view
   end
 
@@ -777,15 +917,7 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
   end
 
   # The comparison's own content, without the scope chooser's transient notice.
-  defp result_body(view) do
-    Enum.map_join(
-      ~w(comparison-totals comparison-differences comparison-structural comparison-unresolved comparison-unknowns),
-      "\n",
-      fn id ->
-        text_of(render(view), "##{id}")
-      end
-    )
-  end
+  defp result_body(view), do: text_of(render(view), "#comparison-result")
 
   # The DOM ids of the rows a streamed container currently draws. A row's own id
   # is its stream's name plus a hash of its content, so filtering on that shape
@@ -800,10 +932,43 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
     |> Enum.filter(&String.starts_with?(&1, stream <> "-"))
   end
 
-  # The differences list is the one this page pages, so its row ids are read
-  # under their stream's own name rather than the container's short id.
-  defp difference_row_ids(view),
-    do: streamed_row_ids(view, "rows", "comparison_differences")
+  # The structural list is the one this page pages, so its row ids are read
+  # under its stream's own name rather than the container's short id.
+  defp structural_row_ids(view),
+    do: streamed_row_ids(view, "structural-rows", "comparison_structural")
+
+  # The grouped route table's own rows, addressed by the stable id the
+  # presentation gave each group.
+  defp route_row_ids(view) do
+    view
+    |> element("#comparison-rows")
+    |> render()
+    |> fragment()
+    |> LazyHTML.query("tr[id^='comparison-route-']")
+    |> Enum.map(&(&1 |> LazyHTML.attribute("id") |> to_string()))
+  end
+
+  # The chart's own spoken labels: each bar names its date and its meaning, so
+  # the value is read with the date it belongs to.
+  defp per_date_labels(view) do
+    view
+    |> element("#comparison-per-date")
+    |> render()
+    |> fragment()
+    |> LazyHTML.query("li[aria-label]")
+    |> Enum.map(&to_string(LazyHTML.attribute(&1, "aria-label")))
+  end
+
+  defp route_row_id(view, text) do
+    view
+    |> element("#comparison-rows")
+    |> render()
+    |> fragment()
+    |> LazyHTML.query("tr[id^='comparison-route-']")
+    |> Enum.find_value(fn row ->
+      if LazyHTML.text(row) =~ text, do: row |> LazyHTML.attribute("id") |> to_string()
+    end)
+  end
 
   # The first streamed row's own Inspect control, addressed by its own DOM id so
   # the case clicks one row rather than the whole list.
@@ -894,6 +1059,8 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
 
   defp week_zip(opts \\ []) do
     trips = Keyword.get(opts, :trips, @trips)
+    stops = Keyword.get(opts, :stops, @stops)
+    shift_seconds = Keyword.get(opts, :shift_seconds, 0)
     renamed? = Keyword.get(opts, :renamed, false)
     extra_route? = Keyword.get(opts, :extra_route, false)
     bad_date? = Keyword.get(opts, :bad_date, false)
@@ -927,9 +1094,9 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       {"routes.txt",
        "route_id,agency_id,route_short_name,route_long_name,route_type\n" <>
          route_rows(route, agency, extra_route?)},
-      {"stops.txt", stops_csv(stop)},
+      {"stops.txt", stops_csv(stop, stops)},
       {"trips.txt", trips_csv(trip_rows)},
-      {"stop_times.txt", stop_times_csv(trip_rows, stop)},
+      {"stop_times.txt", stop_times_csv(trip_rows, stop, stops, shift_seconds)},
       {"calendar.txt", calendar_services_csv(service, thursday_service, extra_thursday?)}
     ]
 
@@ -993,9 +1160,9 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
     end
   end
 
-  defp stops_csv(stop) do
+  defp stops_csv(stop, stops) do
     "stop_id,stop_name,stop_lat,stop_lon\n" <>
-      Enum.map_join(1..@stops, "\n", fn index ->
+      Enum.map_join(1..stops, "\n", fn index ->
         "#{stop}#{index},Stop #{index},40.#{index},-74.#{index}"
       end)
   end
@@ -1007,14 +1174,25 @@ defmodule GtfsPlannerWeb.Gtfs.ReleaseComparisonResultsTest do
       end)
   end
 
-  defp stop_times_csv(trip_rows, stop) do
+  # Every trip departs the same stop chain from its own hour; `shift_seconds`
+  # moves the candidate's whole chain by that much so a timing change is
+  # comparable by hand (5 minutes later leaves "01:05:00" where the earlier
+  # file states "01:00:00").
+  defp stop_times_csv(trip_rows, stop, stops, shift_seconds) do
     "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" <>
       Enum.map_join(trip_rows, "\n", fn {_route, _service, trip, _stops} ->
-        Enum.map_join(1..@stops, "\n", fn index ->
-          "#{trip},0#{index}:00:00,0#{index}:00:00,#{stop}#{index},#{index}"
+        Enum.map_join(1..stops, "\n", fn index ->
+          time = format_time(index * 3600 + shift_seconds)
+          "#{trip},#{time},#{time},#{stop}#{index},#{index}"
         end)
       end)
   end
+
+  defp format_time(secs) do
+    "#{pad2(div(secs, 3600))}:#{pad2(div(rem(secs, 3600), 60))}:#{pad2(rem(secs, 60))}"
+  end
+
+  defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 
   defp zip(members) do
     entries = Enum.map(members, fn {name, body} -> {String.to_charlist(name), body} end)

@@ -364,6 +364,19 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       assert text(d, "#export-link") == "Export pathways"
     end
 
+    test "an operations-only export names its data and its action" do
+      html =
+        render_component(
+          &SharedComponents.check_and_share/1,
+          check_assigns(%{export: export(%{type: :operations_only, expired?: false})})
+        )
+
+      d = doc(html)
+
+      assert text(d, "#export-meta") == "Operations data export · Sep 26, 2026, 10:20 AM"
+      assert text(d, "#export-link") == "Export operations data"
+    end
+
     test "no export names the product's missing export" do
       html =
         render_component(

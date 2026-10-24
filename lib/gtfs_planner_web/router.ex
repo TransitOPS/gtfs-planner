@@ -270,6 +270,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/settings/:section", Gtfs.SettingsLive, :section
       live "/import", Gtfs.ImportLive, :index
       live "/export", Gtfs.ExportLive, :index
+      live "/compare", Gtfs.CompareLive, :index
       live "/validation/:validation_id", Gtfs.ValidationResultLive, :show
       live "/station-reachability/:validation_id", Gtfs.StationReachabilityResultLive, :show
     end

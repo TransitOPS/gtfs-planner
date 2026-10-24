@@ -666,20 +666,21 @@ test.describe("Garages, Fleet and operations export", () => {
 
     await page.goto(`/gtfs/${versionId}/export?type=operations`);
     await expect(page.locator("#export-type-operations")).toBeChecked();
-    await expect(page.locator("#operations-export-note")).toBeVisible();
+    await expect(page.locator("#start-export")).toContainText("Export feed with operations");
     await expect(page.locator("#export-inventory")).toContainText("stops_supplement.txt");
     await expect(page.locator("#export-inventory")).toContainText("vehicles.txt");
 
     await waitForLiveView(page);
     await page.locator("#start-export").click();
 
-    const conflicts = page.locator("#export-conflicts li");
+    const conflicts = page.locator("#export-garage-clash-details li");
     await expect(conflicts).toHaveCount(1, { timeout: 60_000 });
     await expect(conflicts.first()).toContainText(
       `Garage "${garageName}" (${CONFLICTING_GARAGE_ID}) matches the stop `,
     );
     await expect(page.locator("#export-download-link")).toHaveCount(0);
-    await expect(page.locator("#retry-export")).toBeVisible();
+    const retry = page.locator("[id^='export-file-'][id$='-retry']").first();
+    await expect(retry).toBeVisible();
     await expect(page.locator("#export-edit-garages")).toHaveAttribute(
       "href",
       `/gtfs/${versionId}/settings/garages`,
@@ -716,14 +717,12 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/export?type=operations`);
     await waitForLiveView(page);
 
-    // The view has joined, so one click restarts the failed run. Restarting
-    // again would not help: while the build runs the button is replaced, and a
-    // second click would wait for a button that only a failed run renders. The
-    // build gets the time it needs on a busy machine.
-    await page.locator("#retry-export").click();
+    // The view has joined, so one click on the failed file row restarts that
+    // exact run. The build gets the time it needs on a busy machine.
+    await page.locator("[id^='export-file-'][id$='-retry']").first().click();
     await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 150_000 });
 
-    await expect(page.locator("#export-conflicts")).toHaveCount(0);
+    await expect(page.locator("#export-garage-clash")).toHaveCount(0);
 
     await page.screenshot({ path: testInfo.outputPath("export-ready-1440x1000.png") });
 

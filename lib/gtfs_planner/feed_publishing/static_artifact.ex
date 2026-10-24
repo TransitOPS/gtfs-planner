@@ -65,7 +65,7 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifact do
 
   @type pinned_artifact :: %{
           required(:path) => Path.t(),
-          required(:export_type) => :full | :pathways | :operations,
+          required(:export_type) => :full | :pathways | :operations | :operations_only,
           optional(:slot) => :main | :flex,
           optional(:filename) => String.t(),
           optional(:sha256) => String.t()
@@ -131,8 +131,9 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifact do
 
   Returns `{:error, reason}` with one of:
 
-    * `:operations_profile_not_publishable` - the run type is operations,
-      refused before the archive is opened, whatever slot it occupies
+    * `:operations_profile_not_publishable` - the run type is operations or
+      operations-only, refused before the archive is opened, whatever slot it
+      occupies
     * `:tods_content_not_publishable` - a member is internal operations data
     * `:unsafe_entry_name` - an entry name escapes the extraction root
     * `:archive_too_large` - the archive is over the import entry/size limits
@@ -149,10 +150,10 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifact do
   def inspect(artifact)
 
   def inspect(%{path: path, export_type: export_type} = artifact)
-      when is_binary(path) and export_type in [:full, :pathways, :operations] do
+      when is_binary(path) and export_type in [:full, :pathways, :operations, :operations_only] do
     # The trusted run type decides this before any archive work, so an
     # operations run cannot be published by pointing the caller at another slot.
-    if export_type == :operations do
+    if export_type in [:operations, :operations_only] do
       {:error, :operations_profile_not_publishable}
     else
       inspect_pinned(artifact, %{filename: artifact_filename(artifact, path), path: path})

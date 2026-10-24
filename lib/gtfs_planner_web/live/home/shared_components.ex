@@ -701,10 +701,12 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   defp export_type_label(:full), do: "Full GTFS"
   defp export_type_label(:pathways), do: "Pathways export"
   defp export_type_label(:operations), do: "Operations export"
+  defp export_type_label(:operations_only), do: "Operations data export"
 
   defp export_action(:full), do: "Export GTFS"
   defp export_action(:pathways), do: "Export pathways"
   defp export_action(:operations), do: "Export operations"
+  defp export_action(:operations_only), do: "Export operations data"
 
   defp export_status(%{expired?: true}), do: "Download expired"
   defp export_status(%{state: :ready}), do: "Download available"

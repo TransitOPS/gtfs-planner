@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   require Logger
 
   @default_snapshot_timeout_ms 600_000
+  @reference_filenames ~w(routes.txt trips.txt stops.txt stop_times.txt calendar.txt calendar_dates.txt)
 
   @type warning :: %{
           code: String.t(),
@@ -146,7 +147,11 @@ defmodule GtfsPlanner.Gtfs.Export do
   `tods_file_omitted` warning, and a movement left out for want of a driving time
   is reported as a `tods_movements_omitted` warning rather than dropped silently.
   """
-  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
+  @spec build_zip(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only
+        ) ::
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type) do
@@ -161,7 +166,12 @@ defmodule GtfsPlanner.Gtfs.Export do
   (including the default nil) writes stored rows unchanged. `run_id` is the
   option `build_zips/4` documents.
   """
-  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
+  @spec build_zip(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only,
+          keyword()
+        ) ::
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type, opts) do
@@ -215,14 +225,21 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   ## Returns
 
-  - `{:ok, %{main: zip | nil, flex: zip | nil}, warnings}` on success
+  - `{:ok, %{main: zip | nil, flex: zip | nil, reference_sha256: digest | nil}, warnings}` on success
   - `{:error, :snapshot_timeout}` when the snapshot deadline passed
   - `{:error, :artifact_storage_unavailable}` when `run_id` is given and the
     artifact root is not configured or cannot be written
   - `{:error, reason}` for a version with nothing to export or a build failure
   """
-  @spec build_zips(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
-          {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
+  @spec build_zips(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :full | :pathways | :operations | :operations_only,
+          keyword()
+        ) ::
+          {:ok, %{main: binary() | nil, flex: binary() | nil, reference_sha256: String.t() | nil},
+           [warning()]}
+          | {:error, term()}
   def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
     with {:ok, build_parent} <-
            build_parent(organization_id, gtfs_version_id, Keyword.get(opts, :run_id)) do
@@ -230,8 +247,63 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
+  @doc """
+  Derives the operations export's file counts, runs and trips without building
+  a ZIP (R7).
+
+  One derivation: the trips-in-a-run count and the `tods_runs_uncovered`
+  warnings both come from the same `Runs.derive_version/3` structures, so this
+  preview cannot disagree with the ZIP the same version would build. Every TODS
+  file appears with its data-row count, including a file the build would omit as
+  empty, which appears with `0`.
+  """
+  @spec operations_preview(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok,
+           %{
+             files: [{String.t(), non_neg_integer()}],
+             runs: non_neg_integer(),
+             trips_in_run: non_neg_integer(),
+             trips_total: non_neg_integer(),
+             warnings: [warning()]
+           }}
+          | {:error, term()}
+  def operations_preview(organization_id, gtfs_version_id) do
+    with_read_snapshot(fn ->
+      %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
+      movements = movement_rows(organization_id, gtfs_version_id)
+      run_events = movements.run_rows.run_events
+
+      files = [
+        {Tods.stops_supplement_spec().filename, length(garages)},
+        {Tods.vehicles_spec().filename, length(vehicles)},
+        {Tods.calendar_dates_supplement_spec().filename, length(movements.rows.calendar_dates)},
+        {Tods.routes_supplement_spec().filename, length(movements.rows.routes)},
+        {Tods.trips_supplement_spec().filename, length(movements.rows.trips)},
+        {Tods.stop_times_supplement_spec().filename, length(movements.rows.stop_times)},
+        {Tods.run_events_spec().filename, length(run_events)},
+        {Tods.employee_run_dates_spec().filename, length(employee_run_date_rows(movements))}
+      ]
+
+      runs = run_events |> Enum.map(& &1.run_id) |> Enum.uniq() |> length()
+
+      warnings =
+        movement_warnings(movements) ++
+          run_warnings(movements) ++
+          assignment_warnings(movements) ++
+          tods_omission_warnings(garages, vehicles)
+
+      %{
+        files: files,
+        runs: runs,
+        trips_in_run: movements.trips_in_run,
+        trips_total: movements.trips_total,
+        warnings: warnings
+      }
+    end)
+  end
+
   defp build_zips_in(build_parent, organization_id, gtfs_version_id, export_type, opts) do
-    include_flex = Keyword.get(opts, :include_flex, false) and export_type != :pathways
+    include_flex = include_flex?(export_type, opts)
     estimate = normalize_estimate(Keyword.get(opts, :estimate))
 
     temp_dir = generate_temp_dir(build_parent)
@@ -280,7 +352,13 @@ defmodule GtfsPlanner.Gtfs.Export do
 
           main_zip = main_zip(main_result, flex_entries)
 
-          {%{main: main_zip, flex: flex_zip}, main_warnings(main_result) ++ flex_warnings}
+          reference_sha256 =
+            if export_type == :pathways or is_nil(main_zip),
+              do: nil,
+              else: reference_sha256(temp_dir)
+
+          {%{main: main_zip, flex: flex_zip, reference_sha256: reference_sha256},
+           main_warnings(main_result) ++ flex_warnings}
         end)
 
       case result do
@@ -297,6 +375,35 @@ defmodule GtfsPlanner.Gtfs.Export do
       File.rm_rf(temp_dir)
       File.rm_rf(flex_dir)
       if build_parent, do: File.rmdir(build_parent)
+    end
+  end
+
+  defp include_flex?(export_type, opts) do
+    Keyword.get(opts, :include_flex, false) and export_type not in [:pathways, :operations_only]
+  end
+
+  # R2's reference fingerprint: the six files a release note's reference is read
+  # from, hashed in the fixed order above. A missing file contributes no bytes
+  # but is still named, so adding or removing a file changes the digest.
+  defp reference_sha256(temp_dir) do
+    digest =
+      Enum.reduce(@reference_filenames, :crypto.hash_init(:sha256), fn name, state ->
+        bytes = read_reference_file(temp_dir, name)
+
+        state
+        |> :crypto.hash_update(name <> "\n" <> Integer.to_string(byte_size(bytes)) <> "\n")
+        |> :crypto.hash_update(bytes)
+      end)
+
+    digest
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp read_reference_file(temp_dir, name) do
+    case File.read(Path.join(temp_dir, name)) do
+      {:ok, bytes} -> bytes
+      {:error, _reason} -> ""
     end
   end
 
@@ -463,42 +570,42 @@ defmodule GtfsPlanner.Gtfs.Export do
          estimate,
          coords
        ) do
-    %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
-
-    conflict_rollback(
-      Operations.garage_stop_id_conflicts(organization_id, gtfs_version_id, garages)
-    )
-
-    garage_map = Map.new(garages, &{&1.garage_id, &1.name})
-    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
-
-    with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
-           export_files(
+    with {:ok, public_file_paths, tods_paths, warnings} <-
+           build_operations_files(
              temp_dir,
-             fare_specs(FileSpec.get_specs(:full), fares),
              organization_id,
              gtfs_version_id,
-             %{},
-             garage_map,
              mapper,
-             fare_opts(fares, estimate, coords)
+             estimate,
+             coords
            ) do
-      conflict_rollback(emitted_conflicts)
+      {:ok, create_zip_archive(public_file_paths ++ tods_paths, organization_id, gtfs_version_id),
+       warnings}
+    end
+  end
 
-      movements = movement_rows(organization_id, gtfs_version_id)
-
-      file_paths =
-        file_paths ++
-          export_tods_files(temp_dir, garages, vehicles) ++
-          export_movement_files(temp_dir, movements)
-
-      warnings =
-        movement_warnings(movements) ++
-          run_warnings(movements) ++
-          assignment_warnings(movements) ++
-          tods_omission_warnings(garages, vehicles) ++ missing_warnings
-
-      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
+  defp build_main(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         :operations_only,
+         mapper,
+         estimate,
+         coords
+       ) do
+    with {:ok, _public_file_paths, tods_paths, warnings} <-
+           build_operations_files(
+             temp_dir,
+             organization_id,
+             gtfs_version_id,
+             mapper,
+             estimate,
+             coords
+           ) do
+      {:ok,
+       create_zip_archive(tods_paths, organization_id, gtfs_version_id,
+         include_extensions: false
+       ), warnings}
     end
   end
 
@@ -525,6 +632,52 @@ defmodule GtfsPlanner.Gtfs.Export do
              fare_opts(fares, estimate, coords)
            ) do
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), missing_warnings}
+    end
+  end
+
+  defp build_operations_files(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         mapper,
+         estimate,
+         coords
+       ) do
+    %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
+
+    conflict_rollback(
+      Operations.garage_stop_id_conflicts(organization_id, gtfs_version_id, garages)
+    )
+
+    garage_map = Map.new(garages, &{&1.garage_id, &1.name})
+    fares = FaresProjection.export_rows(organization_id, gtfs_version_id)
+
+    with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
+           export_files(
+             temp_dir,
+             fare_specs(FileSpec.get_specs(:full), fares),
+             organization_id,
+             gtfs_version_id,
+             %{},
+             garage_map,
+             mapper,
+             fare_opts(fares, estimate, coords)
+           ) do
+      conflict_rollback(emitted_conflicts)
+
+      movements = movement_rows(organization_id, gtfs_version_id)
+
+      tods_paths =
+        export_tods_files(temp_dir, garages, vehicles) ++
+          export_movement_files(temp_dir, movements)
+
+      warnings =
+        movement_warnings(movements) ++
+          run_warnings(movements) ++
+          assignment_warnings(movements) ++
+          tods_omission_warnings(garages, vehicles) ++ missing_warnings
+
+      {:ok, file_paths, tods_paths, warnings}
     end
   end
 
@@ -1016,19 +1169,29 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       ids = Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}})
 
+      # `ids` is absent when no day type survived `collect/4` — with no day type
+      # there is no service and no movement to name, and nothing to refer back
+      # to. The default keeps a run row's lookup of a service or a movement
+      # trip from raising on a version whose movements produced no file.
+      run_rows =
+        RunsTodsExport.rows(%{
+          day_types: movements.day_types,
+          run_days: run_days,
+          ids: ids,
+          garages_by_id: movements.garages_by_id
+        })
+
+      trips_in_run = count_trips_in_run(run_days)
+
+      # The uncovered contribution is read off the same run rows `run_warnings/1`
+      # warns about, so the preview's gap and its `tods_runs_uncovered` warnings
+      # are one count. `day_uncovered/2` reports nothing for an uncut day type,
+      # which is what keeps an uncut version at 0/0.
+      trips_total = trips_in_run + Enum.sum(Enum.map(run_rows.uncovered, & &1.trips))
+
       %{
         rows: rows,
-        # `ids` is absent when no day type survived `collect/4` — with no day type
-        # there is no service and no movement to name, and nothing to refer back
-        # to. The default keeps a run row's lookup of a service or a movement
-        # trip from raising on a version whose movements produced no file.
-        run_rows:
-          RunsTodsExport.rows(%{
-            day_types: movements.day_types,
-            run_days: run_days,
-            ids: ids,
-            garages_by_id: movements.garages_by_id
-          }),
+        run_rows: run_rows,
         # The planned assignments, expanded over the very `movements` and
         # `run_days` the run rows were just built from and hung on the very
         # `service_ids` those rows used, so `employee_run_dates.txt` can never
@@ -1038,6 +1201,8 @@ defmodule GtfsPlanner.Gtfs.Export do
         # version that has never been rostered (AC-23).
         assignment_rows:
           assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids),
+        trips_in_run: trips_in_run,
+        trips_total: trips_total,
         published?: true
       }
     else
@@ -1045,9 +1210,21 @@ defmodule GtfsPlanner.Gtfs.Export do
         rows: empty_movement_rows(),
         run_rows: %{run_events: [], left_out: 0, uncovered: []},
         assignment_rows: nil,
+        trips_in_run: 0,
+        trips_total: 0,
         published?: false
       }
     end
+  end
+
+  defp count_trips_in_run(run_days) do
+    run_days
+    |> Map.values()
+    |> Enum.filter(&(&1.runs != []))
+    |> Enum.flat_map(& &1.runs)
+    |> Enum.flat_map(& &1.pieces)
+    |> Enum.flat_map(& &1.trips)
+    |> length()
   end
 
   # `Rosters.export_roster/4` composes the roster from the movements and runs
@@ -1280,8 +1457,11 @@ defmodule GtfsPlanner.Gtfs.Export do
     end)
   end
 
-  # Creates ZIP archive from file paths and returns binary
-  defp create_zip_archive(file_paths, organization_id, gtfs_version_id) do
+  # Creates ZIP archive from file paths and returns binary. Every profile
+  # appends the extensions entries (diagram coordinates, stop levels, images)
+  # except operations-only, whose ZIP holds exactly the TODS members of its
+  # operations build and no other file (R1).
+  defp create_zip_archive(file_paths, organization_id, gtfs_version_id, opts \\ []) do
     # Convert file paths to charlist tuples for :zip.create
     files =
       Enum.map(file_paths, fn path ->
@@ -1291,7 +1471,12 @@ defmodule GtfsPlanner.Gtfs.Export do
       end)
 
     # Append extensions entries (diagram coordinates, stop levels, images)
-    files = files ++ extensions_zip_entries(organization_id, gtfs_version_id)
+    files =
+      if Keyword.get(opts, :include_extensions, true) do
+        files ++ extensions_zip_entries(organization_id, gtfs_version_id)
+      else
+        files
+      end
 
     # Create ZIP in memory, with explicit error handling
     case :zip.create(~c"gtfs.zip", files, [:memory]) do

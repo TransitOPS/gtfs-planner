@@ -87,6 +87,47 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
              })
   end
 
+  test "stores the build's reference fingerprint and defaults it to nil" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    {:ok, full_run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+    {:ok, _building, full_generation, full_token} =
+      ExportRuns.claim(organization.id, full_run.id, :build)
+
+    full_artifact = publish!(organization.id, version.id, full_run.id)
+
+    assert {:ok, full_ready} =
+             ExportRuns.mark_ready(organization.id, full_run.id, full_generation, full_token, %{
+               main: full_artifact,
+               flex: nil
+             })
+
+    assert full_ready.gtfs_reference_sha256 == nil
+
+    digest = String.duplicate("a", 64)
+
+    {:ok, operations_run} =
+      ExportRuns.create_pending(organization.id, version.id, @actor, :operations)
+
+    {:ok, _building, operations_generation, operations_token} =
+      ExportRuns.claim(organization.id, operations_run.id, :build)
+
+    operations_artifact = publish!(organization.id, version.id, operations_run.id)
+
+    assert {:ok, operations_ready} =
+             ExportRuns.mark_ready(
+               organization.id,
+               operations_run.id,
+               operations_generation,
+               operations_token,
+               %{main: operations_artifact, flex: nil, reference_sha256: digest}
+             )
+
+    assert operations_ready.gtfs_reference_sha256 == digest
+  end
+
   test "registers the operations export type, reuses its active run, and rejects unknown types" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)

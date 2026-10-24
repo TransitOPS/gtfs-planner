@@ -1883,15 +1883,10 @@ test.describe("Complete route lifecycle journey", () => {
     await awaitConnectedStep033(page);
     await expect(page.locator("#export-type-full")).toBeChecked();
 
-    const previousHref = await page
-      .locator("#export-download-link")
-      .getAttribute("href");
     await page.locator("#start-export").click();
-    await expect
-      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
-        timeout: 120_000,
-      })
-      .not.toBe(previousHref);
+    await expect(page.locator("#export-download-link")).toBeVisible({
+      timeout: 120_000,
+    });
 
     const responsePromise = page.waitForResponse((response) =>
       /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),

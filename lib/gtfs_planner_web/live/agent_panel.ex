@@ -281,7 +281,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
   attaches to the new context's session immediately; a refused one keeps its
   notice, and the panel's own `agent_*` events stay attached either way.
   """
-  @spec set_context(Phoenix.LiveView.Socket.t(), Scope.resource_context()) ::
+  @spec set_context(Phoenix.LiveView.Socket.t(), Scope.resource_context() | nil) ::
           Phoenix.LiveView.Socket.t()
   def set_context(socket, context) do
     if context == socket.assigns[:agent_context] do
@@ -869,7 +869,7 @@ defmodule GtfsPlannerWeb.AgentPanel do
          :ok <- Scope.authorized_context(scope),
          :ok <- Pack.authorize_context(Map.fetch!(Agents.packs(), scope.pack_id), scope),
          version_id when is_binary(version_id) <- panel_version_id(socket) do
-      ~p"/gtfs/#{version_id}/export"
+      ~p"/gtfs/#{version_id}/compare"
     else
       _other -> nil
     end

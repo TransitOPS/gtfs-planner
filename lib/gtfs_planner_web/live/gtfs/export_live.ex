@@ -14,12 +14,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.ReleaseComparison
-  alias GtfsPlanner.Gtfs.ReleaseComparison.AssistantContext
-  alias GtfsPlanner.Gtfs.ReleaseComparison.Compare
-  alias GtfsPlanner.Operations
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations
-  alias GtfsPlanner.Validations.Evidence
   alias GtfsPlannerWeb.AgentPanel
   alias GtfsPlannerWeb.GtfsVersionNavigation
   alias GtfsPlannerWeb.ProductSurfaces
@@ -28,89 +24,34 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
   import GtfsPlannerWeb.Gtfs.FeedPublicationComponents, only: [publication_section: 1]
 
+  import GtfsPlannerWeb.PlannerComponents, only: [toast: 1]
+
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
       check_panel: 1,
-      closures_omitted: 1,
-      comparison: 1,
-      comparison_difference_row: 1,
-      comparison_helper: 1,
-      comparison_results: 1,
-      comparison_structural_row: 1,
-      comparison_unknown_row: 1,
-      comparison_unresolved_row: 1,
-      contents: 1,
-      guide: 1,
-      operations_note: 1,
-      recent_checks: 1,
-      run_status: 1,
-      type_options: 1
+      file_row: 1,
+      files_card: 1,
+      new_file: 1,
+      public_address_card: 1
     ]
-
-  import GtfsPlannerWeb.ResultComponents, only: [result_section: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   # The URL is the single source of truth for the selected export type: only
   # these query values are accepted, and `export_type_from_param/1` maps them
   # onto the atoms `ExportRuns` accepts.
-  @export_type_params ~w(full pathways operations)
+  @export_type_params ~w(full pathways operations operations_only)
 
-  # The one helper panel this page mounts offers both packs. The comparison
-  # helper is only ever bound while a finished comparison has an admitted copy;
-  # the feed quality helper is the default and the fallback.
-  @helper_packs ["feed_quality", "release_comparison"]
-
-  # One page of retained full feed files the editor can choose from. The chosen
-  # identities are kept server-side, so a selection made on one page survives
-  # the next page load and is never taken from a submitted value.
-  @comparison_page_size 25
-
-  # One page of a bounded native result. The result itself is never replaced by
-  # its page: only the rows the page renders are sliced, so a native result
-  # stays fully inspectable however many rows it holds.
-  @comparison_row_limit 25
-  @comparison_row_limit_max 100
-  @comparison_collections [
-    :comparison_differences,
-    :comparison_structural,
-    :comparison_unresolved,
-    :comparison_unknowns
-  ]
-  @comparison_scope_notice "Choose at least one route and one date to narrow this comparison."
-  @comparison_scope_invalid_notice "Those routes or dates aren’t part of this comparison."
-
-  @comparison_unavailable_notice "Those exports aren’t available to compare."
-  @comparison_window_notice "Enter both dates, with the last date on or after the first."
-  @comparison_profile_notice "Only full feed exports can be compared."
-  @comparison_start_failed_notice "The comparison couldn’t start. Try again."
-
-  @comparison_reason_notices %{
-    unavailable: @comparison_unavailable_notice,
-    invalid_window: @comparison_window_notice,
-    unsupported_profile: @comparison_profile_notice,
-    unsupported_size: "Those exports are larger than a comparison can read.",
-    malformed_csv:
-      "One of those files has a table that isn’t valid CSV, so nothing was compared.",
-    invalid_archive: "One of those files isn’t a readable feed archive, so nothing was compared.",
-    cancelled: "The comparison was cancelled. Nothing in your feed was changed.",
-    timeout: "The comparison took longer than its time limit and stopped.",
-    worker_exit: "The comparison stopped unexpectedly. Nothing in your feed was changed."
-  }
+  # Both operations-bearing kinds read the same organization TODS data, so one
+  # operations preview serves either selection.
+  @operations_kinds [:operations, :operations_only]
 
   @export_busy_message "Another export is running. Try again when it finishes."
   @validation_busy_message "Another validation is running. Try again when it finishes."
   @validation_permission_message "You no longer have permission to check this feed. " <>
                                    "Ask an organization administrator to restore your access."
-
-  @empty_feed_quality %{
-    relationship: "unknown",
-    selected_artifact: nil,
-    currentness: "unknown",
-    publication_status: "unsupported",
-    digest: nil,
-    preflight: []
-  }
+  @publication_poll_interval_ms 1_000
+  @publication_poll_attempts 90
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
@@ -125,8 +66,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:operations?, false)
      |> assign(:include_flex, true)
      |> assign(:file_inventory, [])
+     |> assign(:operations_preview, AsyncResult.loading())
+     |> assign(:operations_preview_started?, false)
+     |> assign(:operations_preview_refreshed_run_id, nil)
      |> assign(:closure_count, 0)
-     |> assign(:export_run, nil)
+     |> assign(:selected_kind_busy?, false)
      |> assign(:export_notice, nil)
      |> assign(:export_defaults, nil)
      |> assign(:missing_summary, AsyncResult.loading())
@@ -137,32 +81,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:validation_error, nil)
      |> assign(:recent_checks, [])
      |> assign(:publication, default_publication())
-     |> assign(:feed_quality, @empty_feed_quality)
-     |> assign(:comparison_form, comparison_form(%{}))
-     |> assign(:comparison_choices, %{rows: [], next_cursor: nil})
-     |> assign(:comparison_cursor, nil)
-     |> assign(:comparison_chosen, %{left: nil, right: nil})
-     |> assign(:comparison_status, :idle)
-     |> assign(:comparison_notice, nil)
-     |> assign(:comparison_request_ref, nil)
-     |> assign(:comparison_fingerprint, nil)
-     |> assign(:comparison_coordinator, nil)
-     |> assign(:comparison_monitor, nil)
-     |> assign(:comparison_result, nil)
-     |> assign(:comparison_view, nil)
-     |> assign(:comparison_scope, nil)
-     |> assign(:comparison_scope_form, comparison_scope_form(%{}))
-     |> assign(:comparison_scope_notice, nil)
-     |> assign(:comparison_inspected, nil)
-     |> assign(:comparison_page, comparison_page_defaults())
-     |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
-     |> AgentPanel.mount("feed_quality", allowed_packs: @helper_packs)
-     |> reset_comparison_context()
-     |> configure_comparison_streams()
-     |> stream(:comparison_differences, [])
-     |> stream(:comparison_structural, [])
-     |> stream(:comparison_unresolved, [])
-     |> stream(:comparison_unknowns, [])}
+     |> assign(:publishing_enabled?, PublishingConfig.current() != :disabled)
+     |> assign(:public_addresses, [])
+     |> assign(:files_published_run_ids, MapSet.new())
+     |> assign(:files_loaded_ids, MapSet.new())
+     |> assign(:files_cursor, nil)
+     |> assign(:files_has_more?, false)
+     |> assign(:files_empty?, true)
+     |> assign(:files_started_ids, MapSet.new())
+     |> assign(:files_finished_run, nil)
+     |> assign(:files_notice, nil)
+     |> assign(:files_toast, nil)
+     |> assign(:files_subscribed_ids, MapSet.new())
+     |> assign(:files_clash_run, nil)
+     |> assign(:files_match, %{})
+     |> assign(:files_shown_operations, MapSet.new())
+     |> assign(:files_served_run_id, nil)
+     |> assign(:files_open_warnings, MapSet.new())
+     |> assign(:files_full_current?, false)
+     |> AgentPanel.mount("feed_quality")
+     |> stream_configure(:files, dom_id: &"export-file-#{&1.id}")
+     |> stream(:files, [])}
   end
 
   @impl Phoenix.LiveView
@@ -182,16 +121,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> assign(:export_notice, nil)
       |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
       |> assign(:export_defaults, ExportDefaults.get(organization_id))
-      |> refresh_export_run()
+      |> refresh_selected_kind_busy()
+      |> load_files()
       |> refresh_file_inventory()
       |> assign_recent_checks()
       |> load_missing_summary()
       |> reset_publication()
       |> assign_publication()
-      |> reset_comparison_on_version_change()
-      |> load_comparison_choices()
+      |> refresh_publication_presentation()
 
-    {:noreply, refresh_feed_quality(socket)}
+    {:noreply,
+     socket
+     |> refresh_helper_context()
+     |> ensure_operations_preview()}
   end
 
   @impl Phoenix.LiveView
@@ -242,42 +184,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
-  # The page's own control picks the helper; the panel's allowlist is what the
-  # page mounted, and a pack with nothing to read is refused in `select_helper_pack/2`.
-  @impl Phoenix.LiveView
-  def handle_event("export_helper_mode", %{"pack" => pack}, socket) when is_binary(pack),
-    do: {:noreply, select_helper_pack(socket, pack)}
-
-  def handle_event("export_helper_mode", _params, socket), do: {:noreply, socket}
-
-  # Opening from the finished comparison binds the comparison helper first, so the
-  # panel never opens on the other helper's conversation.
-  @impl Phoenix.LiveView
-  def handle_event("comparison_helper_open", _params, socket) do
-    case socket.assigns.comparison_context do
-      nil ->
-        {:noreply, socket}
-
-      _context ->
-        {:noreply, socket |> select_helper_pack("release_comparison") |> AgentPanel.open()}
-    end
-  end
-
-  # Re-reads the provider-independent readiness without touching any job or form
-  # draft, and rebinds the panel's snapshot to the section it just read. Defaults
-  # saved on the Export defaults page reach this page only through this read, so
-  # it reloads them first; a stale digest would otherwise stop every request.
-  @impl Phoenix.LiveView
-  def handle_event("feed_quality_refresh", _params, socket) do
-    defaults = ExportDefaults.get(socket.assigns.current_organization.id)
-
-    {:noreply,
-     socket
-     |> assign(:export_defaults, defaults)
-     |> assign(:include_flex, defaults.include_flex)
-     |> refresh_feed_quality()}
-  end
-
   @impl Phoenix.LiveView
   def handle_event("run_validation", _params, socket),
     do: handle_run_validation(socket, "mobility_data")
@@ -310,19 +216,17 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     version = socket.assigns.current_gtfs_version
     socket = assign(socket, :export_notice, nil)
 
-    with {:ok, run} <-
-           ExportRuns.create_pending(
-             organization_id,
-             version.id,
-             export_actor(socket),
-             socket.assigns.export_type
-           ),
-         :ok <- subscribe_export_run(run),
-         :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
-    else
+    case ExportRuns.create_pending(
+           organization_id,
+           version.id,
+           export_actor(socket),
+           socket.assigns.export_type
+         ) do
+      {:ok, run} ->
+        {:noreply, start_export_run(socket, organization_id, run)}
+
       {:error, :invalid_transition} ->
-        {:noreply, refresh_export_run(socket)}
+        {:noreply, refresh_selected_kind_busy(socket)}
 
       {:error, :busy} ->
         {:noreply, export_busy(socket)}
@@ -330,7 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       {:error, :artifact_storage_unavailable} ->
         {:noreply,
          socket
-         |> refresh_export_run()
+         |> refresh_selected_kind_busy()
          |> assign(
            :export_notice,
            "The export couldn’t start: this server can’t write export files. Ask an administrator to check the export storage location."
@@ -339,51 +243,106 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       _ ->
         {:noreply,
          socket
-         |> refresh_export_run()
+         |> refresh_selected_kind_busy()
          |> assign(:export_notice, "The export couldn’t start. Try again.")}
     end
   end
 
-  @impl Phoenix.LiveView
-  def handle_event("cancel_export", _params, socket) do
-    socket = assign(socket, :export_notice, nil)
+  # -- Files card ----------------------------------------------------------
 
-    with %{id: run_id} <- socket.assigns.export_run,
-         {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, run_id) do
-      {:noreply, refresh_export_run(socket)}
-    else
-      _ ->
-        {:noreply,
-         socket
-         |> refresh_export_run()
-         |> assign(
-           :export_notice,
-           "The export couldn’t be cancelled. Check the status below and try again."
-         )}
-    end
-  end
+  # One page of this version's retained runs. The keyset cursor is the last
+  # listed row's `(inserted_at, id)`, so paging cannot skip or repeat a row.
+  @files_page_size 25
+  @file_unavailable_notice "That file isn't available."
 
   @impl Phoenix.LiveView
-  def handle_event("retry_export", _params, socket) do
+  def handle_event("load_more_files", _params, socket) do
     organization_id = socket.assigns.current_organization.id
-    socket = assign(socket, :export_notice, nil)
+    version_id = socket.assigns.current_gtfs_version.id
 
-    with %{id: run_id} <- socket.assigns.export_run,
-         {:ok, run} <- ExportRuns.retry(organization_id, run_id),
-         :ok <- subscribe_export_run(run),
-         :ok <- ExportRunner.ensure_started(organization_id, run) do
-      {:noreply, socket |> assign(:export_run, run) |> refresh_feed_quality()}
+    rows =
+      ExportRuns.list_files(organization_id, version_id,
+        after: socket.assigns.files_cursor,
+        limit: @files_page_size + 1
+      )
+
+    {page, rest} = Enum.split(rows, @files_page_size)
+    {socket, page} = subscribe_and_reconcile_listed_files(socket, page)
+
+    {:noreply,
+     socket
+     |> assign(:files_has_more?, rest != [])
+     |> assign(:files_cursor, cursor_for(List.last(page)))
+     |> assign(:files_empty?, false)
+     |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
+     |> merge_files_match(page)
+     |> assign(
+       :files_loaded_ids,
+       MapSet.union(socket.assigns.files_loaded_ids, MapSet.new(Enum.map(page, & &1.id)))
+     )
+     |> stream(:files, page)}
+  end
+
+  # A scoped row action casts the submitted id, resolves it inside this
+  # organization and version, and only then writes. A forged id changes nothing
+  # and is answered with the same opaque notice as an absent run.
+  @impl Phoenix.LiveView
+  def handle_event("cancel_file", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} <- scoped_export_run(socket, uuid),
+         {:ok, _run} <- ExportRuns.request_cancel(socket.assigns.current_organization.id, uuid) do
+      {:noreply,
+       socket
+       |> assign(:files_notice, nil)
+       |> put_files_toast("Export cancelled. No file was saved.", :done)}
     else
-      {:error, :busy} ->
-        {:noreply, export_busy(socket)}
-
-      _ ->
-        {:noreply,
-         socket
-         |> refresh_export_run()
-         |> assign(:export_notice, "The export couldn’t be restarted. Try again.")}
+      _ -> {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
     end
   end
+
+  def handle_event("cancel_file", _params, socket),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+
+  @impl Phoenix.LiveView
+  def handle_event("retry_file", params, socket), do: retry_file(socket, params)
+
+  @impl Phoenix.LiveView
+  def handle_event("export_again_file", params, socket), do: retry_file(socket, params)
+
+  @impl Phoenix.LiveView
+  def handle_event("dismiss_finished", _params, socket),
+    do: {:noreply, assign(socket, :files_finished_run, nil)}
+
+  @impl Phoenix.LiveView
+  def handle_event("dismiss_toast", _params, socket),
+    do: {:noreply, assign(socket, :files_toast, nil)}
+
+  # A row's warning detail is a display toggle only. Rows open independently, as
+  # the prototype's open map does, so toggling one row never closes another. The
+  # row lives in a stream, so the toggled run alone is re-inserted after the
+  # assign change or the open row would not repaint; no other row changed. A
+  # forged id resolves to no run and changes nothing.
+  @impl Phoenix.LiveView
+  def handle_event("toggle_file_warnings", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} = run <- scoped_export_run(socket, uuid) do
+      open_warnings =
+        if MapSet.member?(socket.assigns.files_open_warnings, run.id) do
+          MapSet.delete(socket.assigns.files_open_warnings, run.id)
+        else
+          MapSet.put(socket.assigns.files_open_warnings, run.id)
+        end
+
+      {:noreply,
+       socket
+       |> assign(:files_open_warnings, open_warnings)
+       |> stream_insert(:files, run)}
+    else
+      _refused -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_file_warnings", _params, socket), do: {:noreply, socket}
 
   # -- Static publication --------------------------------------------------
 
@@ -391,6 +350,38 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # export type decide what is reviewed, and the command re-checks the membership
   # and the organization before it answers. A forged event can therefore only ask
   # for a review this page was already allowed to ask for.
+  # The row menu's Publish action binds the review to one explicitly chosen ready
+  # file. The id is cast and resolved inside this organization and version before
+  # any read, and only a ready full or pathways run may be reviewed.
+  @impl Phoenix.LiveView
+  def handle_event("publish_file", %{"run" => run_id}, socket) do
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{state: :ready, export_type: export_type} = run
+         when export_type in [:full, :pathways] <- scoped_export_run(socket, uuid),
+         channel when not is_nil(channel) <- publication_channel(export_type),
+         false <- PublishingConfig.current() == :disabled do
+      socket
+      |> reset_publication()
+      |> put_publication(%{
+        available?: true,
+        channel: channel,
+        slot: :main,
+        run: run,
+        current_address: Enum.find(socket.assigns.public_addresses, &(&1.channel == channel)),
+        notice: nil,
+        consent_form: consent_form(false)
+      })
+      |> start_publication_preview()
+      |> then(&{:noreply, &1})
+    else
+      _ ->
+        {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+    end
+  end
+
+  def handle_event("publish_file", _params, socket),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+
   @impl Phoenix.LiveView
   def handle_event("preview_publication", _params, socket) do
     publication = socket.assigns.publication
@@ -445,18 +436,24 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
              confirm_errors?: confirm_errors?
            ) do
         {:ok, publication_id} ->
-          # The status band is the durable answer and it changes to "Publishing"
-          # here, so a second confirmation beside it would only repeat it.
+          # Acceptance queues durable intent; it does not mean the serving layer
+          # has switched. Keep a bounded observer while this LiveView is open so
+          # the row/address refresh only from durable current state and a durable
+          # failure is surfaced without relying on an export-run broadcast.
+          published = socket.assigns.publication.run
+          poll_token = make_ref()
+
           {:noreply,
            socket
            |> put_publication(%{
-             preview: nil,
-             pending_id: nil,
-             notice: nil,
-             consent_form: consent_form(false),
-             publication_id: publication_id
+             publication_id: publication_id,
+             poll_token: poll_token
            })
-           |> refresh_publication_status()}
+           |> close_publication_review()
+           |> refresh_publication_status()
+           |> refresh_publication_presentation()
+           |> schedule_publication_poll(@publication_poll_attempts)
+           |> put_files_toast(publication_queued_toast(published), :info)}
 
         {:error, reason} ->
           {kind, title, detail} = publication_error(reason)
@@ -486,760 +483,77 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     {:noreply, close_publication_review(socket)}
   end
 
-  # The retained full feed files this organization can choose from. Listing is
-  # scoped by the same `Scope` the comparison itself is authorized with, so the
-  # options a form can offer never include another organization's file.
   @impl Phoenix.LiveView
-  def handle_event("load_more_comparison_choices", _params, socket) do
-    {:noreply, load_comparison_choices(socket, socket.assigns.comparison_cursor)}
-  end
-
-  # A change to either side or to the dates is a replacement: the running
-  # comparison no longer describes what the form says, so it is cancelled and
-  # its request reference retired. The draft is kept exactly as entered.
-  @impl Phoenix.LiveView
-  def handle_event("select_comparison", %{"comparison" => draft}, socket) when is_map(draft) do
-    {:noreply,
-     socket
-     |> cancel_comparison()
-     |> assign(:comparison_form, comparison_form(draft))
-     |> retain_chosen_comparison(draft)
-     |> assign(:comparison_status, :idle)
-     |> assign(:comparison_notice, nil)
-     |> assign(:comparison_result, nil)
-     |> reset_comparison_view()}
-  end
-
-  def handle_event("select_comparison", _params, socket), do: {:noreply, socket}
-
-  # The Compare button is gone while a comparison is held, so only a replayed or
-  # forged event gets here. Starting over it would overwrite the held coordinator
-  # and request reference, orphaning that coordinator and the claims it owns.
-  @impl Phoenix.LiveView
-  def handle_event("start_comparison", _params, %{assigns: %{comparison_status: status}} = socket)
-      when status in [:running, :cancelling],
-      do: {:noreply, socket}
-
-  # Authorization is checked again here, on the server, immediately before any
-  # claim is taken. The selected runs and window are re-resolved from the form
-  # draft rather than from anything the client kept.
-  def handle_event("start_comparison", %{"comparison" => draft}, socket) when is_map(draft) do
-    socket = assign(socket, :comparison_notice, nil)
-    scope = comparison_scope(socket)
-
-    case ReleaseComparison.resolve_selection(scope, selection_params(draft)) do
-      {:ok, selection} ->
-        {:noreply, start_coordinator(socket, selection, draft)}
-
-      {:error, reason} when is_atom(reason) ->
-        {:noreply, refuse_comparison(socket, draft, reason)}
-
-      # A selection this page cannot make sense of is refused like any other,
-      # never rendered and never allowed to reach a claim.
-      _unexpected ->
-        {:noreply, refuse_comparison(socket, draft, :unavailable)}
-    end
-  end
-
-  def handle_event("start_comparison", _params, socket), do: {:noreply, socket}
-
-  # Inspecting a row reveals that row's own detail. It never changes the scope
-  # and never re-reads anything: the row is already in the held result.
-  @impl Phoenix.LiveView
-  def handle_event(
-        "inspect_comparison_row",
-        %{"collection" => collection, "row" => row} = params,
-        socket
-      ) do
-    stream = comparison_stream(collection)
-
-    if not is_nil(stream) and is_binary(row) do
-      detail =
-        socket.assigns.comparison_view
-        |> inspected_row(stream, row)
-        |> case do
-          nil -> nil
-          entry -> Map.put(entry, :limit, page_limit(params["limit"]))
-        end
-
-      {:noreply,
-       socket
-       |> assign(:comparison_inspected, detail)}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("inspect_comparison_row", _params, socket), do: {:noreply, socket}
-
-  # One bounded page of one collection. The page only ever re-reads the
-  # immutable result already held in assigns: the native result itself is never
-  # replaced, so paging cannot make a row disappear from the comparison.
-  @impl Phoenix.LiveView
-  def handle_event(
-        "page_comparison",
-        %{"collection" => collection, "offset" => offset} = params,
-        socket
-      ) do
-    with stream when not is_nil(stream) <- comparison_stream(collection),
-         offset when is_binary(offset) <- offset,
-         {page, ""} <- Integer.parse(offset) do
-      if page >= 0 do
-        {:noreply,
-         stream_comparison_collection(socket, stream, page, page_limit(params["limit"]))}
-      else
-        {:noreply, socket}
-      end
-    else
-      _refused -> {:noreply, socket}
-    end
-  end
-
-  def handle_event("page_comparison", _params, socket), do: {:noreply, socket}
-
-  # Narrowing is explicit and additive only: the form names route pairs and
-  # dates this comparison already proved, and the server revalidates both
-  # against the held result. An empty or unknown selection is refused with the
-  # draft retained, and never narrows anything.
-  @impl Phoenix.LiveView
-  def handle_event("narrow_comparison", %{"comparison_scope" => draft}, socket)
-      when is_map(draft) do
-    socket = assign(socket, :comparison_scope_form, comparison_scope_form(draft))
-
-    case socket.assigns.comparison_view do
-      nil ->
-        {:noreply, socket}
-
-      view ->
-        case scope_selection(draft, view) do
-          {:ok, selection} ->
-            {:noreply, apply_comparison_scope(socket, selection)}
-
-          :empty ->
-            {:noreply,
-             socket
-             |> assign(:comparison_scope_notice, @comparison_scope_notice)
-             |> assign(:comparison_scope, nil)
-             |> stream_comparison(view)}
-
-          :invalid ->
-            {:noreply,
-             socket
-             |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
-             |> assign(:comparison_scope, nil)
-             |> stream_comparison(view)}
-        end
-    end
-  end
-
-  def handle_event("close_comparison_detail", _params, socket),
-    do: {:noreply, assign(socket, :comparison_inspected, nil)}
-
-  def handle_event("narrow_comparison", _params, socket), do: {:noreply, socket}
-
-  # Clearing the scope shows the whole comparison again. The full native result
-  # was never replaced, so this restores it without recomputing anything - and
-  # re-attaches the complete copy, because the admitted context must describe
-  # what is on screen and the screen is the whole comparison again.
-  @impl Phoenix.LiveView
-  def handle_event("clear_comparison_scope", _params, socket) do
-    case socket.assigns.comparison_result do
-      nil ->
-        {:noreply, socket}
-
-      result ->
-        {:noreply,
-         socket
-         |> assign(:comparison_view, result.comparison)
-         |> assign(:comparison_scope, nil)
-         |> assign(:comparison_scope_notice, nil)
-         |> assign(:comparison_scope_form, comparison_scope_form(%{}))
-         |> stream_comparison(result.comparison)
-         |> attach_comparison_context(result, :all)}
-    end
-  end
+  def handle_event("public_address_copied", _params, socket),
+    do: {:noreply, put_files_toast(socket, "Address copied.", :done)}
 
   @impl Phoenix.LiveView
-  def handle_event("cancel_comparison", _params, socket) do
-    # The request reference is deliberately kept: the coordinator answers the
-    # cancellation itself, and that answer is what ends the "Cancelling…" band.
-    {:noreply,
-     socket
-     |> request_cancellation()
-     |> assign(:comparison_status, :cancelling)
-     |> assign(:comparison_notice, nil)}
-  end
+  def handle_event("public_address_copy_failed", _params, socket),
+    do:
+      {:noreply, put_files_toast(socket, "Couldn’t copy the address. Copy it by hand.", :refused)}
 
-  # Closing the comparison region retires the request reference and clears the
-  # admitted result, so a reopened comparison can never adopt the previous
-  # request's answer.
-  @impl Phoenix.LiveView
-  def handle_event("close_comparison", _params, socket) do
-    {:noreply,
-     socket
-     |> cancel_comparison()
-     |> reset_comparison()}
-  end
-
-  defp start_coordinator(socket, selection, draft) do
-    request_ref = System.unique_integer([:positive])
-
-    case ReleaseComparison.start(
-           comparison_scope(socket),
-           selection_params(draft),
-           self(),
-           request_ref
-         ) do
-      {:ok, pid} ->
-        socket
-        |> assign(:comparison_form, comparison_form(draft))
-        |> retain_chosen_comparison(draft, selection)
-        |> assign(:comparison_status, :running)
-        |> assign(:comparison_notice, nil)
-        |> assign(:comparison_result, nil)
-        |> reset_comparison_view()
-        |> assign(:comparison_request_ref, request_ref)
-        |> assign(:comparison_coordinator, pid)
-        |> assign(:comparison_monitor, monitor_coordinator(pid))
-
-      {:error, :unavailable} ->
-        refuse_comparison(socket, draft, :unavailable)
-    end
-  end
-
-  # The refusal keeps the entered draft and the form the page already had: a
-  # refused comparison never clears the export form or the check panel.
-  defp refuse_comparison(socket, draft, reason) do
-    socket
-    |> assign(:comparison_form, comparison_form(draft))
-    |> assign(:comparison_status, :refused)
-    |> assign(
-      :comparison_notice,
-      Map.get(@comparison_reason_notices, reason, @comparison_start_failed_notice)
-    )
-  end
-
-  defp finish_comparison(socket, outcome) do
-    socket = demonitor(socket, :comparison_monitor)
-    finish_comparison_status(socket, outcome)
-  end
-
-  defp finish_comparison_status(socket, {:ok, result}) do
-    # A membership withdrawn while the comparison ran is the same opaque answer
-    # as one withdrawn before it started, and it never reaches the assigns.
+  defp start_export_run(socket, organization_id, run) do
     socket =
-      if Scope.authorized_context(comparison_scope(socket)) == :ok do
-        socket
-        |> assign(:comparison_status, :completed)
-        |> assign(:comparison_fingerprint, result.fingerprint)
-        |> assign(:comparison_result, result)
-        # The finished band names the two files from the result the coordinator
-        # actually compared, so the sentence cannot describe a different pair
-        # than the one that was read.
-        |> assign(:comparison_chosen, compared_rows(socket, result))
-        |> assign(:comparison_notice, nil)
-        |> assign(:comparison_view, result.comparison)
-        |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
-        |> stream_comparison(result.comparison)
-        # Only the complete comparison attaches on its own. A narrowed scope is
-        # the editor's explicit choice, so it attaches when they make it.
-        |> attach_comparison_context(result, :all)
-      else
-        socket
-        |> assign(:comparison_status, :refused)
-        |> assign(:comparison_notice, Map.fetch!(@comparison_reason_notices, :unavailable))
-      end
-
-    socket
-    |> assign(:comparison_coordinator, nil)
-    |> assign(:comparison_monitor, nil)
-    |> assign(:comparison_request_ref, nil)
-  end
-
-  defp finish_comparison_status(socket, {:error, reason}) do
-    socket
-    |> assign(:comparison_status, :refused)
-    |> assign(
-      :comparison_notice,
-      Map.get(@comparison_reason_notices, reason, @comparison_start_failed_notice)
-    )
-    |> assign(:comparison_coordinator, nil)
-    |> assign(:comparison_monitor, nil)
-    |> assign(:comparison_request_ref, nil)
-  end
-
-  # Cancellation is scoped to this page's own coordinator and request reference.
-  # It never touches the export run, the check panel or any draft.
-  defp request_cancellation(%{assigns: %{comparison_coordinator: nil}} = socket), do: socket
-
-  defp request_cancellation(%{assigns: %{comparison_coordinator: pid}} = socket) do
-    ReleaseComparison.cancel(pid, socket.assigns.comparison_request_ref)
-    demonitor(socket, :comparison_monitor)
-  end
-
-  # Retiring the request reference is what makes the previous comparison's
-  # answer stale: a replacement, a close or a version change drops it here, so
-  # the retired coordinator's terminal message can no longer match.
-  defp cancel_comparison(socket) do
-    socket
-    |> request_cancellation()
-    |> assign(:comparison_coordinator, nil)
-    |> assign(:comparison_monitor, nil)
-    |> assign(:comparison_request_ref, nil)
-    |> assign(:comparison_fingerprint, nil)
-  end
-
-  # The chosen rows are server-held. A submitted run id is only accepted when it
-  # is one this page listed, so a forged value names nothing in the status band.
-  defp retain_chosen_comparison(socket, draft) do
-    assign(socket, :comparison_chosen, chosen_rows(known_choices(socket), draft))
-  end
-
-  defp retain_chosen_comparison(socket, draft, selection) do
-    rows =
-      known_choices(socket)
-      |> Map.put(to_string(selection.left.run_id), artifact_row(selection.left))
-      |> Map.put(to_string(selection.right.run_id), artifact_row(selection.right))
-
-    assign(socket, :comparison_chosen, chosen_rows(rows, draft))
-  end
-
-  defp known_choices(socket),
-    do: Map.new(socket.assigns.comparison_choices.rows, &{to_string(&1.run_id), &1})
-
-  # The identities the result carries, kept beside the rows this page listed so
-  # a file whose row has left the current page still names itself truthfully.
-  defp compared_rows(socket, result) do
-    known = known_choices(socket)
-
-    %{
-      left: Map.get(known, to_string(result.left.run_id)) || artifact_row(result.left),
-      right: Map.get(known, to_string(result.right.run_id)) || artifact_row(result.right)
-    }
-  end
-
-  defp chosen_rows(rows, draft) do
-    %{
-      left: Map.get(rows, to_string(Map.get(draft, "left_run_id"))),
-      right: Map.get(rows, to_string(Map.get(draft, "right_run_id")))
-    }
-  end
-
-  # The name a completed comparison reports when the page has no listed row for
-  # it: the export type the artifact identity itself recorded, never a guess at
-  # a version name.
-  defp artifact_row(identity) do
-    %{
-      run_id: identity.run_id,
-      version_name: nil,
-      created_at: nil,
-      export_type: identity.export_type
-    }
-  end
-
-  # Only the four fields the form owns travel to the domain. The source version
-  # identity is never submitted: `resolve_selection/2` resolves each run's own
-  # version inside the organization's scope.
-  defp selection_params(draft) do
-    %{
-      "left_run_id" => Map.get(draft, "left_run_id"),
-      "right_run_id" => Map.get(draft, "right_run_id"),
-      "from" => Map.get(draft, "from"),
-      "to" => Map.get(draft, "to")
-    }
-  end
-
-  # -- assistant context -------------------------------------------------------
-
-  # Freezing is the shared AI04 seam's decision, not this page's: the page hands
-  # over the finished native result and reads back either an admitted context or
-  # the reason there is none.
-  #
-  # A refusal changes only what the helper may read. The native result, the
-  # streams and the drafted scope all stay exactly as they were, because the
-  # comparison was proved here and the byte ceiling limits the copy, not the
-  # finding.
-  defp attach_comparison_context(socket, result, selection) do
-    case AssistantContext.freeze(comparison_scope(socket).resource_context, result, selection) do
-      {:ok, context} ->
-        socket
-        |> assign(:comparison_context, context)
-        |> assign(:comparison_context_notice, nil)
-        |> bind_comparison_helper()
-
-      {:error, reason} ->
-        socket
-        |> assign(:comparison_context, nil)
-        |> assign(:comparison_context_notice, reason)
-        |> bind_comparison_helper()
-    end
-  end
-
-  # Replacing the comparison - a new selection, a close, a version change -
-  # releases the admitted copy together with the result it described, so a
-  # conversation can never answer from rows the page is no longer showing.
-  defp reset_comparison_context(socket) do
-    socket
-    |> assign(:comparison_context, nil)
-    |> assign(:comparison_context_notice, nil)
-    |> bind_comparison_helper()
-  end
-
-  # Only the panel's own binding moves. While the panel holds the comparison
-  # helper, a replaced copy is bound the way `set_context/2` replaces any
-  # context (this panel detaches from its session and clears its transcript;
-  # the session, other tabs, the native comparison and every export or check job
-  # carry on), and no copy at all returns the panel to the feed quality helper,
-  # closed, because the comparison it was about is gone. A panel on the feed
-  # quality helper is never touched: a finished comparison offers the other
-  # helper, it does not take the panel over.
-  defp bind_comparison_helper(%{assigns: %{agent_pack_id: "release_comparison"}} = socket) do
-    case socket.assigns.comparison_context do
-      nil ->
-        socket
-        |> assign(:agent_open?, false)
-        |> select_helper_pack("feed_quality")
-
-      context ->
-        AgentPanel.set_context(socket, context)
-    end
-  end
-
-  defp bind_comparison_helper(socket), do: socket
-
-  # Each helper binds the context it owns. A pack this page did not mount, or the
-  # comparison helper with no admitted copy, changes nothing, so a forged event
-  # cannot bind one helper to the other's context.
-  defp select_helper_pack(socket, "feed_quality"),
-    do: AgentPanel.select_pack(socket, "feed_quality", feed_quality_context(socket))
-
-  defp select_helper_pack(
-         %{assigns: %{comparison_context: %{} = context}} = socket,
-         "release_comparison"
-       ),
-       do: AgentPanel.select_pack(socket, "release_comparison", context)
-
-  defp select_helper_pack(socket, _pack), do: socket
-
-  defp comparison_scope(socket) do
-    %Scope{
-      organization_id: socket.assigns.current_organization.id,
-      gtfs_version_id: socket.assigns.current_gtfs_version.id,
-      user_id: socket.assigns.current_user.id,
-      user_email: socket.assigns.current_user.email,
-      pack_id: "release_comparison",
-      version_name: socket.assigns.current_gtfs_version.name,
-      resource_context: Scope.context({:version, socket.assigns.current_gtfs_version.id})
-    }
-  end
-
-  defp load_comparison_choices(socket, cursor \\ nil) do
-    case ReleaseComparison.list_choices(comparison_scope(socket),
-           limit: @comparison_page_size,
-           cursor: cursor
-         ) do
-      {:ok, %{rows: rows, next_cursor: next_cursor}} ->
-        # Pages accumulate, so a run chosen on an earlier page stays selectable
-        # instead of disappearing from the form.
-        known = socket.assigns.comparison_choices.rows
-        merged = Enum.uniq_by(known ++ rows, & &1.run_id)
-
-        socket
-        |> assign(:comparison_choices, %{rows: merged, next_cursor: next_cursor})
-        |> assign(:comparison_cursor, next_cursor)
-
-      {:error, :unavailable} ->
-        assign(socket, :comparison_choices, %{rows: [], next_cursor: nil})
-    end
-  end
-
-  # Navigating to another version is a different feed, so the comparison ends
-  # here rather than answering under the new version's identity.
-  defp reset_comparison_on_version_change(socket) do
-    if socket.assigns[:comparison_version_id] == socket.assigns.current_gtfs_version.id do
       socket
-    else
-      socket
-      |> cancel_comparison()
-      |> reset_comparison()
-      |> assign(:comparison_version_id, socket.assigns.current_gtfs_version.id)
-    end
-  end
+      |> subscribe_file_run(run)
+      |> remember_started(run)
+      |> stream_insert(:files, run, at: 0)
+      |> assign(:files_empty?, false)
+      |> assign(:files_finished_run, nil)
 
-  # -- comparison result -----------------------------------------------------
+    files_lifecycle_checkpoint(:before_start, run)
 
-  def comparison_page_defaults,
-    do: Map.new(@comparison_collections, &{&1, %{offset: 0, limit: @comparison_row_limit}})
+    case ExportRunner.ensure_started(organization_id, run) do
+      :ok ->
+        current = scoped_export_run(socket, run.id) || run
 
-  # The page's own collection names are accepted, and nothing else: a name this
-  # result does not have is refused rather than read as some other collection.
-  defp comparison_stream(collection) when is_binary(collection) do
-    Enum.find(@comparison_collections, fn name -> to_string(name) == collection end)
-  end
-
-  defp comparison_stream(_collection), do: nil
-
-  # A page limit is a display choice, so it is clamped rather than refused, and
-  # never exceeds the documented maximum.
-  defp page_limit(nil), do: @comparison_row_limit
-
-  defp page_limit(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {limit, _rest} -> limit |> max(1) |> min(@comparison_row_limit_max)
-      :error -> @comparison_row_limit
-    end
-  end
-
-  defp page_limit(_value), do: @comparison_row_limit
-
-  # Every collection is re-streamed from the result currently in view. A
-  # completion, a narrowing and a cleared scope all land here, so there is one
-  # place that decides what the page shows and the counters beside it.
-  defp stream_comparison(socket, view) do
-    Enum.reduce(@comparison_collections, socket, fn collection, acc ->
-      stream_comparison_collection(acc, collection, 0, @comparison_row_limit, view)
-    end)
-  end
-
-  defp stream_comparison_collection(socket, collection, offset, limit, view \\ nil) do
-    view = view || socket.assigns.comparison_view
-    {rows, true_total} = page(collection, view, offset, limit)
-
-    socket
-    |> assign(
-      :comparison_page,
-      Map.put(socket.assigns.comparison_page, collection, %{offset: offset, limit: limit})
-    )
-    |> assign(
-      :comparison_true_totals,
-      Map.put(socket.assigns.comparison_true_totals, collection, true_total)
-    )
-    |> stream(collection, rows, reset: true)
-  end
-
-  # A page is a slice of the immutable result's own already-stable list. The
-  # true total is the whole collection's length, computed from the same result,
-  # so a counter never drifts from the rows it counts.
-  defp page(_collection, nil, _offset, _limit), do: {[], 0}
-
-  defp page(collection, view, offset, limit) do
-    rows = comparison_rows(collection, view)
-
-    {Enum.slice(rows, offset, limit), length(rows)}
-  end
-
-  defp comparison_rows(:comparison_differences, view),
-    do: Map.get(view, :effective_changes, [])
-
-  defp comparison_rows(:comparison_structural, view),
-    do: Map.get(view, :structural_changes, [])
-
-  defp comparison_rows(:comparison_unresolved, view), do: Map.get(view, :unresolved, [])
-  defp comparison_rows(:comparison_unknowns, view), do: Map.get(view, :unknowns, [])
-
-  # The row identity a stream uses is derived from the row's own deterministic
-  # content, so the same result always produces the same DOM ids and a re-render
-  # cannot repaint a row as a different one. A comparison row's own `:id` - a
-  # route or trip identifier that repeats across dates - is deliberately not the
-  # DOM id, because two rows on different dates would collide.
-  defp configure_comparison_streams(socket) do
-    Enum.reduce(@comparison_collections, socket, fn collection, acc ->
-      stream_configure(acc, collection, dom_id: &comparison_row_id(collection, &1))
-    end)
-  end
-
-  defp comparison_row_id(collection, row) do
-    "#{collection}-#{row_fingerprint(row)}"
-  end
-
-  defp row_fingerprint(row) do
-    row
-    |> :erlang.term_to_binary()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-    |> binary_part(0, 16)
-  end
-
-  defp inspected_row(nil, _collection, _row), do: nil
-
-  defp inspected_row(view, collection, row_id) do
-    case Enum.find(
-           comparison_rows(collection, view),
-           &(comparison_row_id(collection, &1) == row_id)
-         ) do
-      nil -> nil
-      row -> Map.put(row, :dom_id, row_id)
-    end
-  end
-
-  # The scope form speaks in route-pair keys and ISO dates. Both are validated
-  # against the result in view, so a forged or stale key narrows nothing.
-  defp scope_selection(draft, view) do
-    keys = draft |> Map.get("route_pair_keys", []) |> List.wrap() |> Enum.map(&to_string/1)
-    dates = draft |> Map.get("dates", []) |> List.wrap()
-
-    available = view |> Compare.route_pairs() |> Enum.map(fn pair -> pair.key end)
-
-    with [_ | _] <- keys,
-         [_ | _] <- dates,
-         {:ok, parsed} <- parse_scope_dates(dates),
-         true <- Enum.all?(keys, &(&1 in available)) do
-      {:ok, %{route_pair_keys: keys, dates: parsed}}
-    else
-      [] -> :empty
-      _ -> :invalid
-    end
-  end
-
-  defp parse_scope_dates(dates) do
-    Enum.reduce_while(dates, {:ok, []}, fn date, {:ok, acc} ->
-      case Date.from_iso8601(date) do
-        {:ok, parsed} -> {:cont, {:ok, acc ++ [parsed]}}
-        {:error, _reason} -> {:halt, :error}
-      end
-    end)
-  end
-
-  defp apply_comparison_scope(socket, selection) do
-    result = socket.assigns.comparison_result
-
-    case Compare.narrow(result.comparison, selection) do
-      {:ok, view} ->
         socket
-        |> assign(:comparison_view, view)
-        |> assign(:comparison_scope, selection)
-        |> assign(:comparison_scope_notice, nil)
-        |> assign(:comparison_inspected, nil)
-        |> stream_comparison(view)
-        |> attach_comparison_context(result, selection)
+        |> assign(:selected_kind_busy?, true)
+        |> stream_insert(:files, current, at: 0)
+        |> update_finished_band(current)
+        |> merge_files_match([current])
+        |> refresh_helper_context()
 
-      # A refused scope shows the whole comparison again, so the summary, the
-      # rows and the helper's copy keep describing the same result.
-      {:error, :invalid_scope} ->
+      {:error, :busy} ->
+        current = scoped_export_run(socket, run.id) || run
+
         socket
-        |> assign(:comparison_view, result.comparison)
-        |> assign(:comparison_scope_notice, @comparison_scope_invalid_notice)
-        |> assign(:comparison_scope, nil)
-        |> assign(:comparison_inspected, nil)
-        |> stream_comparison(result.comparison)
-        |> attach_comparison_context(result, :all)
-    end
-  end
+        |> stream_insert(:files, current, at: 0)
+        |> update_finished_band(current)
+        |> export_busy()
 
-  defp comparison_scope_form(draft) do
-    to_form(
-      %{
-        "route_pair_keys" => draft |> Map.get("route_pair_keys", []) |> List.wrap(),
-        "dates" => draft |> Map.get("dates", []) |> List.wrap()
-      },
-      as: :comparison_scope
-    )
-  end
-
-  defp reset_comparison(socket) do
-    socket
-    |> assign(:comparison_form, comparison_form(%{}))
-    |> assign(:comparison_chosen, %{left: nil, right: nil})
-    |> assign(:comparison_status, :idle)
-    |> assign(:comparison_notice, nil)
-    |> assign(:comparison_request_ref, nil)
-    |> assign(:comparison_fingerprint, nil)
-    |> assign(:comparison_result, nil)
-    |> reset_comparison_view()
-  end
-
-  # A comparison that no longer exists shows no result: the full native result,
-  # the narrowed view, every stream and the page positions all go together, so
-  # a reopened comparison cannot inherit a previous one.
-  defp reset_comparison_view(socket) do
-    socket
-    |> assign(:comparison_view, nil)
-    |> assign(:comparison_scope, nil)
-    |> assign(:comparison_scope_form, comparison_scope_form(%{}))
-    |> assign(:comparison_scope_notice, nil)
-    |> assign(:comparison_inspected, nil)
-    |> assign(:comparison_page, comparison_page_defaults())
-    |> assign(:comparison_true_totals, Map.new(@comparison_collections, &{&1, 0}))
-    |> reset_comparison_context()
-    |> stream(:comparison_differences, [], reset: true)
-    |> stream(:comparison_structural, [], reset: true)
-    |> stream(:comparison_unresolved, [], reset: true)
-    |> stream(:comparison_unknowns, [], reset: true)
-  end
-
-  defp comparison_form(draft) do
-    to_form(
-      %{
-        "left_run_id" => Map.get(draft, "left_run_id", ""),
-        "right_run_id" => Map.get(draft, "right_run_id", ""),
-        "from" => Map.get(draft, "from", ""),
-        "to" => Map.get(draft, "to", "")
-      },
-      as: :comparison
-    )
-  end
-
-  # The helper panel halts every raw `:DOWN` it does not own, so this page's own
-  # monitor carries its own tag and reaches `handle_info/2` as that tagged message.
-  defp monitor_coordinator(pid),
-    do: :erlang.monitor(:process, pid, tag: :comparison_coordinator_down)
-
-  defp demonitor(socket, key) do
-    case socket.assigns[key] do
-      nil ->
+      _other ->
         socket
-
-      ref ->
-        # `Process.demonitor/2` answers `true`, so the socket is rebound rather
-        # than returning its result.
-        Process.demonitor(ref, [:flush])
-        socket
+        |> refresh_selected_kind_busy()
+        |> assign(:export_notice, "The export couldn’t start. Try again.")
     end
   end
 
   @impl Phoenix.LiveView
-  def handle_info({:release_comparison, request_ref, outcome}, socket) do
-    if request_ref == socket.assigns.comparison_request_ref do
-      {:noreply, finish_comparison(socket, outcome)}
-    else
-      # A stale request reference can never win over the current one.
-      {:noreply, socket}
-    end
-  end
-
-  # The coordinator is monitored so an exit that delivers no terminal message is
-  # still reported. It becomes a worker exit only while it is still the current
-  # request; a replaced coordinator's exit changes nothing.
-  @impl Phoenix.LiveView
-  def handle_info({:comparison_coordinator_down, ref, :process, pid, _reason}, socket) do
-    if socket.assigns.comparison_monitor == ref and
-         socket.assigns.comparison_coordinator == pid do
-      {:noreply,
-       socket
-       |> assign(:comparison_status, :refused)
-       |> assign(:comparison_notice, Map.fetch!(@comparison_reason_notices, :worker_exit))
-       |> assign(:comparison_coordinator, nil)
-       |> assign(:comparison_monitor, nil)}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl Phoenix.LiveView
-  def handle_info({:export_run_changed, _run_id}, socket) do
-    # A newer export is a different file, so a review of the previous one belongs
-    # to a page the operator has left. The review is closed for the same reason a
-    # version switch closes it.
-    previous_run_id = socket.assigns.publication.run && socket.assigns.publication.run.id
-    socket = refresh_export_run(socket)
-    current_run_id = socket.assigns.export_run && socket.assigns.export_run.id
+  def handle_info({:export_run_changed, run_id}, socket) do
+    changed_run = scoped_export_run(socket, run_id)
+    socket = refresh_selected_kind_busy(socket)
 
     socket =
-      if previous_run_id == current_run_id,
-        do: socket,
-        else: close_publication_review(socket)
+      case changed_run do
+        %{} = run -> stream_insert(socket, :files, run)
+        _ -> socket
+      end
+      |> refresh_files_match(changed_run)
 
-    {:noreply, socket |> assign_publication() |> refresh_feed_quality()}
+    # A listed run that fails with a garage/stop clash owns the card's callout. A
+    # ready operations-bearing run of the same kind is the corrected successor, so
+    # it clears the stale callout; unrelated full/pathways runs never clear it.
+    socket = update_files_clash_run(socket, changed_run)
+
+    socket = update_finished_band(socket, changed_run)
+
+    {:noreply,
+     socket
+     |> refresh_operations_preview_for_ready_run(changed_run)
+     |> assign_publication()
+     |> refresh_publication_presentation()
+     |> refresh_helper_context()}
   end
 
   # The check the open review is waiting for finished. Building the review again is
@@ -1293,12 +607,77 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     {:noreply, socket}
   end
 
+  # Static delivery is owned by the background publisher and has no export-run
+  # transition to wake this page. Poll only the intent this LiveView queued,
+  # stop on a durable terminal state, and bound the observer to 90 seconds.
+  @impl Phoenix.LiveView
+  def handle_info(
+        {:publication_status_poll, publication_id, poll_token, remaining},
+        %{
+          assigns: %{
+            publication: %{
+              publication_id: publication_id,
+              poll_token: poll_token
+            }
+          }
+        } = socket
+      ) do
+    socket =
+      socket
+      |> refresh_publication_status()
+      |> refresh_publication_presentation()
+
+    case socket.assigns.publication.status.kind do
+      "success" ->
+        published = socket.assigns.publication.run
+
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast(published_toast(published), :done)}
+
+      "error" ->
+        detail = socket.assigns.publication.status.detail
+
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast("Publication failed. #{detail}", :refused)}
+
+      _non_terminal when remaining > 1 ->
+        {:noreply, schedule_publication_poll(socket, remaining - 1)}
+
+      _non_terminal ->
+        {:noreply,
+         socket
+         |> put_publication(%{poll_token: nil})
+         |> put_files_toast(
+           "Publication is still in progress. Refresh this page to check again.",
+           :info
+         )}
+    end
+  end
+
+  def handle_info({:publication_status_poll, _publication_id, _poll_token, _remaining}, socket),
+    do: {:noreply, socket}
+
+  # The toast's dismiss timer carries its token, so a timer set for an earlier
+  # toast cannot clear a later one.
+  @impl Phoenix.LiveView
+  def handle_info({:dismiss_toast, token}, socket) do
+    if socket.assigns.files_toast && socket.assigns.files_toast.token == token do
+      {:noreply, assign(socket, :files_toast, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   defp apply_validation_outcome(socket, %{status: "completed"} = run) do
     socket
     |> assign_persisted_validation_result(run)
     |> assign(:validating, false)
     |> assign(:validation_progress, nil)
-    |> refresh_feed_quality()
+    |> refresh_helper_context()
   end
 
   defp apply_validation_outcome(socket, %{status: "failed"}) do
@@ -1326,6 +705,370 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
+  defp load_files(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    rows = ExportRuns.list_files(organization_id, version_id, limit: @files_page_size + 1)
+    {page, rest} = Enum.split(rows, @files_page_size)
+    {socket, page} = subscribe_and_reconcile_listed_files(socket, page)
+
+    socket
+    |> assign(:files_has_more?, rest != [])
+    |> assign(:files_cursor, cursor_for(List.last(page)))
+    |> assign(:files_empty?, page == [])
+    |> assign(:files_clash_run, clash_run(page, socket.assigns.files_clash_run))
+    |> reset_files_match(page)
+    |> assign(:files_loaded_ids, MapSet.new(Enum.map(page, & &1.id)))
+    |> stream(:files, page, reset: true)
+  end
+
+  # The R3 match answer for a freshly reset Files page. The stream is replaced,
+  # so the previous page's answers and the operations rows they described are
+  # replaced too; the served run is read once here through the same trusted
+  # editor scope the publication section uses. A run that is not a ready
+  # operations-only run contributes no entry.
+  defp reset_files_match(socket, runs) do
+    socket
+    |> assign(:files_match, %{})
+    |> assign(:files_shown_operations, MapSet.new())
+    |> merge_files_match(runs)
+  end
+
+  # One appended page (or one just-started row): add its answers to the displayed
+  # set. The decision is ExportRuns' and never this page's (INV-2).
+  defp merge_files_match(socket, runs) do
+    served_run_id = served_run_id(socket)
+
+    matches =
+      runs
+      |> Enum.filter(&(&1.state == :ready and &1.export_type == :operations_only))
+      |> Map.new(fn run ->
+        {run.id,
+         ExportRuns.reference_match(
+           socket.assigns.current_organization.id,
+           run,
+           served_run_id
+         )}
+      end)
+      |> Enum.reject(fn {_id, match} -> is_nil(match) end)
+      |> Map.new()
+
+    socket
+    |> assign(:files_match, Map.merge(socket.assigns.files_match, matches))
+    |> remember_shown_operations(runs)
+    |> put_served_run(served_run_id)
+  end
+
+  # A displayed operations-only answer is recomputed when its own row changes,
+  # when a full or operations run that could answer it changes, or when the
+  # served run this page read changes. Rows whose answer is removed or replaced
+  # are re-streamed so the rendered statement never outlives the decision it
+  # reports.
+  defp refresh_files_match(socket, changed_run) do
+    served_run_id = served_run_id(socket)
+    socket = remember_shown_operations(socket, changed_run)
+
+    recompute_ids =
+      cond do
+        served_run_id != socket.assigns.files_served_run_id ->
+          socket.assigns.files_shown_operations
+
+        is_nil(changed_run) ->
+          socket.assigns.files_shown_operations
+
+        changed_run.export_type in [:full, :operations] ->
+          socket.assigns.files_shown_operations
+
+        changed_run.export_type == :operations_only ->
+          MapSet.new([changed_run.id])
+
+        true ->
+          MapSet.new()
+      end
+
+    previous_matches = socket.assigns.files_match
+
+    matches =
+      Enum.reduce(recompute_ids, previous_matches, fn id, matches ->
+        case match_answer(socket, id, served_run_id) do
+          nil -> Map.delete(matches, id)
+          answer -> Map.put(matches, id, answer)
+        end
+      end)
+
+    changed_ids =
+      MapSet.filter(recompute_ids, fn id ->
+        Map.get(previous_matches, id) != Map.get(matches, id)
+      end)
+
+    socket
+    |> assign(:files_match, matches)
+    |> put_served_run(served_run_id)
+    |> restream_files(changed_ids)
+  end
+
+  # The current answer for one displayed row, or nil when the row is no longer a
+  # ready operations-only run and so must not keep a statement.
+  defp match_answer(socket, id, served_run_id) do
+    case scoped_export_run(socket, id) do
+      %{state: :ready, export_type: :operations_only} = run ->
+        ExportRuns.reference_match(
+          socket.assigns.current_organization.id,
+          run,
+          served_run_id
+        )
+
+      _ineligible ->
+        nil
+    end
+  end
+
+  defp restream_files(socket, ids) do
+    Enum.reduce(ids, socket, fn id, socket ->
+      case scoped_export_run(socket, id) do
+        %{} = run -> stream_insert(socket, :files, run)
+        nil -> socket
+      end
+    end)
+  end
+
+  defp remember_shown_operations(socket, runs) do
+    ids =
+      runs
+      |> List.wrap()
+      |> Enum.filter(&(&1.export_type == :operations_only))
+      |> MapSet.new(& &1.id)
+
+    assign(
+      socket,
+      :files_shown_operations,
+      MapSet.union(socket.assigns.files_shown_operations, ids)
+    )
+  end
+
+  defp served_run_id(socket) do
+    case FeedPublishing.served_run_id(publication_scope(socket), :full) do
+      {:ok, run_id} -> run_id
+      _other -> nil
+    end
+  end
+
+  defp put_served_run(socket, served_run_id) do
+    assign(socket,
+      files_served_run_id: served_run_id,
+      files_full_current?: not is_nil(served_run_id)
+    )
+  end
+
+  defp cursor_for(nil), do: nil
+  defp cursor_for(%{inserted_at: inserted_at, id: id}), do: {inserted_at, id}
+
+  # A ready row is subscribed too when the R3 match reads it: a full/operations
+  # candidate's transition to expired, and an operations-only row's own expiry,
+  # change a displayed statement, so they must arrive as they happen.
+  defp subscribe_listed_files(socket, runs) do
+    Enum.reduce(runs, socket, fn run, acc ->
+      if run.state in [:pending, :building] or match_subject?(run),
+        do: subscribe_file_run(acc, run),
+        else: acc
+    end)
+  end
+
+  defp match_subject?(%{state: :ready, export_type: type})
+       when type in [:full, :operations, :operations_only],
+       do: true
+
+  defp match_subject?(_run), do: false
+
+  # Reading a row and subscribing are not atomic. Subscribe to every active row
+  # from the read first, then read those rows again: a transition before the
+  # subscription is present in the second read, while a later transition is
+  # delivered through PubSub.
+  defp subscribe_and_reconcile_listed_files(socket, runs) do
+    socket = subscribe_listed_files(socket, runs)
+
+    current =
+      Enum.map(runs, fn run ->
+        if run.state in [:pending, :building],
+          do: scoped_export_run(socket, run.id) || run,
+          else: run
+      end)
+
+    {socket, current}
+  end
+
+  # A listed run is subscribed once per LiveView, so a type patch that reloads
+  # the same page never doubles its broadcasts; a started or retried run is
+  # remembered the same way.
+  defp subscribe_file_run(socket, run) do
+    if MapSet.member?(socket.assigns.files_subscribed_ids, run.id) do
+      socket
+    else
+      files_lifecycle_checkpoint(:before_subscribe, run)
+      subscribe_export_run(run)
+
+      assign(
+        socket,
+        :files_subscribed_ids,
+        MapSet.put(socket.assigns.files_subscribed_ids, run.id)
+      )
+    end
+  end
+
+  defp clash_run(runs, existing) do
+    if existing != nil do
+      existing
+    else
+      Enum.find(
+        runs,
+        &(&1.state == :failed and &1.failure_code == "garage_stop_id_conflict")
+      )
+    end
+  end
+
+  defp update_files_clash_run(socket, changed_run) do
+    cond do
+      changed_run && changed_run.state == :failed &&
+          changed_run.failure_code == "garage_stop_id_conflict" ->
+        assign(socket, :files_clash_run, changed_run)
+
+      changed_run && changed_run.state == :ready &&
+        changed_run.export_type in @operations_kinds &&
+          clash_successor?(socket, changed_run) ->
+        assign(socket, :files_clash_run, nil)
+
+      true ->
+        socket
+    end
+  end
+
+  # A ready operations-bearing run of the same kind as the current callout is
+  # that clash's corrected successor.
+  defp clash_successor?(socket, %{export_type: export_type}) do
+    match?(%{export_type: ^export_type}, socket.assigns.files_clash_run)
+  end
+
+  defp put_files_toast(socket, text, kind) do
+    token = System.unique_integer([:positive, :monotonic])
+    Process.send_after(self(), {:dismiss_toast, token}, 4_000)
+    assign(socket, :files_toast, %{text: text, kind: kind, token: token})
+  end
+
+  defp published_toast(nil), do: "Full feed published."
+  defp published_toast(%{export_type: :pathways}), do: "Station pathways published."
+  defp published_toast(_run), do: "Full feed published."
+
+  defp publication_queued_toast(%{export_type: :pathways}),
+    do: "Station pathways queued for publication."
+
+  defp publication_queued_toast(_run), do: "Full feed queued for publication."
+
+  defp schedule_publication_poll(socket, remaining) do
+    publication = socket.assigns.publication
+
+    Process.send_after(
+      self(),
+      {
+        :publication_status_poll,
+        publication.publication_id,
+        publication.poll_token,
+        remaining
+      },
+      @publication_poll_interval_ms
+    )
+
+    socket
+  end
+
+  defp remember_started(socket, run) do
+    socket
+    |> assign(:files_started_ids, MapSet.put(socket.assigns.files_started_ids, run.id))
+    |> assign(:files_loaded_ids, MapSet.put(socket.assigns.files_loaded_ids, run.id))
+  end
+
+  defp forget_started(socket, run) do
+    assign(socket, :files_started_ids, MapSet.delete(socket.assigns.files_started_ids, run.id))
+  end
+
+  # A completion consumes its started-here marker. That makes dismissal sticky
+  # across later ready metadata broadcasts, while a non-ready transition clears
+  # an on-screen band for the file that is no longer downloadable.
+  defp update_finished_band(socket, nil), do: socket
+
+  defp update_finished_band(socket, run) do
+    finished_run = socket.assigns.files_finished_run
+    finished_id = finished_run && finished_run.id
+
+    cond do
+      finished_id == run.id and run.state == :ready ->
+        assign(socket, :files_finished_run, run)
+
+      finished_id == run.id ->
+        socket
+        |> assign(:files_finished_run, nil)
+        |> forget_started(run)
+
+      run.state == :ready and MapSet.member?(socket.assigns.files_started_ids, run.id) ->
+        socket
+        |> assign(:files_finished_run, run)
+        |> forget_started(run)
+
+      run.state in [:failed, :interrupted, :cancelled, :expired] ->
+        forget_started(socket, run)
+
+      true ->
+        socket
+    end
+  end
+
+  defp retry_file(socket, %{"run" => run_id}) do
+    organization_id = socket.assigns.current_organization.id
+
+    with {:ok, uuid} <- Ecto.UUID.cast(run_id),
+         %{id: _} <- scoped_export_run(socket, uuid),
+         {:ok, run} <- ExportRuns.retry(organization_id, uuid) do
+      socket =
+        socket
+        |> subscribe_file_run(run)
+        |> remember_started(run)
+        |> stream_insert(:files, run, at: 0)
+        |> assign(:files_empty?, false)
+        |> assign(:files_notice, nil)
+        |> assign(:files_finished_run, nil)
+
+      files_lifecycle_checkpoint(:before_start, run)
+
+      case ExportRunner.ensure_started(organization_id, run) do
+        :ok ->
+          current = scoped_export_run(socket, run.id) || run
+
+          {:noreply,
+           socket
+           |> stream_insert(:files, current, at: 0)
+           |> update_finished_band(current)
+           |> merge_files_match([current])}
+
+        {:error, :busy} ->
+          current = scoped_export_run(socket, run.id) || run
+
+          {:noreply,
+           socket
+           |> stream_insert(:files, current, at: 0)
+           |> update_finished_band(current)
+           |> export_busy()}
+
+        _other ->
+          {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+      end
+    else
+      _ -> {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+    end
+  end
+
+  defp retry_file(socket, _params),
+    do: {:noreply, assign(socket, :files_notice, @file_unavailable_notice)}
+
   @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
@@ -1342,35 +1085,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <.gtfs_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:export} />
       </:sub_header>
 
-      <div id="export-page" class="ds-page">
+      <div id="export-page" class="ds-page min-w-0 max-w-full">
         <.header>
-          Export feed
-          <:subtitle>{lede(@current_gtfs_version, @operations?)}</:subtitle>
+          Export
           <:actions>
-            <div
-              :if={@comparison_context}
-              id="export-helper-mode"
-              role="group"
-              aria-label="Which helper answers on this page"
-              class="flex flex-wrap items-center gap-1"
-            >
-              <.button
-                :for={
-                  {pack, label} <- [
-                    {"feed_quality", "Feed quality"},
-                    {"release_comparison", "Comparison"}
-                  ]
-                }
-                id={"export-helper-mode-#{pack}"}
-                type="button"
-                phx-click="export_helper_mode"
-                phx-value-pack={pack}
-                aria-pressed={to_string(@agent_pack_id == pack)}
-                variant={if @agent_pack_id == pack, do: "secondary", else: "quiet"}
-              >
-                {label}
-              </.button>
-            </div>
             <.button
               id="agent-helper-open"
               type="button"
@@ -1388,9 +1106,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
         <div
           id="export-helper-focus"
           phx-hook=".ExportHelperFocus"
-          class={["lg:grid lg:gap-6", @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"]}
+          class={[
+            "min-w-0 max-w-full lg:grid lg:gap-6",
+            @agent_open? && "lg:grid-cols-[minmax(0,1fr)_24rem]"
+          ]}
         >
-          <div class={@agent_open? && "hidden lg:block"}>
+          <div class={["min-w-0 max-w-full", @agent_open? && "hidden lg:block"]}>
             <div
               id="export-download-container"
               class={[
@@ -1399,144 +1120,48 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               ]}
             >
               <div class="grid min-w-0 gap-6">
-                <.result_section
-                  id="export-workspace"
-                  title="Create a feed file"
-                  lede={"Uses #{@current_gtfs_version.name} as it is now."}
-                >
-                  <.type_options
+                <div id="export-workspace">
+                  <.new_file
                     form={@export_form}
                     export_type={@export_type}
                     operations?={@operations?}
-                  />
-                  <.closures_omitted
-                    :if={@export_type == :pathways and @closure_count > 0}
-                    count={@closure_count}
-                  />
-                  <.operations_note
-                    :if={@export_type == :operations}
+                    version={@current_gtfs_version}
                     file_inventory={@file_inventory}
-                  />
-                  <.contents
-                    export_type={@export_type}
-                    file_inventory={@file_inventory}
+                    operations_preview={@operations_preview}
                     missing_summary={@missing_summary}
                     defaults={@export_defaults}
-                    version_id={@current_gtfs_version.id}
-                  />
-                  <.run_status
-                    run={@export_run}
-                    export_type={@export_type}
-                    version={@current_gtfs_version}
+                    busy?={@selected_kind_busy?}
                     notice={@export_notice}
-                    defaults={@export_defaults}
-                    publish?={@publication.opener?}
+                    closure_count={@closure_count}
                   />
+                </div>
 
-                  <.publication_section publication={@publication} />
-                </.result_section>
-
-                <.comparison
-                  form={@comparison_form}
-                  choices={@comparison_choices}
-                  chosen={@comparison_chosen}
-                  status={@comparison_status}
-                  notice={@comparison_notice}
-                  result={@comparison_result}
-                />
-
-                <.comparison_helper
-                  :if={@comparison_result}
-                  context={@comparison_context}
-                  notice={@comparison_context_notice}
-                  open?={@agent_open? and @agent_pack_id == "release_comparison"}
-                />
-
-                <.comparison_results
-                  :if={@comparison_result}
-                  result={@comparison_result}
-                  view={@comparison_view}
-                  scope={@comparison_scope}
-                  scope_form={@comparison_scope_form}
-                  scope_notice={@comparison_scope_notice}
-                  inspected={@comparison_inspected}
-                  page={@comparison_page}
-                  true_totals={@comparison_true_totals}
-                >
-                  <:differences_list>
-                    <div id="comparison-rows" phx-update="stream" class="divide-y divide-subtle">
-                      <.comparison_difference_row
-                        :for={{dom_id, change} <- @streams.comparison_differences}
-                        dom_id={dom_id}
-                        change={change}
-                      />
-                    </div>
-                  </:differences_list>
-                  <:structural_list>
-                    <div
-                      id="comparison-structural-rows"
-                      phx-update="stream"
-                      class="divide-y divide-subtle"
-                    >
-                      <.comparison_structural_row
-                        :for={{dom_id, change} <- @streams.comparison_structural}
-                        dom_id={dom_id}
-                        change={change}
-                      />
-                    </div>
-                  </:structural_list>
-                  <:unresolved_list>
-                    <div
-                      id="comparison-unresolved-rows"
-                      phx-update="stream"
-                      class="divide-y divide-subtle"
-                    >
-                      <.comparison_unresolved_row
-                        :for={{dom_id, entry} <- @streams.comparison_unresolved}
-                        dom_id={dom_id}
-                        entry={entry}
-                      />
-                    </div>
-                  </:unresolved_list>
-                  <:unknowns_list>
-                    <div id="comparison-unknowns" phx-update="stream" class="divide-y divide-subtle">
-                      <.comparison_unknown_row
-                        :for={{dom_id, unknown} <- @streams.comparison_unknowns}
-                        dom_id={dom_id}
-                        unknown={unknown}
-                      />
-                    </div>
-                  </:unknowns_list>
-                </.comparison_results>
-
-                <.guide
-                  export_type={@export_type}
+                <.files_card
+                  empty?={@files_empty?}
+                  has_more?={@files_has_more?}
+                  notice={@files_notice}
+                  finished_run={@files_finished_run}
+                  clash_run={@files_clash_run}
                   version={@current_gtfs_version}
-                  organization={@current_organization}
-                />
+                >
+                  <:files_list>
+                    <.file_row
+                      :for={{dom_id, run} <- @streams.files}
+                      dom_id={dom_id}
+                      run={run}
+                      version={@current_gtfs_version}
+                      match={@files_match[run.id]}
+                      open?={MapSet.member?(@files_open_warnings, run.id)}
+                      defaults={@export_defaults}
+                      full_current?={@files_full_current?}
+                      publishing?={@publishing_enabled?}
+                      published?={MapSet.member?(@files_published_run_ids, run.id)}
+                    />
+                  </:files_list>
+                </.files_card>
               </div>
 
               <div class="grid min-w-0 gap-6">
-                <section
-                  id="feed-quality-evidence"
-                  class="rounded-card border border-control bg-white px-5 py-4"
-                >
-                  <h3 class="text-sm font-bold text-strong">Feed quality</h3>
-                  <p id="feed-quality-relationship" class="mt-1 text-[13px] text-default">
-                    {relationship_copy(@feed_quality)}
-                  </p>
-                  <p class="mt-1 text-[13px] text-muted">
-                    Currentness: {@feed_quality.currentness}. Publication: {@feed_quality.publication_status}.
-                  </p>
-                  <button
-                    id="feed-quality-refresh"
-                    type="button"
-                    phx-click="feed_quality_refresh"
-                    class="mt-2 text-[13px] font-semibold text-action"
-                  >
-                    Refresh check
-                  </button>
-                </section>
                 <.check_panel
                   validating?={@validating}
                   progress={@validation_progress}
@@ -1545,8 +1170,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                   validation_run_id={@validation_run_id}
                   version={@current_gtfs_version}
                   include_flex={@include_flex}
+                  checks={@recent_checks}
                 />
-                <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
+                <.public_address_card
+                  :if={@publishing_enabled?}
+                  addresses={@public_addresses}
+                />
               </div>
             </div>
           </div>
@@ -1560,8 +1189,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               title={@agent_title}
               intro={@agent_intro}
               examples={@agent_examples}
-              scope_line={helper_scope_line(@agent_pack_id, @current_gtfs_version, @comparison_scope)}
-              composer_hint={helper_composer_hint(@agent_pack_id)}
+              scope_line={helper_scope_line(@current_gtfs_version)}
+              composer_hint={helper_composer_hint()}
               status={@agent_status}
               entries={@streams.agent_entries}
               form={@agent_form}
@@ -1571,6 +1200,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
             />
           </div>
         </div>
+        <.publication_section publication={@publication} />
       </div>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".ExportHelperFocus">
@@ -1580,29 +1210,21 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
           }
         }
       </script>
+      <.toast
+        :if={@files_toast}
+        id="export-toast"
+        text_id="export-toast-text"
+        toast={@files_toast}
+      />
     </Layouts.app>
     """
   end
 
-  defp helper_scope_line("release_comparison", version, nil),
-    do: "Export · #{version.name} · whole comparison"
-
-  defp helper_scope_line("release_comparison", version, _narrowed),
-    do: "Export · #{version.name} · narrowed comparison"
-
-  defp helper_scope_line(_pack, version, _scope), do: "Export · " <> version.name
-
-  defp helper_composer_hint("release_comparison"),
-    do: "Answers come from the comparison on this page."
+  defp helper_scope_line(version), do: "Export · " <> version.name
 
   # The feed quality helper prepares an export-options change for review, which is
   # the component's own default rule.
-  defp helper_composer_hint(_pack), do: "Review changes before applying."
-
-  defp lede(version, operations?) do
-    "Create a file of #{version.name} for trip planners such as Google Maps and Transit app" <>
-      if(operations?, do: ", or for your CAD/AVL vendor.", else: ".")
-  end
+  defp helper_composer_hint, do: "Review changes before applying."
 
   # The title a check carries in Recent checks: a plain name for the kind of check.
   defp check_title(%{run_type: "mobility_data"}, _station_names_by_run_id), do: "Feed check"
@@ -1782,20 +1404,84 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp export_type_from_param("pathways"), do: :pathways
   defp export_type_from_param("operations"), do: :operations
+  defp export_type_from_param("operations_only"), do: :operations_only
   defp export_type_from_param(_type), do: :full
 
   # ProductSurfaces alone decides visibility (INV-1): a Pathways organization
-  # never selects the operations export, so its query param falls back to full.
+  # never selects either operations kind, so its query param falls back to full.
   defp resolve_export_type(type_param, organization) do
     case export_type_from_param(type_param) do
-      :operations ->
+      type when type in @operations_kinds ->
         if ProductSurfaces.visible?(organization, :operations_export),
-          do: :operations,
+          do: type,
           else: :full
 
       export_type ->
         export_type
     end
+  end
+
+  defp operations_kind?(export_type), do: export_type in @operations_kinds
+
+  # The operations preview is one async derivation per LiveView visit. The first
+  # time either operations-bearing kind is selected the task starts; switching
+  # back to full and then to the other operations kind never starts a second one.
+  defp ensure_operations_preview(socket) do
+    if operations_kind?(socket.assigns.export_type) and
+         not socket.assigns.operations_preview_started? do
+      load_operations_preview(socket)
+    else
+      socket
+    end
+  end
+
+  # `Export.operations_preview/2` is the sole derivation of the TODS file counts,
+  # runs and trips; neither this page nor a component counts them again.
+  defp load_operations_preview(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    repo = Repo.get_dynamic_repo()
+
+    socket
+    |> assign(:operations_preview_started?, true)
+    |> assign_async(:operations_preview, fn ->
+      # `assign_async` runs its function in a fresh task, which does not inherit
+      # this LiveView's dynamic repo, so the task re-binds it before reading.
+      Repo.put_dynamic_repo(repo)
+
+      case Gtfs.Export.operations_preview(organization_id, version_id) do
+        {:ok, preview} -> {:ok, %{operations_preview: preview}}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  # A newly ready operations-bearing run can change the counts the preview read
+  # before that run, so the preview is derived once more. The refreshed run's id
+  # is recorded, so a repeat broadcast for the same run never starts another task.
+  defp refresh_operations_preview_for_ready_run(socket, changed_run) do
+    case changed_run do
+      %{state: :ready, export_type: export_type, id: run_id}
+      when export_type in @operations_kinds ->
+        if socket.assigns.operations_preview_refreshed_run_id == run_id do
+          socket
+        else
+          socket
+          |> assign(:operations_preview_refreshed_run_id, run_id)
+          |> load_operations_preview()
+        end
+
+      _other ->
+        socket
+    end
+  end
+
+  defp scoped_export_run(socket, run_id) do
+    ExportRuns.get_for_version(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      run_id
+    )
   end
 
   defp export_actor(socket) do
@@ -1806,28 +1492,33 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     export_type = socket.assigns.export_type
-    # The operations export packages the full GTFS file set; its TODS additions
-    # come from the organization, not from the version.
-    base_type = if export_type == :operations, do: :full, else: export_type
+
+    # The combined operations export packages the full GTFS file set; the
+    # operations-only export has no GTFS base. TODS counts are never derived
+    # here: `Export.operations_preview/2` is the one place that counts them.
+    base_type =
+      case export_type do
+        :operations -> :full
+        :operations_only -> nil
+        other -> other
+      end
 
     file_inventory =
-      organization_id
-      |> Gtfs.get_file_inventory(version_id, base_type)
-      |> Kernel.++(tods_inventory(organization_id, export_type))
-      |> Enum.sort_by(fn {filename, _count} -> filename end)
+      case base_type do
+        nil -> []
+        type -> Gtfs.get_file_inventory(organization_id, version_id, type)
+      end
 
     # The omission notice reads the published closure count through the same
     # scope the Evolutions surface uses; the route only mounts a published
     # version, so it matches the rows the full inventory reports.
     socket
-    |> assign(:file_inventory, file_inventory)
+    |> assign(
+      :file_inventory,
+      Enum.sort_by(file_inventory, fn {filename, _count} -> filename end)
+    )
     |> assign(:closure_count, Gtfs.count_closures(organization_id, version_id))
   end
-
-  defp tods_inventory(organization_id, :operations),
-    do: Operations.tods_file_inventory(organization_id)
-
-  defp tods_inventory(_organization_id, _export_type), do: []
 
   # -- Feed quality helper ----------------------------------------------------
 
@@ -1835,14 +1526,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # describe one selection. Every change of the selected export, its checks, its
   # type or the saved defaults goes through here; `set_context` is a no-op while
   # the snapshot is unchanged and starts a fresh conversation when it moved.
-  defp refresh_feed_quality(socket) do
-    socket = assign(socket, :feed_quality, feed_quality_summary(socket))
 
-    # The comparison helper owns the panel's context while it is selected, and a
-    # return to this helper reads a fresh snapshot in `select_helper_pack/2`.
-    if socket.assigns.agent_pack_id == "feed_quality",
-      do: AgentPanel.set_context(socket, feed_quality_context(socket)),
-      else: socket
+  defp refresh_helper_context(socket) do
+    AgentPanel.set_context(socket, feed_quality_context(socket))
   end
 
   # The host builds the snapshot the helper reads: only a server fingerprint of
@@ -1873,25 +1559,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
          }) do
       {:ok, context} -> context
       {:error, _reason} -> Scope.context({:version, version_id})
-    end
-  end
-
-  # The section is provider-independent: it reads the same scoped Evidence the
-  # pack reads, and never starts, repairs or publishes anything.
-  defp feed_quality_summary(socket) do
-    case Evidence.readiness(feed_quality_scope(socket), socket.assigns.export_type, nil, :primary) do
-      {:ok, readiness} ->
-        %{
-          relationship: readiness.relationship,
-          selected_artifact: readiness.selected_artifact,
-          currentness: readiness.currentness,
-          publication_status: readiness.publication_status,
-          digest: readiness.digest,
-          preflight: readiness.preflight
-        }
-
-      {:error, _reason} ->
-        @empty_feed_quality
     end
   end
 
@@ -1983,21 +1650,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     end
   end
 
-  defp relationship_copy(%{relationship: "checked"}),
-    do: "A completed check read these exact bytes."
-
-  defp relationship_copy(%{relationship: "different_bytes"}),
-    do: "A completed check read different bytes for this version."
-
-  defp relationship_copy(%{relationship: "different_profile"}),
-    do: "A completed check's profile differs from this selection."
-
-  defp relationship_copy(%{relationship: "unavailable"}),
-    do: "This export selection is not available."
-
-  defp relationship_copy(_summary),
-    do: "The check history cannot be compared to this selection yet."
-
   defp agent_review_label(%{command: {:feed_quality_export_options, _command}}),
     do: "Review options"
 
@@ -2007,23 +1659,34 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # so the page goes back to the export it was showing and says why.
   defp export_busy(socket) do
     socket
-    |> refresh_export_run()
+    |> refresh_selected_kind_busy()
     |> assign(:export_notice, @export_busy_message)
   end
 
-  defp refresh_export_run(socket) do
+  defp refresh_selected_kind_busy(socket) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
     export_run =
       ExportRuns.latest_for_version(organization_id, version_id, socket.assigns.export_type)
 
-    if export_run, do: subscribe_export_run(export_run)
-    assign(socket, :export_run, export_run)
+    assign(socket, :selected_kind_busy?, selected_kind_busy?(export_run))
   end
+
+  defp selected_kind_busy?(%{state: state}) when state in [:pending, :building], do: true
+  defp selected_kind_busy?(_run), do: false
 
   defp subscribe_export_run(run),
     do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
+
+  # Tests use this observer to move a durable run at the exact subscription or
+  # worker-start boundary. It is unset in application environments.
+  defp files_lifecycle_checkpoint(stage, run) do
+    case Application.get_env(:gtfs_planner, :export_files_lifecycle_observer) do
+      observer when is_function(observer, 2) -> observer.(stage, run)
+      _other -> :ok
+    end
+  end
 
   # The version's missing-times count loads apart from the file list, so a
   # large version never blocks the page; the pre-run line reads it when ready.
@@ -2041,6 +1704,93 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   # The export type names the public channel this page is about, and the reviewed
   # artifact is the run's main one. Operations has no channel: the catalog owner
   # refuses that profile outright, so the page never offers the action.
+  # The server-owned Public address presentation. Only a channel the server reports
+  # `:current` is served; a pending, staging, switching or reconciling attempt is
+  # never shown as an address or as a Published row.
+  defp refresh_publication_presentation(socket) do
+    if PublishingConfig.current() == :disabled do
+      socket
+      |> assign(
+        publishing_enabled?: false,
+        public_addresses: [],
+        files_published_run_ids: MapSet.new()
+      )
+      |> put_publication(%{current_address: nil})
+    else
+      refresh_enabled_publication_presentation(socket)
+    end
+  end
+
+  defp refresh_enabled_publication_presentation(socket) do
+    case FeedPublishing.status(publication_scope(socket)) do
+      {:ok, publications} ->
+        addresses =
+          publications
+          |> Enum.filter(&(&1.channel in [:full, :pathways] and &1.status == :current))
+          |> Enum.map(&address_row(&1, publication_scope(socket)))
+          |> Enum.reject(&is_nil/1)
+
+        served_ids = MapSet.new(addresses, & &1.run_id)
+        previous = socket.assigns.files_published_run_ids
+
+        socket =
+          assign(socket,
+            publishing_enabled?: true,
+            public_addresses: addresses,
+            files_published_run_ids: served_ids
+          )
+          |> put_current_address(addresses)
+
+        if MapSet.equal?(served_ids, previous), do: socket, else: restream_loaded_files(socket)
+
+      {:error, _reason} ->
+        socket
+        |> assign(
+          publishing_enabled?: true,
+          public_addresses: [],
+          files_published_run_ids: MapSet.new()
+        )
+        |> put_publication(%{current_address: nil})
+    end
+  end
+
+  # The drawer's Replaces line reads the current address row matching the bound
+  # channel, or nil when that channel currently serves nothing.
+  defp put_current_address(socket, addresses) do
+    current = Enum.find(addresses, &(&1.channel == socket.assigns.publication.channel))
+    put_publication(socket, %{current_address: current})
+  end
+
+  defp address_row(
+         %{active_attempt: %{private_snapshot: %{"source" => source}}} = publication,
+         scope
+       ) do
+    case FeedPublishing.served_run_id(scope, publication.channel) do
+      {:ok, run_id} when is_binary(run_id) ->
+        %{
+          channel: publication.channel,
+          url: FeedPublishing.public_url(publication.namespace, publication.channel),
+          filename: Map.get(source, "filename"),
+          run_id: run_id,
+          served_at: publication.manifest_last_modified
+        }
+
+      _not_served ->
+        nil
+    end
+  end
+
+  defp address_row(_publication, _scope), do: nil
+
+  defp restream_loaded_files(socket) do
+    Enum.reduce(socket.assigns.files_loaded_ids, socket, fn id, acc ->
+      case scoped_export_run(acc, id) do
+        %{} = run -> stream_insert(acc, :files, run)
+        _other -> acc
+      end
+    end)
+  end
+
   defp publication_channel(:full), do: :full
   defp publication_channel(:pathways), do: :pathways
   defp publication_channel(_export_type), do: nil
@@ -2052,9 +1802,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       channel: nil,
       slot: :main,
       run: nil,
+      current_address: nil,
       preview: nil,
       pending_id: nil,
       publication_id: nil,
+      poll_token: nil,
       consent_form: consent_form(false),
       notice: nil,
       status: not_published_status()
@@ -2081,15 +1833,13 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   defp assign_publication(socket) do
-    channel = publication_channel(socket.assigns.export_type)
-
-    if is_nil(channel) or PublishingConfig.current() == :disabled do
+    if PublishingConfig.current() == :disabled do
       assign(socket, :publication, default_publication())
     else
-      run = if(match?(%{state: :ready}, socket.assigns.export_run), do: socket.assigns.export_run)
+      publication = %{socket.assigns.publication | available?: true}
 
       socket
-      |> put_publication(%{available?: true, channel: channel, slot: :main, run: run})
+      |> assign(:publication, publication)
       |> refresh_publication_status()
     end
   end
@@ -2102,7 +1852,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> put_publication(%{
       preview: nil,
       pending_id: nil,
+      publication_id: nil,
+      poll_token: nil,
       notice: nil,
+      current_address: nil,
       consent_form: consent_form(false)
     })
   end
