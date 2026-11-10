@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
   @required_roles ~w(
     active_stop fallback_stop other_level_stop
     pathway_forward pathway_inactive
+    pathway_step_free pathway_not_step_free pathway_barrier
     label label_halo ruler focus selection building_outline error degraded
     journal_open
   )a
@@ -57,6 +58,15 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     halo_color = DiagramPalette.roles().label_halo.color
     journal_color = DiagramPalette.roles().journal_open.color
     assert DiagramPalette.contrast_ratio(halo_color, journal_color) >= 4.5
+  end
+
+  test "each step-free view colour stays visible on white and on black plans" do
+    for role <- [:pathway_step_free, :pathway_not_step_free, :pathway_barrier] do
+      colour = DiagramPalette.roles()[role].color
+
+      assert DiagramPalette.contrast_ratio("#FFFFFF", colour) >= 4.5
+      assert DiagramPalette.contrast_ratio("#000000", colour) >= 3.0
+    end
   end
 
   test "points and pathways share one blue that stays visible on white and on black plans" do

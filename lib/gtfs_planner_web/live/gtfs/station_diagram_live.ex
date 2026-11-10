@@ -132,6 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:mode, :view)
      |> assign(:panel_tab, :points)
      |> assign(:side_panel_open?, false)
+     |> assign(:step_free_view?, false)
      |> assign(:list_query, "")
      |> assign(:station_editing_status, nil)
      |> assign(:show_diagram_upload_drawer, false)
@@ -981,7 +982,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         end
 
       if stop_id do
-        badge = %{pathway_id: pathway.id, pathway_mode: pathway.pathway_mode}
+        badge = %{
+          pathway_id: pathway.id,
+          pathway_mode: pathway.pathway_mode,
+          step_free: Pathway.step_free_state(pathway),
+          barriers: Pathway.step_free_barriers(pathway)
+        }
+
         Map.update(badges_by_stop, stop_id, [badge], &[badge | &1])
       else
         badges_by_stop
@@ -1009,6 +1016,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       phx-hook="JournalPanelHook"
       style={DiagramPalette.css_custom_properties()}
       data-immersive={if @mode in [:add, :connect, :map], do: "true"}
+      data-step-free-view={to_string(@step_free_view?)}
     >
       <Layouts.app
         flash={@flash}
@@ -1142,6 +1150,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                           upload={@uploads.diagram}
                           upload_phase={@upload_phase}
                           point_count={length(@child_stops_list)}
+                          step_free_view?={@step_free_view?}
                         />
                       </div>
                     </div>
@@ -1803,6 +1812,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   def handle_event("switch_mode", _params, socket) do
     {:noreply, put_flash(socket, :error, "Invalid mode selection")}
+  end
+
+  # The step-free view only recolours what is already drawn: every pathway
+  # carries its state, and the page attribute decides whether CSS shows it.
+  @impl true
+  def handle_event("toggle_step_free_view", _params, socket) do
+    {:noreply, update(socket, :step_free_view?, &(not &1))}
   end
 
   @impl true
@@ -2635,7 +2651,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:editing_pathway_pair, pathway_pair)
              |> assign(
                :pathway_form,
-               to_form(Map.put(params, "lock_version", pathway.lock_version))
+               to_form(
+                 params
+                 |> Map.put("lock_version", pathway.lock_version)
+                 # A draft from a form without the slope field takes the slope
+                 # the reloaded pathway now has, so saving cannot clear it unseen.
+                 |> Map.put_new("max_slope", pathway.max_slope)
+               )
              )
              |> assign(:pathway_outcome, nil)}
 
@@ -3503,6 +3525,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       signposted_as: params["signposted_as"],
       reversed_signposted_as: params["reversed_signposted_as"]
     }
+
+    # The slope field is absent from a form that has no slope to show. Leaving
+    # the attribute out then keeps a stored slope instead of clearing it.
+    attrs =
+      case params do
+        %{"max_slope" => slope} -> Map.put(attrs, :max_slope, parse_optional_decimal(slope))
+        _no_slope_field -> attrs
+      end
 
     case editing_pathway do
       %Pathway{} = pathway ->
@@ -5839,8 +5869,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       |> recompute_pathway_decoration()
       |> stream_same_level_pathways_for_pair(pair_key)
       |> recompute_cross_level_badges()
+      |> restream_stops_with_changed_badges(badges_before)
 
     maybe_push_markers_on_badge_change(socket, badges_before)
+  end
+
+  # A badge is drawn inside its stop's stream item, so a stop whose badges
+  # changed is re-inserted; otherwise it keeps the badge it was first drawn with.
+  defp restream_stops_with_changed_badges(socket, badges_before) do
+    badges = socket.assigns.cross_level_badges_by_stop
+
+    socket.assigns.child_stops_list
+    |> Enum.filter(&(Map.get(badges, &1.id) != Map.get(badges_before, &1.id)))
+    |> Enum.reduce(socket, &stream_insert(&2, :child_stops, &1))
   end
 
   # Re-push active child-stop markers in map mode only when cross-level badge
@@ -6322,6 +6363,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       "traversal_time" => pathway.traversal_time,
       "length" => pathway.length,
       "stair_count" => pathway.stair_count,
+      "max_slope" => pathway.max_slope,
       "min_width" => pathway.min_width,
       "signposted_as" => pathway.signposted_as,
       "reversed_signposted_as" => pathway.reversed_signposted_as
@@ -6662,11 +6704,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       traversal_time: parse_optional_int(form_field_value(form, :traversal_time)),
       length: parse_optional_decimal(form_field_value(form, :length)),
       stair_count: parse_optional_int(form_field_value(form, :stair_count)),
+      # Slope is signed along the direction of travel, so it turns with the
+      # pathway: the form's value where the form shows one, else the stored one.
+      max_slope: negate(flip_slope(pathway, form)),
       min_width: parse_optional_decimal(form_field_value(form, :min_width))
     }
   end
 
   defp form_field_value(form, field), do: form[field] && form[field].value
+
+  defp flip_slope(_pathway, %{params: %{"max_slope" => slope}}),
+    do: parse_optional_decimal(slope)
+
+  defp flip_slope(pathway, _form), do: pathway.max_slope
+
+  defp negate(nil), do: nil
+  defp negate(%Decimal{} = value), do: Decimal.negate(value)
 
   defp show_flipped_pathway(socket, updated_pathway) do
     refreshed_socket = refresh_lists(socket)

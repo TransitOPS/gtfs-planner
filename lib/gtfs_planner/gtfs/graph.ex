@@ -30,12 +30,19 @@ defmodule GtfsPlanner.Gtfs.Graph do
   end
 
   @doc """
+  Whether a pathway mode can carry a step-free route: walkway, moving sidewalk,
+  elevator, fare gate and exit gate can; stairs and escalators cannot.
+  """
+  def step_free_mode?(pathway_mode),
+    do: MapSet.member?(@step_free_modes, normalize_pathway_mode(pathway_mode))
+
+  @doc """
   Like `build_directed_adjacency/1` but filtered to step-free modes
   (walkway, moving sidewalk, elevator, fare gate, exit gate).
   """
   def build_step_free_directed_adjacency(pathways) do
     pathways
-    |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
+    |> Enum.filter(&step_free_mode?(&1.pathway_mode))
     |> build_directed_adjacency()
   end
 
@@ -78,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.Graph do
   """
   def build_step_free_path_traversal_adjacency(pathways) do
     pathways
-    |> Enum.filter(&MapSet.member?(@step_free_modes, normalize_pathway_mode(&1.pathway_mode)))
+    |> Enum.filter(&step_free_mode?(&1.pathway_mode))
     |> build_path_traversal_adjacency()
   end
 
