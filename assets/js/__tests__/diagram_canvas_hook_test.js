@@ -1265,7 +1265,11 @@ describe("DiagramCanvasHook — clicking a pathway while setting scale", () => {
 
     pointerClick(hitLine, { clientX: 200, clientY: 300 });
 
-    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("canvas_click", { x: 20.5, y: 30.25 });
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith(
+      "canvas_click",
+      { x: 20.5, y: 30.25 },
+      expect.any(Function)
+    );
     expect(routed).toEqual([]);
   });
 
@@ -1275,7 +1279,11 @@ describe("DiagramCanvasHook — clicking a pathway while setting scale", () => {
 
     pointerClick(badge, { clientX: 200, clientY: 300 });
 
-    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("canvas_click", { x: 20.5, y: 30.25 });
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith(
+      "canvas_click",
+      { x: 20.5, y: 30.25 },
+      expect.any(Function)
+    );
     expect(routed).toEqual([]);
   });
 
@@ -1393,5 +1401,122 @@ describe("DiagramCanvasHook — canvas resize", () => {
     hook.destroyed();
 
     expect(observers[0].disconnect).toHaveBeenCalledTimes(1);
+  });
+});
+
+// npm --prefix assets test -- js/__tests__/diagram_canvas_hook_test.js -t "editing-mode shortcuts"
+describe("DiagramCanvasHook — editing-mode shortcuts", () => {
+  let svg;
+  let overlay;
+  let hook;
+
+  function press(key, init = {}, target = document) {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  function attach(tag, attrs = {}) {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([name, value]) => el.setAttribute(name, value));
+    document.body.appendChild(el);
+    return el;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    svg = canvas.svg;
+    overlay = canvas.overlay;
+    hook = makeHook(svg);
+    hook.mounted();
+  });
+
+  afterEach(() => {
+    hook.destroyed();
+    vi.restoreAllMocks();
+  });
+
+  it("switches to the mode a plain S, A or C asks for, in either letter case", () => {
+    const add = press("a");
+    press("C");
+    overlay.setAttribute("data-mode", "connect");
+    press("s");
+
+    expect(hook.pushEvent.mock.calls).toEqual([
+      ["switch_mode", { mode: "add" }],
+      ["switch_mode", { mode: "connect" }],
+      ["switch_mode", { mode: "view" }]
+    ]);
+    expect(add.defaultPrevented).toBe(true);
+  });
+
+  it("sends nothing for the mode already in use", () => {
+    press("s");
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+
+  it("leaves Ctrl, Cmd and Alt combinations and held keys to the browser", () => {
+    const copy = press("c", { metaKey: true });
+    press("a", { ctrlKey: true });
+    press("a", { altKey: true });
+    press("a", { repeat: true });
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+    expect(copy.defaultPrevented).toBe(false);
+  });
+
+  it("leaves a key typed into a field alone", () => {
+    press("a", {}, attach("input", { type: "text" }));
+    press("a", {}, attach("textarea"));
+    press("a", {}, attach("select"));
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+
+  it("acts on a key pressed while a mode radio has focus", () => {
+    press("a", {}, attach("input", { type: "radio" }));
+
+    expect(hook.pushEvent).toHaveBeenCalledWith("switch_mode", { mode: "add" });
+  });
+
+  it("does nothing while a dialog or the photo viewer is open", () => {
+    const dialog = attach("dialog", { open: "" });
+    press("a");
+    dialog.remove();
+    attach("div", { role: "dialog", "aria-modal": "true" });
+    press("a");
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+
+  it("waits for the reply to a click on the plan, so a name typed early cannot cancel the point", () => {
+    hook.clientPointToSvg = () => ({ x: 20, y: 30 });
+    svg.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 5, clientY: 5 }));
+    const [event, , acknowledge] = hook.pushEvent.mock.calls[0];
+    press("s");
+
+    expect(event).toBe("canvas_click");
+    expect(hook.pushEvent).toHaveBeenCalledTimes(1);
+
+    acknowledge();
+    press("a");
+
+    expect(hook.pushEvent).toHaveBeenLastCalledWith("switch_mode", { mode: "add" });
+  });
+
+  it("stops listening once the plan is gone, as it is in Align", () => {
+    hook.destroyed();
+    press("a");
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while a point is being dragged", () => {
+    hook.dragging = { stopId: "STOP_1" };
+    press("a");
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
   });
 });

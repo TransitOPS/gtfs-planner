@@ -86,6 +86,51 @@ const DRAG_HOLD_MS = 200;
 const DRAG_THRESHOLD_PX = 5;
 const PAN_FRACTION = 0.25;
 const ZOOM_FACTOR = 1.5;
+// Plain keys that switch the editing mode. The mode control shows the same
+// letters as keycaps while this hook is mounted.
+const MODE_SHORTCUTS = { s: "view", a: "add", c: "connect" };
+// Inputs whose keys are not text entry, so a mode key pressed on one still acts.
+const NON_TEXT_INPUT_TYPES = new Set([
+  "radio",
+  "checkbox",
+  "button",
+  "submit",
+  "reset",
+  "range",
+  "file",
+  "color",
+  "image"
+]);
+
+function typingTarget(el) {
+  if (!el?.matches) return false;
+  if (el.matches("textarea, select") || el.closest("[contenteditable]:not([contenteditable='false'])")) {
+    return true;
+  }
+  return el.matches("input") && !NON_TEXT_INPUT_TYPES.has(el.type);
+}
+
+// The editing mode a keydown asks for, or null. A mode key acts only as a
+// plain keypress: Ctrl, Cmd and Alt combinations stay with the browser, typing
+// in a field stays typing, and an open dialog or photo viewer keeps the
+// keyboard so a stray key cannot discard the point or pathway being edited.
+function shortcutMode(e) {
+  if (e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) {
+    return null;
+  }
+
+  const mode = MODE_SHORTCUTS[e.key?.toLowerCase()];
+
+  if (
+    !mode ||
+    typingTarget(e.target) ||
+    document.querySelector('dialog[open], [aria-modal="true"]')
+  ) {
+    return null;
+  }
+
+  return mode;
+}
 
 function paletteColor(root, variable, fallback) {
   const page = root?.closest?.("#diagram-page");
@@ -723,6 +768,22 @@ const DiagramCanvasHook = {
       }
     }
 
+    const mode = shortcutMode(e);
+    if (mode) {
+      // A press mid-drag would switch modes under the pointer, and the mode
+      // already in use needs no event. A key typed straight after a click on
+      // the plan belongs to the drawer that click is opening: switching modes
+      // before the reply would cancel the new point.
+      const busy =
+        this.dragging || this.dragCandidate || this.isPanning || this.awaitingCanvasClick;
+
+      if (!busy && mode !== this.overlay?.getAttribute("data-mode")) {
+        e.preventDefault();
+        this.pushEvent("switch_mode", { mode });
+      }
+      return;
+    }
+
     if ((e.key === "Enter" || e.key === " ") && this.isViewMode() && this.overlay) {
       const activeEl = document.activeElement;
       if (!activeEl || !this.overlay.contains(activeEl)) {
@@ -773,7 +834,10 @@ const DiagramCanvasHook = {
 
     const x = Math.round(svgPt.x * 100) / 100;
     const y = Math.round(svgPt.y * 100) / 100;
-    this.pushEvent("canvas_click", { x, y });
+    this.awaitingCanvasClick = true;
+    this.pushEvent("canvas_click", { x, y }, () => {
+      this.awaitingCanvasClick = false;
+    });
   },
 
   handleCapturedClick(e) {
@@ -2311,6 +2375,11 @@ const DiagramCanvasHook = {
     };
 
     img.src = href;
+  },
+
+  // A reply lost with the connection must not leave the mode keys switched off.
+  reconnected() {
+    this.awaitingCanvasClick = false;
   },
 
   destroyed() {
