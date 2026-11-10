@@ -42,9 +42,11 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
   alias GtfsPlanner.Versions
 
   @zone "America/New_York"
-  # The ambiguous reading the fall-back on 2026-11-01 creates, keyed exactly as
-  # `FeedPeriods.choice_key/2` keys it.
-  @ambiguous_key "America/New_York|2026-11-01T01:30:00"
+  # The ambiguous reading the fall-back on 2035-11-04 creates, keyed exactly as
+  # `FeedPeriods.choice_key/2` keys it. The date is far ahead because an accepted
+  # alert reads as "Scheduled" only until its notice begins, a week before it
+  # starts: the 2026 fall-back this used stopped being scheduled on 2026-10-25.
+  @ambiguous_key "America/New_York|2035-11-04T01:30:00"
   @edt_seconds "-14400"
 
   setup do
@@ -218,7 +220,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
       assert publication_row(alert) == nil
 
       saved = Repo.get!(Alert, alert.id)
-      assert saved.timing.start_date == ~D[2026-11-01]
+      assert saved.timing.start_date == ~D[2035-11-04]
       assert saved.complete == true
 
       # Choosing the offset resolves exactly that reading rather than guessing
@@ -448,10 +450,10 @@ defmodule GtfsPlannerWeb.Gtfs.AlertPublicationLiveTest do
   defp ambiguous_alert(context) do
     attrs =
       Map.put(complete_attrs(context), "timing", %{
-        "start_date" => "2026-11-01",
+        "start_date" => "2035-11-04",
         "start_time" => "01:30:00",
         "end_kind" => "confirmed",
-        "end_date" => "2026-11-01",
+        "end_date" => "2035-11-04",
         "end_time" => "20:00:00"
       })
 
