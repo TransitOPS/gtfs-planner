@@ -274,19 +274,47 @@ test.describe("Diagram pan and zoom keyboard accessibility", () => {
     expect(updatedText).not.toBe(initialText);
   });
 
-  test("Ctrl+scroll wheel zooms the canvas", async ({ page }) => {
+  test("scroll wheel zooms the canvas", async ({ page }) => {
     const canvas = page.locator('svg[phx-hook="DiagramCanvas"]');
     await canvas.waitFor({ timeout: 5000 });
 
     const zoomLabel = page.locator("[data-zoom-label]");
     const initialText = await zoomLabel.textContent();
 
-    // Dispatch Ctrl+wheel on the SVG canvas
-    await canvas.dispatchEvent("wheel", { deltaY: -100, ctrlKey: true });
+    // A plain scroll over the plan zooms; no modifier key is needed.
+    await canvas.dispatchEvent("wheel", { deltaY: -100 });
     await page.waitForTimeout(300);
 
     const updatedText = await zoomLabel.textContent();
     expect(updatedText).not.toBe(initialText);
+  });
+
+  // bin/test-browser e2e/diagram_keyboard.spec.js --grep "dragging the plan"
+  test("dragging the plan pans it without placing a point, and a click still places one", async ({
+    page,
+  }) => {
+    await page.locator('label[for="diagram-mode-option-add"]').click();
+    await expect(page.locator('#diagram-mode input[value="add"]')).toBeChecked();
+
+    const overlay = page.locator("#diagram-overlay");
+    const before = await overlay.getAttribute("viewBox");
+    const box = await page.locator('svg[phx-hook="DiagramCanvas"]').boundingBox();
+    const x = box.x + box.width * 0.25;
+    const y = box.y + box.height * 0.75;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 120, y - 60, { steps: 6 });
+    await page.mouse.up();
+    // Give a wrongly placed point time to open its drawer.
+    await page.waitForTimeout(300);
+
+    await expect(overlay).not.toHaveAttribute("viewBox", before);
+    await expect(page.locator("#child-stop-drawer-overlay")).toHaveAttribute("data-open", "false");
+
+    await page.mouse.click(x, y);
+
+    await expect(page.locator("#child-stop-form input[name='stop_name']")).toBeFocused();
   });
 
   test("reset view button returns zoom to 100%", async ({ page }) => {

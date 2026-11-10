@@ -4346,7 +4346,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#diagram-mode input[value='view'][checked]")
     end
 
-    test "view mode shows the stop search and default cursor with diagram", %{
+    test "view mode shows the stop search with diagram", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -4361,11 +4361,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert has_element?(view, "#stop-id-search")
-      assert has_element?(view, "svg.cursor-default")
-
-      render_hook(view, "switch_mode", %{"mode" => "add"})
-
-      assert has_element?(view, "svg.cursor-crosshair")
     end
 
     test "enters immersive editing that keeps strip context, and View exits it", %{

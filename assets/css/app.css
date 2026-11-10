@@ -3240,13 +3240,21 @@ dialog[role="alertdialog"][open] > div > div {
 }
 
 /* The pan buttons exist for keyboard operators: they appear once focus is inside
-   the plan, and mouse users pan with Shift-drag or the middle button. */
+   the plan, and mouse users drag the plan. */
 #diagram-page #pan-cluster {
   display: none;
 }
 
 #diagram-page #plan-wrap:focus-within #pan-cluster {
   display: flex;
+}
+
+/* While the plan is being dragged the whole page shows the closed hand and
+   selects no text, wherever the pointer travels. */
+body.floorplan-panning,
+body.floorplan-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 
 /* Align: the map fills the workspace instead of holding a square. */
