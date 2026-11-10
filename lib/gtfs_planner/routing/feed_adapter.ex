@@ -3,6 +3,56 @@ defmodule GtfsPlanner.Routing.FeedAdapter do
   Pure conversion from application Ecto structs to PathwaysRouter row shapes.
   """
 
+  @doc """
+  Gives each stop without coordinates those of its nearest located ancestor.
+
+  GTFS lets a station element omit `stop_lat` and `stop_lon`; the element then
+  sits at its parent. PathwaysRouter resolves one level of that, and only when
+  the parent is in the same feed, then drops every stop still unlocated along
+  with the pathways that touch it. Resolving the whole chain here keeps a
+  boarding area under an unlocated platform in the station graph. A stop with
+  no located ancestor in `stops` is returned unchanged, so no coordinate is
+  invented.
+  """
+  @spec inherit_coordinates([map()]) :: [map()]
+  def inherit_coordinates(stops) do
+    by_id = Map.new(stops, &{&1.stop_id, &1})
+
+    Enum.map(stops, fn stop ->
+      with false <- located?(stop),
+           %{} = ancestor <-
+             located_ancestor(Map.get(stop, :parent_station), by_id, MapSet.new([stop.stop_id])) do
+        %{stop | stop_lat: ancestor.stop_lat, stop_lon: ancestor.stop_lon}
+      else
+        _located_or_no_ancestor -> stop
+      end
+    end)
+  end
+
+  # `seen` ends the walk on a parent cycle in malformed data.
+  defp located_ancestor(parent_id, by_id, seen) do
+    case Map.get(by_id, parent_id) do
+      nil ->
+        nil
+
+      parent ->
+        cond do
+          located?(parent) ->
+            parent
+
+          MapSet.member?(seen, parent_id) ->
+            nil
+
+          true ->
+            located_ancestor(Map.get(parent, :parent_station), by_id, MapSet.put(seen, parent_id))
+        end
+    end
+  end
+
+  @doc "Whether a stop records both of its own coordinates."
+  @spec located?(map()) :: boolean()
+  def located?(stop), do: not is_nil(stop.stop_lat) and not is_nil(stop.stop_lon)
+
   @spec stop_rows([map()]) :: [map()]
   def stop_rows(stops) do
     Enum.map(stops, fn stop ->

@@ -598,6 +598,48 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
   end
 
   describe "build_expanded_route/3" do
+    # mix test test/gtfs_planner/gtfs/station_report_2/connectivity_test.exs \
+    #   --only test:"test build_expanded_route/3 reports recorded lengths between points without coordinates"
+    test "reports recorded lengths between points without coordinates" do
+      point = fn id, type ->
+        make_stop(%{
+          stop_id: id,
+          location_type: type,
+          level_id: "L1",
+          stop_lat: nil,
+          stop_lon: nil
+        })
+      end
+
+      walkway = fn id, from, to, length ->
+        make_pathway(%{
+          pathway_id: id,
+          from_stop_id: from,
+          to_stop_id: to,
+          traversal_time: nil,
+          length: Decimal.new(length)
+        })
+      end
+
+      snapshot = %{
+        child_stops: [point.("ENT_1", 2), point.("NODE_1", 3), point.("PLAT_1", 0)],
+        pathways: [
+          walkway.("PW_1", "ENT_1", "NODE_1", "25.0"),
+          walkway.("PW_2", "NODE_1", "PLAT_1", "40.5")
+        ],
+        levels: [make_level(%{level_id: "L1", level_name: "Street", level_index: 0.0})]
+      }
+
+      route = Connectivity.build_expanded_route(snapshot, "ENT_1", "PLAT_1")
+
+      assert route.distance == 65.5
+      assert Enum.map(route.steps, & &1.dist) == [nil, 25.0, 40.5]
+
+      [%{targets: [target]}] = Connectivity.build_route_detail(snapshot, :entrance_to_platform)
+
+      assert target.distance == 65.5
+    end
+
     test "returns steps with correct structure" do
       snapshot = %{
         child_stops: [
