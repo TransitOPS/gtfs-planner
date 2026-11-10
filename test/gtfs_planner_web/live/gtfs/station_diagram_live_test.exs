@@ -904,6 +904,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
     end
 
+    test "a new point's drawer opens on its first field and an existing point's on the heading",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_FOCUS",
+          stop_name: "Focus Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 30.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "60", "y" => "70"})
+
+      assert has_element?(
+               view,
+               "#child-stop-drawer-overlay[data-open='true'][data-initial-focus='first_field']"
+             )
+
+      render_hook(view, "close_drawer", %{})
+      render_hook(view, "switch_mode", %{"mode" => "view"})
+      render_hook(view, "stop_clicked", %{"id" => child_stop.id})
+
+      assert has_element?(
+               view,
+               "#child-stop-drawer-overlay[data-open='true'][data-initial-focus='heading']"
+             )
+    end
+
     test "new child stop drawer renders latitude and longitude inputs", %{
       conn: conn,
       user: user,
