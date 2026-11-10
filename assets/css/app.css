@@ -5708,11 +5708,13 @@ body:has(#route-fares) :is(a, button, input, select, textarea, summary, [role="b
   outline-offset: 2px;
 }
 
-/* The keycaps the grid reading line, the grid bar's idle hint and the shortcut
-   sheet share. */
+/* The keycaps the grid reading line, the grid bar's idle hint, the shortcut
+   sheet and the floorplan's mode control and key share. */
 #cell-reading kbd,
 #grid-bar kbd,
-#shortcut-sheet kbd {
+#shortcut-sheet kbd,
+#diagram-mode kbd,
+#diagram-legend-panel kbd {
   display: inline-flex;
   min-width: 22px;
   height: 22px;
@@ -5729,6 +5731,13 @@ body:has(#route-fares) :is(a, button, input, select, textarea, summary, [role="b
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* A phone has no keys to press, and the mode control has no room for keycaps. */
+@media (max-width: 639px) {
+  #diagram-mode kbd {
+    display: none;
+  }
 }
 
 /* The Stops map markers. Leaflet positions a divIcon's element; these rules are

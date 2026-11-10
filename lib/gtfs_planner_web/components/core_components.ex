@@ -2666,7 +2666,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
     required: true,
     doc:
       "`{label, value}` tuples, or maps with :label and :value and optionally :disabled, " <>
-        ":disabled_reason and :icon (a hero icon name shown before the label)"
+        ":disabled_reason, :icon (a hero icon name shown before the label) and :shortcut (a " <>
+        "key shown in a `<kbd>` after the label; the page styles it and handles the keypress)"
 
   attr :value, :any, required: true
   attr :event, :string, required: true
@@ -2789,6 +2790,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               value={option.value}
               checked={@value == option.value}
               disabled={option.disabled}
+              aria-keyshortcuts={option.shortcut}
               aria-describedby={
                 cond do
                   option.disabled_reason -> "#{option.id}-reason"
@@ -2800,6 +2802,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
             />
             <.icon :if={option.icon} name={option.icon} class="mr-1.5 size-4 shrink-0" />
             {option.label}
+            <kbd :if={option.shortcut} aria-hidden="true" class="ml-2">
+              {option.shortcut}
+            </kbd>
             <span
               :if={option.disabled_reason}
               id={"#{option.id}-reason"}
@@ -2831,11 +2836,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
       Map.get(option, :disabled, false),
       Map.get(option, :disabled_reason),
       control_id,
-      Map.get(option, :icon)
+      Map.get(option, :icon),
+      Map.get(option, :shortcut)
     )
   end
 
-  defp segmented_option(label, value, disabled, disabled_reason, control_id, icon \\ nil) do
+  defp segmented_option(
+         label,
+         value,
+         disabled,
+         disabled_reason,
+         control_id,
+         icon \\ nil,
+         shortcut \\ nil
+       ) do
     value = to_string(value)
 
     %{
@@ -2844,7 +2858,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       value: value,
       disabled: disabled,
       disabled_reason: disabled_reason,
-      icon: icon
+      icon: icon,
+      shortcut: shortcut
     }
   end
 

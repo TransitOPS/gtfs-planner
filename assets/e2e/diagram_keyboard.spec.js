@@ -199,6 +199,36 @@ test.describe("Diagram mode switching via keyboard", () => {
 
     await expect(page.locator("#child-stop-form input[name='stop_name']")).toBeFocused();
   });
+
+  // bin/test-browser e2e/diagram_keyboard.spec.js --grep "S, A and C"
+  test("S, A and C switch the editing mode, and letters typed into a name do not", async ({
+    page,
+  }) => {
+    const mode = (value) => page.locator(`#diagram-mode input[value="${value}"]`);
+
+    await page.keyboard.press("c");
+    await expect(mode("connect")).toBeChecked();
+    await page.keyboard.press("s");
+    await expect(mode("view")).toBeChecked();
+    await page.keyboard.press("a");
+    await expect(mode("add")).toBeChecked();
+
+    const canvas = page.locator('svg[phx-hook="DiagramCanvas"]');
+    const box = await canvas.boundingBox();
+    await canvas.click({ position: { x: box.width * 0.25, y: box.height * 0.75 } });
+    const name = page.locator("#child-stop-form input[name='stop_name']");
+    await expect(name).toBeFocused();
+    await page.keyboard.type("Access ramp");
+
+    await expect(name).toHaveValue("Access ramp");
+    await expect(mode("add")).toBeChecked();
+
+    // The keys act again once the drawer the click opened has closed.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#child-stop-drawer-overlay")).toHaveAttribute("data-open", "false");
+    await page.keyboard.press("s");
+    await expect(mode("view")).toBeChecked();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

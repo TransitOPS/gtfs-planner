@@ -118,15 +118,31 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :current_user, :any, required: true
 
   def diagram_action_strip(assigns) do
+    # The floorplan's canvas hook handles the mode keys, so the keycaps show
+    # only while it is mounted: on a level with a floorplan, outside Align.
+    keys? = assigns.has_diagram and assigns.mode != :map
+
     mode_options = [
-      %{label: "Select", value: "view", icon: "hero-cursor-arrow-rays"},
+      %{
+        label: "Select",
+        value: "view",
+        icon: "hero-cursor-arrow-rays",
+        shortcut: if(keys?, do: "S")
+      },
       %{
         label: "Add point",
         value: "add",
         icon: "hero-map-pin",
-        disabled: not assigns.has_diagram
+        disabled: not assigns.has_diagram,
+        shortcut: if(keys?, do: "A")
       },
-      %{label: "Connect", value: "connect", icon: "hero-link", disabled: not assigns.has_diagram},
+      %{
+        label: "Connect",
+        value: "connect",
+        icon: "hero-link",
+        disabled: not assigns.has_diagram,
+        shortcut: if(keys?, do: "C")
+      },
       %{label: "Align", value: "map", icon: "hero-map", disabled: not assigns.has_diagram}
     ]
 
@@ -4494,6 +4510,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             Shift-drag or middle-drag pans. Ctrl or Cmd + scroll zooms; scroll pans when zoomed in.
           </li>
           <li>Tab reaches the plan; Enter opens the focused point or pathway.</li>
+          <li>
+            <kbd>S</kbd>, <kbd>A</kbd> and <kbd>C</kbd> switch to Select, Add point and Connect.
+          </li>
         </ul>
       </div>
       <button
