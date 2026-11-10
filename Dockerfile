@@ -4,7 +4,7 @@
 ARG ELIXIR_VERSION=1.19.2
 ARG ERLANG_VERSION=28.1.1
 
-# https://gallery.ecr.aws/docker/library/debian
+# https://hub.docker.com/_/debian
 ARG DEBIAN_RELEASE=bookworm
 ARG DEBIAN_VERSION=${DEBIAN_RELEASE}-20251103
 
@@ -47,7 +47,7 @@ COPY rel rel
 RUN curl https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem > priv/repo/rds.pem
 RUN mix release
 
-FROM public.ecr.aws/docker/library/debian:${DEBIAN_VERSION}-slim AS release
+FROM debian:${DEBIAN_VERSION}-slim AS release
 
 WORKDIR /app
 RUN chown nobody /app

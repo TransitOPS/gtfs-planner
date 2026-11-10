@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   loginAndGoToDiagram,
+  openDiagramPanel,
   selectDiagramMode,
 } from "./station_diagram_helpers";
 
@@ -91,6 +92,7 @@ function overlapping(labels) {
 
 async function addPoint(page, { name, x, y }) {
   await selectDiagramMode(page, "add");
+  await openDiagramPanel(page);
   await page.locator("#keyboard-create-stop").click();
   await expect(page.locator("#child-stop-drawer-overlay")).toHaveAttribute(
     "data-open",
@@ -111,6 +113,7 @@ async function addPoint(page, { name, x, y }) {
 }
 
 async function deletePoint(page, name) {
+  await openDiagramPanel(page);
   await page
     .locator("button[phx-click='edit_child_stop']", { hasText: name })
     .first()
