@@ -4835,6 +4835,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
       title={@drawer_title}
+      initial_focus={if @selected_stop_id, do: :heading, else: :first_field}
       class="max-w-[440px]"
     >
       <:lede :if={@drawer_lede}>{@drawer_lede}</:lede>

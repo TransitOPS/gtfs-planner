@@ -186,6 +186,19 @@ test.describe("Diagram mode switching via keyboard", () => {
     await page.locator('label[for="diagram-mode-option-view"]').click();
     await page.waitForTimeout(500);
   });
+
+  // bin/test-browser e2e/diagram_keyboard.spec.js --grep "Name field"
+  test("placing a new point puts focus in its Name field", async ({ page }) => {
+    await page.locator('label[for="diagram-mode-option-add"]').click();
+    await expect(page.locator('#diagram-mode input[value="add"]')).toBeChecked();
+
+    // The lower left of the plan is clear of the seeded points and pathway.
+    const canvas = page.locator('svg[phx-hook="DiagramCanvas"]');
+    const box = await canvas.boundingBox();
+    await canvas.click({ position: { x: box.width * 0.25, y: box.height * 0.75 } });
+
+    await expect(page.locator("#child-stop-form input[name='stop_name']")).toBeFocused();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
