@@ -2887,10 +2887,29 @@ html:has(#route-details-save-bar:not([hidden])) {
   fill: var(--diagram-pathway-forward) !important;
 }
 
-#diagram-page #pathway-arrow path,
+#diagram-page marker[id^="pathway-arrow"] path,
 #diagram-page [data-cross-level-badge-stairs],
 #diagram-page [data-cross-level-badge-elevator] {
   fill: var(--diagram-pathway-forward) !important;
+}
+
+/* Step-free view. Every pathway, cross-level badge and key symbol carries its
+   state; turning the view on re-points the pathway colour for each state, so
+   lines, rails, glyphs and badges recolour together. An arrowhead takes its
+   colour from its marker, so each state has its own. */
+#diagram-page[data-step-free-view="true"] [data-step-free="step_free"],
+#diagram-page[data-step-free-view="true"] #pathway-arrow-step_free {
+  --diagram-pathway-forward: var(--diagram-pathway-step-free);
+}
+
+#diagram-page[data-step-free-view="true"] [data-step-free="not_step_free"],
+#diagram-page[data-step-free-view="true"] #pathway-arrow-not_step_free {
+  --diagram-pathway-forward: var(--diagram-pathway-not-step-free);
+}
+
+#diagram-page[data-step-free-view="true"] [data-step-free="barrier"],
+#diagram-page[data-step-free-view="true"] #pathway-arrow-barrier {
+  --diagram-pathway-forward: var(--diagram-pathway-barrier);
 }
 
 #diagram-page [data-pathway-label] {

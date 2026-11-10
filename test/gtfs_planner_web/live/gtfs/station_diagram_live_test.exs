@@ -5225,6 +5225,223 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
+    test "the plan carries each pathway's step-free state and the toggle turns the view on", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      point = fn suffix, x ->
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STEP_FREE_#{suffix}",
+          stop_name: "Step-free #{suffix}",
+          location_type: 3,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => x, "y" => 20.0}
+        })
+      end
+
+      from = point.("FROM", 10.0)
+
+      pathway = fn to, attrs ->
+        pathway_fixture(organization.id, gtfs_version.id, from.stop_id, to.stop_id, attrs)
+      end
+
+      walkway = pathway.(point.("WALK", 20.0), %{pathway_mode: 1})
+      stairs = pathway.(point.("STAIRS", 30.0), %{pathway_mode: 2})
+
+      turnstile =
+        pathway.(point.("GATE", 40.0), %{
+          pathway_mode: 6,
+          is_bidirectional: false,
+          min_width: Decimal.new("0.60")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#pathways-#{walkway.id}[data-step-free='step_free']")
+      assert has_element?(view, "#pathways-#{stairs.id}[data-step-free='not_step_free']")
+      assert has_element?(view, "#pathways-#{turnstile.id}[data-step-free='barrier']")
+      assert has_element?(view, "#diagram-page[data-step-free-view='false']")
+
+      view |> element("#step-free-view-toggle") |> render_click()
+
+      assert has_element?(view, "#diagram-page[data-step-free-view='true']")
+      assert has_element?(view, "#step-free-view-toggle[aria-pressed='true']")
+
+      view |> element("#step-free-view-toggle") |> render_click()
+
+      assert has_element?(view, "#diagram-page[data-step-free-view='false']")
+    end
+
+    test "a walkway's maximum slope saves from the pathway form and reclassifies it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      [from, to] =
+        for {suffix, x} <- [{"FROM", 10.0}, {"TO", 30.0}] do
+          stop_fixture(organization.id, gtfs_version.id, %{
+            stop_id: "SLOPE_#{suffix}",
+            stop_name: "Slope #{suffix}",
+            location_type: 3,
+            parent_station: station.stop_id,
+            level_id: level.level_id,
+            diagram_coordinate: %{"x" => x, "y" => 20.0}
+          })
+        end
+
+      ramp =
+        pathway_fixture(organization.id, gtfs_version.id, from.stop_id, to.stop_id, %{
+          pathway_mode: 1
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "edit_pathway", %{"id" => ramp.id})
+
+      view
+      |> form("#pathway-form", %{"max_slope" => "0.1"})
+      |> render_submit()
+
+      saved = Repo.get!(GtfsPlanner.Gtfs.Pathway, ramp.id)
+
+      assert Decimal.equal?(saved.max_slope, Decimal.new("0.1"))
+      assert has_element?(view, "#pathways-#{ramp.id}[data-step-free='barrier']")
+    end
+
+    test "a stored slope survives a save that does not touch it and turns with a flip", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      [from, gate_to, ramp_to] =
+        for {suffix, x} <- [{"FROM", 10.0}, {"GATE", 30.0}, {"RAMP", 50.0}] do
+          stop_fixture(organization.id, gtfs_version.id, %{
+            stop_id: "KEEP_SLOPE_#{suffix}",
+            stop_name: "Keep slope #{suffix}",
+            location_type: 3,
+            parent_station: station.stop_id,
+            level_id: level.level_id,
+            diagram_coordinate: %{"x" => x, "y" => 20.0}
+          })
+        end
+
+      # A slope on a gate can only come from an import; the form has no reason to show one.
+      gate =
+        pathway_fixture(organization.id, gtfs_version.id, from.stop_id, gate_to.stop_id, %{
+          pathway_mode: 6,
+          is_bidirectional: false,
+          max_slope: Decimal.new("0.05")
+        })
+
+      ramp =
+        pathway_fixture(organization.id, gtfs_version.id, from.stop_id, ramp_to.stop_id, %{
+          pathway_mode: 1,
+          max_slope: Decimal.new("0.05")
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "edit_pathway", %{"id" => gate.id})
+
+      view
+      |> form("#pathway-form", %{"min_width" => "1.2"})
+      |> render_submit()
+
+      saved_gate = Repo.get!(GtfsPlanner.Gtfs.Pathway, gate.id)
+
+      assert Decimal.equal?(saved_gate.min_width, Decimal.new("1.2"))
+      assert Decimal.equal?(saved_gate.max_slope, Decimal.new("0.05"))
+
+      render_hook(view, "edit_pathway", %{"id" => ramp.id})
+
+      render_hook(view, "flip_pathway", %{
+        "id" => ramp.id,
+        "revision" => to_string(ramp.lock_version)
+      })
+
+      flipped = Repo.get!(GtfsPlanner.Gtfs.Pathway, ramp.id)
+
+      assert flipped.from_stop_id == ramp_to.stop_id
+      assert Decimal.equal?(flipped.max_slope, Decimal.new("-0.05"))
+    end
+
+    test "a cross-level pathway's badge takes its new state when the pathway is saved", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      level_2 =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "STEP_FREE_BADGE_L2",
+          level_name: "Step-free badge level 2",
+          level_index: 1.0
+        })
+
+      {:ok, _stop_level_2} =
+        insert_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level_2.id,
+          diagram_filename: "step-free-badge-level-2.png"
+        })
+
+      [lower, upper] =
+        for {suffix, floor} <- [{"LOWER", level}, {"UPPER", level_2}] do
+          stop_fixture(organization.id, gtfs_version.id, %{
+            stop_id: "STEP_FREE_BADGE_#{suffix}",
+            stop_name: "Step-free badge #{suffix}",
+            location_type: 3,
+            parent_station: station.stop_id,
+            level_id: floor.level_id,
+            diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+          })
+        end
+
+      lift =
+        pathway_fixture(organization.id, gtfs_version.id, lower.stop_id, upper.stop_id, %{
+          pathway_mode: 5
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      assert has_element?(view, "#cross-level-badge-#{lift.id}[data-step-free='step_free']")
+
+      render_hook(view, "edit_pathway", %{"id" => lift.id})
+
+      view
+      |> form("#pathway-form", %{"min_width" => "0.6"})
+      |> render_submit()
+
+      assert has_element?(view, "#cross-level-badge-#{lift.id}[data-step-free='barrier']")
+    end
+
     test "renders mode-specific SVG structure for pathway modes 1 through 7", %{
       conn: conn,
       user: user,
@@ -5702,54 +5919,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start='url(#pathway-arrow)']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end='url(#pathway-arrow)']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
              )
 
       # One-way exit gate: arrow at end only
       assert has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end='url(#pathway-arrow)']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start='url(#pathway-arrow)']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
              )
 
       # Bidirectional exit gate: arrows at both ends
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start='url(#pathway-arrow)']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end='url(#pathway-arrow)']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
              )
     end
 

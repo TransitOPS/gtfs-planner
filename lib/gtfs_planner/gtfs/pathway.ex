@@ -3,6 +3,8 @@ defmodule GtfsPlanner.Gtfs.Pathway do
   import Ecto.Changeset
   import GtfsPlanner.ChangesetHelpers
 
+  alias GtfsPlanner.Gtfs.Graph
+
   @pathway_modes %{
     walkway: 1,
     stairs: 2,
@@ -70,6 +72,54 @@ defmodule GtfsPlanner.Gtfs.Pathway do
 
   def pathway_modes, do: @pathway_modes
 
+  # Limits from the ADA Standards. A ramp may be no steeper than 1:12 (0.0833),
+  # so the boundary sits just above it and a ramp recorded as 0.083 or 0.0833
+  # passes. An opening must be 32 inches (0.8128 m) clear, which the editor
+  # stores as 0.81.
+  @max_step_free_slope Decimal.new("0.0834")
+  @min_step_free_width Decimal.new("0.81")
+
+  @doc """
+  Classifies a pathway for the floorplan's step-free view.
+
+    * `:not_step_free` - stairs or an escalator
+    * `:barrier` - a step-free type recorded as too steep or too narrow
+    * `:step_free` - any other step-free type; blank measurements pass
+
+  Returns `nil` for a `pathway_mode` outside 1..7. The type test is
+  `GtfsPlanner.Gtfs.Graph.step_free_mode?/1`, the one the station reports use.
+  """
+  @spec step_free_state(map()) :: :step_free | :barrier | :not_step_free | nil
+  def step_free_state(%{pathway_mode: mode} = pathway) when mode in 1..7 do
+    cond do
+      not Graph.step_free_mode?(mode) -> :not_step_free
+      step_free_barriers(pathway) != [] -> :barrier
+      true -> :step_free
+    end
+  end
+
+  def step_free_state(_pathway), do: nil
+
+  @doc """
+  The measurements that stop a wheelchair on a step-free type: `:slope` when the
+  absolute `max_slope` is steeper than a 1:12 ramp, `:width` when `min_width` is
+  under 0.81 m. Blank, zero and non-decimal values are not barriers.
+  """
+  @spec step_free_barriers(map()) :: [:slope | :width]
+  def step_free_barriers(pathway) do
+    slope = Map.get(pathway, :max_slope)
+    width = Map.get(pathway, :min_width)
+
+    Enum.filter([:slope, :width], fn
+      :slope ->
+        match?(%Decimal{}, slope) and Decimal.gt?(Decimal.abs(slope), @max_step_free_slope)
+
+      :width ->
+        match?(%Decimal{}, width) and Decimal.positive?(width) and
+          Decimal.lt?(width, @min_step_free_width)
+    end)
+  end
+
   def mode_label(mode) do
     case mode do
       1 -> "Walkway"
@@ -100,7 +150,9 @@ defmodule GtfsPlanner.Gtfs.Pathway do
   ]
 
   @doc "Validates fields editable from the station editor without casting ownership or revision."
-  def editor_changeset(pathway, attrs), do: base_changeset(pathway, attrs, @editor_fields)
+  def editor_changeset(pathway, attrs) do
+    pathway |> base_changeset(attrs, @editor_fields) |> validate_slope_ratio()
+  end
 
   @doc "Creates an editor pathway with ownership supplied by the selected scope."
   def create_changeset(%__MODULE__{} = pathway, attrs, %{
@@ -109,6 +161,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       }) do
     %{pathway | organization_id: organization_id, gtfs_version_id: gtfs_version_id}
     |> base_changeset(attrs, [:pathway_id | @editor_fields])
+    |> validate_slope_ratio()
   end
 
   def changeset(pathway, attrs) do
@@ -116,6 +169,17 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       pathway,
       attrs,
       [:pathway_id | @editor_fields] ++ [:organization_id, :gtfs_version_id]
+    )
+  end
+
+  # A slope entered in the editor is a ratio, so a percentage typed by mistake
+  # (8.3 for 0.083) is refused here instead of overflowing the column. Imports
+  # keep whatever the feed holds: only a changed value is checked.
+  defp validate_slope_ratio(changeset) do
+    validate_number(changeset, :max_slope,
+      greater_than_or_equal_to: -1,
+      less_than_or_equal_to: 1,
+      message: "must be a ratio between -1 and 1, such as 0.083 for a 1:12 ramp"
     )
   end
 

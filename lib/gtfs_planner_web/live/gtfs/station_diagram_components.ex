@@ -2556,6 +2556,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :upload, :any, default: nil
   attr :upload_phase, :atom, default: :idle
   attr :point_count, :integer, default: 0
+  attr :step_free_view?, :boolean, default: false
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -2624,7 +2625,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             ruler_point_a={@ruler_point_a}
             ruler_point_b={@ruler_point_b}
           />
-          <.plan_controls />
+          <.plan_controls step_free_view?={@step_free_view?} />
         <% @active_level -> %>
           <.empty_diagram_state
             has_diagram={@has_diagram}
@@ -2698,8 +2699,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       preserveAspectRatio="xMidYMid meet"
     >
       <defs>
+        <%!-- One arrowhead per step-free state, so the step-free view can
+        colour each to match its line: marker content takes its colour from
+        the marker, never from the line that references it. --%>
         <marker
-          id="pathway-arrow"
+          :for={state <- [nil, :step_free, :barrier, :not_step_free]}
+          id={pathway_arrow_id(state)}
           viewBox="0 0 6 6"
           refX="6"
           refY="3"
@@ -2868,6 +2873,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     {line_x1, line_y1, line_x2, line_y2} = parallel_offset(x1, y1, x2, y2, 0.0)
 
     one_way? = assigns.pathway.is_bidirectional != true
+    step_free = Pathway.step_free_state(assigns.pathway)
 
     forward_label_text =
       Map.get(assigns.pathway, :display_signposted_as, assigns.pathway.signposted_as)
@@ -2901,6 +2907,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:has_forward_label?, has_forward_label?)
       |> assign(:has_reverse_label?, has_reverse_label?)
       |> assign(:editable?, assigns.mode == :view)
+      |> assign(:step_free, step_free)
+      |> assign(:arrow, "url(##{pathway_arrow_id(step_free)})")
 
     ~H"""
     <g
@@ -2909,8 +2917,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       class="group cursor-pointer pointer-events-auto"
       data-from-stop-id={@pathway.from_stop.id}
       data-to-stop-id={@pathway.to_stop.id}
+      data-step-free={@step_free}
       data-editable={if @editable?, do: "pathway"}
-      data-tooltip={if @editable?, do: "Click to edit pathway"}
+      data-tooltip={if @editable?, do: pathway_tooltip(@pathway)}
       data-tooltip-color={if @editable?, do: "#FF00FF"}
       tabindex={if @editable?, do: "0"}
       role={if @editable?, do: "button"}
@@ -2944,6 +2953,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <%= case @pathway.pathway_mode do %>
         <% 1 -> %>
           <.pathway_walkway
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -2954,6 +2964,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 2 -> %>
           <.pathway_stairs
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -2964,6 +2975,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 3 -> %>
           <.pathway_moving_sidewalk
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -2974,6 +2986,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 4 -> %>
           <.pathway_escalator
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -2984,6 +2997,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 5 -> %>
           <.pathway_elevator
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -2993,6 +3007,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 6 -> %>
           <.pathway_fare_gate
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -3003,6 +3018,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% 7 -> %>
           <.pathway_exit_gate
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -3013,6 +3029,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           />
         <% _ -> %>
           <.pathway_walkway
+            arrow={@arrow}
             x1={@x1}
             y1={@y1}
             x2={@x2}
@@ -3099,6 +3116,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
 
+  attr :arrow, :string, required: true
+
   defp pathway_walkway(assigns) do
     ~H"""
     <.pathway_casing
@@ -3117,8 +3136,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-line="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -3139,6 +3158,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
+
+  attr :arrow, :string, required: true
 
   defp pathway_stairs(assigns) do
     assigns =
@@ -3175,8 +3196,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-line="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -3218,6 +3239,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
 
+  attr :arrow, :string, required: true
+
   defp pathway_moving_sidewalk(assigns) do
     assigns =
       assign(
@@ -3253,8 +3276,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-line="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -3296,6 +3319,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
 
+  attr :arrow, :string, required: true
+
   defp pathway_escalator(assigns) do
     assigns =
       assign(
@@ -3331,8 +3356,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-line="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -3373,6 +3398,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
 
+  attr :arrow, :string, required: true
+
   defp pathway_elevator(assigns) do
     {mid_x, mid_y} = pathway_midpoint(assigns.x1, assigns.y1, assigns.x2, assigns.y2)
 
@@ -3408,7 +3435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
+      marker-start={if @one_way?, do: nil, else: @arrow}
       data-pathway-connector="true"
       data-pathway-end-trim-start="10"
       data-pathway-end-trim-end="12"
@@ -3423,7 +3450,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="#FF00FF"
       stroke-width="0.26"
       stroke-linecap="butt"
-      marker-end="url(#pathway-arrow)"
+      marker-end={@arrow}
       data-pathway-connector="true"
       data-pathway-end-trim-start="12"
       data-pathway-end-trim-end="10"
@@ -3471,6 +3498,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
+
+  attr :arrow, :string, required: true
 
   defp pathway_fare_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
@@ -3553,8 +3582,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="transparent"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-arrow-guide="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -3570,6 +3599,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :mode, :atom, required: true
   attr :one_way?, :boolean, required: true
   attr :stroke_mult, :float, default: 1.0
+
+  attr :arrow, :string, required: true
 
   defp pathway_exit_gate(assigns) do
     {rail_a_x1, rail_a_y1, rail_a_x2, rail_a_y2} =
@@ -3652,8 +3683,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       stroke="transparent"
       stroke-width="0.30"
       stroke-linecap="butt"
-      marker-start={if @one_way?, do: nil, else: "url(#pathway-arrow)"}
-      marker-end="url(#pathway-arrow)"
+      marker-start={if @one_way?, do: nil, else: @arrow}
+      marker-end={@arrow}
       data-pathway-arrow-guide="true"
       data-pathway-end-trim="10"
       data-base-stroke={2.5 * @stroke_mult}
@@ -4036,6 +4067,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(location_type) when location_type in [0, 2], do: 8
   defp stop_label_y_offset(_location_type), do: 10
 
+  defp pathway_arrow_id(nil), do: "pathway-arrow"
+  defp pathway_arrow_id(state), do: "pathway-arrow-#{state}"
+
+  # A measured barrier has no shape of its own on the plan, so its hover text
+  # names the measurement, with or without the step-free view.
+  defp pathway_tooltip(pathway) do
+    case Pathway.step_free_barriers(pathway) do
+      [] -> "Click to edit pathway"
+      barriers -> "#{barrier_text(barriers)}. Click to edit pathway"
+    end
+  end
+
+  defp barrier_text([:slope]), do: "Steeper than a 1:12 ramp"
+  defp barrier_text([:width]), do: "Narrower than 0.81 m"
+  defp barrier_text([:slope, :width]), do: "Steeper than a 1:12 ramp and narrower than 0.81 m"
+
   defp stop_tooltip_text(:view, false), do: "Click to edit, drag to move"
   defp stop_tooltip_text(:view, true), do: "Editing disabled while measuring"
   defp stop_tooltip_text(:connect, _measurement_enabled), do: "Select stop to create pathway"
@@ -4049,7 +4096,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     "#{mode_label} pathway from #{from_label} to #{to_label}"
   end
 
-  defp cross_level_badge_tooltip(mode_label), do: "#{mode_label} pathway. Click to edit pathway"
+  defp cross_level_badge_tooltip(mode_label, badge) do
+    case badge[:barriers] || [] do
+      [] -> "#{mode_label} pathway. Click to edit pathway"
+      barriers -> "#{mode_label} pathway. #{barrier_text(barriers)}. Click to edit pathway"
+    end
+  end
+
   defp cross_level_badge_aria_label(mode_label), do: "Cross-level #{mode_label} pathway"
 
   attr :stop, :any, required: true
@@ -4079,7 +4132,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           class="group pointer-events-auto cursor-pointer"
           data-cross-level-pathway-badge="true"
           data-pathway-id={badge.pathway_id}
-          data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label)}
+          data-step-free={badge[:step_free]}
+          data-tooltip={if @editable?, do: cross_level_badge_tooltip(mode_label, badge)}
           data-tooltip-color={if @editable?, do: "#FF00FF"}
           tabindex={if @editable?, do: "0"}
           role={if @editable?, do: "button"}
@@ -4418,17 +4472,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # nowhere else. The pan buttons exist for keyboard operators, so they appear
   # once focus is inside the plan (`#plan-wrap:focus-within`, in the page CSS);
   # mouse users pan with Shift-drag or the middle button.
+  attr :step_free_view?, :boolean, default: false
+
   defp plan_controls(assigns) do
     ~H"""
+    <%!-- The key stops below the Floorplan settings button, which would
+    otherwise cover the top of a key tall enough to scroll. A click on either
+    button below the key is inside this block, so turning the step-free view
+    on or off leaves an open key, and its legend, open. --%>
     <div
       id="plan-key"
-      class="pointer-events-none absolute inset-y-3 left-3 z-20 flex flex-col justify-end"
+      phx-click-away={close_key()}
+      class="pointer-events-none absolute bottom-3 left-3 top-[72px] z-20 flex flex-col justify-end"
     >
       <div
         id="diagram-legend-panel"
         role="dialog"
         aria-label="Key"
-        phx-click-away={close_key()}
         phx-window-keydown={close_key(JS.focus(to: "#diagram-legend-trigger[aria-expanded='true']"))}
         phx-key="escape"
         style="display: none;"
@@ -4496,10 +4556,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <p class="mt-3 text-[12.5px] font-[650] text-muted">Pathways</p>
         <ul class="mt-1.5 grid gap-1.5">
           <li :for={mode <- 1..7} class="flex items-center gap-3 text-sm">
-            <.pathway_symbol mode={mode} class="h-5 w-9" /> <span>{key_pathway_label(mode)}</span>
+            <.pathway_symbol
+              mode={mode}
+              step_free={Pathway.step_free_state(%{pathway_mode: mode})}
+              class="h-5 w-9"
+            />
+            <span>{key_pathway_label(mode)}</span>
           </li>
           <li class="text-[12.5px] text-muted">An arrowhead marks a one-way pathway.</li>
         </ul>
+
+        <div :if={@step_free_view?} id="step-free-key">
+          <p class="mt-3 text-[12.5px] font-[650] text-muted">Step-free view</p>
+          <ul class="mt-1.5 grid gap-1.5">
+            <li
+              :for={
+                {state, label} <- [
+                  {:step_free, "Step-free"},
+                  {:not_step_free, "Stairs or escalator"},
+                  {:barrier, "Steeper than a 1:12 ramp or narrower than 0.81 m"}
+                ]
+              }
+              class="flex items-center gap-3 text-sm"
+            >
+              <.pathway_symbol mode={1} one_way?={false} step_free={state} class="h-5 w-9" />
+              <span>{label}</span>
+            </li>
+            <li class="text-[12.5px] text-muted">
+              Judged by pathway type. Slope and width count only where they are recorded.
+            </li>
+          </ul>
+        </div>
 
         <p class="mt-3 text-[12.5px] font-[650] text-muted">Moving around</p>
         <ul class="mt-1.5 grid gap-1 text-[12.5px] text-default">
@@ -4515,22 +4602,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </li>
         </ul>
       </div>
-      <button
-        id="diagram-legend-trigger"
-        type="button"
-        aria-expanded="false"
-        aria-controls="diagram-legend-panel"
-        class="pointer-events-auto inline-flex min-h-11 items-center gap-1.5 self-start rounded-control border border-subtle bg-white px-3 text-[13px] font-[650] text-strong shadow-card hover:bg-canvas"
-        phx-click={
-          JS.toggle(to: "#diagram-legend-panel")
-          |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#diagram-legend-trigger")
-        }
-      >
-        <.icon name="hero-list-bullet" class="size-4" /> Key
-      </button>
+      <div class="pointer-events-auto flex items-center gap-2 self-start">
+        <button
+          id="diagram-legend-trigger"
+          type="button"
+          aria-expanded="false"
+          aria-controls="diagram-legend-panel"
+          class="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-subtle bg-white px-3 text-[13px] font-[650] text-strong shadow-card hover:bg-canvas"
+          phx-click={
+            JS.toggle(to: "#diagram-legend-panel")
+            |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#diagram-legend-trigger")
+          }
+        >
+          <.icon name="hero-list-bullet" class="size-4" /> Key
+        </button>
+        <button
+          id="step-free-view-toggle"
+          type="button"
+          title="Step-free view"
+          aria-pressed={to_string(@step_free_view?)}
+          phx-click="toggle_step_free_view"
+          class={[
+            "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-control border px-3 text-[13px] font-[650] shadow-card",
+            if(@step_free_view?,
+              do: "border-action bg-selection text-action",
+              else: "border-subtle bg-white text-strong hover:bg-canvas"
+            )
+          ]}
+        >
+          <.icon name="hero-swatch" class="size-4" />
+          <span class="max-sm:sr-only">Step-free view</span>
+        </button>
+      </div>
     </div>
 
-    <div id="plan-view-controls" class="absolute bottom-3 right-3 z-10 flex items-end gap-2">
+    <%!-- At phone width the pan buttons stack above the zoom buttons, clear
+    of the Key and step-free buttons on the left. --%>
+    <div
+      id="plan-view-controls"
+      class="absolute bottom-3 right-3 z-10 flex items-end gap-2 max-sm:flex-col"
+    >
       <div
         id="pan-cluster"
         class="items-stretch overflow-clip rounded-control border border-subtle bg-white shadow-card"
@@ -4658,6 +4769,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :one_way?, :boolean, default: nil
   attr :class, :string, default: "h-4 w-7"
 
+  attr :step_free, :atom, default: nil
+
   defp pathway_symbol(assigns) do
     one_way? =
       case assigns.one_way? do
@@ -4668,7 +4781,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     assigns = assign(assigns, :arrow?, one_way?)
 
     ~H"""
-    <svg viewBox="0 0 28 16" class={["shrink-0", @class]} aria-hidden="true">
+    <svg
+      viewBox="0 0 28 16"
+      class={["shrink-0", @class]}
+      data-step-free={@step_free}
+      aria-hidden="true"
+    >
       <g
         fill="none"
         stroke-linecap="round"
@@ -6478,6 +6596,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             help="Recommended if narrower than 1 meter."
           />
 
+          <%!-- GTFS limits slope to walkways and moving sidewalks. A slope
+          stored on another type stays visible, even while it is being
+          retyped, so it can be corrected. --%>
+          <.input
+            :if={
+              @pathway_form[:pathway_mode].value in ["1", "3"] or
+                Values.present?(@pathway_form[:max_slope].value) or
+                (@editing_pathway != nil and @editing_pathway.max_slope != nil)
+            }
+            field={@pathway_form[:max_slope]}
+            type="number"
+            label="Maximum slope (optional)"
+            step="any"
+            placeholder="Not specified"
+            help="Rise over run: 0.083 is a 1:12 ramp. Negative when it slopes down."
+          />
+
           <.input
             :if={@pathway_form[:pathway_mode].value == "2"}
             field={@pathway_form[:stair_count]}
@@ -7536,7 +7671,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
                 "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
               ]}
             >
-              <.pathway_symbol mode={pathway.pathway_mode} one_way?={!pathway.is_bidirectional} />
+              <.pathway_symbol
+                mode={pathway.pathway_mode}
+                one_way?={!pathway.is_bidirectional}
+                step_free={Pathway.step_free_state(pathway)}
+              />
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-sm font-[650] text-strong">
                   {pathway_row_label(pathway)}

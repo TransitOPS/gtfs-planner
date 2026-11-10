@@ -36,6 +36,24 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
       color: "#6B7280",
       cue: "dotted line and unavailable label"
     },
+    # The step-free view's three states. Teal and red differ in blueness as well
+    # as hue, so they stay apart under red-green colour blindness, and the red
+    # keeps clear of the amber journal markers.
+    pathway_step_free: %{
+      css_variable: "--diagram-pathway-step-free",
+      color: "#0F766E",
+      cue: "pathway type glyph and key row"
+    },
+    pathway_not_step_free: %{
+      css_variable: "--diagram-pathway-not-step-free",
+      color: "#6B7280",
+      cue: "stairs or escalator glyph and key row"
+    },
+    pathway_barrier: %{
+      css_variable: "--diagram-pathway-barrier",
+      color: "#B91C1C",
+      cue: "hover text naming the measurement and key row"
+    },
     label: %{css_variable: "--diagram-label", color: "#1F2937", cue: "text label"},
     label_halo: %{
       css_variable: "--diagram-label-halo",

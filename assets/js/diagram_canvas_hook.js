@@ -1898,11 +1898,11 @@ const DiagramCanvasHook = {
       element.setAttribute("stroke-dasharray", scaled.join(" "));
     });
 
-    const pathwayMarker = overlay.querySelector("#pathway-arrow");
-    if (pathwayMarker) {
+    // One arrowhead marker per step-free state; all hold the same size.
+    overlay.querySelectorAll('marker[id^="pathway-arrow"]').forEach((pathwayMarker) => {
       pathwayMarker.setAttribute("markerWidth", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
       pathwayMarker.setAttribute("markerHeight", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
-    }
+    });
 
     overlay
       .querySelectorAll(
