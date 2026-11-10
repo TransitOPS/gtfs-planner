@@ -190,4 +190,62 @@ defmodule GtfsPlanner.Routing.FeedAdapterTest do
       assert Enum.at(rows, 1).level_id == "L2"
     end
   end
+
+  # mix test test/gtfs_planner/routing/feed_adapter_test.exs --only describe:"inherit_coordinates/1"
+  describe "inherit_coordinates/1" do
+    defp place(id, parent, lat, lon) do
+      %Stop{stop_id: id, parent_station: parent, stop_lat: lat, stop_lon: lon}
+    end
+
+    defp coordinates(stops, id) do
+      stop = Enum.find(stops, &(&1.stop_id == id))
+      {stop.stop_lat, stop.stop_lon}
+    end
+
+    test "a point without coordinates takes its station's" do
+      stops =
+        FeedAdapter.inherit_coordinates([
+          place("STATION", nil, Decimal.new("40.02"), Decimal.new("-75.07")),
+          place("NODE", "STATION", nil, nil)
+        ])
+
+      assert coordinates(stops, "NODE") == {Decimal.new("40.02"), Decimal.new("-75.07")}
+    end
+
+    test "a boarding area reaches past an unlocated platform to the station" do
+      stops =
+        FeedAdapter.inherit_coordinates([
+          place("STATION", nil, Decimal.new("40.02"), Decimal.new("-75.07")),
+          place("PLATFORM", "STATION", nil, nil),
+          place("BOARDING", "PLATFORM", nil, nil)
+        ])
+
+      assert coordinates(stops, "BOARDING") == {Decimal.new("40.02"), Decimal.new("-75.07")}
+    end
+
+    test "a point with its own coordinates keeps them" do
+      stops =
+        FeedAdapter.inherit_coordinates([
+          place("STATION", nil, Decimal.new("40.02"), Decimal.new("-75.07")),
+          place("ENTRANCE", "STATION", Decimal.new("40.03"), Decimal.new("-75.08"))
+        ])
+
+      assert coordinates(stops, "ENTRANCE") == {Decimal.new("40.03"), Decimal.new("-75.08")}
+    end
+
+    test "no coordinate is invented when no ancestor has one" do
+      stops =
+        FeedAdapter.inherit_coordinates([
+          place("STATION", nil, nil, nil),
+          place("NODE", "STATION", nil, nil),
+          place("ORPHAN", "ELSEWHERE", nil, nil),
+          place("LOOP_A", "LOOP_B", nil, nil),
+          place("LOOP_B", "LOOP_A", nil, nil)
+        ])
+
+      for id <- ~w(NODE ORPHAN LOOP_A LOOP_B) do
+        assert coordinates(stops, id) == {nil, nil}
+      end
+    end
+  end
 end

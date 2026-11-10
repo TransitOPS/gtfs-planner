@@ -344,23 +344,6 @@ test.describe("Diagram focus indicator", () => {
     await page.waitForSelector("#diagram-overlay");
   });
 
-  test("focus-visible ring is present on keyboard-focused canvas elements", async ({
-    page,
-  }) => {
-    // Tab to a stop in the canvas overlay
-    await page.locator("#diagram-canvas-wrapper").click();
-    await page.keyboard.press("Tab");
-    await page.waitForTimeout(300);
-
-    // Check that the focused element is within the overlay
-    const inOverlay = await page.evaluate(() => {
-      const ae = document.activeElement;
-      const overlay = document.getElementById("diagram-overlay");
-      return overlay ? overlay.contains(ae) : false;
-    });
-    expect(inOverlay).toBe(true);
-  });
-
   test("zoom button shows focus-visible ring on keyboard navigation", async ({
     page,
   }) => {

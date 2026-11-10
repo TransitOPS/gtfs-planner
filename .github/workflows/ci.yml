@@ -181,11 +181,15 @@ jobs:
         # clones this checkout and runs `git checkout origin/main` inside the
         # clone; a clone only carries refs/heads/* from its source, so
         # origin/main resolves in the clone only when this checkout has a
-        # local `main` branch. The checkout is a detached PR merge ref, so
-        # forcing the local branch is safe.
+        # local `main` branch. On a pull request the checkout is a detached
+        # merge ref, so forcing the local branch is safe. On a push to main or
+        # a scheduled run the checkout is `main` itself, which git refuses to
+        # force-update and which already is the branch credo needs.
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git branch -f main refs/remotes/origin/main
+          if [ "$(git symbolic-ref -q --short HEAD)" != "main" ]; then
+            git branch -f main refs/remotes/origin/main
+          fi
       - name: Run credo
         run: mise run lint:elixir:credo
       - name: Run sobelow

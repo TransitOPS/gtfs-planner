@@ -63,6 +63,20 @@ defmodule GtfsPlanner.RoutingTest do
       refute MapSet.member?(graph.element_ids, "NOCOORD")
     end
 
+    test "a boarding area under a platform without coordinates is still part of the graph" do
+      stops = [
+        stop("PLATFORM", lat: nil, lon: nil, parent_station: "STATION"),
+        stop("BOARDING", lat: nil, lon: nil, location_type: 4, parent_station: "PLATFORM")
+      ]
+
+      snap = Map.put(snapshot(stops, []), :station, stop("STATION", location_type: 1))
+
+      assert {:ok, %StationGraph{} = graph} = Routing.build_station_graph(snap)
+
+      assert MapSet.member?(graph.element_ids, "PLATFORM")
+      assert MapSet.member?(graph.element_ids, "BOARDING")
+    end
+
     test "a pathway referencing a missing stop yields a missing_endpoint diagnostic" do
       stops = [stop("A")]
       pw = pathway("A", "MISSING")

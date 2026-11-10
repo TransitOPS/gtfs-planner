@@ -137,21 +137,53 @@ defmodule GtfsPlanner.Routing.PathwayTraversalTest do
       assert {:ok, _} = PathwayTraversal.traverse(pw, from, to, [])
       assert {:ok, _} = PathwayTraversal.traverse(pw, to, from, [])
     end
+  end
 
-    test "does not fabricate missing stop coordinates" do
-      from = stop("A", lat: nil)
-      to = stop("B")
+  # mix test test/gtfs_planner/routing/pathway_traversal_test.exs \
+  #   --only describe:"traverse/4 between stops without coordinates"
+  describe "traverse/4 between stops without coordinates" do
+    defp unlocated(id), do: stop(id, lat: nil, lon: nil)
 
-      pathway = %Pathway{
-        pathway_id: "PW_MISSING_COORDINATE",
-        pathway_mode: 1,
-        is_bidirectional: true,
-        from_stop_id: "A",
-        to_stop_id: "B",
-        traversal_time: 60
-      }
+    defp walkway(attrs) do
+      struct!(
+        %Pathway{
+          pathway_id: "PW_UNLOCATED",
+          pathway_mode: 1,
+          is_bidirectional: true,
+          from_stop_id: "A",
+          to_stop_id: "B"
+        },
+        attrs
+      )
+    end
 
-      assert {:error, _reason} = PathwayTraversal.traverse(pathway, from, to, [])
+    test "reports the recorded length and the time to walk it" do
+      pathway = walkway(length: Decimal.new("133"))
+
+      assert {:ok, result} =
+               PathwayTraversal.traverse(pathway, unlocated("A"), unlocated("B"), [])
+
+      assert result.distance_meters == 133.0
+      assert result.time_seconds == 100.0
+    end
+
+    test "reports a recorded traversal time and no distance when no length is recorded" do
+      pathway = walkway(traversal_time: 60)
+
+      assert {:ok, result} =
+               PathwayTraversal.traverse(pathway, unlocated("A"), unlocated("B"), [])
+
+      assert result.time_seconds == 60.0
+      assert result.distance_meters == nil
+    end
+
+    test "takes no distance or time from a position one stop does not have" do
+      # B has coordinates and A has none: there is no line between them to measure.
+      assert {:ok, result} =
+               PathwayTraversal.traverse(walkway([]), unlocated("A"), stop("B"), [])
+
+      assert result.distance_meters == nil
+      assert result.time_seconds == nil
     end
   end
 end

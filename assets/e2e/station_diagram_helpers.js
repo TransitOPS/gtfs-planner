@@ -57,6 +57,10 @@ export async function openDiagramPanel(page) {
 }
 
 export async function selectDiagramMode(page, mode) {
+  // A click that lands before the LiveView connects, as it can straight after
+  // a reload, checks the radio in the browser only; the server then mounts in
+  // Select mode and the mode never changes.
+  await page.locator(".phx-connected").waitFor({ state: "attached" });
   const radio = page.locator(`#diagram-mode input[value="${mode}"]`);
   await page.locator(`label[for="diagram-mode-option-${mode}"]`).click();
   await expect(radio).toBeChecked();
