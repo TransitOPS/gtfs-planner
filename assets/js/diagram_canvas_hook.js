@@ -86,6 +86,27 @@ const DRAG_HOLD_MS = 200;
 const DRAG_THRESHOLD_PX = 5;
 const PAN_FRACTION = 0.25;
 const ZOOM_FACTOR = 1.5;
+// Wheel zoom. A scroll and a pinch report very different deltas for the same
+// intent, so each has its own rate. One event is capped so a flick of the
+// wheel cannot jump several zoom steps, and the pinch cap is lower so a mouse
+// wheel turned with Ctrl held, which arrives looking like a huge pinch, zooms
+// about as fast as a plain scroll.
+const WHEEL_ZOOM_RATE = 0.002;
+const PINCH_ZOOM_RATE = 0.01;
+const WHEEL_MAX_DELTA = 120;
+const PINCH_MAX_DELTA = 25;
+const WHEEL_LINE_PX = 16;
+
+// The zoom factor one wheel event asks for: above 1 zooms in. Browsers report
+// a pinch as a wheel with Ctrl held, and some report lines or pages instead of
+// pixels.
+function wheelZoomFactor(e) {
+  const unit = e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_MAX_DELTA : 1;
+  const cap = e.ctrlKey ? PINCH_MAX_DELTA : WHEEL_MAX_DELTA;
+  const delta = Math.max(-cap, Math.min(cap, e.deltaY * unit));
+
+  return Math.exp(-delta * (e.ctrlKey ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE));
+}
 // Plain keys that switch the editing mode. The mode control shows the same
 // letters as keycaps while this hook is mounted.
 const MODE_SHORTCUTS = { s: "view", a: "add", c: "connect" };
@@ -426,6 +447,10 @@ const DiagramCanvasHook = {
   startStopDrag(candidate) {
     if (this.dragCandidate !== candidate) return;
 
+    // The press is a point drag from here on. Without this, cancelling the
+    // drag with Escape would turn the rest of the gesture into a pan.
+    this.panCandidate = null;
+
     const pathwayElements = [];
 
     this.overlay
@@ -490,53 +515,39 @@ const DiagramCanvasHook = {
     this.cancelDragHold();
   },
 
+  // The plan owns the wheel while the pointer is over it. Every scroll and
+  // pinch zooms at the pointer and none is handed back to the page, so the
+  // browser's own scroll, zoom and swipe-back never fire from the plan.
   handleWheel(e) {
-    const svg = this.el;
+    e.preventDefault();
 
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      // Scroll up (negative deltaY) = zoom in, scroll down = zoom out
-      const delta = e.deltaY > 0 ? 0.95 : 1.05;
-      const newScale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * delta));
+    const newScale = Math.min(
+      this.maxScale,
+      Math.max(this.minScale, this.scale * wheelZoomFactor(e))
+    );
 
-      if (newScale !== this.scale) {
-        const rect = svg.getBoundingClientRect();
-        const mouseX = (e.clientX - rect.left) / rect.width * this.viewBox.w + this.viewBox.x;
-        const mouseY = (e.clientY - rect.top) / rect.height * this.viewBox.h + this.viewBox.y;
-
-        const newW = this.baseW / newScale;
-        const newH = this.baseH / newScale;
-
-        this.viewBox.x = mouseX - (mouseX - this.viewBox.x) * (newW / this.viewBox.w);
-        this.viewBox.y = mouseY - (mouseY - this.viewBox.y) * (newH / this.viewBox.h);
-        this.viewBox.w = newW;
-        this.viewBox.h = newH;
-        this.scale = newScale;
-
-        this.updateViewBox();
-      }
-    } else {
-      // Calculate limits to check if we should allow page scroll
-      const margin = 0.5;
-      const minY = -this.viewBox.h * margin;
-      const maxY = this.baseH - this.viewBox.h * (1 - margin);
-
-      // Use a small epsilon for float comparison
-      const isAtTop = this.viewBox.y <= minY + 0.1;
-      const isAtBottom = this.viewBox.y >= maxY - 0.1;
-
-      // If we are at the edge and trying to scroll past it, let the page scroll
-      if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
-        return;
-      }
-
-      e.preventDefault();
-      const panSpeed = 0.3;
-      this.viewBox.x += e.deltaX * panSpeed / this.scale;
-      this.viewBox.y += e.deltaY * panSpeed / this.scale;
-      this.clampViewBox();
-      this.updateViewBox();
+    if (newScale === this.scale) {
+      return;
     }
+
+    // The plan is fitted inside the canvas and centred on the spare axis, so
+    // the spot under the pointer comes from the canvas's own transform. Without
+    // one, zoom holds the centre of the view.
+    const anchor = this.clientPointToSvg(e.clientX, e.clientY) ?? {
+      x: this.viewBox.x + this.viewBox.w / 2,
+      y: this.viewBox.y + this.viewBox.h / 2
+    };
+
+    const newW = this.baseW / newScale;
+    const newH = this.baseH / newScale;
+
+    this.viewBox.x = anchor.x - (anchor.x - this.viewBox.x) * (newW / this.viewBox.w);
+    this.viewBox.y = anchor.y - (anchor.y - this.viewBox.y) * (newH / this.viewBox.h);
+    this.viewBox.w = newW;
+    this.viewBox.h = newH;
+    this.scale = newScale;
+
+    this.updateViewBox();
   },
 
   handleMouseDown(e) {
@@ -545,11 +556,38 @@ const DiagramCanvasHook = {
     }
 
     if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
-      this.isPanning = true;
-      this.panStart = { x: e.clientX, y: e.clientY };
-      this.el.style.cursor = "grabbing";
+      this.startPan(e.clientX, e.clientY);
       e.preventDefault();
+      return;
     }
+
+    // A plain press may become a pan once the pointer moves; until then it is
+    // still a click. A press on a point in Select mode is a point drag, which
+    // handleOverlayPointerDown claims. Ctrl-click opens the context menu on a
+    // Mac and never sends its release, so it does not arm a pan.
+    if (e.button === 0 && !e.ctrlKey) {
+      this.panCandidate = { x: e.clientX, y: e.clientY };
+    }
+  },
+
+  // The whole page shows the closed hand and selects no text while the plan
+  // moves, wherever the pointer travels; the class sits on <body> so a
+  // LiveView patch cannot drop it mid-pan.
+  startPan(clientX, clientY) {
+    this.isPanning = true;
+    this.panStart = { x: clientX, y: clientY };
+    this.panOrigin = { x: clientX, y: clientY };
+    this.panMoved = false;
+    this.panCandidate = null;
+    this.hideTooltip();
+    document.body.classList.add("floorplan-panning");
+  },
+
+  stopPan() {
+    this.isPanning = false;
+    this.panCandidate = null;
+    this.panMoved = false;
+    document.body.classList.remove("floorplan-panning");
   },
 
   // The point a press, click or hover at the pointer acts on: a point hit target
@@ -693,12 +731,45 @@ const DiagramCanvasHook = {
       return;
     }
 
+    // A release that never reached the page (a context menu, another window)
+    // leaves no button held, so the press is over.
+    if (e.buttons === 0 && (this.panCandidate || this.isPanning)) {
+      this.stopPan();
+      return;
+    }
+
+    if (this.panCandidate && !this.dragCandidate) {
+      const distance = Math.hypot(
+        e.clientX - this.panCandidate.x,
+        e.clientY - this.panCandidate.y
+      );
+
+      // Past the click threshold the press is a pan. It starts from where the
+      // press landed, so the plan stays under the pointer.
+      if (distance > DRAG_THRESHOLD_PX) {
+        this.startPan(this.panCandidate.x, this.panCandidate.y);
+        window.getSelection?.()?.removeAllRanges();
+      }
+    }
+
     if (this.isPanning) {
-      const rect = this.el.getBoundingClientRect();
-      const dx = (e.clientX - this.panStart.x) / rect.width * this.viewBox.w;
-      const dy = (e.clientY - this.panStart.y) / rect.height * this.viewBox.h;
-      this.viewBox.x -= dx;
-      this.viewBox.y -= dy;
+      // The plan is fitted inside the canvas, so a pixel is the same number of
+      // plan units on both axes whatever the canvas's shape.
+      const unitsPerPx = this.unitsPerPx(this.el);
+
+      if (!unitsPerPx) {
+        return;
+      }
+
+      if (
+        Math.hypot(e.clientX - this.panOrigin.x, e.clientY - this.panOrigin.y) >
+        DRAG_THRESHOLD_PX
+      ) {
+        this.panMoved = true;
+      }
+
+      this.viewBox.x -= (e.clientX - this.panStart.x) * unitsPerPx;
+      this.viewBox.y -= (e.clientY - this.panStart.y) * unitsPerPx;
       this.panStart = { x: e.clientX, y: e.clientY };
       this.clampViewBox();
       this.updateViewBox();
@@ -734,14 +805,23 @@ const DiagramCanvasHook = {
       });
 
       this.dragging = null;
+      this.panCandidate = null;
       this._suppressNextClick = true;
       return;
     }
 
-    if (this.isPanning) {
-      this.isPanning = false;
-      this.el.style.cursor = "";
+    if (this.isPanning && this.panMoved) {
+      // The release ends a pan, not a click, whether the pan was a plain drag,
+      // a Shift-drag or a middle-drag. The click it produces can land on the
+      // plan, the overlay or an ancestor of both, so the flag is cleared once
+      // that click has had its turn instead of waiting to be consumed.
+      this._suppressNextClick = true;
+      setTimeout(() => {
+        this._suppressNextClick = false;
+      }, 0);
     }
+
+    this.stopPan();
   },
 
   handleDocumentKeyDown(e) {
@@ -969,6 +1049,8 @@ const DiagramCanvasHook = {
     this.maxScale = 10;
     this.isPanning = false;
     this.panStart = { x: 0, y: 0 };
+    this.panCandidate = null;
+    this.panMoved = false;
     this._canvasKey = svg.getAttribute("data-canvas-key");
     this.currentImageHref = null;
     this._activeImageLoadToken = 0;
@@ -2409,6 +2491,7 @@ const DiagramCanvasHook = {
     document.removeEventListener("keydown", this._handleDocumentKeyDown);
     this.removeOverlayPanZoom();
     this.cancelDragHold();
+    this.stopPan();
     this.dragging = null;
     this.pendingDrop = null;
 

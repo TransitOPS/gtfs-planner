@@ -623,17 +623,6 @@ describe("DiagramCanvasHook — pan/zoom controls", () => {
       // affect native zoom.
       expect(btn).toBeDefined();
     });
-
-    it("edge page-scroll is preserved because pan/zoom uses click, not wheel", () => {
-      // Pan/zoom buttons do not touch the wheel event path.
-      // The existing handleWheel preserves edge page-scroll at lines 424-436.
-      // Buttons are additive: they manipulate viewBox synchronously,
-      // independent of wheel-based panning.
-      const btn = attachButton({ "data-pan": "up", "aria-label": "Pan up" });
-      btn.click();
-      // No wheel event is dispatched; edge page-scroll path is untouched.
-      expect(hook.viewBox.y).toBeLessThan(10);
-    });
   });
 });
 
@@ -1518,5 +1507,252 @@ describe("DiagramCanvasHook — editing-mode shortcuts", () => {
     press("a");
 
     expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+});
+
+// npm --prefix assets test -- js/__tests__/diagram_canvas_hook_test.js -t "wheel zoom"
+describe("DiagramCanvasHook — wheel zoom", () => {
+  let svg;
+  let hook;
+
+  function wheel(init) {
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    svg.dispatchEvent(event);
+    return event;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    svg = canvas.svg;
+    hook = makeHook(svg);
+    hook.mounted();
+    hook.baseW = 100;
+    hook.baseH = 80;
+    hook.viewBox = { x: 0, y: 0, w: 100, h: 80 };
+    hook.scale = 1;
+    // The pointer sits over plan coordinate (50, 20): halfway across the view
+    // and a quarter of the way down.
+    hook.clientPointToSvg = () => ({ x: 50, y: 20 });
+  });
+
+  afterEach(() => {
+    hook.destroyed();
+    vi.restoreAllMocks();
+  });
+
+  it("zooms in on a scroll up and keeps the spot under the pointer where it was", () => {
+    const event = wheel({ deltaY: -100 });
+
+    expect(hook.scale).toBeCloseTo(Math.exp(0.2), 6);
+    expect((50 - hook.viewBox.x) / hook.viewBox.w).toBeCloseTo(0.5, 6);
+    expect((20 - hook.viewBox.y) / hook.viewBox.h).toBeCloseTo(0.25, 6);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("zooms out on a scroll down", () => {
+    wheel({ deltaY: 100 });
+
+    expect(hook.scale).toBeCloseTo(Math.exp(-0.2), 6);
+  });
+
+  it("zooms faster for a pinch than for a scroll of the same size", () => {
+    wheel({ deltaY: -10 });
+    const scrolled = hook.scale;
+    hook.scale = 1;
+    hook.viewBox = { x: 0, y: 0, w: 100, h: 80 };
+    wheel({ deltaY: -10, ctrlKey: true });
+
+    expect(hook.scale).toBeGreaterThan(scrolled);
+  });
+
+  it("caps one event, so a flick of the wheel cannot jump several steps", () => {
+    wheel({ deltaY: -5000 });
+
+    expect(hook.scale).toBeCloseTo(Math.exp(0.24), 6);
+  });
+
+  it("zooms a mouse wheel turned with Ctrl held about as fast as a plain scroll", () => {
+    wheel({ deltaY: -100, ctrlKey: true });
+
+    expect(hook.scale).toBeCloseTo(Math.exp(0.25), 6);
+  });
+
+  it("reads a wheel that reports lines as pixels", () => {
+    wheel({ deltaY: -3, deltaMode: 1 });
+
+    expect(hook.scale).toBeCloseTo(Math.exp(0.096), 6);
+  });
+
+  it("holds the centre of the view when the canvas has no transform to read", () => {
+    hook.clientPointToSvg = () => null;
+    wheel({ deltaY: -100 });
+
+    expect(hook.viewBox.x + hook.viewBox.w / 2).toBeCloseTo(50, 6);
+    expect(hook.viewBox.y + hook.viewBox.h / 2).toBeCloseTo(40, 6);
+  });
+
+  it("never hands a scroll back to the page, at the zoom limit or sideways", () => {
+    hook.scale = hook.maxScale;
+    hook.viewBox = { x: 0, y: 0, w: 10, h: 8 };
+    const atLimit = wheel({ deltaY: -100 });
+    const sideways = wheel({ deltaX: 80, deltaY: 0 });
+
+    expect(atLimit.defaultPrevented).toBe(true);
+    expect(sideways.defaultPrevented).toBe(true);
+    expect(hook.viewBox).toEqual({ x: 0, y: 0, w: 10, h: 8 });
+  });
+});
+
+// npm --prefix assets test -- js/__tests__/diagram_canvas_hook_test.js -t "dragging the plan"
+describe("DiagramCanvasHook — dragging the plan", () => {
+  let svg;
+  let overlay;
+  let hook;
+
+  function down(target, init = {}) {
+    target.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 100, clientY: 100, ...init })
+    );
+  }
+
+  function click() {
+    svg.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 150, clientY: 100 })
+    );
+  }
+
+  const planClicks = () => hook.pushEvent.mock.calls.filter(([event]) => event === "canvas_click");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    svg = canvas.svg;
+    overlay = canvas.overlay;
+    hook = makeHook(svg);
+    hook.mounted();
+    hook.baseW = 100;
+    hook.baseH = 80;
+    hook.viewBox = { x: 10, y: 10, w: 50, h: 40 };
+    hook.scale = 2;
+    // The plan is drawn at 10 pixels per unit on both axes, whatever the
+    // canvas's shape.
+    svg.getScreenCTM = () => ({ a: 10 });
+    hook.clientPointToSvg = (x, y) => ({ x, y });
+  });
+
+  afterEach(() => {
+    hook.destroyed();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("moves the plan with the pointer once a press passes the click threshold", () => {
+    down(svg);
+    hook.handleMouseMove({ clientX: 150, clientY: 80 });
+
+    // 50px right and 20px up at 10px per unit.
+    expect(hook.viewBox.x).toBeCloseTo(5, 6);
+    expect(hook.viewBox.y).toBeCloseTo(12, 6);
+    expect(document.body.classList.contains("floorplan-panning")).toBe(true);
+
+    hook.handleMouseUp({});
+
+    expect(document.body.classList.contains("floorplan-panning")).toBe(false);
+  });
+
+  it("swallows the click that ends a pan and lets the next click through", () => {
+    down(svg);
+    hook.handleMouseMove({ clientX: 150, clientY: 100 });
+    hook.handleMouseUp({});
+    click();
+
+    expect(planClicks()).toHaveLength(0);
+
+    click();
+
+    expect(planClicks()).toHaveLength(1);
+  });
+
+  it("does not swallow a later click when the pan was released off the plan", () => {
+    down(svg);
+    hook.handleMouseMove({ clientX: 150, clientY: 100 });
+    hook.handleMouseUp({});
+    vi.runAllTimers();
+    click();
+
+    expect(planClicks()).toHaveLength(1);
+  });
+
+  it("keeps a press that barely moves as a click", () => {
+    down(svg);
+    hook.handleMouseMove({ clientX: 103, clientY: 102 });
+    hook.handleMouseUp({});
+    click();
+
+    expect(hook.viewBox).toEqual({ x: 10, y: 10, w: 50, h: 40 });
+    expect(planClicks()).toHaveLength(1);
+  });
+
+  it("stops following the pointer when the release never reached the page", () => {
+    down(svg);
+    hook.handleMouseMove({ clientX: 150, clientY: 100, buttons: 1 });
+    hook.handleMouseMove({ clientX: 250, clientY: 100, buttons: 0 });
+    hook.handleMouseMove({ clientX: 300, clientY: 100, buttons: 0 });
+
+    expect(hook.viewBox.x).toBeCloseTo(5, 6);
+    expect(document.body.classList.contains("floorplan-panning")).toBe(false);
+  });
+
+  it("does not arm a pan on Ctrl-click, which opens the context menu on a Mac", () => {
+    down(svg, { ctrlKey: true });
+    hook.handleMouseMove({ clientX: 150, clientY: 100 });
+
+    expect(hook.viewBox.x).toBe(10);
+  });
+
+  it("moves the point and not the plan when the press lands on a point in Select", () => {
+    const { hitTarget } = makeStopGroup(overlay);
+    down(hitTarget, { clientX: 50, clientY: 50 });
+    hook.handleMouseMove({ clientX: 80, clientY: 50 });
+
+    expect(hook.dragging.stopId).toBe("STOP_1");
+    expect(hook.viewBox.x).toBe(10);
+
+    hook.handleMouseUp({});
+  });
+
+  it("does not turn a point drag cancelled with Escape into a pan", () => {
+    const { hitTarget } = makeStopGroup(overlay);
+    down(hitTarget, { clientX: 50, clientY: 50 });
+    hook.handleMouseMove({ clientX: 80, clientY: 50 });
+    hook.handleDocumentKeyDown({ key: "Escape" });
+    hook.handleMouseMove({ clientX: 120, clientY: 50 });
+
+    expect(hook.viewBox.x).toBe(10);
+  });
+
+  it("pans from a press on a point outside Select, where points do not drag", () => {
+    overlay.setAttribute("data-mode", "connect");
+    const { hitTarget } = makeStopGroup(overlay);
+    down(hitTarget);
+    hook.handleMouseMove({ clientX: 150, clientY: 100 });
+
+    expect(hook.dragging).toBeNull();
+    expect(hook.viewBox.x).toBeCloseTo(5, 6);
+  });
+
+  it("swallows the click that ends a Shift-drag started on a point", () => {
+    const { hitTarget } = makeStopGroup(overlay);
+    const clicked = vi.fn();
+    overlay.addEventListener("click", clicked);
+    down(hitTarget, { shiftKey: true });
+    hook.handleMouseMove({ clientX: 150, clientY: 100 });
+    hook.handleMouseUp({});
+    hitTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(hook.viewBox.x).toBeCloseTo(5, 6);
+    expect(clicked).not.toHaveBeenCalled();
   });
 });

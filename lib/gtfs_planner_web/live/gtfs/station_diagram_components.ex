@@ -2586,7 +2586,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             preserveAspectRatio="xMidYMid meet"
             class={[
               "absolute inset-0 block size-full",
-              if(@mode == :view, do: "cursor-default", else: "cursor-crosshair")
+              plan_cursor(@mode, @measurement_enabled)
             ]}
           >
             <image
@@ -3807,7 +3807,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               data-center-y={cy}
               class={
                 if @mode == :view and not @measurement_enabled,
-                  do: "cursor-grab",
+                  do: "cursor-move",
                   else: "cursor-pointer"
               }
               phx-click="stop_clicked"
@@ -4066,6 +4066,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp stop_label_y_offset(4), do: 6
   defp stop_label_y_offset(location_type) when location_type in [0, 2], do: 8
   defp stop_label_y_offset(_location_type), do: 10
+
+  # Select drags the plan to pan, so it shows the open hand; a point shows the
+  # move cursor instead, because dragging there moves the point. Every other
+  # state places something with a click.
+  defp plan_cursor(:view, false), do: "cursor-grab"
+  defp plan_cursor(:view, true), do: "cursor-default"
+  defp plan_cursor(_mode, _measurement_enabled), do: "cursor-crosshair"
 
   defp pathway_arrow_id(nil), do: "pathway-arrow"
   defp pathway_arrow_id(state), do: "pathway-arrow-#{state}"
@@ -4471,7 +4478,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # Key at the lower left, view controls at the lower right, on the plan and
   # nowhere else. The pan buttons exist for keyboard operators, so they appear
   # once focus is inside the plan (`#plan-wrap:focus-within`, in the page CSS);
-  # mouse users pan with Shift-drag or the middle button.
+  # mouse users drag the plan.
   attr :step_free_view?, :boolean, default: false
 
   defp plan_controls(assigns) do
@@ -4594,7 +4601,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             Click a point or pathway to edit it. Drag a point to move it; Esc cancels.
           </li>
           <li>
-            Shift-drag or middle-drag pans. Ctrl or Cmd + scroll zooms; scroll pans when zoomed in.
+            Drag the plan to pan; hold Shift to start the drag on a point. Scroll or pinch to zoom.
           </li>
           <li>Tab reaches the plan; Enter opens the focused point or pathway.</li>
           <li>
