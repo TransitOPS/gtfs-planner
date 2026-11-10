@@ -252,6 +252,25 @@ describe("JournalPanelHook", () => {
       );
     });
 
+    it("tries again when the target is rendered but cannot take focus yet", () => {
+      const hook = makeHook();
+      hook.mounted();
+      // A disabled button stands in for a row inside a panel that is still
+      // hidden while it slides in: it is in the page and refuses focus.
+      hook.el.innerHTML =
+        '<button id="journal-entries-1" type="button" disabled>Entries</button>';
+      const entries = hook.el.querySelector("#journal-entries-1");
+      hook.handlers.get("journal-focus")({ selector: "#journal-entries-1" });
+
+      vi.runOnlyPendingTimers();
+      expect(document.activeElement).not.toBe(entries);
+
+      entries.disabled = false;
+      vi.runOnlyPendingTimers();
+
+      expect(document.activeElement).toBe(entries);
+    });
+
     it("stops waiting for a focus target that never renders", () => {
       const hook = makeHook();
       hook.mounted();

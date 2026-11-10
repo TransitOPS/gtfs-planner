@@ -124,9 +124,12 @@ const JournalPanelHook = {
         return;
       }
 
+      // The target can exist before it can take focus: the panel that holds it
+      // is still hidden while it slides in. Focus that did not land is tried
+      // again instead of leaving the keyboard on the page body.
       if (typeof target?.focus === "function") {
         target.focus();
-        return;
+        if (document.activeElement === target) return;
       }
 
       attempts += 1;
