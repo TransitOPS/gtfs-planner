@@ -527,6 +527,23 @@ async function openExport(page) {
   return versionId;
 }
 
+async function startExportAndOpenFlexLink(page) {
+  await page.click("#start-export");
+
+  const finishedDownload = page.locator("#export-download-link");
+  await finishedDownload.waitFor({ state: "visible", timeout: 150_000 });
+
+  const href = await finishedDownload.getAttribute("href");
+  const runId = href?.match(/\/export-runs\/([^/]+)\/download$/)?.[1];
+  if (!runId) throw new Error(`Finished export has an unexpected download href: ${href}`);
+
+  await page.locator(`#export-file-${runId}-menu-button`).click();
+  const flexLink = page.locator(`#export-file-${runId}-download-flex`);
+  await flexLink.waitFor({ state: "visible" });
+
+  return flexLink;
+}
+
 // The page must fit the viewport, so both download links and both validation
 // buttons are visible without a horizontal scrollbar.
 async function expectNoHorizontalPageScroll(page) {
@@ -543,18 +560,10 @@ test("export-flex", async ({ page }) => {
 
   const versionId = await openExport(page);
 
-  const flexLink = page.locator("#export-flex-download-link");
-
-  // A freshly reset browser database has no export run, so the case starts one
-  // and waits for its published flex artifact; a database that already ran this
-  // case holds a ready pair the page can be captured from directly.
-  if ((await flexLink.count()) === 0) {
-    await page.click("#start-export");
-    await flexLink.waitFor({ state: "visible", timeout: 150_000 });
-  }
+  const flexLink = await startExportAndOpenFlexLink(page);
 
   await expect(page.locator("#export-download-link")).toBeVisible();
-  await expect(page.locator("#export-flex-download-link")).toHaveAttribute(
+  await expect(flexLink).toHaveAttribute(
     "href",
     new RegExp(`^/gtfs/${versionId}/export-runs/[0-9a-f-]+/download\\?file=flex$`),
   );
@@ -565,7 +574,7 @@ test("export-flex", async ({ page }) => {
   await capture(page, "export-flex");
 
   await page.setViewportSize(NARROW);
-  await page.waitForSelector("#export-flex-download-link");
+  await expect(flexLink).toBeVisible();
   await expectNoHorizontalPageScroll(page);
   await capture(page, "export-flex");
 
@@ -1047,18 +1056,12 @@ test("flex journey", async ({ page }) => {
   await captureBoth(page, "journey-export-defaults");
 
   // 11. A full export of this version, and the flex file it publishes. A run
-  //     that is already ready holds the version's artifact, which is the link
-  //     this journey follows; an empty history starts one through the page's own
-  //     button, and the link appears when the worker publishes the flex bytes.
+  //     The finished band identifies this journey's run; its row menu owns the
+  //     flex download alongside the main archive.
   await page.goto(`/gtfs/${versionId}/export`);
   await waitForLiveView(page);
 
-  const flexLink = page.locator("#export-flex-download-link");
-
-  if ((await flexLink.count()) === 0) {
-    await page.click("#start-export");
-    await flexLink.waitFor({ state: "visible", timeout: 150_000 });
-  }
+  const flexLink = await startExportAndOpenFlexLink(page);
 
   await expect(flexLink).toHaveAttribute(
     "href",

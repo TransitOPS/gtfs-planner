@@ -1321,18 +1321,32 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       """)
     end
 
-    test "declares Export then Import with exact destinations and stable link IDs" do
+    test "declares Export, Compare and Import with exact destinations and stable link IDs" do
       html = render_gtfs_sub_nav(:export)
       links = sub_nav_links(html, "gtfs-sub-nav")
 
-      assert sub_nav_texts(links) == ["Export", "Import"]
-      assert sub_nav_attr(links, "href") == ["/gtfs/42/export", "/gtfs/42/import"]
-      assert sub_nav_attr(links, "id") == ["gtfs-tab-export", "gtfs-tab-import"]
+      assert sub_nav_texts(links) == ["Export", "Compare", "Import"]
+
+      assert sub_nav_attr(links, "href") == [
+               "/gtfs/42/export",
+               "/gtfs/42/compare",
+               "/gtfs/42/import"
+             ]
+
+      assert sub_nav_attr(links, "id") == [
+               "gtfs-tab-export",
+               "gtfs-tab-compare",
+               "gtfs-tab-import"
+             ]
 
       assert_sub_nav_contract(html, "gtfs-sub-nav")
     end
 
-    for {active_tab, label} <- [{:export, "Export"}, {:import, "Import"}] do
+    for {active_tab, label} <- [
+          {:export, "Export"},
+          {:compare, "Compare"},
+          {:import, "Import"}
+        ] do
       test "#{active_tab} marks exactly one current link" do
         links = sub_nav_links(render_gtfs_sub_nav(unquote(active_tab)), "gtfs-sub-nav")
 

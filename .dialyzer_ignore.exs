@@ -63,7 +63,6 @@
   {"lib/gtfs_planner/gtfs/export.ex", :pattern_match},
   {"lib/gtfs_planner/gtfs/export.ex", :pattern_match_cov},
   {"lib/gtfs_planner/gtfs/export.ex", :unused_fun},
-  {"lib/gtfs_planner/gtfs/export_runs.ex", :unknown_type},
   {"lib/gtfs_planner/gtfs/fares.ex", :call_without_opaque},
   {"lib/gtfs_planner/gtfs/fares/projection.ex", :contract_with_opaque},
   {"lib/gtfs_planner/gtfs/flex/export.ex", :call_without_opaque},

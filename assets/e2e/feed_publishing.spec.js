@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { bodyFitsViewport, logInAs } from "./browser_helpers.js";
@@ -47,6 +47,37 @@ async function shot(page, name, { fullPage = true } = {}) {
     path: resolve(CAPTURE_DIR, `step-021-${name}.png`),
     fullPage,
   });
+}
+
+// The shared export-UX capture surface for this feature. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    fullPage: true,
+  });
+}
+
+// A ready file's Publish action is one item in the row's own more-actions menu,
+// which opens the row-bound publication drawer.
+async function openPublishDrawer(page, filename) {
+  const row = page
+    .locator("tbody[id^='export-file-']")
+    .filter({ hasText: filename })
+    .first();
+  await expect(row).toBeVisible();
+
+  const rowId = await row.getAttribute("id");
+  await row.locator(`#${rowId}-menu summary`).click();
+
+  const publish = row.locator(`#${rowId}-publish`);
+  await publish.click();
+  await expect(page.locator("#publish-drawer")).toBeVisible();
 }
 
 // The organization's default published version is the one the seed backdates its
@@ -109,17 +140,26 @@ test.describe("static publication @static", () => {
     await page.setViewportSize(DESKTOP);
     await exportPage(page);
 
-    // The opener sits in the run's own action row, beside the download.
-    await expect(page.locator("#export-download-link")).toBeVisible();
-    const opener = page.locator("#feed-publish-open");
+    // The opener sits in the run's own action row, inside its more-actions menu.
+    const fullRow = page
+      .locator("tbody[id^='export-file-']")
+      .filter({ hasText: "browser-full.zip" })
+      .first();
+    await expect(fullRow).toBeVisible();
+    await expect(fullRow.locator("[id$='-download']")).toBeVisible();
+
+    const fullRowId = await fullRow.getAttribute("id");
+    await fullRow.locator(`#${fullRowId}-menu summary`).click();
+    const opener = fullRow.locator(`#${fullRowId}-publish`);
     await expect(opener).toBeVisible();
 
-    // Keyboard operation: the opener is reachable from the keyboard and opens
+    // Keyboard operation: the action is reachable from the keyboard and opens
     // the review when it is activated, not only when it is clicked.
     await opener.focus();
     await expect(opener).toBeFocused();
     await page.keyboard.press("Enter");
 
+    await expect(page.locator("#publish-drawer")).toBeVisible();
     const review = page.locator("#feed-publish-review");
     await expect(review).toBeVisible();
 
@@ -129,8 +169,6 @@ test.describe("static publication @static", () => {
     await expect(page.locator("#feed-publish-url")).toContainText(
       "/browser-test/static/gtfs.zip",
     );
-    await expect(page.locator("#feed-publish-profile")).toContainText("GTFS feed");
-    await expect(page.locator("#feed-publish-hash")).toContainText("…");
     await expect(page.locator("#feed-publish-report")).toContainText("0 errors");
     await expect(page.locator("#feed-publish-inventory")).toContainText("routes.txt");
     await expect(page.locator("#feed-publish-inventory")).toContainText("agency.txt");
@@ -144,25 +182,33 @@ test.describe("static publication @static", () => {
 
   test("publishing the reviewed file records durable intent @static", async ({ page }) => {
     await page.setViewportSize(NARROW);
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await exportPage(page);
 
     await expect(bodyFitsViewport(page)).resolves.toBe(true);
 
-    await page.locator("#feed-publish-open").click();
+    await openPublishDrawer(page, "browser-full.zip");
     await expect(page.locator("#feed-publish-review")).toBeVisible();
+
+    for (const viewport of [
+      { label: "1440", width: 1440, height: 1000 },
+      { label: "320", width: 320, height: 800 },
+    ]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expect(bodyFitsViewport(page)).resolves.toBe(true);
+      await exportCapture(page, "publish-review", viewport);
+    }
+
+    await page.setViewportSize(NARROW);
 
     // Keyboard: the primary action is a submit control in the review's own form.
     await page.locator("#feed-publish-confirm").focus();
     await page.keyboard.press("Enter");
 
-    // The review is answered and the channel now reports a durable state from
-    // its own row rather than "Not published yet".
+    // The review is answered with the page's durable-intent confirmation.
     await expect(page.locator("#feed-publish-review")).toHaveCount(0);
-    await expect(page.locator("#feed-publish-status")).not.toContainText(
-      "Not published yet",
-    );
-    await expect(page.locator("#feed-publish-status")).toContainText(
-      /Publishing|Published|Publication failed/,
+    await expect(page.locator("#export-toast-text")).toContainText(
+      "queued for publication",
     );
 
     await shot(page, "static-published-320");
@@ -174,7 +220,7 @@ test.describe("static publication @static", () => {
     await page.setViewportSize(DESKTOP);
     await exportPage(page, "?type=pathways");
 
-    await page.locator("#feed-publish-open").click();
+    await openPublishDrawer(page, "browser-pathways.zip");
     const review = page.locator("#feed-publish-review");
     await expect(review).toBeVisible();
 
@@ -194,9 +240,6 @@ test.describe("static publication @static", () => {
     );
     await expect(page.locator("#feed-publish-refusal")).toContainText("3 errors");
     await expect(review).toBeVisible();
-    await expect(page.locator("#feed-publish-status")).not.toContainText(
-      "/static/pathways.zip",
-    );
 
     await shot(page, "static-consent-1280");
 

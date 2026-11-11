@@ -24,7 +24,11 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
   comparison of two such files has more route and date rows than the shared
   helper context can hold and needs an explicit narrowing. `simple_zip/0` is one
   route with one weekday trip, and `frequency_zip/1` is the same file with or
-  without a non-exact frequency window on that trip.
+  without a non-exact frequency window on that trip. `native_size_zip/0`
+  expands to 100,001 exact departures per active date so two dates cross the
+  native 200,000-departure ceiling. `chart_extrema_zip/1` moves one extra trip
+  from Thursday to Wednesday, producing equal positive and negative date-chart
+  extrema.
 
   `seed_browser!/2` publishes the retained exports the browser journeys choose
   from, each on a version of its own and named for what the journey compares.
@@ -133,16 +137,7 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
   departures.
   """
   def frequency_zip(frequency?) do
-    members = [
-      {"agency.txt", @agency},
-      {"routes.txt", @routes_header <> "R1,A,1,Main,3"},
-      {"stops.txt", @stops_header <> "S1,First,40.1,-74.1\nS2,Second,40.2,-74.2"},
-      {"trips.txt", "route_id,service_id,trip_id,direction_id\nR1,WEEK,T1,0"},
-      {"stop_times.txt",
-       "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" <>
-         "T1,08:00:00,08:00:00,S1,1\nT1,08:10:00,08:10:00,S2,2"},
-      {"calendar.txt", @weekdays <> @weekday_service}
-    ]
+    members = simple_members()
 
     if frequency? do
       zip(
@@ -155,6 +150,54 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
     else
       zip(members)
     end
+  end
+
+  @doc """
+  One exact frequency trip with 100,001 departures on every active date.
+
+  A two-date comparison crosses the native 200,000 exact-departure ceiling,
+  while narrowing to one date is below it.
+  """
+  def native_size_zip do
+    zip(
+      simple_members() ++
+        [
+          {"frequencies.txt",
+           "trip_id,start_time,end_time,headway_secs,exact_times\nT1,08:00:00,35:46:41,1,1"}
+        ]
+    )
+  end
+
+  @doc """
+  One ordinary weekday trip plus a second trip that runs on Wednesday for
+  `:candidate` and Thursday for `:earlier`.
+
+  Comparing earlier to candidate over 2026-11-25–26 yields +1 then -1, which
+  exercises both date-chart halves at the same maximum height.
+  """
+  def chart_extrema_zip(side) when side in [:earlier, :candidate] do
+    {service_id, date} =
+      case side do
+        :earlier -> {"THU", "20261126"}
+        :candidate -> {"WED", "20261125"}
+      end
+
+    zip([
+      {"agency.txt", @agency},
+      {"routes.txt", @routes_header <> "R1,A,1,Main,3"},
+      {"stops.txt", @stops_header <> "S1,First,40.1,-74.1\nS2,Second,40.2,-74.2"},
+      {"trips.txt",
+       "route_id,service_id,trip_id,direction_id\nR1,WEEK,T1,0\nR1,#{service_id},T2,0"},
+      {"stop_times.txt",
+       "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" <>
+         "T1,08:00:00,08:00:00,S1,1\nT1,08:10:00,08:10:00,S2,2\n" <>
+         "T2,09:00:00,09:00:00,S1,1\nT2,09:10:00,09:10:00,S2,2"},
+      {"calendar.txt",
+       @weekdays <>
+         @weekday_service <>
+         "\n#{service_id},0,0,0,0,0,0,0,20260101,20261231"},
+      {"calendar_dates.txt", "service_id,date,exception_type\n#{service_id},#{date},1"}
+    ])
   end
 
   @doc """
@@ -171,6 +214,10 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
       one trip becomes a non-exact frequency window;
     * "Unchanged service A" and "Unchanged service B": two identical files;
     * "Large network A" and "Large network B": too many rows for the helper;
+    * "Native size A" and "Native size B": too many exact departures for the
+      native comparison over the two-date browser window;
+    * "Chart extrema earlier" and "Chart extrema candidate": +1 and -1 date
+      deltas at the chart's extrema;
     * "Expiring export": an ordinary file the journey expires itself.
   """
   def seed_browser!(organization, actor) do
@@ -185,6 +232,10 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
           {"Unchanged service B", simple_zip()},
           {"Large network A", many_routes_zip(@oversized_routes)},
           {"Large network B", many_routes_zip(@oversized_routes)},
+          {"Native size A", native_size_zip()},
+          {"Native size B", native_size_zip()},
+          {"Chart extrema earlier", chart_extrema_zip(:earlier)},
+          {"Chart extrema candidate", chart_extrema_zip(:candidate)},
           {"Expiring export", simple_zip()}
         ] do
       run = publish_run!(organization, backdated_version!(organization, name), bytes, actor)
@@ -205,6 +256,19 @@ defmodule GtfsPlanner.ReleaseComparisonFixtures do
   end
 
   defp actor, do: %{id: Ecto.UUID.generate(), email: "exporter@example.com"}
+
+  defp simple_members do
+    [
+      {"agency.txt", @agency},
+      {"routes.txt", @routes_header <> "R1,A,1,Main,3"},
+      {"stops.txt", @stops_header <> "S1,First,40.1,-74.1\nS2,Second,40.2,-74.2"},
+      {"trips.txt", "route_id,service_id,trip_id,direction_id\nR1,WEEK,T1,0"},
+      {"stop_times.txt",
+       "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" <>
+         "T1,08:00:00,08:00:00,S1,1\nT1,08:10:00,08:10:00,S2,2"},
+      {"calendar.txt", @weekdays <> @weekday_service}
+    ]
+  end
 
   defp stop_times(unit_trip) do
     "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" <>

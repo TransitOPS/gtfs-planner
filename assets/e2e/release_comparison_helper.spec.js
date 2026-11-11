@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { logInAs } from "./browser_helpers.js";
+import { bodyFitsViewport, logInAs } from "./browser_helpers.js";
 
 /**
  * Release comparison journeys on the Export page (step 13).
@@ -50,6 +50,11 @@ const FREQUENCY = {
 };
 const UNCHANGED = { left: "Unchanged service A", right: "Unchanged service B" };
 const LARGE = { left: "Large network A", right: "Large network B" };
+const NATIVE_SIZE = { left: "Native size A", right: "Native size B" };
+const CHART_EXTREMA = {
+  left: "Chart extrema earlier",
+  right: "Chart extrema candidate",
+};
 const EXPIRING = "Expiring export";
 
 const VIEWPORTS = [
@@ -85,9 +90,9 @@ async function openExport(page, viewport) {
   });
   await logInAs(page, EDITOR_USER);
   const versionId = await versionIdFor(page, HOST_VERSION);
-  await page.goto(`/gtfs/${versionId}/export`);
+  await page.goto(`/gtfs/${versionId}/compare`);
   await page.waitForSelector("[data-phx-main].phx-connected");
-  await expect(page.locator("#export-workspace")).toBeVisible();
+  await expect(page.locator("#compare-page")).toBeVisible();
   await expect(page.locator("#export-comparison-form")).toBeVisible();
   return versionId;
 }
@@ -190,13 +195,27 @@ async function ask(page, message) {
 /** The document and the panel fit the viewport. */
 async function fitsWidth(page) {
   return page.evaluate(() => {
-    const page = document.querySelector("#export-page");
+    const page = document.querySelector("#compare-page");
     const panel = document.querySelector("#agent-panel");
     return (
       page.scrollWidth <= page.clientWidth + 1 &&
       (panel === null || panel.scrollWidth <= panel.clientWidth + 1)
     );
   });
+}
+
+async function expectMinimumChipTargets(page) {
+  const chips = page.locator("#comparison-kind-chips button");
+  const count = await chips.count();
+  expect(count, "comparison result must offer at least one kind chip").toBeGreaterThan(0);
+
+  for (let index = 0; index < count; index += 1) {
+    const chip = chips.nth(index);
+    const box = await chip.boundingBox();
+    expect(box, `comparison kind chip ${index} must have a rendered box`).not.toBeNull();
+    expect(box.width, `comparison kind chip ${index} must be at least 44px wide`).toBeGreaterThanOrEqual(44);
+    expect(box.height, `comparison kind chip ${index} must be at least 44px tall`).toBeGreaterThanOrEqual(44);
+  }
 }
 
 /** One element at its own size, for a card too tall for the panel's scroll area. */
@@ -210,21 +229,110 @@ async function captureElement(locator, name, viewport) {
 }
 
 async function capture(page, name, viewport, region = null) {
-  if (!CAPTURE_DIR) return;
+  if (CAPTURE_DIR) {
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    await page.screenshot({
+      path: resolve(CAPTURE_DIR, `${name}-${viewport.label}.png`),
+      fullPage: true,
+    });
 
-  mkdirSync(CAPTURE_DIR, { recursive: true });
+    // The page is long, so the region the state is about is captured at its own
+    // size as well, which is the one that can be read at 320px.
+    if (region) {
+      await page.locator(region).screenshot({
+        path: resolve(CAPTURE_DIR, `${name}-region-${viewport.label}.png`),
+      });
+    }
+  }
+
+  await exportCapture(page, name, viewport);
+}
+
+// The export-UX capture surface this package's step 16 owns. Nothing is written
+// unless EXPORT_UX_CAPTURE_DIR names a directory.
+const EXPORT_UX_CAPTURE_DIR = process.env.EXPORT_UX_CAPTURE_DIR;
+
+async function exportCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
   await page.screenshot({
-    path: resolve(CAPTURE_DIR, `${name}-${viewport.label}.png`),
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+  });
+}
+
+async function exportFullPageCapture(page, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
     fullPage: true,
   });
+}
 
-  // The page is long, so the region the state is about is captured at its own
-  // size as well, which is the one that can be read at 320px.
-  if (region) {
-    await page.locator(region).screenshot({
-      path: resolve(CAPTURE_DIR, `${name}-region-${viewport.label}.png`),
-    });
+async function exportElementCapture(locator, name, viewport) {
+  if (!EXPORT_UX_CAPTURE_DIR) return;
+
+  mkdirSync(EXPORT_UX_CAPTURE_DIR, { recursive: true });
+  await locator.screenshot({
+    path: resolve(EXPORT_UX_CAPTURE_DIR, `${name}-${viewport.label}.png`),
+  });
+}
+
+async function dateChartLayout(page) {
+  return page.locator("#comparison-per-date li").evaluateAll((entries) =>
+    entries.map((entry) => {
+      const value = entry.querySelector("span:first-child").getBoundingClientRect();
+      const plot = entry.querySelector("div[aria-hidden=true]").getBoundingClientRect();
+      const bar = entry.querySelector("div[style]")?.getBoundingClientRect() ?? null;
+      const date = entry.querySelector("span:last-child").getBoundingClientRect();
+
+      return {
+        label: entry.getAttribute("aria-label"),
+        valueBottom: value.bottom,
+        plotTop: plot.top,
+        plotBottom: plot.bottom,
+        barTop: bar?.top ?? null,
+        barBottom: bar?.bottom ?? null,
+        dateTop: date.top,
+      };
+    }),
+  );
+}
+
+async function captureLowerResult(page, viewport) {
+  const structural = page.locator("#comparison-structural");
+  if (!(await structural.evaluate((element) => element.open))) {
+    await structural.locator("summary").click();
   }
+  await expect(structural).toHaveJSProperty("open", true);
+
+  const rows = page.locator("#comparison-rows");
+  await rows.scrollIntoViewIfNeeded();
+  await rows.evaluate((element, mobile) => {
+    element.scrollLeft = mobile ? element.scrollWidth - element.clientWidth : 0;
+  }, viewport.width < 640);
+
+  if (viewport.width < 640) {
+    await expect
+      .poll(() => rows.evaluate((element) => element.scrollLeft))
+      .toBeGreaterThan(0);
+  }
+
+  await exportElementCapture(
+    rows,
+    "compare-result-table-scrolled",
+    viewport,
+  );
+  await exportElementCapture(
+    page.locator("#comparison-result"),
+    "compare-result-lower",
+    viewport,
+  );
+
+  await page.locator("#comparison-exclusions").scrollIntoViewIfNeeded();
+  await exportCapture(page, "compare-result-footer", viewport);
 }
 
 /**
@@ -288,7 +396,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
       await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
       await expect(page.locator("#export-helper-mode")).toHaveCount(0);
       await expect(page.locator("#agent-panel")).toHaveCount(0);
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
 
       await compare(page, FALL);
 
@@ -320,6 +428,23 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
       await expect(page.locator("#comparison-completeness")).toContainText(
         "Incomplete for this window",
       );
+
+      for (const captureViewport of [
+        { label: "1440", width: 1440, height: 1000 },
+        { label: "320", width: 320, height: 800 },
+      ]) {
+        await page.setViewportSize({
+          width: captureViewport.width,
+          height: captureViewport.height,
+        });
+        await expectMinimumChipTargets(page);
+        await expect(bodyFitsViewport(page)).resolves.toBe(true);
+        await page.locator("#comparison-result").scrollIntoViewIfNeeded();
+        await exportCapture(page, "compare-result", captureViewport);
+        await captureLowerResult(page, captureViewport);
+      }
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
       // The helper is offered beside the finished result and never opened for the person.
       await expect(page.locator("#comparison-helper-entry")).toContainText(
@@ -372,7 +497,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
       await expect(summary.locator("a")).toHaveCount(1);
       await expect(summary.locator("a")).toHaveAttribute(
         "href",
-        `/gtfs/${versionId}/export`,
+        `/gtfs/${versionId}/compare`,
       );
       await expect(
         page.locator("#agent-entries a[href*='/routes/']"),
@@ -400,7 +525,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
 
       // The helper changed nothing on the page behind it.
       await expect(page.locator("#comparison-exact-delta")).toHaveText("-1");
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
 
       // The keyboard closes the panel and returns to the page's Open helper button.
       await page.locator("#agent-panel-close").focus();
@@ -427,7 +552,7 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
     await expect(page.locator("#comparison-total-reasons")).toContainText(
       "frequency windows rather than exact departures",
     );
-    await expect(page.locator("#comparison-exact-delta")).toHaveCount(0);
+    await expect(page.locator("#comparison-exact-delta")).toHaveText("—");
     await expect(page.locator("#comparison-completeness")).toContainText(
       "Incomplete for this window",
     );
@@ -466,13 +591,15 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
     await openExport(page, viewport);
     await compare(page, UNCHANGED);
 
-    await expect(page.locator("#comparison-totals")).toContainText("no change");
-    await expect(page.locator("#comparison-completeness")).toContainText(
-      "Complete for this window",
+    // A complete comparison with nothing to report is its own state card, not
+    // the result card with empty sections.
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "No differences",
     );
-    await expect(page.locator("#comparison-differences-empty")).toBeVisible();
-    await expect(page.locator("#comparison-structural-empty")).toBeVisible();
-    await expect(page.locator("#comparison-unresolved-empty")).toBeVisible();
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "Riders get the same service",
+    );
+    await expect(page.locator("#comparison-result")).toHaveCount(0);
     await capture(page, "no-difference", viewport);
 
     await openHelper(page);
@@ -520,14 +647,90 @@ test.describe("loss and churn, and what could not be compared (A35)", () => {
 
     // The editor's choices and the native export controls are untouched.
     expect(await chosenValues(page)).toEqual(chosen);
-    await expect(page.locator("#start-export")).toBeEnabled();
+    await expect(page.locator("#comparison-start")).toBeEnabled();
     await expect(page.locator("#comparison-close")).toBeVisible();
     await capture(page, "expired-baseline", viewport);
 
     // A retained pair still compares on the same page.
     await page.locator("#comparison-close").click();
     await compare(page, UNCHANGED);
-    await expect(page.locator("#comparison-totals")).toContainText("no change");
+    await expect(page.locator("#comparison-nochange")).toContainText(
+      "No differences",
+    );
+  });
+});
+
+test.describe("native comparison limits and chart geometry", () => {
+  test("native size refusal keeps the selected files and dates at both viewports", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const chosen = await (async () => {
+      await openExport(page, VIEWPORTS[0]);
+      return chooseFiles(page, NATIVE_SIZE);
+    })();
+
+    await page.locator("#comparison-start").click();
+    await expect(page.locator("#comparison-status-title")).toHaveText(
+      "The comparison couldn’t finish",
+      { timeout: 60_000 },
+    );
+    await expect(page.locator("#comparison-status")).toContainText(
+      "These files are too large to compare",
+    );
+    await expect(page.locator("#comparison-status")).toContainText(
+      "200,000 exact departures",
+    );
+    await expect(page.locator("#comparison-results")).toHaveCount(0);
+    await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
+    expect(await chosenValues(page)).toEqual(chosen);
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      expect(await chosenValues(page)).toEqual(chosen);
+      await expect(bodyFitsViewport(page)).resolves.toBe(true);
+      await exportFullPageCapture(page, "compare-refused", viewport);
+    }
+  });
+
+  test("positive and negative extrema stay between their value and date labels", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openExport(page, VIEWPORTS[0]);
+    await compare(page, CHART_EXTREMA);
+
+    await expect(page.locator("#comparison-date-2026-11-25")).toContainText("+1");
+    await expect(page.locator("#comparison-date-2026-11-26")).toContainText("−1");
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await page.locator("#comparison-per-date").scrollIntoViewIfNeeded();
+
+      const extrema = (await dateChartLayout(page)).filter(({ label }) =>
+        label?.includes("1 trip"),
+      );
+      expect(extrema).toHaveLength(2);
+
+      for (const entry of extrema) {
+        expect(entry.barTop).toBeGreaterThanOrEqual(entry.plotTop);
+        expect(entry.barBottom).toBeLessThanOrEqual(entry.plotBottom);
+        expect(entry.barTop).toBeGreaterThan(entry.valueBottom);
+        expect(entry.barBottom).toBeLessThan(entry.dateTop);
+      }
+
+      await exportElementCapture(
+        page.locator("#comparison-per-date"),
+        "compare-chart-extrema",
+        viewport,
+      );
+    }
   });
 });
 
@@ -548,10 +751,9 @@ test.describe("helper limits, failure and replacement", () => {
       await expect(page.locator("#comparison-helper-open")).toHaveCount(0);
       await expect(page.locator("#agent-panel")).toHaveCount(0);
 
-      await expect(page.locator("#comparison-totals")).toContainText(
-        "no change",
+      await expect(page.locator("#comparison-nochange")).toContainText(
+        "No differences",
       );
-      await expect(page.locator("#comparison-differences")).toBeVisible();
       await expect(page.locator("#comparison-scope-form")).toBeVisible();
       expect(await fitsWidth(page)).toBe(true);
       await capture(
@@ -560,6 +762,21 @@ test.describe("helper limits, failure and replacement", () => {
         viewport,
         "#comparison-helper-entry",
       );
+
+      for (const captureViewport of [
+        { label: "1440", width: 1440, height: 1000 },
+        { label: "320", width: 320, height: 800 },
+      ]) {
+        await page.setViewportSize({
+          width: captureViewport.width,
+          height: captureViewport.height,
+        });
+        await expect(bodyFitsViewport(page)).resolves.toBe(true);
+        await notice.scrollIntoViewIfNeeded();
+        await exportCapture(page, "compare-helper-refused", captureViewport);
+      }
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
       // The way out is the explicit scope form, reachable by keyboard.
       await page.locator("#comparison-helper-narrow").focus();
@@ -632,7 +849,7 @@ test.describe("helper limits, failure and replacement", () => {
       // visible again once the panel closes.
       await expect(page.locator("#comparison-exact-delta")).toHaveText("-1");
       await expect(page.locator("#comparison-results")).toBeAttached();
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
       expect(await chosenValues(page)).toEqual(chosen);
       expect(await fitsWidth(page)).toBe(true);
       await capture(page, "provider-failure", viewport, "#agent-panel");
@@ -669,7 +886,7 @@ test.describe("helper limits, failure and replacement", () => {
       await expect(page.locator("#export-helper-mode")).toHaveCount(0);
       await expect(page.locator("#comparison-results")).toHaveCount(0);
       expect((await chosenValues(page))[1]).toBe(other);
-      await expect(page.locator("#start-export")).toBeEnabled();
+      await expect(page.locator("#comparison-start")).toBeEnabled();
     });
   }
 });

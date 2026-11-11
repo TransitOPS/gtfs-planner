@@ -191,13 +191,8 @@ test.describe("the Export helper", () => {
       const versionId = await versionIdFor(page);
 
       await openPage(page, `/gtfs/${versionId}/export`);
-      await expect(page.locator("#feed-quality-evidence")).toBeVisible();
-
-      // No artifact exists for this seed, so the section states the domain's
-      // honest unavailable relationship before the helper is asked.
-      await expect(page.locator("#feed-quality-relationship")).toContainText(
-        "This export selection is not available.",
-      );
+      await expect(page.locator("#gtfs-export-form")).toBeVisible();
+      await expect(page.locator("#export-type-full")).toBeChecked();
 
       await openHelper(page);
       await ask(page, "Prepare the Pathways export for me.");
@@ -239,11 +234,12 @@ test.describe("the Export helper", () => {
     });
     await expect(page.locator("#gtfs-export-form")).toBeVisible();
 
-    // A source refresh (native type change) is a fresh page load: the
-    // provider-independent section stays, the panel starts closed, and the
+    // A source refresh (native type change) is a fresh page load: the native
+    // form keeps the selected type, the panel starts closed, and the
     // conversation that answered about the old source cannot reappear.
     await openPage(page, `/gtfs/${versionId}/export?type=operations`);
-    await expect(page.locator("#feed-quality-evidence")).toBeVisible();
+    await expect(page.locator("#export-type-operations")).toBeChecked();
+    await expect(page.locator("#gtfs-export-form")).toBeVisible();
     await openHelper(page);
     await expect(page.locator("#agent-entry-2")).toHaveCount(0);
 

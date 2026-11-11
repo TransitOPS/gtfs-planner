@@ -4,9 +4,9 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ScaleTest do
   import Ecto.Query
   import GtfsPlanner.TodsGeneratorFixtures
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.StopTime
-  alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Gtfs.{GtfsTime, StopTime, Trip}
   alias GtfsPlanner.Repo
 
   @moduletag :blocking_scale
@@ -15,8 +15,8 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ScaleTest do
   # Preview and save each compose the schedule. The ordinary two-minute
   # Sandbox lifetime covers neither their combined runtime nor bulk setup.
   setup do
-    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Repo, shared: true, ownership_timeout: 300_000)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
+    owner = Sandbox.start_owner!(Repo, shared: true, ownership_timeout: 300_000)
+    on_exit(fn -> Sandbox.stop_owner(owner) end)
     :ok
   end
 
@@ -50,7 +50,7 @@ defmodule GtfsPlanner.Gtfs.TodsGenerator.ScaleTest do
 
         Enum.map(stops, fn stop ->
           seconds = start + if(stop.stop_sequence == 1, do: 0, else: 300)
-          time = seconds |> GtfsPlanner.Gtfs.GtfsTime.format()
+          time = GtfsTime.format(seconds)
 
           stop
           |> Map.from_struct()

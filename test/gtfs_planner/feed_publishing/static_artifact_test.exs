@@ -74,6 +74,38 @@ defmodule GtfsPlanner.FeedPublishing.StaticArtifactTest do
                })
     end
 
+    test "an operations-only run is refused from its trusted run type, before the archive is opened",
+         %{dir: dir} do
+      artifact =
+        archive(dir, "gtfs.zip", @full_members ++ [{"vehicles.txt", "vehicle_id\nV1\n"}])
+
+      assert {:error, :operations_profile_not_publishable} =
+               StaticArtifact.inspect(%{
+                 path: artifact,
+                 filename: "gtfs.zip",
+                 export_type: :operations_only,
+                 slot: :main
+               })
+
+      # The Flex sidecar of an operations-only run carries the same run type, so
+      # it is refused for the same reason rather than published as flex.
+      assert {:error, :operations_profile_not_publishable} =
+               StaticArtifact.inspect(%{
+                 path: artifact,
+                 filename: "gtfs.zip",
+                 export_type: :operations_only,
+                 slot: :flex
+               })
+
+      # The refusal happens before the archive is read, so a path that does not
+      # exist is refused the same way instead of raising.
+      assert {:error, :operations_profile_not_publishable} =
+               StaticArtifact.inspect(%{
+                 path: Path.join(dir, "absent.zip"),
+                 export_type: :operations_only
+               })
+    end
+
     test "any TODS member refuses the whole candidate without stripping it", %{dir: dir} do
       for member <- [
             "stops_supplement.txt",

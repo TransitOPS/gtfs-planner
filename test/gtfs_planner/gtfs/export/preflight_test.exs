@@ -358,6 +358,19 @@ defmodule GtfsPlanner.Gtfs.Export.PreflightTest do
                "bidirectional_exit_gate"
              ]
     end
+
+    test "skips every check for an operations_only export", %{
+      organization: org,
+      version: version
+    } do
+      arrange_every_violation(org.id, version.id)
+
+      assert {:error, issues} = Preflight.run(org.id, version.id, :full)
+      assert issues != []
+
+      assert Preflight.run(org.id, version.id, :operations_only) == :ok
+      assert Preflight.inspect_summary(org.id, version.id, :operations_only) == []
+    end
   end
 
   describe "inspect_summary/3" do
