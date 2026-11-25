@@ -180,6 +180,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert paid_band.node_ids == ["m_paid"]
 
       assert_no_node_overlaps(layout.nodes)
+
+      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
+      for edge <- layout.edges do
+        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
+        refute edge.path_d =~ ~r/[CQA]/
+      end
     end
 
     test "does not split any level when no fare gates exist" do
@@ -203,6 +209,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert layout.has_fare_gates? == false
       assert Enum.all?(layout.lanes, &(not &1.split_fare_zones?))
       assert_no_node_overlaps(layout.nodes)
+
+      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
+      for edge <- layout.edges do
+        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
+        refute edge.path_d =~ ~r/[CQA]/
+      end
     end
   end
 
@@ -234,6 +246,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert node_by_id["e_mid"].x < node_by_id["e_right"].x
       assert node_by_id["p_left"].x < node_by_id["p_right"].x
       assert_no_node_overlaps(layout.nodes)
+
+      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
+      for edge <- layout.edges do
+        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
+        refute edge.path_d =~ ~r/[CQA]/
+      end
     end
 
     test "falls back to entrance-to-platform BFS discovery order then stop_id when diagram_coordinate is absent" do
@@ -262,6 +280,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert node_by_id["z_first"].x < node_by_id["a_second"].x
       assert node_by_id["p_early"].x < node_by_id["p_late"].x
       assert_no_node_overlaps(layout.nodes)
+
+      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
+      for edge <- layout.edges do
+        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
+        refute edge.path_d =~ ~r/[CQA]/
+      end
     end
   end
 
@@ -390,6 +414,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert :not_step_free in layout.legend
 
       assert_no_node_overlaps(layout.nodes)
+
+      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
+      for edge <- layout.edges do
+        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
+        refute edge.path_d =~ ~r/[CQA]/
+      end
     end
 
     test "dims non-matching edges when a subset of validation highlights is active",

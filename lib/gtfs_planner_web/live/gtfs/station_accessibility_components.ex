@@ -585,7 +585,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
               />
               <text
                 x="24"
-                y={lane.y + 22}
+                y={Float.round(lane.y + lane.height / 2.0 + 4.0, 1)}
                 fill="#3d4758"
                 font-size="11"
                 font-weight="700"
@@ -599,9 +599,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
                 <%= for {sub, idx} <- Enum.with_index(lane.sub_bands) do %>
                   <line
                     :if={idx > 0}
-                    x1="136"
+                    x1="112"
                     y1={sub.y}
-                    x2={max(@layout.width - 20, 140)}
+                    x2={max(@layout.width - 24, 140)}
                     y2={sub.y}
                     stroke="#b5c0cc"
                     stroke-width="1"
@@ -610,7 +610,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
                   <text
                     :if={sub.label}
                     x={max(@layout.width - 24, 150)}
-                    y={sub.y + 18}
+                    y={Float.round(sub.y + sub.height / 2.0 + 4.0, 1)}
                     text-anchor="end"
                     fill="#3d4758"
                     font-size="11"
@@ -748,7 +748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
 
     ~H"""
     <title>{edge_aria_label(@edge)}</title>
-    <path d={@edge.path_d} fill="none" stroke="transparent" stroke-width="16" />
+    <path d={@edge.path_d} fill="none" stroke="transparent" stroke-width="16" stroke-linejoin="round" />
     <path
       :if={@near_halo?}
       d={@edge.path_d}
@@ -757,6 +757,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
       stroke-opacity="0.55"
       stroke-width="10"
       stroke-linecap="round"
+      stroke-linejoin="round"
     />
     <path
       d={@edge.path_d}
@@ -765,6 +766,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
       stroke-width={@width}
       stroke-dasharray={@dasharray}
       stroke-linecap="round"
+      stroke-linejoin="round"
       opacity={@opacity}
     />
     """
@@ -812,42 +814,106 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
 
   attr :node, :map, required: true
 
-  defp schematic_node_graphics(assigns) do
-    left = Float.round(assigns.node.x - assigns.node.width / 2.0, 1)
-    top = Float.round(assigns.node.y - assigns.node.height / 2.0, 1)
-    {fill, stroke, text_fill, rx} = node_visual_tokens(assigns.node)
+  defp schematic_node_graphics(%{node: %{role: :entrance}} = assigns) do
+    inaccessible? = assigns.node.step_free? == false
+    fill = if(inaccessible?, do: "#fbe3e3", else: "#0f1a3d")
+    stroke = if(inaccessible?, do: "#b91c1c", else: "#0f1a3d")
+    label_fill = if(inaccessible?, do: "#9b1c1c", else: "#0a1330")
 
     assigns =
       assigns
-      |> assign(:left, left)
-      |> assign(:top, top)
       |> assign(:fill, fill)
       |> assign(:stroke, stroke)
-      |> assign(:text_fill, text_fill)
-      |> assign(:rx, rx)
+      |> assign(:label_fill, label_fill)
+      |> assign(:inaccessible?, inaccessible?)
 
     ~H"""
     <title>{@node.name} ({@node.stop_id})</title>
     <rect
-      x={@left}
-      y={@top}
-      width={@node.width}
-      height={@node.height}
-      rx={@rx}
-      fill={@fill}
-      stroke={@stroke}
-      stroke-width="1.5"
+      x={Float.round(@node.x - 18.0, 1)}
+      y={Float.round(@node.y - 28.0, 1)}
+      width="36"
+      height="44"
+      fill="transparent"
     />
     <text
       x={@node.x}
-      y={Float.round(@node.y + 4.0, 1)}
+      y={Float.round(@node.y - 16.0, 1)}
       text-anchor="middle"
-      fill={@text_fill}
+      fill={@label_fill}
       font-size="12"
-      font-weight="600"
+      font-weight="700"
     >
-      {truncate_label(@node.name, 20)}
+      {truncate_label(@node.name, 22)}
     </text>
+    <rect
+      x={Float.round(@node.x - 9.0, 1)}
+      y={Float.round(@node.y - 9.0, 1)}
+      width="18"
+      height="18"
+      rx="4"
+      fill={@fill}
+      stroke={@stroke}
+      stroke-width="1.8"
+      stroke-dasharray={if(@inaccessible?, do: "3 2", else: nil)}
+    />
+    """
+  end
+
+  defp schematic_node_graphics(%{node: %{role: role}} = assigns)
+       when role in [:platform, :boarding_area] do
+    ~H"""
+    <title>{@node.name} ({@node.stop_id})</title>
+    <rect
+      x={Float.round(@node.x - 68.0, 1)}
+      y={Float.round(@node.y - 12.0, 1)}
+      width="136"
+      height="44"
+      fill="transparent"
+    />
+    <rect
+      x={Float.round(@node.x - 64.0, 1)}
+      y={Float.round(@node.y - 7.0, 1)}
+      width="128"
+      height="14"
+      rx="4"
+      fill="#e2e8f0"
+      stroke="#94a3b8"
+      stroke-width="1.2"
+    />
+    <circle
+      cx={@node.x}
+      cy={@node.y}
+      r="4.5"
+      fill="#ffffff"
+      stroke="#475569"
+      stroke-width="1.8"
+    />
+    <text
+      x={@node.x}
+      y={Float.round(@node.y + 24.0, 1)}
+      text-anchor="middle"
+      fill="#0a1330"
+      font-size="12"
+      font-weight="700"
+    >
+      {truncate_label(@node.name, 22)}
+    </text>
+    """
+  end
+
+  defp schematic_node_graphics(assigns) do
+    ~H"""
+    <title>{@node.name} ({@node.stop_id})</title>
+    <circle cx={@node.x} cy={@node.y} r="14" fill="transparent" />
+    <circle
+      cx={@node.x}
+      cy={@node.y}
+      r="5.5"
+      fill="#ffffff"
+      stroke="#475569"
+      stroke-width="2"
+    />
     """
   end
 
@@ -2120,18 +2186,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityComponents do
   defp callout_text_color(%{style_role: :schematic_near_threshold}), do: "#8a5a0e"
   defp callout_text_color(%{style_role: :schematic_sole_elevator}), do: "#9f0f5c"
   defp callout_text_color(_edge), do: "#0a1330"
-
-  defp node_visual_tokens(%{role: :entrance, step_free?: false}),
-    do: {"#fbe3e3", "#b91c1c", "#9b1c1c", "6"}
-
-  defp node_visual_tokens(%{role: :entrance}),
-    do: {"#0f1a3d", "#0f1a3d", "#ffffff", "6"}
-
-  defp node_visual_tokens(%{role: role}) when role in [:platform, :boarding_area],
-    do: {"#eef0f7", "#7a8698", "#0a1330", "6"}
-
-  defp node_visual_tokens(_node),
-    do: {"#ffffff", "#586479", "#0a1330", "14"}
 
   defp edge_aria_label(edge) do
     "#{edge.pathway_mode_label} #{edge.pathway_id} (#{edge.classification}) — open in Floorplans"

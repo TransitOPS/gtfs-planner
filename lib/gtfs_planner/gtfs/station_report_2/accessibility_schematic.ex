@@ -15,18 +15,18 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
   alias GtfsPlanner.Gtfs.StationReport2.AccessibilityGrouping
   alias GtfsPlanner.Values
 
-  @left_gutter 144.0
-  @right_padding 72.0
-  @top_padding 28.0
-  @bottom_padding 28.0
+  @side_padding 120.0
+  @top_padding 24.0
+  @bottom_padding 24.0
   @node_spacing_x 248.0
   @node_width 144.0
   @node_height 40.0
-  @sub_band_height 100.0
-  @lane_gap 30.0
+  @min_node_gap 188.0
+  @sub_band_height 92.0
+  @lane_gap 34.0
   @min_width 680.0
   @min_height 220.0
-  @parallel_offset_step 24.0
+  @parallel_offset_step 22.0
 
   @default_highlights %{
     barriers: false,
@@ -88,7 +88,9 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
     bfs_order = compute_bfs_discovery_order(visible_stops, renderable_edges)
 
     lane_specs = build_lane_specs(visible_stops, level_index, fare_zones, bfs_order)
-    {width, height, lanes, nodes} = position_lanes_and_nodes(lane_specs, analysis)
+
+    {width, height, lanes, nodes} =
+      position_lanes_and_nodes(lane_specs, analysis, renderable_edges)
 
     node_by_id = Map.new(nodes, &{&1.stop_id, &1})
 
@@ -382,7 +384,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
 
   # --- Coordinate assignment ---
 
-  defp position_lanes_and_nodes(lane_specs, analysis) do
+  defp position_lanes_and_nodes(lane_specs, analysis, renderable_edges) do
     max_per_band =
       lane_specs
       |> Enum.flat_map(& &1.sub_bands)
@@ -390,13 +392,15 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
       |> Enum.max(fn -> 1 end)
       |> max(1)
 
-    width =
-      Float.round(
-        max(@min_width, @left_gutter + max_per_band * @node_spacing_x + @right_padding),
-        2
-      )
+    content_width =
+      if max_per_band <= 1 do
+        @node_width
+      else
+        (max_per_band - 1) * @node_spacing_x + @node_width
+      end
 
-    usable_width = width - @left_gutter - @right_padding
+    width = Float.round(max(@min_width, content_width + @side_padding * 2.0), 2)
+    center_x = width / 2.0
 
     entrance_by_id = Map.new(Map.get(analysis, :entrances, []), &{&1.stop_id, &1})
     platform_by_id = Map.new(Map.get(analysis, :platforms, []), &{&1.stop_id, &1})
@@ -408,7 +412,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
           position_sub_bands(
             lane_spec,
             cur_y,
-            usable_width,
+            center_x,
             entrance_by_id,
             platform_by_id
           )
@@ -437,21 +441,27 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
       end
 
     height = Float.round(max(@min_height, raw_height), 2)
-    {width, height, Enum.reverse(rev_lanes), Enum.reverse(rev_nodes)}
+    ordered_lanes = Enum.reverse(rev_lanes)
+    band_order = Enum.flat_map(ordered_lanes, fn lane -> Enum.map(lane.sub_bands, & &1.id) end)
+    initial_nodes = Enum.reverse(rev_nodes)
+
+    aligned_nodes =
+      align_cross_band_columns(initial_nodes, band_order, renderable_edges, width, max_per_band)
+
+    {width, height, ordered_lanes, aligned_nodes}
   end
 
-  defp position_sub_bands(lane_spec, start_y, usable_width, entrance_by_id, platform_by_id) do
+  defp position_sub_bands(lane_spec, start_y, center_x, entrance_by_id, platform_by_id) do
     {rev_subs, rev_nodes, end_y} =
       Enum.reduce(lane_spec.sub_bands, {[], [], start_y}, fn sub, {subs_acc, nodes_acc, cur_y} ->
         count = max(length(sub.stops), 1)
-        step_x = usable_width / count
         cy = Float.round(cur_y + @sub_band_height / 2.0, 2)
 
         sub_nodes =
           sub.stops
           |> Enum.with_index()
           |> Enum.map(fn {stop, idx} ->
-            cx = Float.round(@left_gutter + step_x * (idx + 0.5), 2)
+            cx = Float.round(center_x + (idx - (count - 1) / 2.0) * @node_spacing_x, 2)
 
             build_positioned_node(
               stop,
@@ -480,6 +490,203 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
 
     {Enum.reverse(rev_subs), Enum.reverse(rev_nodes), end_y}
   end
+
+  # Snaps sparser bands' nodes to the vertical column(s) of their cross-band
+  # neighbors while keeping horizontal centering, strict left-to-right order,
+  # and guaranteed non-overlap clearance.
+  defp align_cross_band_columns(nodes, band_order, renderable_edges, width, max_per_band) do
+    min_x = Float.round(@side_padding + @node_width / 2.0, 2)
+    max_x = Float.round(width - @side_padding - @node_width / 2.0, 2)
+    band_by_stop = Map.new(nodes, &{&1.stop_id, &1.sub_band_id})
+    cross_neighbors = build_cross_band_neighbors(renderable_edges, band_by_stop)
+
+    bands_by_id =
+      nodes
+      |> Enum.group_by(& &1.sub_band_id)
+      |> Map.new(fn {band_id, band_nodes} ->
+        {band_id, Enum.sort_by(band_nodes, & &1.band_index)}
+      end)
+
+    x_by_stop = Map.new(nodes, &{&1.stop_id, &1.x})
+
+    # Anchor the densest band(s) first and propagate exact column coordinates
+    # outward to adjacent bands so multi-level chains (e.g. Paid Mezz -> Unpaid
+    # Mezz -> Street and Paid Mezz -> Platforms) align into straight vertical
+    # columns with zero horizontal jogs.
+    anchored =
+      bands_by_id
+      |> Enum.filter(fn {_id, band_nodes} -> length(band_nodes) >= max_per_band end)
+      |> Enum.flat_map(fn {_id, band_nodes} -> Enum.map(band_nodes, & &1.stop_id) end)
+      |> MapSet.new()
+
+    {aligned_x, _anchored} =
+      propagate_column_alignment(
+        band_order,
+        bands_by_id,
+        cross_neighbors,
+        x_by_stop,
+        anchored,
+        max_per_band,
+        min_x,
+        max_x
+      )
+
+    Enum.map(nodes, fn node -> %{node | x: Map.fetch!(aligned_x, node.stop_id)} end)
+  end
+
+  defp propagate_column_alignment(
+         band_order,
+         bands_by_id,
+         cross_neighbors,
+         x_by_stop,
+         anchored,
+         max_per_band,
+         min_x,
+         max_x
+       ) do
+    unanchored_bands =
+      Enum.reject(band_order, fn band_id ->
+        length(Map.get(bands_by_id, band_id, [])) >= max_per_band
+      end)
+
+    do_propagate_alignment(
+      unanchored_bands,
+      bands_by_id,
+      cross_neighbors,
+      x_by_stop,
+      anchored,
+      min_x,
+      max_x
+    )
+  end
+
+  defp do_propagate_alignment(
+         [],
+         _bands_by_id,
+         _cross_neighbors,
+         x_by_stop,
+         anchored,
+         _min_x,
+         _max_x
+       ),
+       do: {x_by_stop, anchored}
+
+  defp do_propagate_alignment(
+         remaining_bands,
+         bands_by_id,
+         cross_neighbors,
+         x_by_stop,
+         anchored,
+         min_x,
+         max_x
+       ) do
+    {ready, waiting} =
+      Enum.split_with(remaining_bands, fn band_id ->
+        band_has_anchored_neighbor?(Map.get(bands_by_id, band_id, []), cross_neighbors, anchored)
+      end)
+
+    if ready == [] do
+      {x_by_stop, anchored}
+    else
+      {next_x, next_anchored} =
+        align_ready_bands(ready, bands_by_id, cross_neighbors, x_by_stop, anchored, min_x, max_x)
+
+      do_propagate_alignment(
+        waiting,
+        bands_by_id,
+        cross_neighbors,
+        next_x,
+        next_anchored,
+        min_x,
+        max_x
+      )
+    end
+  end
+
+  defp band_has_anchored_neighbor?(band_nodes, cross_neighbors, anchored) do
+    Enum.any?(band_nodes, fn node ->
+      cross_neighbors
+      |> Map.get(node.stop_id, [])
+      |> Enum.any?(&MapSet.member?(anchored, &1))
+    end)
+  end
+
+  defp align_ready_bands(ready, bands_by_id, cross_neighbors, x_by_stop, anchored, min_x, max_x) do
+    Enum.reduce(ready, {x_by_stop, anchored}, fn band_id, {acc_x, acc_anc} ->
+      band_nodes = Map.get(bands_by_id, band_id, [])
+
+      updated_x =
+        align_band_to_anchored(band_nodes, acc_x, acc_anc, cross_neighbors, min_x, max_x)
+
+      updated_anc = Enum.reduce(band_nodes, acc_anc, &MapSet.put(&2, &1.stop_id))
+      {updated_x, updated_anc}
+    end)
+  end
+
+  defp align_band_to_anchored(band_nodes, x_by_stop, anchored, cross_neighbors, min_x, max_x) do
+    desired =
+      Enum.map(band_nodes, fn node ->
+        neighbor_xs =
+          cross_neighbors
+          |> Map.get(node.stop_id, [])
+          |> Enum.filter(&MapSet.member?(anchored, &1))
+          |> Enum.uniq()
+          |> Enum.map(&Map.get(x_by_stop, &1))
+          |> Enum.reject(&is_nil/1)
+
+        target =
+          case neighbor_xs do
+            [] -> Map.fetch!(x_by_stop, node.stop_id)
+            xs -> Enum.sum(xs) / length(xs)
+          end
+
+        {node.stop_id, clamp_float(target, min_x, max_x)}
+      end)
+
+    spaced = enforce_monotonic_spacing(desired, min_x, max_x)
+
+    Enum.reduce(spaced, x_by_stop, fn {stop_id, x}, acc ->
+      Map.put(acc, stop_id, Float.round(x, 2))
+    end)
+  end
+
+  defp build_cross_band_neighbors(edges, band_by_stop) do
+    Enum.reduce(edges, %{}, fn edge, acc ->
+      b_from = Map.get(band_by_stop, edge.from_stop_id)
+      b_to = Map.get(band_by_stop, edge.to_stop_id)
+
+      if b_from && b_to && b_from != b_to do
+        acc
+        |> Map.update(edge.from_stop_id, [edge.to_stop_id], &[edge.to_stop_id | &1])
+        |> Map.update(edge.to_stop_id, [edge.from_stop_id], &[edge.from_stop_id | &1])
+      else
+        acc
+      end
+    end)
+  end
+
+  defp enforce_monotonic_spacing([], _min_x, _max_x), do: []
+  defp enforce_monotonic_spacing([{id, x}], _min_x, _max_x), do: [{id, x}]
+
+  defp enforce_monotonic_spacing(pairs, min_x, max_x) do
+    # Forward pass: push right to satisfy minimum center-to-center clearance
+    {rev_fwd, _prev} =
+      Enum.reduce(pairs, {[], nil}, fn {id, x}, {acc, prev_x} ->
+        adjusted = if(prev_x, do: max(x, prev_x + @min_node_gap), else: max(x, min_x))
+        {[{id, adjusted} | acc], adjusted}
+      end)
+
+    # Backward pass: pull left so everything stays inside [min_x, max_x]
+    {final, _next} =
+      Enum.reduce(rev_fwd, {[], nil}, fn {id, x}, {acc, next_x} ->
+        adjusted = if(next_x, do: min(x, next_x - @min_node_gap), else: min(x, max_x))
+        {[{id, max(adjusted, min_x)} | acc], max(adjusted, min_x)}
+      end)
+
+    final
+  end
+
+  defp clamp_float(value, lo, hi), do: value |> max(lo) |> min(hi)
 
   defp build_positioned_node(
          stop,
@@ -721,96 +928,111 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
   defp default_edge_callout(_edge), do: nil
 
   defp compute_edge_geometry(from_node, to_node, offset, parallel_idx, parallel_count) do
-    half_w = @node_width / 2.0
-    half_h = @node_height / 2.0
-
     cond do
       from_node.stop_id == to_node.stop_id ->
-        # Self-loop fallback
+        {half_w, _half_h} = node_anchor_extents(from_node)
         x1 = Float.round(from_node.x + half_w, 2)
-        y1 = Float.round(from_node.y - 6.0, 2)
-        x2 = Float.round(from_node.x + half_w, 2)
-        y2 = Float.round(from_node.y + 6.0, 2)
-        cx = Float.round(from_node.x + half_w + 34.0 + abs(offset), 2)
+        y1 = Float.round(from_node.y - 8.0, 2)
+        y2 = Float.round(from_node.y + 8.0, 2)
+        cx = Float.round(from_node.x + max(half_w, 12.0) + 28.0 + abs(offset), 2)
 
         %{
           x1: x1,
           y1: y1,
-          x2: x2,
+          x2: x1,
           y2: y2,
           label_x: cx,
           label_y: from_node.y,
           path_d:
-            "M #{format_num(x1)} #{format_num(y1)} Q #{format_num(cx)} #{format_num(from_node.y)} #{format_num(x2)} #{format_num(y2)}"
+            "M #{format_num(x1)} #{format_num(y1)} " <>
+              "L #{format_num(cx)} #{format_num(y1)} " <>
+              "L #{format_num(cx)} #{format_num(y2)} " <>
+              "L #{format_num(x1)} #{format_num(y2)}"
         }
 
       from_node.y == to_node.y ->
-        same_band_geometry(from_node, to_node, half_w, offset)
+        same_band_geometry(from_node, to_node, offset)
 
       true ->
-        cross_band_geometry(from_node, to_node, half_h, offset, parallel_idx, parallel_count)
+        cross_band_geometry(from_node, to_node, offset, parallel_idx, parallel_count)
     end
   end
 
-  defp same_band_geometry(from_node, to_node, half_w, offset) do
+  defp node_anchor_extents(%{role: :entrance}), do: {9.0, 9.0}
+
+  defp node_anchor_extents(%{role: role}) when role in [:platform, :boarding_area],
+    do: {64.0, 7.0}
+
+  defp node_anchor_extents(_node), do: {0.0, 0.0}
+
+  defp same_band_geometry(from_node, to_node, offset) do
+    {from_hw, from_hh} = node_anchor_extents(from_node)
+    {to_hw, to_hh} = node_anchor_extents(to_node)
+
     {x1, x2} =
       if from_node.x <= to_node.x do
-        {Float.round(from_node.x + half_w, 2), Float.round(to_node.x - half_w, 2)}
+        {Float.round(from_node.x + from_hw, 2), Float.round(to_node.x - to_hw, 2)}
       else
-        {Float.round(from_node.x - half_w, 2), Float.round(to_node.x + half_w, 2)}
+        {Float.round(from_node.x - from_hw, 2), Float.round(to_node.x + to_hw, 2)}
       end
 
     y = from_node.y
     adjacent? = abs(from_node.band_index - to_node.band_index) <= 1
 
-    if adjacent? and offset == 0.0 do
+    if adjacent? do
+      y_line = Float.round(y + offset * 0.4, 2)
+
+      label_y =
+        if(offset == 0.0, do: Float.round(y_line - 18.0, 2), else: Float.round(y_line - 14.0, 2))
+
       %{
         x1: x1,
-        y1: y,
+        y1: y_line,
         x2: x2,
-        y2: y,
+        y2: y_line,
         label_x: Float.round((x1 + x2) / 2.0, 2),
-        label_y: Float.round(y - 10.0, 2),
-        path_d: "M #{format_num(x1)} #{format_num(y)} L #{format_num(x2)} #{format_num(y)}"
+        label_y: label_y,
+        path_d:
+          "M #{format_num(x1)} #{format_num(y_line)} L #{format_num(x2)} #{format_num(y_line)}"
       }
     else
-      bow = if(offset != 0.0, do: offset * 1.4, else: -52.0)
-
-      cx = Float.round((x1 + x2) / 2.0, 2)
-      cy = Float.round(y + bow, 2)
-      # Quadratic Bezier midpoint at t = 0.5: 0.25*P0 + 0.5*C + 0.25*P2
-      mid_y = Float.round(0.5 * y + 0.5 * cy, 2)
+      # Non-adjacent same-band edge: orthogonal 90-degree bridge clearing intervening nodes
+      ax = Float.round(from_node.x + offset * 0.4, 2)
+      bx = Float.round(to_node.x + offset * 0.4, 2)
+      y1 = Float.round(y - from_hh, 2)
+      y2 = Float.round(y - to_hh, 2)
+      detour_y = Float.round(y - max(from_hh, to_hh) - 24.0 - abs(offset) * 0.5, 2)
 
       %{
-        x1: x1,
-        y1: y,
-        x2: x2,
-        y2: y,
-        label_x: cx,
-        label_y: mid_y,
+        x1: ax,
+        y1: y1,
+        x2: bx,
+        y2: y2,
+        label_x: Float.round((ax + bx) / 2.0, 2),
+        label_y: detour_y,
         path_d:
-          "M #{format_num(x1)} #{format_num(y)} Q #{format_num(cx)} #{format_num(cy)} #{format_num(x2)} #{format_num(y)}"
+          "M #{format_num(ax)} #{format_num(y1)} " <>
+            "L #{format_num(ax)} #{format_num(detour_y)} " <>
+            "L #{format_num(bx)} #{format_num(detour_y)} " <>
+            "L #{format_num(bx)} #{format_num(y2)}"
       }
     end
   end
 
-  defp cross_band_geometry(from_node, to_node, half_h, offset, parallel_idx, parallel_count) do
+  defp cross_band_geometry(from_node, to_node, offset, parallel_idx, parallel_count) do
+    {_from_hw, from_hh} = node_anchor_extents(from_node)
+    {_to_hw, to_hh} = node_anchor_extents(to_node)
     going_down? = from_node.y < to_node.y
-    x1 = Float.round(from_node.x + offset * 0.4, 2)
-    x2 = Float.round(to_node.x + offset * 0.4, 2)
+    x1 = Float.round(from_node.x + offset * 0.5, 2)
+    x2 = Float.round(to_node.x + offset * 0.5, 2)
 
     {y1, y2} =
       if going_down? do
-        {Float.round(from_node.y + half_h, 2), Float.round(to_node.y - half_h, 2)}
+        {Float.round(from_node.y + from_hh, 2), Float.round(to_node.y - to_hh, 2)}
       else
-        {Float.round(from_node.y - half_h, 2), Float.round(to_node.y + half_h, 2)}
+        {Float.round(from_node.y - from_hh, 2), Float.round(to_node.y + to_hh, 2)}
       end
 
-    mid_y = Float.round((y1 + y2) / 2.0, 2)
-    cx1 = Float.round(x1 + offset, 2)
-    cx2 = Float.round(x2 + offset, 2)
-
-    # Stagger parallel cross-band callouts along t when distinct callouts exist
     t =
       if parallel_count > 1 do
         0.36 + 0.28 * (parallel_idx / (parallel_count - 1))
@@ -818,33 +1040,38 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic do
         0.5
       end
 
-    u = 1.0 - t
+    if x1 == x2 do
+      # Vertically aligned nodes: pure straight vertical line
+      label_y = Float.round(y1 + (y2 - y1) * t, 2)
 
-    label_x =
-      Float.round(
-        u * u * u * x1 + 3 * u * u * t * cx1 + 3 * u * t * t * cx2 + t * t * t * x2,
-        2
-      )
+      %{
+        x1: x1,
+        y1: y1,
+        x2: x2,
+        y2: y2,
+        label_x: x1,
+        label_y: label_y,
+        path_d: "M #{format_num(x1)} #{format_num(y1)} L #{format_num(x2)} #{format_num(y2)}"
+      }
+    else
+      # Cross-column nodes: axis-aligned 90-degree orthogonal elbow
+      bend_y = Float.round((y1 + y2) / 2.0 + offset * 0.35, 2)
+      label_x = Float.round(x1 + (x2 - x1) * t, 2)
 
-    label_y =
-      Float.round(
-        u * u * u * y1 + 3 * u * u * t * mid_y + 3 * u * t * t * mid_y + t * t * t * y2,
-        2
-      )
-
-    %{
-      x1: x1,
-      y1: y1,
-      x2: x2,
-      y2: y2,
-      label_x: label_x,
-      label_y: label_y,
-      path_d:
-        "M #{format_num(x1)} #{format_num(y1)} " <>
-          "C #{format_num(cx1)} #{format_num(mid_y)}, " <>
-          "#{format_num(cx2)} #{format_num(mid_y)}, " <>
-          "#{format_num(x2)} #{format_num(y2)}"
-    }
+      %{
+        x1: x1,
+        y1: y1,
+        x2: x2,
+        y2: y2,
+        label_x: label_x,
+        label_y: bend_y,
+        path_d:
+          "M #{format_num(x1)} #{format_num(y1)} " <>
+            "L #{format_num(x1)} #{format_num(bend_y)} " <>
+            "L #{format_num(x2)} #{format_num(bend_y)} " <>
+            "L #{format_num(x2)} #{format_num(y2)}"
+      }
+    end
   end
 
   defp build_legend(edges) do
