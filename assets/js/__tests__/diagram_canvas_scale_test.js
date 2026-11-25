@@ -228,7 +228,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               y1="10"
               x2="20"
               y2="10"
-              marker-end="url(#pathway-arrow)"
+              marker-end="url(#diagram-arrow)"
               data-pathway-end-trim="10"
               data-base-stroke="2.5"
             ></line>

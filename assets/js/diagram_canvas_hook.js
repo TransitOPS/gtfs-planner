@@ -278,6 +278,12 @@ const DiagramCanvasHook = {
     return 1 - (1 - Math.max(safeScale, MIN_ZOOM)) * ((1 - MARKER_MIN_SHRINK) / (1 - MIN_ZOOM));
   },
 
+  // Arrowhead marker width and height in viewBox units, as the attribute string
+  // `scaleOverlayElements` writes; the overlay observer compares against it.
+  pathwayMarkerSize(unitsPerPx) {
+    return `${OVERLAY_BASE.pathwayMarkerSize * unitsPerPx * this.markerShrink(this.scale || 1)}`;
+  },
+
   isViewMode() {
     return this.overlay?.getAttribute("data-mode") === "view";
   },
@@ -1448,7 +1454,7 @@ const DiagramCanvasHook = {
     const isPathwayArrowMarker = (node) =>
       node instanceof Element &&
       node.tagName.toLowerCase() === "marker" &&
-      (node.hasAttribute("data-pathway-arrow") || node.id.startsWith("pathway-arrow"));
+      node.hasAttribute("data-pathway-arrow");
 
     this.overlayObserver = new MutationObserver((mutations) => {
       let needsChildRefresh = false;
@@ -1485,7 +1491,7 @@ const DiagramCanvasHook = {
         ) {
           const unitsPerPx = this.unitsPerPx(overlay);
           if (unitsPerPx) {
-            const expectedSize = `${OVERLAY_BASE.pathwayMarkerSize * unitsPerPx * this.markerShrink(this.scale || 1)}`;
+            const expectedSize = this.pathwayMarkerSize(unitsPerPx);
             if (
               mutation.target.getAttribute("markerUnits") !== "userSpaceOnUse" ||
               mutation.target.getAttribute("markerWidth") !== expectedSize ||
@@ -2020,20 +2026,19 @@ const DiagramCanvasHook = {
     });
 
     // One arrowhead marker per step-free state; all hold the same size.
-    const pathwayMarkerSize = `${mk(OVERLAY_BASE.pathwayMarkerSize)}`;
-    overlay
-      .querySelectorAll('marker[data-pathway-arrow], marker[id^="pathway-arrow"]')
-      .forEach((pathwayMarker) => {
-        if (pathwayMarker.getAttribute("markerUnits") !== "userSpaceOnUse") {
-          pathwayMarker.setAttribute("markerUnits", "userSpaceOnUse");
-        }
-        if (pathwayMarker.getAttribute("markerWidth") !== pathwayMarkerSize) {
-          pathwayMarker.setAttribute("markerWidth", pathwayMarkerSize);
-        }
-        if (pathwayMarker.getAttribute("markerHeight") !== pathwayMarkerSize) {
-          pathwayMarker.setAttribute("markerHeight", pathwayMarkerSize);
-        }
-      });
+    // Writes only changed values: the overlay observer watches these attributes.
+    const pathwayMarkerSize = this.pathwayMarkerSize(unitsPerPx);
+    overlay.querySelectorAll("marker[data-pathway-arrow]").forEach((pathwayMarker) => {
+      if (pathwayMarker.getAttribute("markerUnits") !== "userSpaceOnUse") {
+        pathwayMarker.setAttribute("markerUnits", "userSpaceOnUse");
+      }
+      if (pathwayMarker.getAttribute("markerWidth") !== pathwayMarkerSize) {
+        pathwayMarker.setAttribute("markerWidth", pathwayMarkerSize);
+      }
+      if (pathwayMarker.getAttribute("markerHeight") !== pathwayMarkerSize) {
+        pathwayMarker.setAttribute("markerHeight", pathwayMarkerSize);
+      }
+    });
 
     overlay
       .querySelectorAll(
