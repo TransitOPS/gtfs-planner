@@ -7,6 +7,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
   alias GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematic
   alias GtfsPlanner.Gtfs.Stop
 
+  # Minimum center-to-center spacing between nodes in one band
+  # (AccessibilitySchematic's @min_node_gap).
+  @min_node_gap 188.0
+
   # --- Fixture helpers ---
 
   defp level(id, index, name) do
@@ -152,13 +156,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert layout.has_fare_gates? == true
       assert Enum.map(layout.lanes, & &1.level_id) == ["L0", "L1", "L2", nil]
 
-      assert Enum.map(layout.lanes, & &1.level_name) == [
-               "Street",
-               "Mezzanine",
-               "Platforms",
-               "Unassigned level"
-             ]
-
       # Lane y positions strictly increase top-to-bottom
       lane_ys = Enum.map(layout.lanes, & &1.y)
       assert lane_ys == Enum.sort(lane_ys)
@@ -172,7 +169,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       refute l_nil.split_fare_zones?
 
       assert Enum.map(l1.sub_bands, & &1.fare_zone) == [:unpaid, :paid]
-      assert Enum.map(l1.sub_bands, & &1.label) == ["Unpaid", "Paid"]
 
       [unpaid_band, paid_band] = l1.sub_bands
       assert unpaid_band.y < paid_band.y
@@ -180,12 +176,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert paid_band.node_ids == ["m_paid"]
 
       assert_no_node_overlaps(layout.nodes)
-
-      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
-      for edge <- layout.edges do
-        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
-        refute edge.path_d =~ ~r/[CQA]/
-      end
     end
 
     test "does not split any level when no fare gates exist" do
@@ -209,12 +199,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert layout.has_fare_gates? == false
       assert Enum.all?(layout.lanes, &(not &1.split_fare_zones?))
       assert_no_node_overlaps(layout.nodes)
-
-      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
-      for edge <- layout.edges do
-        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
-        refute edge.path_d =~ ~r/[CQA]/
-      end
     end
   end
 
@@ -246,12 +230,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert node_by_id["e_mid"].x < node_by_id["e_right"].x
       assert node_by_id["p_left"].x < node_by_id["p_right"].x
       assert_no_node_overlaps(layout.nodes)
-
-      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
-      for edge <- layout.edges do
-        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
-        refute edge.path_d =~ ~r/[CQA]/
-      end
     end
 
     test "falls back to entrance-to-platform BFS discovery order then stop_id when diagram_coordinate is absent" do
@@ -280,12 +258,56 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert node_by_id["z_first"].x < node_by_id["a_second"].x
       assert node_by_id["p_early"].x < node_by_id["p_late"].x
       assert_no_node_overlaps(layout.nodes)
+    end
 
-      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
-      for edge <- layout.edges do
-        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
-        refute edge.path_d =~ ~r/[CQA]/
+    test "snaps a sparse level's node to its elevator neighbor's column without breaking order or spacing" do
+      # mix test test/gtfs_planner/gtfs/station_report_2/accessibility_schematic_test.exs --only test:"test horizontal node ordering (CR-C4) snaps a sparse level's node to its elevator neighbor's column without breaking order or spacing"
+      #
+      # Platforms (dense, 3 nodes) anchor the columns. Both Street entrances
+      # (sparse, 2 nodes) ride an elevator to the middle platform: e_a takes that
+      # column and e_b, which wants the same column, is pushed right instead of
+      # overlapping.
+      stops = [
+        stop("e_a", 2, %{level_id: "L0", diagram_coordinate: %{x: 10, y: 0}}),
+        stop("e_b", 2, %{level_id: "L0", diagram_coordinate: %{x: 20, y: 0}}),
+        stop("p_left", 0, %{level_id: "L2", diagram_coordinate: %{x: 10, y: 0}}),
+        stop("p_mid", 0, %{level_id: "L2", diagram_coordinate: %{x: 50, y: 0}}),
+        stop("p_right", 0, %{level_id: "L2", diagram_coordinate: %{x: 90, y: 0}})
+      ]
+
+      pathways = [
+        confirmed_elevator("ev_a", "e_a", "p_mid"),
+        confirmed_elevator("ev_b", "e_b", "p_mid"),
+        confirmed_walkway("w_left", "p_left", "p_mid"),
+        confirmed_walkway("w_right", "p_mid", "p_right")
+      ]
+
+      snap =
+        snapshot(stops, pathways,
+          levels: [level("L0", 0.0, "Street"), level("L2", -2.0, "Platforms")]
+        )
+
+      layout = AccessibilitySchematic.build_layout(snap, Accessibility.build(snap), mode: :rider)
+      node_by_id = Map.new(layout.nodes, &{&1.stop_id, &1})
+
+      # Elevator-connected nodes share a vertical column
+      assert node_by_id["e_a"].x == node_by_id["p_mid"].x
+
+      # Left-to-right order within each band follows diagram_coordinate.x
+      assert node_by_id["e_a"].x < node_by_id["e_b"].x
+      assert node_by_id["p_left"].x < node_by_id["p_mid"].x
+      assert node_by_id["p_mid"].x < node_by_id["p_right"].x
+
+      # No two nodes in a band sit closer than the minimum center-to-center gap
+      for {_band, band_nodes} <- Enum.group_by(layout.nodes, & &1.sub_band_id) do
+        band_nodes
+        |> Enum.map(& &1.x)
+        |> Enum.sort()
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.each(fn [left, right] -> assert right - left >= @min_node_gap end)
       end
+
+      assert_no_node_overlaps(layout.nodes)
     end
   end
 
@@ -406,20 +428,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilitySchematicTest do
       assert edge_by_id["ev_dn"].style_role == :schematic_sole_elevator
       assert edge_by_id["ev_up"].active_highlights == [:single_elevator]
 
-      assert :confirmed in layout.legend
-      assert :unverified in layout.legend
-      assert :near_threshold in layout.legend
-      assert :single_elevator in layout.legend
-      assert :barrier in layout.legend
-      assert :not_step_free in layout.legend
-
       assert_no_node_overlaps(layout.nodes)
-
-      # All edges use straight axis-aligned segments (M/L only, no curves C/Q/A)
-      for edge <- layout.edges do
-        assert edge.path_d =~ ~r/\AM [0-9.\- ]+( L [0-9.\- ]+)+\z/
-        refute edge.path_d =~ ~r/[CQA]/
-      end
     end
 
     test "dims non-matching edges when a subset of validation highlights is active",

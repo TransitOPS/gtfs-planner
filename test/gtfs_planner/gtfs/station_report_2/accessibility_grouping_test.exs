@@ -191,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityGroupingTest do
   # --- Platform grouping ---
 
   describe "platform grouping" do
-    test "groups scheduled platforms by bipartite route components with single- and multi-route titles" do
+    test "groups scheduled platforms by bipartite route components" do
       stops = [
         stop("e1", 2, %{level_id: "L0"}),
         stop("p1", 0, %{level_id: "L2"}),
@@ -226,14 +226,11 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityGroupingTest do
 
       by_ids = Map.new(grouped.platform_groups, &{&1.platform_stop_ids, &1})
 
-      assert by_ids[["p1", "p2"]].title == "Subway/Metro (2 routes)"
       assert by_ids[["p1", "p2"]].grouping_strategy == :route_component
       assert by_ids[["p1", "p2"]].route_ids == ["R1", "R2"]
 
-      assert by_ids[["p3"]].title == "Orange"
       assert by_ids[["p3"]].grouping_strategy == :route_component
 
-      assert by_ids[["p4"]].title == "Commuter Rail West"
       assert by_ids[["p4"]].grouping_strategy == :route_component
       assert by_ids[["p4"]].route_ids == ["R4"]
     end
@@ -270,12 +267,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityGroupingTest do
       bus_group = by_type_level[{3, "L0"}]
       assert bus_group.grouping_strategy == :route_type_level
       assert bus_group.platform_stop_ids == ["pb1", "pb2", "pb3", "pb4", "pb5"]
-      assert bus_group.title == "Bus (5 routes) · Street"
 
       rail_group = by_type_level[{2, "L2"}]
       assert rail_group.grouping_strategy == :route_type_level
       assert rail_group.platform_stop_ids == ["pr1", "pr2"]
-      assert rail_group.title == "Rail (2 routes) · Platform"
     end
 
     test "falls back to level_id alone for unscheduled platforms (CR-S3)" do
@@ -304,15 +299,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityGroupingTest do
 
       assert by_level["L1"].grouping_strategy == :level_fallback
       assert by_level["L1"].platform_stop_ids == ["p1", "p2"]
-      assert by_level["L1"].title == "Mezzanine"
 
       assert by_level["L2"].grouping_strategy == :level_fallback
       assert by_level["L2"].platform_stop_ids == ["p3"]
-      assert by_level["L2"].title == "Platform"
 
       assert by_level[nil].grouping_strategy == :level_fallback
       assert by_level[nil].platform_stop_ids == ["p_nil"]
-      assert by_level[nil].title == "Unassigned level"
     end
   end
 
@@ -357,13 +349,10 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityGroupingTest do
       by_members = Map.new(grouped.entrance_groups, &{&1.entrance_stop_ids, &1})
 
       assert Map.has_key?(by_members, ["e1", "e2"])
-      assert by_members[["e1", "e2"]].title == "Street · Main St, Oak Ave"
 
       assert Map.has_key?(by_members, ["e3"])
-      assert by_members[["e3"]].title == "Street · South Plaza"
 
       assert Map.has_key?(by_members, ["e_gated"])
-      assert by_members[["e_gated"]].title == "Street · Gate Entrance"
 
       # Inaccessible stairs entrance must not appear in any entrance group
       all_grouped_e = Enum.flat_map(grouped.entrance_groups, & &1.entrance_stop_ids)

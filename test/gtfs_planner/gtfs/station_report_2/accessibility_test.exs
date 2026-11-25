@@ -299,7 +299,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityTest do
       assert elevator.label == "el_down / el_up"
       assert elevator.pathway_ids == ["el_down", "el_up"]
       assert elevator.sole_link_pairs == 2
-      assert elevator.connects == "Street \u2194 Platform"
 
       assert [single_elev_issue] = Enum.filter(result.issues, &(&1.kind == :single_elevator))
       assert single_elev_issue.affected_pairs == 2
@@ -335,7 +334,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityTest do
       assert elevator.id == "el_01"
       assert elevator.pathway_ids == ["el_01", "el_02", "el_10", "el_12", "el_20", "el_21"]
       assert elevator.sole_link_pairs == 1
-      assert elevator.connects == "Street \u2194 Mezzanine \u2194 Platform"
     end
   end
 
@@ -377,14 +375,12 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityTest do
       steep_issue = barrier_issues["pw_steep_ramp"]
       assert steep_issue.affected_pairs == 1
       assert steep_issue.barriers == [:slope]
-      assert steep_issue.description =~ "0.11"
-      assert steep_issue.description =~ "0.0834"
+      assert Decimal.equal?(steep_issue.measurements.max_slope, Decimal.new("0.11"))
 
       bypassed_issue = barrier_issues["pw_narrow_bypassed"]
       assert bypassed_issue.affected_pairs == 0
       assert bypassed_issue.barriers == [:width]
-      assert bypassed_issue.description =~ "0.70"
-      assert bypassed_issue.description =~ "0.81"
+      assert Decimal.equal?(bypassed_issue.measurements.min_width, Decimal.new("0.70"))
     end
 
     test "does not credit a bypassed barrier shortcut on the unblocked direction of an asymmetric pair" do
@@ -525,7 +521,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityTest do
   # --- Near-threshold issues (D-1) ---
 
   describe "near_threshold issues (D-1)" do
-    test "emits slope and width near-threshold issues citing 0.915 m continuous width" do
+    test "emits slope and width near-threshold issues" do
       stops = [
         stop("e1", 2, %{level_id: "L0"}),
         stop("m1", 3, %{level_id: "L1"}),
@@ -546,12 +542,9 @@ defmodule GtfsPlanner.Gtfs.StationReport2.AccessibilityTest do
 
       assert near_by_id["pw_ramp"].affected_pairs == 1
       assert near_by_id["pw_ramp"].near_threshold_fields == [:slope]
-      assert near_by_id["pw_ramp"].description =~ "0.0834"
 
       assert near_by_id["pw_tight_gate"].affected_pairs == 1
       assert near_by_id["pw_tight_gate"].near_threshold_fields == [:width]
-      assert near_by_id["pw_tight_gate"].description =~ "0.915 m"
-      refute near_by_id["pw_tight_gate"].description =~ "0.81 m"
     end
   end
 

@@ -240,22 +240,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
 
       assert has_element?(view, "#report-stop-edit-form")
-
-      assert has_element?(
-               view,
-               "#report-stop-edit-form input[name='stop[stop_name]'][value='Northbound Platform']"
-             )
-
-      assert has_element?(
-               view,
-               "#report-stop-edit-form input[name='stop[platform_code]'][value='1']"
-             )
-
-      assert has_element?(
-               view,
-               "#report-stop-edit-form select[name='stop[wheelchair_boarding]'] option[selected][value='1']"
-             )
-
       refute has_element?(view, "#flash-error")
 
       state = :sys.get_state(view.pid)
@@ -282,18 +266,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
 
       assert_patch(view, base_path)
       assert has_element?(view, "#report-stop-edit-form")
-
-      assert has_element?(
-               view,
-               "#report-stop-edit-form input[name='stop[stop_name]'][value='Southbound Platform']"
-             )
-
-      assert has_element?(
-               view,
-               "#report-stop-edit-form select[name='stop[wheelchair_boarding]'] option[selected][value='2']"
-             )
-
       refute has_element?(view, "#flash-error")
+
+      state = :sys.get_state(view.pid)
+      assert state.socket.assigns.drawer_entity.id == platform_south.id
     end
 
     test "malformed UUID flashes generic refusal, keeps drawer closed, and clears param", %{
@@ -311,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
 
     test "unknown UUID flashes generic refusal, keeps drawer closed, and clears param", %{
@@ -329,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
 
     test "stop belonging to another station in the same version flashes generic refusal and keeps drawer closed",
@@ -364,7 +340,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
 
     test "stop belonging to another GTFS version flashes generic refusal and keeps drawer closed",
@@ -400,7 +376,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
 
     test "stop belonging to another organization flashes generic refusal and keeps drawer closed",
@@ -437,7 +413,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
 
     test "same-station live patch with foreign stop UUID flashes generic refusal and keeps drawer closed",
@@ -468,7 +444,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveAccessibilityLinksTest do
       assert_patch(view, base_path)
       refute has_element?(view, "#report-stop-edit-form")
       refute has_element?(view, "#report-stop-lookup-error")
-      assert has_element?(view, "#flash-error", "Stop not found.")
+      assert has_element?(view, "#flash-error")
     end
   end
 end

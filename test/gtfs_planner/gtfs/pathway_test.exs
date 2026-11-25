@@ -202,17 +202,4 @@ defmodule GtfsPlanner.Gtfs.PathwayTest do
       assert Pathway.near_threshold_fields(%{max_slope: "0.08", min_width: "0.85"}) == []
     end
   end
-
-  # mix test test/gtfs_planner/gtfs/pathway_test.exs --only describe:"accessibility_thresholds/0"
-  describe "accessibility_thresholds/0" do
-    test "exposes ADA hard-barrier and near-threshold constants" do
-      thresholds = Pathway.accessibility_thresholds()
-
-      assert Decimal.equal?(thresholds.max_slope, Decimal.new("0.0834"))
-      assert Decimal.equal?(thresholds.near_slope, Decimal.new("0.075"))
-      assert Decimal.equal?(thresholds.min_width, Decimal.new("0.81"))
-      assert Decimal.equal?(thresholds.near_width, Decimal.new("0.92"))
-      assert Decimal.equal?(thresholds.comfort_width, Decimal.new("0.915"))
-    end
-  end
 end

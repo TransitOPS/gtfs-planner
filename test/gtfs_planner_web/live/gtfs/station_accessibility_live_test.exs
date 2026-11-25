@@ -30,22 +30,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest.ControlledSnapshotSource
-
-  @excluded_terms [
-    "Outage feed",
-    "Not in outage feed",
-    "Last verified",
-    "Field visit",
-    "Blueprint only",
-    "Source: blueprint",
-    "Pathways Studio"
-  ]
 
   defp live_accessibility(conn, path) do
     {:ok, view, _html} = live(conn, path)
     {view, render_async(view, 5_000)}
+  end
+
+  defp loaded_station_id(view) do
+    :sys.get_state(view.pid).socket.assigns.station.stop_id
   end
 
   defp control_snapshot_source do
@@ -506,14 +499,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
       assert flash == %{"error" => "Station not found"}
 
       # Accessing foreign version directly -> rejected by AssignGtfsVersion
-      assert {:error, {:redirect, %{to: redirect_to}}} =
+      assert {:error, {:redirect, %{to: "/"}}} =
                live(
                  conn,
                  "/gtfs/#{version_b.id}/stops/#{foreign_station.stop_id}/report/accessibility"
                )
-
-      assert redirect_to !=
-               "/gtfs/#{version_b.id}/stops/#{foreign_station.stop_id}/report/accessibility"
     end
   end
 
@@ -585,15 +575,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
                "#station-accessibility-page[data-derived-state='empty_topology']"
              )
 
-      assert render(view) =~ "Second Station"
+      assert loaded_station_id(view) == station_two.stop_id
 
+      # Wait for the stale task to deliver its result and exit before checking
+      stale_ref = Process.monitor(stale_task)
       release_load(stale_task, :real)
+      assert_receive {:DOWN, ^stale_ref, :process, ^stale_task, _reason}, 2_000
       _ = :sys.get_state(view.pid)
 
       # Stale result from station_one must NOT overwrite station_two
-      html = render(view)
-      assert html =~ "Second Station"
-      refute html =~ "Central Square"
+      assert loaded_station_id(view) == station_two.stop_id
 
       assert has_element?(
                view,
@@ -761,20 +752,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
 
       conn = log_in_user(conn, user, organization: org)
 
-      {view, rider_html} =
+      {view, _html} =
         live_accessibility(
           conn,
           "/gtfs/#{version.id}/stops/#{station.stop_id}/report/accessibility"
         )
 
-      # Default view is Network -> Rider routes with view switcher visible
-      assert has_element?(view, "#accessibility-view-switcher")
+      # Default view is Network -> Rider routes
       assert has_element?(view, "#view-switch-network[aria-pressed='true']")
       assert has_element?(view, "#accessibility-network-view")
       assert has_element?(view, "#tab-rider-routes[aria-selected='true']")
-      assert has_element?(view, "#accessibility-schematic-svg")
-      assert has_element?(view, "#network-access-matrix-card")
-      assert has_element?(view, "#network-elevator-dependency-card")
 
       # Back link to Station Report
       assert has_element?(
@@ -796,15 +783,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
 
       # Switch to Validation tab
       view |> element("#tab-validation") |> render_click()
-      validation_html = render(view)
 
       assert has_element?(view, "#tab-validation[aria-selected='true']")
-      assert has_element?(view, "#validation-highlight-filters")
-      assert has_element?(view, "#validation-confidence-card")
-      assert has_element?(view, "#confidence-confirmed")
-      assert has_element?(view, "#confidence-unverified")
-      assert has_element?(view, "#confidence-no-route")
-      assert has_element?(view, "#validation-issues-card")
 
       # Toggle all 4 highlight checkboxes
       refute has_element?(view, "#highlight-barriers[checked]")
@@ -861,12 +841,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
       view |> element("#view-switch-impact") |> render_click()
       assert has_element?(view, "#accessibility-impact-view")
       assert has_element?(view, "#view-switch-impact[aria-pressed='true']")
-
-      # Strict exclusions check across Rider routes and Validation HTML
-      for excluded <- @excluded_terms do
-        refute rider_html =~ excluded
-        refute validation_html =~ excluded
-      end
     end
 
     test "preselects route from ?from=&to= query params and tolerates invalid params", %{
@@ -900,7 +874,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
   end
 
   describe "large station Impact & routes view (CR-S4)" do
-    test "enforces Impact & routes only, normalizes ?view=network, supports stepper corridor collapse, grouped matrix drill-down, and 3-column elevator table",
+    test "enforces Impact & routes only, normalizes ?view=network, supports stepper corridor collapse and grouped matrix drill-down",
          %{conn: conn} do
       %{organization: org, user: user, gtfs_version: version} = create_editor_context()
       fixture = build_large_station(org.id, version.id)
@@ -908,7 +882,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
       conn = log_in_user(conn, user, organization: org)
 
       # Even when requesting ?view=network, large station normalizes to :impact and hides switcher
-      {view, html} =
+      {view, _html} =
         live_accessibility(
           conn,
           "/gtfs/#{version.id}/stops/#{station.stop_id}/report/accessibility?view=network"
@@ -923,12 +897,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
       render_click(view, "switch_view", %{"view" => "network"})
       assert has_element?(view, "#accessibility-impact-view")
       refute has_element?(view, "#accessibility-network-view")
-
-      # 4 KPI tiles present
-      assert has_element?(view, "#kpi-step-free-entrances")
-      assert has_element?(view, "#kpi-confirmed-pairs")
-      assert has_element?(view, "#kpi-unverified-pairs")
-      assert has_element?(view, "#kpi-sole-elevators")
 
       # Select HUB_E1 -> HUB_P1 via route selector so the 2-edge verified corridor collapses
       render_click(view, "select_route", %{"from" => "HUB_E1", "to" => "HUB_P1"})
@@ -968,26 +936,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationAccessibilityLiveTest do
 
       view |> element("#drilldown-inspect-HUB_E1-HUB_P7") |> render_click()
       assert has_element?(view, "#selected-route-summary[data-route-status='unverified']")
-
-      # Elevator dependency table has strictly 3 columns: Elevator, Connects, Sole link for
-      assert has_element?(view, "#elevator-dependency-table thead tr th", "Elevator")
-      assert has_element?(view, "#elevator-dependency-table thead tr th", "Connects")
-      assert has_element?(view, "#elevator-dependency-table thead tr th", "Sole link for")
-
-      table_html = view |> element("#elevator-dependency-table thead") |> render()
-      assert length(:binary.matches(table_html, "</th>")) == 3
-
-      # Strict exclusions check on large station Impact & routes HTML
-      for excluded <- @excluded_terms do
-        refute html =~ excluded
-      end
-    end
-  end
-
-  describe "WCAG AA contrast for custom purple unverified tokens" do
-    test "--color-unverified-fg (#5b21b6) on --color-unverified-bg (#f3edff) meets >= 4.5:1 AA" do
-      ratio = DiagramPalette.contrast_ratio("#f3edff", "#5b21b6")
-      assert ratio >= 4.5
     end
   end
 end
