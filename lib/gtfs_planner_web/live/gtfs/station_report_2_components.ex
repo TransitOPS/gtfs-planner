@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       printing a freshly loaded report is complete.
   """
   use Phoenix.Component
+  use GtfsPlannerWeb, :verified_routes
 
   import GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents
 
@@ -214,6 +215,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :title, :string, required: true
   attr :description, :string, required: true
   slot :counts, doc: "a count strip that sums up the section"
+  slot :actions, doc: "optional header actions aligned beside the section heading"
   slot :inner_block, required: true
 
   # One card per section: a tinted band that names the section and what it
@@ -222,10 +224,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     ~H"""
     <section id={@id} class="scroll-mt-4 overflow-clip rounded-card border border-subtle bg-white">
       <div class="border-b border-subtle bg-canvas px-5 py-4 sm:px-6">
-        <h2 class="font-display text-[20px] font-semibold leading-tight tracking-[-0.02em] text-strong">
-          {@title}
-        </h2>
-        <p class="mt-1 text-[13px] text-muted">{@description}</p>
+        <div class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div class="min-w-0">
+            <h2 class="font-display text-[20px] font-semibold leading-tight tracking-[-0.02em] text-strong">
+              {@title}
+            </h2>
+            <p class="mt-1 text-[13px] text-muted">{@description}</p>
+          </div>
+          <div :if={@actions != []} class="shrink-0 print:hidden">
+            {render_slot(@actions)}
+          </div>
+        </div>
         <div :if={@counts != []} class="mt-3">{render_slot(@counts)}</div>
       </div>
       {render_slot(@inner_block)}
@@ -917,6 +926,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :connectivity_routes, :map, default: %{}
   attr :expanded_sources, :any, default: MapSet.new()
   attr :expanded_route_keys, :any, default: MapSet.new()
+  attr :gtfs_version_id, :any, default: nil
+  attr :stop_id, :string, default: nil
 
   def reachability_connectivity_section(assigns) do
     ~H"""
@@ -925,6 +936,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       title="Routes riders can take"
       description="Can riders get from each entrance to each platform, between platforms, and back out? Following pathway directions."
     >
+      <:actions :if={not is_nil(@gtfs_version_id) and not is_nil(@stop_id)}>
+        <.link
+          id="station-report-accessibility-link"
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/report/accessibility"}
+          class={[
+            "inline-flex min-h-11 items-center gap-2 rounded-control border border-control bg-white px-4 py-2 text-sm font-[650] text-action no-underline",
+            "transition-colors hover:bg-soft hover:text-action-hover",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          ]}
+        >
+          <.icon name="hero-shield-check" class="size-4 shrink-0" />
+          <span>Open accessibility views</span>
+        </.link>
+      </:actions>
+
       <.report_empty
         :if={is_nil(@connectivity_summaries)}
         id="connectivity-empty-report"
@@ -942,6 +968,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           route_detail_groups={Map.get(@connectivity_route_details, dim, [])}
           routes={@connectivity_routes}
           expanded_route_keys={@expanded_route_keys}
+          gtfs_version_id={@gtfs_version_id}
+          stop_id={@stop_id}
         />
       </div>
     </.report_section>
@@ -954,6 +982,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :route_detail_groups, :list, default: []
   attr :routes, :map, default: %{}
   attr :expanded_route_keys, :any, default: MapSet.new()
+  attr :gtfs_version_id, :any, default: nil
+  attr :stop_id, :string, default: nil
 
   defp connectivity_dimension_section(assigns) do
     stats = assigns.summary.stats
@@ -1058,6 +1088,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
             group={Map.get(@route_detail_by_source, row.source_stop_id)}
             routes={@routes}
             expanded_route_keys={@expanded_route_keys}
+            gtfs_version_id={@gtfs_version_id}
+            stop_id={@stop_id}
           />
         </div>
       </div>
@@ -1082,6 +1114,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :group, :map, default: nil
   attr :routes, :map, default: %{}
   attr :expanded_route_keys, :any, default: MapSet.new()
+  attr :gtfs_version_id, :any, default: nil
+  attr :stop_id, :string, default: nil
 
   defp connectivity_source_row(assigns) do
     assigns =
@@ -1146,6 +1180,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
           dimension={@dimension}
           routes={@routes}
           expanded_route_keys={@expanded_route_keys}
+          gtfs_version_id={@gtfs_version_id}
+          stop_id={@stop_id}
         />
       </div>
     </div>

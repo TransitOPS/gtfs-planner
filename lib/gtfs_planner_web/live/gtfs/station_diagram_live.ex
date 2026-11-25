@@ -58,6 +58,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @drawer_journal_load_key :drawer_journal_load
   @no_coordinate_changes_status "No coordinate changes to review."
   @alignment_changed_status "The alignment changed — review again."
+  @pathway_intent_error_message "Pathway not found."
 
   @type drawer_journal_state ::
           :idle | :initial_loading | :ready | :refreshing | :error
@@ -234,10 +235,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   def handle_params(%{"stop_id" => stop_id} = params, _uri, socket) do
     if same_station_already_loaded?(socket, stop_id) do
       socket =
-        socket
-        |> maybe_switch_level_from_params(params)
-        |> maybe_open_child_stop_from_params(params)
-        |> maybe_open_journal_from_params(params)
+        if pathway_intent_blocked_by_active_mode?(socket, params) do
+          socket
+        else
+          socket
+          |> maybe_switch_level_from_params(params)
+          |> maybe_open_child_stop_from_params(params)
+          |> maybe_open_pathway_from_params(params)
+          |> maybe_open_journal_from_params(params)
+        end
 
       {:noreply, socket}
     else
@@ -339,6 +345,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> assign(:show_diagram_upload_drawer, false)
           |> load_level_data(active_level)
           |> maybe_open_child_stop_from_params(params)
+          |> maybe_open_pathway_from_params(params)
           |> setup_station_journal()
           |> maybe_open_journal_from_params(params)
 
@@ -407,6 +414,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_info(:clear_edit_child_stop_param, socket) do
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    station_stop_id = socket.assigns.station.stop_id
+
+    {:noreply,
+     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+  end
+
+  @impl true
+  def handle_info(:clear_edit_pathway_param, socket) do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
 
@@ -2458,7 +2474,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   @impl true
   def handle_event("edit_pathway", %{"id" => id} = params, socket) do
     # Setting scale owns the diagram clicks; the hook turns a pathway click into a ruler point.
-    if socket.assigns.mode == :add or socket.assigns.measurement_enabled do
+    if pathway_edit_blocked_by_mode?(socket) do
       {:noreply, socket}
     else
       case Stations.get_pathway(socket.assigns.audit_ctx, id) do
@@ -6932,7 +6948,68 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp maybe_open_child_stop_from_params(socket, _params), do: socket
 
+  defp maybe_open_pathway_from_params(socket, %{"edit_child_stop_id" => _}), do: socket
+
+  defp maybe_open_pathway_from_params(socket, %{"edit_pathway_id" => id} = params) do
+    if pathway_edit_blocked_by_mode?(socket) do
+      socket
+    else
+      open_pathway_from_intent(socket, id, params)
+    end
+  end
+
+  defp maybe_open_pathway_from_params(socket, _params), do: socket
+
+  defp open_pathway_from_intent(socket, id, params) do
+    audit_ctx = socket.assigns.audit_ctx || AuditContext.from_assigns(socket.assigns)
+
+    case Stations.get_pathway(audit_ctx, id) do
+      {:ok, pathway} ->
+        if connected?(socket), do: send(self(), :clear_edit_pathway_param)
+
+        target_level =
+          level_from_params(socket.assigns.levels, params) ||
+            pathway_intent_level(socket.assigns.levels, pathway)
+
+        socket
+        |> maybe_switch_pathway_level(target_level)
+        |> close_journal_panel()
+        |> open_pathway_drawer(pathway)
+
+      {:error, :not_found} ->
+        put_flash(socket, :error, @pathway_intent_error_message)
+    end
+  end
+
+  defp pathway_edit_blocked_by_mode?(socket) do
+    socket.assigns.mode == :add or socket.assigns.measurement_enabled
+  end
+
+  defp pathway_intent_blocked_by_active_mode?(socket, params) do
+    Map.has_key?(params, "edit_pathway_id") and
+      not Map.has_key?(params, "edit_child_stop_id") and
+      pathway_edit_blocked_by_mode?(socket)
+  end
+
+  defp pathway_intent_level(levels, pathway) do
+    from_level_id = pathway.from_stop && pathway.from_stop.level_id
+    to_level_id = pathway.to_stop && pathway.to_stop.level_id
+
+    find_station_level(levels, from_level_id) ||
+      find_station_level(levels, to_level_id)
+  end
+
+  defp find_station_level(levels, level_id) when is_binary(level_id) and level_id != "" do
+    Enum.find(levels, &(&1.level_id == level_id))
+  end
+
+  defp find_station_level(_levels, _level_id), do: nil
+
+  defp maybe_switch_pathway_level(socket, nil), do: socket
+  defp maybe_switch_pathway_level(socket, level), do: switch_active_level_if_needed(socket, level)
+
   defp maybe_open_journal_from_params(socket, %{"edit_child_stop_id" => _}), do: socket
+  defp maybe_open_journal_from_params(socket, %{"edit_pathway_id" => _}), do: socket
 
   defp maybe_open_journal_from_params(socket, %{"journal" => "open"} = params) do
     focus_entry_id =
@@ -7035,7 +7112,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     do: "Stop is not assigned to a known station level"
 
   defp switch_active_level_if_needed(socket, level) do
-    if level.id == socket.assigns.active_level.id do
+    current_level_id = socket.assigns.active_level && socket.assigns.active_level.id
+
+    if level.id == current_level_id do
       socket
     else
       socket

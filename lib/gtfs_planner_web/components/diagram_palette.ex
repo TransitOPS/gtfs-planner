@@ -54,6 +54,23 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
       color: "#B91C1C",
       cue: "hover text naming the measurement and key row"
     },
+    # Station accessibility cross-level schematic states. Each pairs color with a
+    # stroke pattern, icon/badge, and explicit text label.
+    schematic_unverified: %{
+      css_variable: "--diagram-schematic-unverified",
+      color: "#7C3AED",
+      cue: "dotted purple stroke, question icon, and unverified label"
+    },
+    schematic_near_threshold: %{
+      css_variable: "--diagram-schematic-near-threshold",
+      color: "#8A5A0E",
+      cue: "dashed amber stroke, measurement callout, and near-threshold badge"
+    },
+    schematic_sole_elevator: %{
+      css_variable: "--diagram-schematic-sole-elevator",
+      color: "#C81870",
+      cue: "heavy stroke, elevator badge, and sole-link callout"
+    },
     label: %{css_variable: "--diagram-label", color: "#1F2937", cue: "text label"},
     label_halo: %{
       css_variable: "--diagram-label-halo",

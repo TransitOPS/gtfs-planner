@@ -120,6 +120,9 @@
   --color-info-bg: #e0f1f5;
   --color-info-fg: #0e5c73;
   --color-info-line: #2c8faa;
+  --color-unverified-bg: #f3edff;
+  --color-unverified-fg: #5b21b6;
+  --color-unverified-line: #7c3aed;
 
   /* Map tokens for the saved-route map: the ground under the streets and the
      ink of its attribution. */

@@ -151,4 +151,68 @@ defmodule GtfsPlanner.Gtfs.PathwayTest do
       assert Pathway.step_free_state(pathway(%{pathway_mode: nil})) == nil
     end
   end
+
+  # mix test test/gtfs_planner/gtfs/pathway_test.exs --only describe:"near_threshold_fields/1"
+  describe "near_threshold_fields/1" do
+    test "returns [:slope] for abs(max_slope) in [0.075, 0.0834] including negative slopes" do
+      for slope <- ["0.075", "0.080", "0.081", "-0.081", "0.0833", "0.0834", "-0.0834"] do
+        ramp = pathway(%{max_slope: Decimal.new(slope)})
+
+        assert Pathway.near_threshold_fields(ramp) == [:slope],
+               "expected [:slope] for max_slope=#{slope}"
+      end
+    end
+
+    test "excludes gentle slopes, zero, and hard-barrier slopes" do
+      for slope <- ["0", "0.05", "0.074", "-0.0749", "0.0835", "-0.0835", "0.10"] do
+        ramp = pathway(%{max_slope: Decimal.new(slope)})
+
+        assert Pathway.near_threshold_fields(ramp) == [],
+               "expected [] for max_slope=#{slope}"
+      end
+    end
+
+    test "returns [:width] for min_width in [0.81, 0.92]" do
+      for width <- ["0.81", "0.85", "0.915", "0.92"] do
+        gate = pathway(%{pathway_mode: 6, min_width: Decimal.new(width)})
+
+        assert Pathway.near_threshold_fields(gate) == [:width],
+               "expected [:width] for min_width=#{width}"
+      end
+    end
+
+    test "excludes wide openings, zero, negative, and hard-barrier widths" do
+      for width <- ["-0.85", "0", "0.80", "0.809", "0.921", "0.93", "1.20"] do
+        gate = pathway(%{pathway_mode: 6, min_width: Decimal.new(width)})
+
+        assert Pathway.near_threshold_fields(gate) == [],
+               "expected [] for min_width=#{width}"
+      end
+    end
+
+    test "returns both [:slope, :width] when both measurements are near threshold" do
+      pw = pathway(%{max_slope: Decimal.new("-0.080"), min_width: Decimal.new("0.88")})
+
+      assert Pathway.near_threshold_fields(pw) == [:slope, :width]
+    end
+
+    test "returns [] for nil or non-Decimal values" do
+      assert Pathway.near_threshold_fields(pathway(%{max_slope: nil, min_width: nil})) == []
+      assert Pathway.near_threshold_fields(%{max_slope: 0.08, min_width: 0.85}) == []
+      assert Pathway.near_threshold_fields(%{max_slope: "0.08", min_width: "0.85"}) == []
+    end
+  end
+
+  # mix test test/gtfs_planner/gtfs/pathway_test.exs --only describe:"accessibility_thresholds/0"
+  describe "accessibility_thresholds/0" do
+    test "exposes ADA hard-barrier and near-threshold constants" do
+      thresholds = Pathway.accessibility_thresholds()
+
+      assert Decimal.equal?(thresholds.max_slope, Decimal.new("0.0834"))
+      assert Decimal.equal?(thresholds.near_slope, Decimal.new("0.075"))
+      assert Decimal.equal?(thresholds.min_width, Decimal.new("0.81"))
+      assert Decimal.equal?(thresholds.near_width, Decimal.new("0.92"))
+      assert Decimal.equal?(thresholds.comfort_width, Decimal.new("0.915"))
+    end
+  end
 end
