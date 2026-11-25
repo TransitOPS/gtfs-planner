@@ -13941,6 +13941,972 @@ case Accounts.register_first_admin(%{
         "with garage #{tods_saved_world.garage.name} and one unblocked trip"
     )
 
+    # ── Station Accessibility Validation fixtures (spec 45, step 5) ──
+    #
+    # Two additive stations under the existing editor org and "Browser E2E
+    # Version" so `station_accessibility.spec.js` can exercise both the small-
+    # station Network schematic (Rider routes + Validation) and the large-
+    # station Impact & routes transfer-center surface without touching
+    # BROWSER_STATION or any other spec's fixtures.
+    acc_insert_stop = fn attrs ->
+      {:ok, stop} =
+        GtfsPlanner.GtfsFixtures.insert_stop(
+          Map.merge(
+            %{
+              stop_lat: Decimal.new("42.3554"),
+              stop_lon: Decimal.new("-71.0655"),
+              organization_id: org.id,
+              gtfs_version_id: diagram_version.id
+            },
+            attrs
+          )
+        )
+
+      stop
+    end
+
+    acc_insert_level = fn station_rec, level_id, level_name, level_index, filename ->
+      {:ok, lvl} =
+        GtfsPlanner.GtfsFixtures.insert_level(%{
+          level_id: level_id,
+          level_name: level_name,
+          level_index: level_index,
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id
+        })
+
+      {:ok, _sl} =
+        GtfsPlanner.GtfsFixtures.insert_stop_level(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          stop_id: station_rec.id,
+          level_id: lvl.id,
+          diagram_filename: filename
+        })
+
+      :ok =
+        DiagramStorage.store_import_image(
+          org.id,
+          diagram_version.id,
+          station_rec.stop_id,
+          filename,
+          one_pixel_png
+        )
+
+      lvl
+    end
+
+    acc_insert_pathway = fn attrs ->
+      {:ok, pw} =
+        Gtfs.apply_import_entity(
+          :add,
+          :pathway,
+          nil,
+          Map.merge(
+            %{
+              organization_id: org.id,
+              gtfs_version_id: diagram_version.id
+            },
+            attrs
+          )
+        )
+
+      pw
+    end
+
+    # 1) Small station: ACCESSIBILITY_SMALL_STATION (network_available? == true)
+    acc_small_station =
+      acc_insert_stop.(%{
+        stop_id: "ACCESSIBILITY_SMALL_STATION",
+        stop_name: "Riverside Square",
+        location_type: 1,
+        wheelchair_boarding: 1
+      })
+
+    _acc_sm_l0 = acc_insert_level.(acc_small_station, "ACC_SM_L0", "Street", 0.0, "acc_sm_l0.png")
+
+    _acc_sm_l1 =
+      acc_insert_level.(acc_small_station, "ACC_SM_L_1", "Mezzanine", -1.0, "acc_sm_l1.png")
+
+    _acc_sm_l2 =
+      acc_insert_level.(acc_small_station, "ACC_SM_L_2", "Platforms", -2.0, "acc_sm_l2.png")
+
+    for stop_attrs <- [
+          %{
+            stop_id: "ACC_SM_ENT_NORTH",
+            stop_name: "North Entrance",
+            location_type: 2,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L0",
+            diagram_coordinate: %{"x" => 20, "y" => 30}
+          },
+          %{
+            stop_id: "ACC_SM_ENT_SOUTH",
+            stop_name: "South Entrance",
+            location_type: 2,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L0",
+            diagram_coordinate: %{"x" => 52, "y" => 30}
+          },
+          %{
+            stop_id: "ACC_SM_ENT_EAST",
+            stop_name: "East Stairs",
+            location_type: 2,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L0",
+            diagram_coordinate: %{"x" => 84, "y" => 30}
+          },
+          %{
+            stop_id: "ACC_SM_MEZZ_UNPAID_N",
+            stop_name: "North Lobby",
+            location_type: 3,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_1",
+            diagram_coordinate: %{"x" => 20, "y" => 35}
+          },
+          %{
+            stop_id: "ACC_SM_MEZZ_UNPAID_S",
+            stop_name: "South Lobby",
+            location_type: 3,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_1",
+            diagram_coordinate: %{"x" => 52, "y" => 35}
+          },
+          %{
+            stop_id: "ACC_SM_MEZZ_PAID_W",
+            stop_name: "West Concourse",
+            location_type: 3,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_1",
+            diagram_coordinate: %{"x" => 20, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_SM_MEZZ_PAID_MID",
+            stop_name: "Transfer Hall",
+            location_type: 3,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_1",
+            diagram_coordinate: %{"x" => 46, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_SM_MEZZ_PAID_E",
+            stop_name: "East Concourse",
+            location_type: 3,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_1",
+            diagram_coordinate: %{"x" => 72, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_SM_PLAT_1",
+            stop_name: "Inbound Platform",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_2",
+            diagram_coordinate: %{"x" => 20, "y" => 50}
+          },
+          %{
+            stop_id: "ACC_SM_PLAT_2",
+            stop_name: "Outbound Platform",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            parent_station: acc_small_station.stop_id,
+            level_id: "ACC_SM_L_2",
+            diagram_coordinate: %{"x" => 72, "y" => 50}
+          }
+        ] do
+      acc_insert_stop.(stop_attrs)
+    end
+
+    for pw_attrs <- [
+          %{
+            pathway_id: "ACC_SM_PW_RAMP_N",
+            from_stop_id: "ACC_SM_ENT_NORTH",
+            to_stop_id: "ACC_SM_MEZZ_UNPAID_N",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.80"),
+            max_slope: Decimal.new("0.050"),
+            traversal_time: 25,
+            length: Decimal.new("20.0"),
+            signposted_as: "Mezzanine"
+          },
+          %{
+            pathway_id: "ACC_SM_PW_RAMP_S",
+            from_stop_id: "ACC_SM_ENT_SOUTH",
+            to_stop_id: "ACC_SM_MEZZ_UNPAID_S",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.80"),
+            max_slope: Decimal.new("0.045"),
+            traversal_time: 30,
+            length: Decimal.new("22.0"),
+            signposted_as: "Mezzanine"
+          },
+          %{
+            pathway_id: "ACC_SM_PW_BARRIER_RAMP",
+            from_stop_id: "ACC_SM_ENT_EAST",
+            to_stop_id: "ACC_SM_MEZZ_UNPAID_S",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.40"),
+            max_slope: Decimal.new("0.11"),
+            traversal_time: 20,
+            length: Decimal.new("12.0")
+          },
+          %{
+            pathway_id: "ACC_SM_PW_STAIRS_E",
+            from_stop_id: "ACC_SM_ENT_EAST",
+            to_stop_id: "ACC_SM_MEZZ_UNPAID_S",
+            pathway_mode: 2,
+            is_bidirectional: true,
+            stair_count: 24,
+            traversal_time: 35,
+            length: Decimal.new("14.0")
+          },
+          %{
+            pathway_id: "ACC_SM_PW_GATE_W",
+            from_stop_id: "ACC_SM_MEZZ_UNPAID_N",
+            to_stop_id: "ACC_SM_MEZZ_PAID_W",
+            pathway_mode: 6,
+            is_bidirectional: true,
+            min_width: Decimal.new("0.90"),
+            traversal_time: 5
+          },
+          %{
+            pathway_id: "ACC_SM_PW_GATE_S",
+            from_stop_id: "ACC_SM_MEZZ_UNPAID_S",
+            to_stop_id: "ACC_SM_MEZZ_PAID_W",
+            pathway_mode: 6,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.05"),
+            traversal_time: 5
+          },
+          %{
+            pathway_id: "ACC_SM_PW_EL1_DOWN",
+            from_stop_id: "ACC_SM_MEZZ_PAID_W",
+            to_stop_id: "ACC_SM_PLAT_1",
+            pathway_mode: 5,
+            is_bidirectional: false,
+            min_width: Decimal.new("1.20"),
+            traversal_time: 30,
+            length: Decimal.new("9.0"),
+            signposted_as: "Inbound Platform"
+          },
+          %{
+            pathway_id: "ACC_SM_PW_EL1_UP",
+            from_stop_id: "ACC_SM_PLAT_1",
+            to_stop_id: "ACC_SM_MEZZ_PAID_W",
+            pathway_mode: 5,
+            is_bidirectional: false,
+            min_width: Decimal.new("1.20"),
+            traversal_time: 30,
+            length: Decimal.new("9.0"),
+            signposted_as: "Mezzanine & Exit"
+          },
+          %{
+            pathway_id: "ACC_SM_PW_WALK_UNVER_1",
+            from_stop_id: "ACC_SM_MEZZ_PAID_W",
+            to_stop_id: "ACC_SM_MEZZ_PAID_MID",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            traversal_time: 20,
+            length: Decimal.new("18.0")
+          },
+          %{
+            pathway_id: "ACC_SM_PW_WALK_UNVER_2",
+            from_stop_id: "ACC_SM_MEZZ_PAID_MID",
+            to_stop_id: "ACC_SM_MEZZ_PAID_E",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            traversal_time: 18,
+            length: Decimal.new("15.0")
+          },
+          %{
+            pathway_id: "ACC_SM_PW_EL2",
+            from_stop_id: "ACC_SM_MEZZ_PAID_E",
+            to_stop_id: "ACC_SM_PLAT_2",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.20"),
+            traversal_time: 30,
+            length: Decimal.new("9.0"),
+            signposted_as: "Outbound Platform"
+          }
+        ] do
+      acc_insert_pathway.(pw_attrs)
+    end
+
+    # 2) Large transfer center: ACCESSIBILITY_TRANSFER_CENTER (network_available? == false)
+    acc_tc_station =
+      acc_insert_stop.(%{
+        stop_id: "ACCESSIBILITY_TRANSFER_CENTER",
+        stop_name: "Harbor Transfer Center",
+        location_type: 1,
+        wheelchair_boarding: 1,
+        stop_lat: Decimal.new("42.3519"),
+        stop_lon: Decimal.new("-71.0552")
+      })
+
+    _acc_tc_l0 = acc_insert_level.(acc_tc_station, "ACC_TC_L0", "Street", 0.0, "acc_tc_l0.png")
+
+    _acc_tc_l1 =
+      acc_insert_level.(acc_tc_station, "ACC_TC_L_1", "Concourse", -1.0, "acc_tc_l1.png")
+
+    _acc_tc_l2 =
+      acc_insert_level.(acc_tc_station, "ACC_TC_L_2", "Upper Platforms", -2.0, "acc_tc_l2.png")
+
+    _acc_tc_l3 =
+      acc_insert_level.(acc_tc_station, "ACC_TC_L_3", "Lower Platforms", -3.0, "acc_tc_l3.png")
+
+    for stop_attrs <- [
+          # 7 step-free entrances (3 structural entrance groups) + 2 inaccessible entrances
+          %{
+            stop_id: "ACC_TC_ENT_EAST_1",
+            stop_name: "East Street Entrance",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 15, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_EAST_2",
+            stop_name: "Transit Plaza East",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 25, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_PLAZA_C",
+            stop_name: "Main Plaza Center",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 50, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_PLAZA_N",
+            stop_name: "Main Plaza North",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 40, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_PLAZA_S",
+            stop_name: "Main Plaza South",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 60, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_SOUTH_1",
+            stop_name: "South Station Way",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 75, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_SOUTH_2",
+            stop_name: "Harbor Walkway",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 85, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_STAIRS_1",
+            stop_name: "North Overpass Stairs",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 32, "y" => 20}
+          },
+          %{
+            stop_id: "ACC_TC_ENT_STAIRS_2",
+            stop_name: "Canal Ramp",
+            location_type: 2,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 92, "y" => 20}
+          },
+          # Street vestibules
+          %{
+            stop_id: "ACC_TC_VEST_PLAZA",
+            stop_name: "Plaza Vestibule",
+            location_type: 3,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 50, "y" => 45}
+          },
+          %{
+            stop_id: "ACC_TC_VEST_SOUTH",
+            stop_name: "South Vestibule",
+            location_type: 3,
+            level_id: "ACC_TC_L0",
+            diagram_coordinate: %{"x" => 80, "y" => 45}
+          },
+          # Concourse unpaid + paid nodes (including 4-walkway verified corridor chain)
+          %{
+            stop_id: "ACC_TC_CONC_UNPAID_E",
+            stop_name: "East Unpaid Lobby",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 20, "y" => 25}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_UNPAID_W",
+            stop_name: "West Unpaid Lobby",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 50, "y" => 25}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_UNPAID_S",
+            stop_name: "South Unpaid Hall",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 80, "y" => 25}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_PAID_E",
+            stop_name: "East Fare Hall",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 20, "y" => 65}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_PAID_1",
+            stop_name: "Concourse Hall A",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 35, "y" => 65}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_PAID_2",
+            stop_name: "Concourse Hall B",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 50, "y" => 65}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_PAID_3",
+            stop_name: "Concourse Hall C",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 65, "y" => 65}
+          },
+          %{
+            stop_id: "ACC_TC_CONC_PAID_W",
+            stop_name: "West Transfer Hub",
+            location_type: 3,
+            level_id: "ACC_TC_L_1",
+            diagram_coordinate: %{"x" => 80, "y" => 65}
+          },
+          # Upper & Lower platform hubs
+          %{
+            stop_id: "ACC_TC_UPPER_HUB",
+            stop_name: "Upper Mezzanine Hub",
+            location_type: 3,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 65, "y" => 40}
+          },
+          %{
+            stop_id: "ACC_TC_UPPER_BACKUP",
+            stop_name: "Red Line East Landing",
+            location_type: 3,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 48, "y" => 40}
+          },
+          %{
+            stop_id: "ACC_TC_CR_HALL",
+            stop_name: "Commuter Rail Concourse",
+            location_type: 3,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 20, "y" => 40}
+          },
+          %{
+            stop_id: "ACC_TC_LOWER_HUB",
+            stop_name: "Blue Line Hub",
+            location_type: 3,
+            level_id: "ACC_TC_L_3",
+            diagram_coordinate: %{"x" => 65, "y" => 40}
+          },
+          # 9 platforms across 3 GTFS routes
+          %{
+            stop_id: "ACC_TC_P_BLUE_1",
+            stop_name: "Blue Line Inbound",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_3",
+            diagram_coordinate: %{"x" => 35, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_BLUE_2",
+            stop_name: "Blue Line Outbound",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_3",
+            diagram_coordinate: %{"x" => 55, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_BLUE_3",
+            stop_name: "Blue Line Airport",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_3",
+            diagram_coordinate: %{"x" => 75, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_CR_1",
+            stop_name: "Track 1",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 12, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_CR_2",
+            stop_name: "Track 2",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 22, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_CR_3",
+            stop_name: "Track 3",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 32, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_RED_1",
+            stop_name: "Red Line Northbound",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 55, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_RED_2",
+            stop_name: "Red Line Southbound",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 70, "y" => 70}
+          },
+          %{
+            stop_id: "ACC_TC_P_RED_3",
+            stop_name: "Red Line Express",
+            location_type: 0,
+            wheelchair_boarding: 1,
+            level_id: "ACC_TC_L_2",
+            diagram_coordinate: %{"x" => 85, "y" => 70}
+          }
+        ] do
+      acc_insert_stop.(Map.put(stop_attrs, :parent_station, acc_tc_station.stop_id))
+    end
+
+    # 3 GTFS routes + trips + stop_times serving the 9 platforms (non-name platform grouping)
+    for {route_id, short_name, long_name, route_type, color, platform_ids} <- [
+          {"ACC_TC_RED", "Red Line", "Red Line Rapid Transit", 1, "DA291C",
+           ["ACC_TC_P_RED_1", "ACC_TC_P_RED_2", "ACC_TC_P_RED_3"]},
+          {"ACC_TC_BLUE", "Blue Line", "Blue Line Metro", 1, "003DA5",
+           ["ACC_TC_P_BLUE_1", "ACC_TC_P_BLUE_2", "ACC_TC_P_BLUE_3"]},
+          {"ACC_TC_CR", "Commuter Rail", "Regional Commuter Rail", 2, "80276C",
+           ["ACC_TC_P_CR_1", "ACC_TC_P_CR_2", "ACC_TC_P_CR_3"]}
+        ] do
+      {:ok, tc_route} =
+        GtfsPlanner.GtfsFixtures.insert_route(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: route_id,
+          route_short_name: short_name,
+          route_long_name: long_name,
+          route_type: route_type,
+          route_color: color,
+          route_text_color: "FFFFFF"
+        })
+
+      {:ok, tc_trip} =
+        GtfsPlanner.GtfsFixtures.insert_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: tc_route.route_id,
+          trip_id: "#{route_id}_TRIP_1",
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: short_name,
+          direction_id: 0
+        })
+
+      for {plat_id, seq} <- Enum.with_index(platform_ids, 1) do
+        {:ok, _st} =
+          GtfsPlanner.GtfsFixtures.insert_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            trip_id: tc_trip.trip_id,
+            stop_id: plat_id,
+            stop_sequence: seq,
+            arrival_time: "08:0#{seq}:00",
+            departure_time: "08:0#{seq}:00"
+          })
+      end
+    end
+
+    for pw_attrs <- [
+          # Group 1 (East Concourse): 2 ramps -> East Unpaid Lobby -> Fare Gate E -> East Fare Hall
+          %{
+            pathway_id: "ACC_TC_PW_EAST_1",
+            from_stop_id: "ACC_TC_ENT_EAST_1",
+            to_stop_id: "ACC_TC_CONC_UNPAID_E",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            max_slope: Decimal.new("0.048"),
+            traversal_time: 22,
+            length: Decimal.new("20.0"),
+            signposted_as: "Concourse"
+          },
+          %{
+            pathway_id: "ACC_TC_PW_EAST_2",
+            from_stop_id: "ACC_TC_ENT_EAST_2",
+            to_stop_id: "ACC_TC_CONC_UNPAID_E",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            max_slope: Decimal.new("0.048"),
+            traversal_time: 24,
+            length: Decimal.new("22.0"),
+            signposted_as: "Concourse"
+          },
+          # Group 2 (Main Plaza): 3 walkways -> Plaza Vestibule -> Sole-link Plaza Elevator -> West Unpaid Lobby
+          %{
+            pathway_id: "ACC_TC_PW_PLAZA_N",
+            from_stop_id: "ACC_TC_ENT_PLAZA_N",
+            to_stop_id: "ACC_TC_VEST_PLAZA",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 12,
+            length: Decimal.new("12.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_PLAZA_C",
+            from_stop_id: "ACC_TC_ENT_PLAZA_C",
+            to_stop_id: "ACC_TC_VEST_PLAZA",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 10,
+            length: Decimal.new("10.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_PLAZA_S",
+            from_stop_id: "ACC_TC_ENT_PLAZA_S",
+            to_stop_id: "ACC_TC_VEST_PLAZA",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 12,
+            length: Decimal.new("12.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_EL_PLAZA",
+            from_stop_id: "ACC_TC_VEST_PLAZA",
+            to_stop_id: "ACC_TC_CONC_UNPAID_W",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.40"),
+            traversal_time: 35,
+            length: Decimal.new("9.0"),
+            signposted_as: "Concourse"
+          },
+          # Group 3 (South Terminal): 2 walkways -> South Vestibule -> Sole-link South Elevator -> South Unpaid Hall
+          %{
+            pathway_id: "ACC_TC_PW_SOUTH_1",
+            from_stop_id: "ACC_TC_ENT_SOUTH_1",
+            to_stop_id: "ACC_TC_VEST_SOUTH",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            traversal_time: 14,
+            length: Decimal.new("14.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_SOUTH_2",
+            from_stop_id: "ACC_TC_ENT_SOUTH_2",
+            to_stop_id: "ACC_TC_VEST_SOUTH",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            traversal_time: 16,
+            length: Decimal.new("16.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_EL_SOUTH",
+            from_stop_id: "ACC_TC_VEST_SOUTH",
+            to_stop_id: "ACC_TC_CONC_UNPAID_S",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.40"),
+            traversal_time: 35,
+            length: Decimal.new("9.0"),
+            signposted_as: "Concourse"
+          },
+          # 2 inaccessible entrances (stairs + measured barrier ramp)
+          %{
+            pathway_id: "ACC_TC_PW_STAIRS_1",
+            from_stop_id: "ACC_TC_ENT_STAIRS_1",
+            to_stop_id: "ACC_TC_CONC_UNPAID_W",
+            pathway_mode: 2,
+            is_bidirectional: true,
+            stair_count: 28,
+            traversal_time: 40,
+            length: Decimal.new("16.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_BARRIER_RAMP",
+            from_stop_id: "ACC_TC_ENT_STAIRS_2",
+            to_stop_id: "ACC_TC_CONC_UNPAID_E",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.50"),
+            max_slope: Decimal.new("0.105"),
+            traversal_time: 25,
+            length: Decimal.new("15.0")
+          },
+          # Mode-6 fare gates separating unpaid/paid zones
+          %{
+            pathway_id: "ACC_TC_PW_GATE_E",
+            from_stop_id: "ACC_TC_CONC_UNPAID_E",
+            to_stop_id: "ACC_TC_CONC_PAID_E",
+            pathway_mode: 6,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.05"),
+            traversal_time: 5
+          },
+          %{
+            pathway_id: "ACC_TC_PW_GATE_W",
+            from_stop_id: "ACC_TC_CONC_UNPAID_W",
+            to_stop_id: "ACC_TC_CONC_PAID_W",
+            pathway_mode: 6,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.05"),
+            traversal_time: 5
+          },
+          %{
+            pathway_id: "ACC_TC_PW_GATE_S",
+            from_stop_id: "ACC_TC_CONC_UNPAID_S",
+            to_stop_id: "ACC_TC_CONC_PAID_E",
+            pathway_mode: 6,
+            is_bidirectional: true,
+            min_width: Decimal.new("0.90"),
+            traversal_time: 5
+          },
+          # 4 consecutive confirmed flat mode-1 walkways on Paid Concourse (collapses into one verified corridor!)
+          %{
+            pathway_id: "ACC_TC_PW_CORR_1",
+            from_stop_id: "ACC_TC_CONC_PAID_E",
+            to_stop_id: "ACC_TC_CONC_PAID_1",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.40"),
+            traversal_time: 24,
+            length: Decimal.new("28.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_CORR_2",
+            from_stop_id: "ACC_TC_CONC_PAID_1",
+            to_stop_id: "ACC_TC_CONC_PAID_2",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.40"),
+            traversal_time: 24,
+            length: Decimal.new("28.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_CORR_3",
+            from_stop_id: "ACC_TC_CONC_PAID_2",
+            to_stop_id: "ACC_TC_CONC_PAID_3",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.40"),
+            traversal_time: 24,
+            length: Decimal.new("28.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_CORR_4",
+            from_stop_id: "ACC_TC_CONC_PAID_3",
+            to_stop_id: "ACC_TC_CONC_PAID_W",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.40"),
+            traversal_time: 24,
+            length: Decimal.new("28.0")
+          },
+          # Multi-landing pairwise Central Elevator (3 landings -> 1 whole-elevator component, sole link for Blue Line)
+          %{
+            pathway_id: "ACC_TC_PW_EL_C_1",
+            from_stop_id: "ACC_TC_CONC_PAID_W",
+            to_stop_id: "ACC_TC_UPPER_HUB",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.50"),
+            traversal_time: 25,
+            length: Decimal.new("8.0"),
+            signposted_as: "Red & Blue Lines"
+          },
+          %{
+            pathway_id: "ACC_TC_PW_EL_C_2",
+            from_stop_id: "ACC_TC_UPPER_HUB",
+            to_stop_id: "ACC_TC_LOWER_HUB",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.50"),
+            traversal_time: 25,
+            length: Decimal.new("8.0"),
+            signposted_as: "Blue Line"
+          },
+          %{
+            pathway_id: "ACC_TC_PW_EL_C_3",
+            from_stop_id: "ACC_TC_CONC_PAID_W",
+            to_stop_id: "ACC_TC_LOWER_HUB",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.50"),
+            traversal_time: 40,
+            length: Decimal.new("16.0"),
+            signposted_as: "Blue Line"
+          },
+          # Backup elevator for Red Line (sole_link_pairs == 0)
+          %{
+            pathway_id: "ACC_TC_PW_EL_RED_BACKUP",
+            from_stop_id: "ACC_TC_CONC_PAID_3",
+            to_stop_id: "ACC_TC_UPPER_BACKUP",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.40"),
+            traversal_time: 30,
+            length: Decimal.new("8.0"),
+            signposted_as: "Red Line"
+          },
+          %{
+            pathway_id: "ACC_TC_PW_RED_BACKUP_WALK",
+            from_stop_id: "ACC_TC_UPPER_BACKUP",
+            to_stop_id: "ACC_TC_UPPER_HUB",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            traversal_time: 15,
+            length: Decimal.new("14.0")
+          },
+          # Commuter Rail elevator (sole link for Commuter Rail platforms)
+          %{
+            pathway_id: "ACC_TC_PW_EL_CR",
+            from_stop_id: "ACC_TC_CONC_PAID_E",
+            to_stop_id: "ACC_TC_CR_HALL",
+            pathway_mode: 5,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.35"),
+            traversal_time: 30,
+            length: Decimal.new("8.0"),
+            signposted_as: "Commuter Rail"
+          },
+          # Blue Line platform approaches (confirmed)
+          %{
+            pathway_id: "ACC_TC_PW_BLUE_1",
+            from_stop_id: "ACC_TC_LOWER_HUB",
+            to_stop_id: "ACC_TC_P_BLUE_1",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 18,
+            length: Decimal.new("18.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_BLUE_2",
+            from_stop_id: "ACC_TC_LOWER_HUB",
+            to_stop_id: "ACC_TC_P_BLUE_2",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 20,
+            length: Decimal.new("20.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_BLUE_3",
+            from_stop_id: "ACC_TC_LOWER_HUB",
+            to_stop_id: "ACC_TC_P_BLUE_3",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 22,
+            length: Decimal.new("22.0")
+          },
+          # Red Line platform approaches (2 confirmed + 1 near-threshold 0.081 ramp)
+          %{
+            pathway_id: "ACC_TC_PW_RED_1",
+            from_stop_id: "ACC_TC_UPPER_HUB",
+            to_stop_id: "ACC_TC_P_RED_1",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 16,
+            length: Decimal.new("16.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_RED_2",
+            from_stop_id: "ACC_TC_UPPER_HUB",
+            to_stop_id: "ACC_TC_P_RED_2",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.20"),
+            traversal_time: 18,
+            length: Decimal.new("18.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_RED_3",
+            from_stop_id: "ACC_TC_UPPER_HUB",
+            to_stop_id: "ACC_TC_P_RED_3",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("1.80"),
+            max_slope: Decimal.new("0.081"),
+            traversal_time: 20,
+            length: Decimal.new("18.0")
+          },
+          # Commuter Rail platform approaches (1 confirmed + 2 unverified missing min_width)
+          %{
+            pathway_id: "ACC_TC_PW_CR_1",
+            from_stop_id: "ACC_TC_CR_HALL",
+            to_stop_id: "ACC_TC_P_CR_1",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            min_width: Decimal.new("2.00"),
+            traversal_time: 15,
+            length: Decimal.new("12.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_CR_2",
+            from_stop_id: "ACC_TC_CR_HALL",
+            to_stop_id: "ACC_TC_P_CR_2",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            traversal_time: 15,
+            length: Decimal.new("12.0")
+          },
+          %{
+            pathway_id: "ACC_TC_PW_CR_3",
+            from_stop_id: "ACC_TC_CR_HALL",
+            to_stop_id: "ACC_TC_P_CR_3",
+            pathway_mode: 1,
+            is_bidirectional: true,
+            traversal_time: 18,
+            length: Decimal.new("16.0")
+          }
+        ] do
+      acc_insert_pathway.(pw_attrs)
+    end
+
+    IO.puts(
+      "Browser seed: accessibility stations ACCESSIBILITY_SMALL_STATION and ACCESSIBILITY_TRANSFER_CENTER in Browser E2E Version"
+    )
+
     # The seed bulk-loads its rows, and a new database has no planner statistics
     # until autovacuum's first pass. A query planned before then estimates one row
     # per table and nests its joins, so the Stops page's routes-serving-stations

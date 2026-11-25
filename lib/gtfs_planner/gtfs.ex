@@ -2977,6 +2977,8 @@ defmodule GtfsPlanner.Gtfs do
            %{
              route_id: r.route_id,
              route_short_name: r.route_short_name,
+             route_long_name: r.route_long_name,
+             route_type: r.route_type,
              route_color: r.route_color,
              route_text_color: r.route_text_color
            }}

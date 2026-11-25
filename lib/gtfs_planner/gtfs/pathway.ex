@@ -75,9 +75,35 @@ defmodule GtfsPlanner.Gtfs.Pathway do
   # Limits from the ADA Standards. A ramp may be no steeper than 1:12 (0.0833),
   # so the boundary sits just above it and a ramp recorded as 0.083 or 0.0833
   # passes. An opening must be 32 inches (0.8128 m) clear, which the editor
-  # stores as 0.81.
+  # stores as 0.81. Near-threshold warning bands highlight ramps approaching
+  # 1:12 (0.075..0.0834) and tight openings approaching the 36 in. (0.915 m)
+  # continuous accessible width (0.81..0.92 m).
   @max_step_free_slope Decimal.new("0.0834")
+  @near_step_free_slope Decimal.new("0.075")
   @min_step_free_width Decimal.new("0.81")
+  @near_step_free_width Decimal.new("0.92")
+  @comfort_step_free_width Decimal.new("0.915")
+
+  @doc """
+  Returns the ADA hard-barrier and near-threshold accessibility limits owned by
+  `Pathway`.
+  """
+  @spec accessibility_thresholds() :: %{
+          max_slope: Decimal.t(),
+          near_slope: Decimal.t(),
+          min_width: Decimal.t(),
+          near_width: Decimal.t(),
+          comfort_width: Decimal.t()
+        }
+  def accessibility_thresholds do
+    %{
+      max_slope: @max_step_free_slope,
+      near_slope: @near_step_free_slope,
+      min_width: @min_step_free_width,
+      near_width: @near_step_free_width,
+      comfort_width: @comfort_step_free_width
+    }
+  end
 
   @doc """
   Classifies a pathway for the floorplan's step-free view.
@@ -119,6 +145,42 @@ defmodule GtfsPlanner.Gtfs.Pathway do
           Decimal.lt?(width, @min_step_free_width)
     end)
   end
+
+  @doc """
+  Returns measurements that pass hard ADA barrier limits but sit close enough
+  to warrant review:
+
+    * `:slope` when `0.075 <= abs(max_slope) <= 0.0834`
+    * `:width` when `0.81 <= min_width <= 0.92`
+
+  Blank, zero, non-decimal, out-of-band, and hard-barrier values are excluded.
+  """
+  @spec near_threshold_fields(map()) :: [:slope | :width]
+  def near_threshold_fields(pathway) when is_map(pathway) do
+    slope = Map.get(pathway, :max_slope)
+    width = Map.get(pathway, :min_width)
+
+    Enum.filter([:slope, :width], fn
+      :slope -> near_threshold_slope?(slope)
+      :width -> near_threshold_width?(width)
+    end)
+  end
+
+  defp near_threshold_slope?(%Decimal{} = slope) do
+    abs_slope = Decimal.abs(slope)
+
+    Decimal.compare(abs_slope, @near_step_free_slope) != :lt and
+      Decimal.compare(abs_slope, @max_step_free_slope) != :gt
+  end
+
+  defp near_threshold_slope?(_slope), do: false
+
+  defp near_threshold_width?(%Decimal{} = width) do
+    Decimal.compare(width, @min_step_free_width) != :lt and
+      Decimal.compare(width, @near_step_free_width) != :gt
+  end
+
+  defp near_threshold_width?(_width), do: false
 
   def mode_label(mode) do
     case mode do

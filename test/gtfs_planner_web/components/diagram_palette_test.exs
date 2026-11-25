@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     active_stop fallback_stop other_level_stop
     pathway_forward pathway_inactive
     pathway_step_free pathway_not_step_free pathway_barrier
+    schematic_unverified schematic_near_threshold schematic_sole_elevator
     label label_halo ruler focus selection building_outline error degraded
     journal_open
   )a
@@ -77,5 +78,17 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
 
     assert DiagramPalette.contrast_ratio("#FFFFFF", blue) >= 4.5
     assert DiagramPalette.contrast_ratio("#000000", blue) >= 3.0
+  end
+
+  test "accessibility schematic roles and unverified text tokens meet WCAG AA contrast" do
+    for role <- [:schematic_unverified, :schematic_near_threshold, :schematic_sole_elevator] do
+      meta = DiagramPalette.roles()[role]
+      assert DiagramPalette.contrast_ratio("#FFFFFF", meta.color) >= 4.5
+      assert DiagramPalette.contrast_ratio("#F4F6F9", meta.color) >= 4.5
+      assert DiagramPalette.contrast_ratio("#000000", meta.color) >= 3.0
+    end
+
+    assert DiagramPalette.contrast_ratio("#F3EDFF", "#5B21B6") >= 4.5
+    assert DiagramPalette.contrast_ratio("#F3EDFF", "#7C3AED") >= 4.5
   end
 end

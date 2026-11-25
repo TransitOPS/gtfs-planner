@@ -213,6 +213,7 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id", Gtfs.StopDetailLive, :show
       live "/stops/:stop_id/diagram", Gtfs.StationDiagramLive, :index
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
+      live "/stops/:stop_id/report/accessibility", Gtfs.StationAccessibilityLive, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
       live "/stops/:stop_id/evolutions", Gtfs.PathwayEvolutionsLive, :index
       # The moment access preview is the same LiveView at its second route, so

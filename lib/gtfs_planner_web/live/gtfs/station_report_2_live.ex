@@ -71,6 +71,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
      |> assign(:refresh_reason, nil)
      |> assign(:report_error, nil)
      |> assign(:url_dimensions, [])
+     |> assign(:pending_edit_stop_id, nil)
      |> clear_model()
      |> reset_expansion()
      |> clear_drawer()
@@ -88,13 +89,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     if active_scope?(socket, organization_id, gtfs_version_id, stop_id) do
       # A patch that does not move the report scope (for example a `dimensions`
-      # query change) must not restart work or discard disclosure state.
-      {:noreply, socket}
+      # query change or clearing `edit_stop_id`) must not restart work or
+      # discard disclosure state.
+      {:noreply, handle_same_scope_edit_stop_param(socket, params)}
     else
       {:noreply,
        socket
        |> assign(:stop_id, stop_id)
        |> assign(:url_dimensions, parse_url_dimensions(params))
+       |> assign(:pending_edit_stop_id, Map.get(params, "edit_stop_id"))
        |> clear_model()
        |> reset_expansion()
        |> clear_drawer()
@@ -148,6 +151,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   def handle_async(@report_key, {:exit, _reason}, socket) do
     if socket.assigns.view_state in [:initial_loading, :refreshing] do
       {:noreply, assign_report_error(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:clear_edit_stop_param, scope, flash_error}, socket) do
+    if scope == socket.assigns.report_scope do
+      # Replace the intent URL so Back returns to the linking page.
+      socket = push_patch(socket, to: report_path_without_edit_stop(socket), replace: true)
+      socket = if flash_error, do: put_flash(socket, :error, flash_error), else: socket
+      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -219,6 +234,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     |> then(fn socket ->
       if first_model?, do: seed_expansion(socket, model), else: put_expansion(socket, [])
     end)
+    |> maybe_resolve_pending_edit_stop()
   end
 
   # -- Station result helper ---------------------------------------------------
@@ -680,6 +696,85 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     end
   end
 
+  defp handle_same_scope_edit_stop_param(socket, %{"edit_stop_id" => edit_stop_id}) do
+    if socket.assigns.model do
+      resolve_edit_stop_param(socket, edit_stop_id)
+    else
+      assign(socket, :pending_edit_stop_id, edit_stop_id)
+    end
+  end
+
+  defp handle_same_scope_edit_stop_param(socket, _params), do: socket
+
+  defp maybe_resolve_pending_edit_stop(%{assigns: %{pending_edit_stop_id: nil}} = socket),
+    do: socket
+
+  defp maybe_resolve_pending_edit_stop(socket) do
+    resolve_edit_stop_param(socket, socket.assigns.pending_edit_stop_id)
+  end
+
+  defp resolve_edit_stop_param(socket, edit_stop_id) do
+    org_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    audit = AuditContext.from_assigns(socket.assigns)
+
+    socket =
+      with {:ok, uuid} <- Ecto.UUID.cast(edit_stop_id),
+           %Stop{} = snapshot_stop <- find_snapshot_stop_by_uuid(socket.assigns.model, uuid),
+           %Stop{} = stop <- Gtfs.get_stop_by_id(org_id, version_id, uuid),
+           true <- stop.id == snapshot_stop.id,
+           true <- Stations.station_member?(audit, "stop", stop.id) do
+        socket =
+          socket
+          |> assign(:drawer_return_focus_id, nil)
+          |> open_stop_drawer(stop.stop_id)
+
+        if socket.assigns.drawer_entity do
+          socket
+        else
+          socket
+          |> reset_drawer()
+          |> put_flash(:error, "Stop not found.")
+        end
+      else
+        _ ->
+          socket
+          |> reset_drawer()
+          |> put_flash(:error, "Stop not found.")
+      end
+
+    flash_error = Phoenix.Flash.get(socket.assigns.flash, :error)
+
+    if connected?(socket) do
+      send(self(), {:clear_edit_stop_param, socket.assigns.report_scope, flash_error})
+    end
+
+    assign(socket, :pending_edit_stop_id, nil)
+  end
+
+  defp find_snapshot_stop_by_uuid(
+         %{snapshot: %{station: station, child_stops: child_stops}},
+         uuid
+       ) do
+    Enum.find([station | child_stops], &(&1.id == uuid))
+  end
+
+  defp find_snapshot_stop_by_uuid(_model, _uuid), do: nil
+
+  defp report_path_without_edit_stop(socket) do
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    stop_id = socket.assigns.stop_id
+
+    case socket.assigns.url_dimensions do
+      [] ->
+        ~p"/gtfs/#{gtfs_version_id}/stops/#{stop_id}/report"
+
+      dimensions ->
+        dims = Enum.map_join(dimensions, ",", &Atom.to_string/1)
+        ~p"/gtfs/#{gtfs_version_id}/stops/#{stop_id}/report?#{[dimensions: dims]}"
+    end
+  end
+
   defp stop_form(stop) do
     to_form(
       %{
@@ -778,6 +873,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
                   connectivity_routes={@model.connectivity_routes}
                   expanded_sources={@expanded_sources}
                   expanded_route_keys={@expanded_route_keys}
+                  gtfs_version_id={@current_gtfs_version.id}
+                  stop_id={@station.stop_id}
                 />
                 <.gps_checks_section
                   items={@model.gps_items}

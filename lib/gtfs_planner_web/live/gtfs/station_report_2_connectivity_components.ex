@@ -16,6 +16,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   Every status badge is `ResultComponents.tone_badge/1`.
   """
   use Phoenix.Component
+  use GtfsPlannerWeb, :verified_routes
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
   import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
@@ -27,6 +28,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   attr :dimension, :atom, required: true
   attr :routes, :map, default: %{}
   attr :expanded_route_keys, :any, default: MapSet.new()
+  attr :gtfs_version_id, :any, default: nil
+  attr :stop_id, :string, default: nil
 
   @doc "Renders one source and every target route reachable from it."
   def source_group_card(assigns) do
@@ -55,10 +58,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <.target_row
           :for={target <- @group.targets}
           target={target}
+          dimension={@dimension}
           source_id={@group.source.stop_id}
           source_name={@group.source.name}
           routes={@routes}
           expanded_route_keys={@expanded_route_keys}
+          gtfs_version_id={@gtfs_version_id}
+          stop_id={@stop_id}
         />
       </div>
     </div>
@@ -66,13 +72,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   end
 
   attr :target, :map, required: true
+  attr :dimension, :atom, default: nil
   attr :source_id, :string, required: true
   attr :source_name, :string, required: true
   attr :routes, :map, default: %{}
   attr :expanded_route_keys, :any, default: MapSet.new()
+  attr :gtfs_version_id, :any, default: nil
+  attr :stop_id, :string, default: nil
 
   defp target_row(assigns) do
     key = {assigns.source_id, assigns.target.stop_id}
+
+    accessibility_pair_path =
+      if assigns.dimension == :entrance_to_platform and
+           not is_nil(assigns.gtfs_version_id) and
+           not is_nil(assigns.stop_id) do
+        ~p"/gtfs/#{assigns.gtfs_version_id}/stops/#{assigns.stop_id}/report/accessibility?#{[from: assigns.source_id, to: assigns.target.stop_id]}"
+      end
 
     assigns =
       assigns
@@ -82,6 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       |> assign(:expanded_route, Map.get(assigns.routes, key))
       |> assign(:expanded, MapSet.member?(assigns.expanded_route_keys, key))
       |> assign(:route_region_id, "route-#{assigns.source_id}-#{assigns.target.stop_id}")
+      |> assign(:accessibility_pair_path, accessibility_pair_path)
 
     ~H"""
     <div>
@@ -175,6 +192,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         <div class="mt-4">
           <.step_table steps={@expanded_route.steps} />
         </div>
+
+        <.accessibility_pair_link
+          :if={@accessibility_pair_path}
+          id={"route-accessibility-link-#{@source_id}-#{@target.stop_id}"}
+          navigate={@accessibility_pair_path}
+        />
       </div>
 
       <div
@@ -190,7 +213,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
             No directed path exists between these stops. Check that pathway records connect all intermediate nodes.
           </span>
         </p>
+
+        <.accessibility_pair_link
+          :if={@accessibility_pair_path}
+          id={"route-accessibility-link-#{@source_id}-#{@target.stop_id}"}
+          navigate={@accessibility_pair_path}
+        />
       </div>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :navigate, :string, required: true
+
+  defp accessibility_pair_link(assigns) do
+    ~H"""
+    <div class="mt-3 flex flex-wrap items-center justify-end print:hidden">
+      <.link
+        id={@id}
+        navigate={@navigate}
+        class={[
+          "inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-sm font-[650] text-action no-underline",
+          "hover:text-action-hover hover:underline",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        ]}
+      >
+        <span>Inspect step-free route</span>
+        <.icon name="hero-arrow-right" class="size-4 shrink-0" />
+      </.link>
     </div>
     """
   end

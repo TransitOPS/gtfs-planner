@@ -42,6 +42,12 @@ defmodule GtfsPlannerWeb.ResultComponents do
       text: "text-info-fg",
       icon: "hero-information-circle"
     },
+    "unverified" => %{
+      bar: "border-unverified-line",
+      badge: "bg-unverified-bg text-unverified-fg",
+      text: "text-unverified-fg",
+      icon: "hero-question-mark-circle"
+    },
     "neutral" => %{
       bar: "border-control",
       badge: "bg-canvas text-muted",

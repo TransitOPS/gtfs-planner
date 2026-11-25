@@ -228,7 +228,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
              )
 
       refute html =~ "Reports New"
-      assert length(:binary.matches(html, report_href)) == 1
+      assert length(:binary.matches(html, ~s(href="#{report_href}"))) == 1
     end
 
     test "legacy report route is not defined", %{
