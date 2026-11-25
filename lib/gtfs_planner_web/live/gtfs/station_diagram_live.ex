@@ -422,12 +422,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
-  def handle_info(:clear_edit_pathway_param, socket) do
+  def handle_info({:clear_edit_pathway_param, flash_error}, socket) do
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
 
-    {:noreply,
-     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+    # Replace the intent URL so Back returns to the page that linked here
+    # instead of replaying the intent and reopening the drawer. The patch
+    # drops the flash, so a refusal message is set again afterwards.
+    socket =
+      push_patch(socket,
+        to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram",
+        replace: true
+      )
+
+    socket = if flash_error, do: put_flash(socket, :error, flash_error), else: socket
+    {:noreply, socket}
   end
 
   @impl true
@@ -6965,7 +6974,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case Stations.get_pathway(audit_ctx, id) do
       {:ok, pathway} ->
-        if connected?(socket), do: send(self(), :clear_edit_pathway_param)
+        if connected?(socket), do: send(self(), {:clear_edit_pathway_param, nil})
 
         target_level =
           level_from_params(socket.assigns.levels, params) ||
@@ -6977,6 +6986,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         |> open_pathway_drawer(pathway)
 
       {:error, :not_found} ->
+        if connected?(socket),
+          do: send(self(), {:clear_edit_pathway_param, @pathway_intent_error_message})
+
         put_flash(socket, :error, @pathway_intent_error_message)
     end
   end

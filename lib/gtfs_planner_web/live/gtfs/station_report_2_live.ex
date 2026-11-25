@@ -159,7 +159,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   @impl true
   def handle_info({:clear_edit_stop_param, scope, flash_error}, socket) do
     if scope == socket.assigns.report_scope do
-      socket = push_patch(socket, to: report_path_without_edit_stop(socket))
+      # Replace the intent URL so Back returns to the linking page.
+      socket = push_patch(socket, to: report_path_without_edit_stop(socket), replace: true)
       socket = if flash_error, do: put_flash(socket, :error, flash_error), else: socket
       {:noreply, socket}
     else

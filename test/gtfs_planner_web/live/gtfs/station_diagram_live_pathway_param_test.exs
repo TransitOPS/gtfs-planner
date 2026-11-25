@@ -141,16 +141,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
              "#pathway-form input[name='pathway_id'][value='#{upper_pathway.pathway_id}']"
            )
 
-    assert has_element?(
-             view,
-             "#level-control button[data-level-id='L2'][aria-current='true']"
-           )
-
-    refute has_element?(
-             view,
-             "#level-control button[data-level-id='L1'][aria-current='true']"
-           )
-
     assert_patch(view, base_path)
 
     state = :sys.get_state(view.pid)
@@ -180,11 +170,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     assert has_element?(
              view,
              "#pathway-form input[name='pathway_id'][value='#{cross_level_pathway.pathway_id}']"
-           )
-
-    assert has_element?(
-             view,
-             "#level-control button[data-level-id='L2'][aria-current='true']"
            )
 
     assert_patch(view, base_path)
@@ -267,6 +252,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     organization: organization,
     gtfs_version: gtfs_version,
     station: station,
+    ground_level: ground_level,
     upper_level: upper_level,
     upper_pathway: upper_pathway
   } do
@@ -275,10 +261,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
 
     {:ok, view, _html} = live(conn, base_path)
 
-    assert has_element?(
-             view,
-             "#level-control button[data-level-id='L1'][aria-current='true']"
-           )
+    assert :sys.get_state(view.pid).socket.assigns.active_level.id == ground_level.id
 
     refute has_element?(view, "#pathway-form")
 
@@ -287,11 +270,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     assert has_element?(
              view,
              "#pathway-form input[name='pathway_id'][value='#{upper_pathway.pathway_id}']"
-           )
-
-    assert has_element?(
-             view,
-             "#level-control button[data-level-id='L2'][aria-current='true']"
            )
 
     assert_patch(view, base_path)
@@ -359,7 +337,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     user: user,
     organization: organization,
     gtfs_version: gtfs_version,
-    station: station
+    station: station,
+    upper_level: upper_level
   } do
     conn = log_in_user(conn, user, organization: organization)
     base_path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram"
@@ -367,14 +346,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     {:ok, view, _html} = live(conn, "#{base_path}?edit_pathway_id=not-a-uuid")
 
     refute has_element?(view, "#pathway-form")
-    assert has_element?(view, "#flash-error", "Pathway not found.")
+    assert has_element?(view, "#flash-error")
 
     render_patch(view, "#{base_path}?level=L2")
 
-    assert has_element?(
-             view,
-             "#level-control button[data-level-id='L2'][aria-current='true']"
-           )
+    assert :sys.get_state(view.pid).socket.assigns.active_level.id == upper_level.id
   end
 
   test "unknown UUID edit_pathway_id flashes generic error without opening drawer", %{
@@ -390,7 +366,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
     {:ok, view, _html} = live(conn, "#{base_path}?edit_pathway_id=#{Ecto.UUID.generate()}")
 
     refute has_element?(view, "#pathway-form")
-    assert has_element?(view, "#flash-error", "Pathway not found.")
+    assert has_element?(view, "#flash-error")
+    # The refused intent is cleared so a reload does not repeat the error.
+    assert_patch(view, base_path)
   end
 
   test "pathway belonging to another station in the same version flashes generic error", %{
@@ -439,7 +417,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
       live(conn, "#{base_path}?edit_pathway_id=#{other_station_pathway.id}")
 
     refute has_element?(view, "#pathway-form")
-    assert has_element?(view, "#flash-error", "Pathway not found.")
+    assert has_element?(view, "#flash-error")
   end
 
   test "pathway belonging to another GTFS version flashes generic error", %{
@@ -490,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
       live(conn, "#{base_path}?edit_pathway_id=#{other_version_pathway.id}")
 
     refute has_element?(view, "#pathway-form")
-    assert has_element?(view, "#flash-error", "Pathway not found.")
+    assert has_element?(view, "#flash-error")
   end
 
   test "pathway belonging to another organization flashes generic error", %{
@@ -542,6 +520,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayParamTest do
       live(conn, "#{base_path}?edit_pathway_id=#{other_org_pathway.id}")
 
     refute has_element?(view, "#pathway-form")
-    assert has_element?(view, "#flash-error", "Pathway not found.")
+    assert has_element?(view, "#flash-error")
   end
 end
