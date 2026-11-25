@@ -70,6 +70,12 @@ async function measureOverlay(page) {
         type: marker.getAttribute("data-location-type"),
         ...size(marker),
       })),
+      arrowMarkers: [...overlay.querySelectorAll("marker[data-pathway-arrow]")].map((marker) => ({
+        id: marker.id,
+        markerUnits: marker.getAttribute("markerUnits"),
+        widthPx: parseFloat(marker.getAttribute("markerWidth")) * pxPerUnit,
+        heightPx: parseFloat(marker.getAttribute("markerHeight")) * pxPerUnit,
+      })),
       hitTargets: [...overlay.querySelectorAll("[data-stop-hit-target]")].map(size),
     };
   });
@@ -161,9 +167,28 @@ test.describe("Station diagram legibility", () => {
       for (const percent of ZOOM_TARGETS) {
         await zoomTo(page, percent);
 
-        const { markers, hitTargets } = await measureOverlay(page);
+        const { markers, arrowMarkers, hitTargets } = await measureOverlay(page);
         expect(markers.length).toBeGreaterThan(0);
+        expect(arrowMarkers.length).toBe(4);
         expect(hitTargets.length).toBeGreaterThan(0);
+
+        for (const arrow of arrowMarkers) {
+          expect(arrow.markerUnits, `${arrow.id} markerUnits at ${percent}%`).toBe(
+            "userSpaceOnUse",
+          );
+          expect(arrow.widthPx, `${arrow.id} width at ${percent}%`).toBeGreaterThanOrEqual(
+            8 - EPSILON,
+          );
+          expect(arrow.widthPx, `${arrow.id} width at ${percent}%`).toBeLessThanOrEqual(
+            8 + EPSILON,
+          );
+          expect(arrow.heightPx, `${arrow.id} height at ${percent}%`).toBeGreaterThanOrEqual(
+            8 - EPSILON,
+          );
+          expect(arrow.heightPx, `${arrow.id} height at ${percent}%`).toBeLessThanOrEqual(
+            8 + EPSILON,
+          );
+        }
 
         for (const marker of markers) {
           expect(marker.width, `type ${marker.type} marker width at ${percent}%`).toBeGreaterThanOrEqual(

@@ -2701,23 +2701,29 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <defs>
         <%!-- One arrowhead per step-free state, so the step-free view can
         colour each to match its line: marker content takes its colour from
-        the marker, never from the line that references it. --%>
+        the marker, never from the line that references it. Defaults use
+        `strokeWidth` units (3.2 × 2.5px = 8px) and palette variables so arrows
+        stay proportional and on-palette before JS scales them or if a patch or
+        stale asset misses a marker ID; `scaleOverlayElements` switches them to
+        `userSpaceOnUse` at an exact 8px across every pathway stroke weight. --%>
         <marker
           :for={state <- [nil, :step_free, :barrier, :not_step_free]}
           id={pathway_arrow_id(state)}
+          data-pathway-arrow="true"
+          data-step-free={state}
           viewBox="0 0 6 6"
           refX="6"
           refY="3"
-          markerWidth="1.5"
-          markerHeight="1.5"
+          markerWidth="3.2"
+          markerHeight="3.2"
           orient="auto-start-reverse"
-          markerUnits="userSpaceOnUse"
+          markerUnits="strokeWidth"
           overflow="visible"
         >
           <path
             d="M 0 0 L 6 3 L 0 6 z"
-            fill="#FF00FF"
-            stroke="#FFFFFF"
+            fill="var(--diagram-pathway-forward, #0B63E5)"
+            stroke="var(--diagram-label-halo, #FFFFFF)"
             stroke-width="1.5"
             stroke-linejoin="round"
             paint-order="stroke"
@@ -4074,8 +4080,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp plan_cursor(:view, true), do: "cursor-default"
   defp plan_cursor(_mode, _measurement_enabled), do: "cursor-crosshair"
 
-  defp pathway_arrow_id(nil), do: "pathway-arrow"
-  defp pathway_arrow_id(state), do: "pathway-arrow-#{state}"
+  # Distinct from the legacy `pathway-arrow*` IDs so cached older JS that writes
+  # viewBox-unit `markerWidth` without changing `markerUnits` cannot clobber
+  # these `strokeWidth`-defaulted markers.
+  defp pathway_arrow_id(nil), do: "diagram-arrow"
+  defp pathway_arrow_id(state), do: "diagram-arrow-#{state}"
 
   # A measured barrier has no shape of its own on the plan, so its hover text
   # names the measurement, with or without the step-free view.

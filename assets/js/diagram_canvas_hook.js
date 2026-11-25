@@ -1442,43 +1442,82 @@ const DiagramCanvasHook = {
 
   setupOverlayObserver() {
     // Use MutationObserver to detect when LiveView resets the overlay viewBox
+    // or server-rendered pathway arrowhead marker attributes.
     const svg = this.el;
     const container = svg.parentElement;
-    
+    const isPathwayArrowMarker = (node) =>
+      node instanceof Element &&
+      node.tagName.toLowerCase() === "marker" &&
+      (node.hasAttribute("data-pathway-arrow") || node.id.startsWith("pathway-arrow"));
+
     this.overlayObserver = new MutationObserver((mutations) => {
+      let needsChildRefresh = false;
+      let needsViewBoxSync = false;
+      let needsMarkerRescale = false;
+      const overlay = container.querySelector("#diagram-overlay");
+
       for (const mutation of mutations) {
-        if (mutation.type === "attributes" && mutation.attributeName === "viewBox") {
-          const overlay = container.querySelector("#diagram-overlay");
-          if (overlay && mutation.target === overlay) {
-            const expectedViewBox =
-              `${this.viewBox.x} ${this.viewBox.y} ${this.viewBox.w} ${this.viewBox.h}`;
+        if (mutation.type === "childList") {
+          needsChildRefresh = true;
+          continue;
+        }
 
-            if (overlay.getAttribute("viewBox") === expectedViewBox) {
-              continue;
+        if (mutation.type !== "attributes") {
+          continue;
+        }
+
+        if (mutation.attributeName === "viewBox" && overlay && mutation.target === overlay) {
+          const expectedViewBox =
+            `${this.viewBox.x} ${this.viewBox.y} ${this.viewBox.w} ${this.viewBox.h}`;
+
+          if (overlay.getAttribute("viewBox") !== expectedViewBox) {
+            needsViewBoxSync = true;
+          }
+          continue;
+        }
+
+        if (
+          (mutation.attributeName === "markerWidth" ||
+            mutation.attributeName === "markerHeight" ||
+            mutation.attributeName === "markerUnits") &&
+          overlay &&
+          isPathwayArrowMarker(mutation.target)
+        ) {
+          const unitsPerPx = this.unitsPerPx(overlay);
+          if (unitsPerPx) {
+            const expectedSize = `${OVERLAY_BASE.pathwayMarkerSize * unitsPerPx * this.markerShrink(this.scale || 1)}`;
+            if (
+              mutation.target.getAttribute("markerUnits") !== "userSpaceOnUse" ||
+              mutation.target.getAttribute("markerWidth") !== expectedSize ||
+              mutation.target.getAttribute("markerHeight") !== expectedSize
+            ) {
+              needsMarkerRescale = true;
             }
-
-            // LiveView reset the viewBox, re-apply our current state
-            this.syncOverlayViewBox();
-            this.scaleOverlayElements();
-            this.repositionTooltipIfVisible();
           }
         }
-        // Also watch for child changes (stream updates)
-        if (mutation.type === "childList") {
-          this.refreshTooltipElements();
-          this.setupTooltipListeners();
-          this.setupOverlayPanZoom();
-          this.syncOverlayViewBox();
-          this.scaleOverlayElements();
-          this.repositionTooltipIfVisible();
-        }
+      }
+
+      if (needsChildRefresh) {
+        this.refreshTooltipElements();
+        this.setupTooltipListeners();
+        this.setupOverlayPanZoom();
+        this.syncOverlayViewBox();
+        this.scaleOverlayElements();
+        this.repositionTooltipIfVisible();
+      } else if (needsViewBoxSync) {
+        // LiveView reset the viewBox, re-apply our current state
+        this.syncOverlayViewBox();
+        this.scaleOverlayElements();
+        this.repositionTooltipIfVisible();
+      } else if (needsMarkerRescale) {
+        this.scaleOverlayElements();
       }
     });
 
     // Observe the container for changes to the overlay
     this.overlayObserver.observe(container, {
       attributes: true,
-      attributeFilter: ["viewBox"],
+      attributeFilter: ["viewBox", "markerWidth", "markerHeight", "markerUnits"],
       childList: true,
       subtree: true
     });
@@ -1981,10 +2020,20 @@ const DiagramCanvasHook = {
     });
 
     // One arrowhead marker per step-free state; all hold the same size.
-    overlay.querySelectorAll('marker[id^="pathway-arrow"]').forEach((pathwayMarker) => {
-      pathwayMarker.setAttribute("markerWidth", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
-      pathwayMarker.setAttribute("markerHeight", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
-    });
+    const pathwayMarkerSize = `${mk(OVERLAY_BASE.pathwayMarkerSize)}`;
+    overlay
+      .querySelectorAll('marker[data-pathway-arrow], marker[id^="pathway-arrow"]')
+      .forEach((pathwayMarker) => {
+        if (pathwayMarker.getAttribute("markerUnits") !== "userSpaceOnUse") {
+          pathwayMarker.setAttribute("markerUnits", "userSpaceOnUse");
+        }
+        if (pathwayMarker.getAttribute("markerWidth") !== pathwayMarkerSize) {
+          pathwayMarker.setAttribute("markerWidth", pathwayMarkerSize);
+        }
+        if (pathwayMarker.getAttribute("markerHeight") !== pathwayMarkerSize) {
+          pathwayMarker.setAttribute("markerHeight", pathwayMarkerSize);
+        }
+      });
 
     overlay
       .querySelectorAll(

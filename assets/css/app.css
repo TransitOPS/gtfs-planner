@@ -2887,6 +2887,7 @@ html:has(#route-details-save-bar:not([hidden])) {
   fill: var(--diagram-pathway-forward) !important;
 }
 
+#diagram-page marker[data-pathway-arrow] path,
 #diagram-page marker[id^="pathway-arrow"] path,
 #diagram-page [data-cross-level-badge-stairs],
 #diagram-page [data-cross-level-badge-elevator] {

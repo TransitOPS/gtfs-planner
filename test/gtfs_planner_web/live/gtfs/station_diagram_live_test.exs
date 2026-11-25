@@ -5914,55 +5914,77 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       # One-way exit gate: arrow at end only
       assert has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#diagram-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#diagram-arrow']"
              )
 
       # Bidirectional exit gate: arrows at both ends
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#diagram-arrow']"
              )
+
+      # Every arrowhead marker defaults to strokeWidth-relative sizing and palette
+      # tokens so arrows never balloon in viewBox units or fall back to magenta
+      # before JS runs or if an asset/patch misses a marker ID.
+      for {id, state} <- [
+            {"diagram-arrow", nil},
+            {"diagram-arrow-step_free", "step_free"},
+            {"diagram-arrow-barrier", "barrier"},
+            {"diagram-arrow-not_step_free", "not_step_free"}
+          ] do
+        state_selector = if state, do: "[data-step-free='#{state}']", else: ""
+
+        assert has_element?(
+                 view,
+                 "#diagram-overlay defs marker##{id}[data-pathway-arrow='true']#{state_selector}[markerUnits='strokeWidth'][markerWidth='3.2'][markerHeight='3.2']"
+               )
+
+        assert has_element?(
+                 view,
+                 "#diagram-overlay defs marker##{id} path[fill='var(--diagram-pathway-forward, #0B63E5)'][stroke='var(--diagram-label-halo, #FFFFFF)']"
+               )
+      end
     end
 
     test "renders editable tooltip metadata for stops and pathways with one shared tooltip node",
