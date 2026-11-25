@@ -5914,54 +5914,54 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{one_way_walkway.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_walkway.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_moving.id} [data-pathway-line][marker-end^='url(#diagram-arrow']"
              )
 
       # One-way exit gate: arrow at end only
       assert has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#diagram-arrow']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{one_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#diagram-arrow']"
              )
 
       # Bidirectional exit gate: arrows at both ends
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#pathway-arrow']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-start^='url(#diagram-arrow']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#pathway-arrow']"
+               "#pathways-#{two_way_exit_gate.id} [data-pathway-arrow-guide][marker-end^='url(#diagram-arrow']"
              )
     end
 

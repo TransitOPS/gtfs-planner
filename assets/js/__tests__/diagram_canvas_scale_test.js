@@ -20,7 +20,37 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
         ></div>
         <svg id="diagram-overlay">
           <defs>
-            <marker id="pathway-arrow" markerWidth="1.5" markerHeight="1.5"></marker>
+            <marker
+              id="diagram-arrow"
+              data-pathway-arrow="true"
+              markerUnits="strokeWidth"
+              markerWidth="3.2"
+              markerHeight="3.2"
+            ></marker>
+            <marker
+              id="diagram-arrow-step_free"
+              data-pathway-arrow="true"
+              data-step-free="step_free"
+              markerUnits="strokeWidth"
+              markerWidth="3.2"
+              markerHeight="3.2"
+            ></marker>
+            <marker
+              id="diagram-arrow-barrier"
+              data-pathway-arrow="true"
+              data-step-free="barrier"
+              markerUnits="strokeWidth"
+              markerWidth="3.2"
+              markerHeight="3.2"
+            ></marker>
+            <marker
+              id="diagram-arrow-not_step_free"
+              data-pathway-arrow="true"
+              data-step-free="not_step_free"
+              markerUnits="strokeWidth"
+              markerWidth="3.2"
+              markerHeight="3.2"
+            ></marker>
           </defs>
           <g id="stops-svg">
             <g
@@ -198,7 +228,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               y1="10"
               x2="20"
               y2="10"
-              marker-end="url(#pathway-arrow)"
+              marker-end="url(#diagram-arrow)"
               data-pathway-end-trim="10"
               data-base-stroke="2.5"
             ></line>
@@ -577,11 +607,45 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       expect(dashes[1]).toBeCloseTo(3, 6);
     });
 
-    it("draws the arrowhead 8px", () => {
-      const { pxPerUnit } = render({ zoom: 2 });
+    it.each([
+      ["standard canvas at 200% zoom", FITTED_PX_PER_UNIT, 2],
+      ["wide canvas at 100% zoom", 25.7, 1],
+      ["wide canvas at 400% zoom", 25.7, 4],
+    ])("draws every step-free arrowhead marker 8px on %s", (_name, fitted, zoom) => {
+      const { pxPerUnit } = render({ fitted, zoom });
 
-      expect(attr("#pathway-arrow", "markerWidth") * pxPerUnit).toBeCloseTo(8, 6);
-      expect(attr("#pathway-arrow", "markerHeight") * pxPerUnit).toBeCloseTo(8, 6);
+      for (const id of [
+        "#diagram-arrow",
+        "#diagram-arrow-step_free",
+        "#diagram-arrow-barrier",
+        "#diagram-arrow-not_step_free",
+      ]) {
+        const marker = document.querySelector(id);
+        expect(marker.getAttribute("markerUnits")).toBe("userSpaceOnUse");
+        expect(attr(id, "markerWidth") * pxPerUnit).toBeCloseTo(8, 6);
+        expect(attr(id, "markerHeight") * pxPerUnit).toBeCloseTo(8, 6);
+      }
+    });
+
+    it("restores arrowhead markers if LiveView resets their attributes without changing viewBox", async () => {
+      const { hook, pxPerUnit } = render({ fitted: 25.7, zoom: 4 });
+      hook.viewBox = { x: 0, y: 0, w: 25, h: 10.5 };
+      hook.setupOverlayObserver();
+
+      try {
+        const marker = document.querySelector("#diagram-arrow-step_free");
+        marker.setAttribute("markerUnits", "strokeWidth");
+        marker.setAttribute("markerWidth", "3.2");
+        marker.setAttribute("markerHeight", "3.2");
+
+        await Promise.resolve();
+
+        expect(marker.getAttribute("markerUnits")).toBe("userSpaceOnUse");
+        expect(attr("#diagram-arrow-step_free", "markerWidth") * pxPerUnit).toBeCloseTo(8, 6);
+        expect(attr("#diagram-arrow-step_free", "markerHeight") * pxPerUnit).toBeCloseTo(8, 6);
+      } finally {
+        hook.overlayObserver?.disconnect();
+      }
     });
 
     it("ends an arrow line 10px short of each stop", () => {
